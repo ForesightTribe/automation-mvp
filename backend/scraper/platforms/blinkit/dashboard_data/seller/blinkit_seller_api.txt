@@ -1,0 +1,1485 @@
+======SALES PAGE(https://partnersbiz.com/app/sales)========
+
+curl 'https://partnersbiz.com/v1/get-sales-details/?offset=0&limit=30' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A99a6be4d-9128-49dc-a1a2-1d4118a5181f; refresh_token=a8718cea-e58c-4c93-bd9a-3e3911985431; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781002062864; _ga_29600K57ZR=GS2.1.s1781000831$o9$g1$t1781001163$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"created_at__gte":"2026-06-01","created_at__lte":"2026-06-08"},"order_by":[]}'
+
+Sample Response:
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "data": [
+            {
+                "city_id": 1,
+                "item_id": 10111606,
+                "mrp": 550.0,
+                "qty_sold": 1,
+                "city_name": "Bengaluru",
+                "item_name": "Walkers Butter Shortbread Triangle Biscuit(Pack)",
+                "category": "Bakery & Biscuits"
+            },
+            {
+                "city_id": 1,
+                "item_id": 10161313,
+                "mrp": 5964.0,
+                "qty_sold": 142,
+                "city_name": "Bengaluru",
+                "item_name": "Dobra Bubblegum Cotton Candy(Cup)",
+                "category": "Sweet Tooth"
+            },
+            {
+                "city_id": 3,
+                "item_id": 10161314,
+                "mrp": 4410.0,
+                "qty_sold": 105,
+                "city_name": "Pune",
+                "item_name": "Dobra Strawberry Blast Cotton Candy(Cup)",
+                "category": "Sweet Tooth"
+            }
+        ],
+        "total_count": 2173,
+        "offset": 0,
+        "limit": 30
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+
+----Smaller Apis on Sales Page-----
+
+curl 'https://partnersbiz.com/v1/count-distinct-skus/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A99a6be4d-9128-49dc-a1a2-1d4118a5181f; refresh_token=a8718cea-e58c-4c93-bd9a-3e3911985431; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781002062864; _ga_29600K57ZR=GS2.1.s1781000831$o9$g1$t1781001163$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"created_at__gte":"2026-06-01","created_at__lte":"2026-06-08"}}'
+
+Response:
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "distinct_skus": 15
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/count-distinct-categories/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A99a6be4d-9128-49dc-a1a2-1d4118a5181f; refresh_token=a8718cea-e58c-4c93-bd9a-3e3911985431; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781002062864; _ga_29600K57ZR=GS2.1.s1781000831$o9$g1$t1781001163$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"created_at__gte":"2026-06-01","created_at__lte":"2026-06-08"}}'
+
+Response:
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "distinct_categories": 4
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/maximum-selling-item/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A99a6be4d-9128-49dc-a1a2-1d4118a5181f; refresh_token=a8718cea-e58c-4c93-bd9a-3e3911985431; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781002062864; _ga_29600K57ZR=GS2.1.s1781000831$o9$g1$t1781001163$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::99a6be4d-9128-49dc-a1a2-1d4118a5181f' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"created_at__gte":"2026-06-01","created_at__lte":"2026-06-08"}}'
+
+Response:
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "max_sell_item": "Dobra Pop Goli Soda - Nimbu Masala(PET Bottle)"
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+
+======= PO PAGE (https://partnersbiz.com/app/po) =======
+
+curl 'https://partnersbiz.com/v1/client-po-details/?offset=0&limit=30' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"order_by":["-expiry_date"],"filters":{"po_state__in":["Created","Cancelled","Expired","Fulfilled","Cancelled post Creation","Scheduled","Unscheduled","Rescheduled","Delivered","Partially Scheduled"]}}'
+
+Sample Response:
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "data": [
+            {
+                "po_number": "51116610000115",
+                "vendor_id": 25141,
+                "vendor_name": "OXBOW BRANDS PRIVATE LIMITED",
+                "manufacturer_id": 2521,
+                "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+                "facility_id": 5833,
+                "facility_name": "Varanasi V2 - Feeder Warehouse",
+                "city_name": "Varanasi",
+                "address": "bearing Arazi/Gata No. 966, 967, 968, 969, 972, 973, 975, 976, 977, 978, 979, 980, 982, 983,984, 985, 986, 997, 998, OWM Logipark Varanasi 2 LLP, Mauza Bihada, Keswar Raja,Veterinary Hospital, Kabirpur, Rajatalab, Varanasi 2, Uttar Pradesh, 221311",
+                "outlet_id": 8333,
+                "po_state": "Fulfilled",
+                "issue_date": "2026-05-18T05:42:53Z",
+                "expiry_date": "2026-06-30T18:29:59Z",
+                "schedule_date": "2026-06-01T04:30:00Z",
+                "scheduled_on": null,
+                "total_units_ordered": 660,
+                "total_po_amount": 31792.8,
+                "load_size": null,
+                "item_count": 7,
+                "download_url": "https://s3.ap-southeast-1.amazonaws.com/grofers.retail/purchase-order/po/51116610000115.pdf",
+                "total_grn_quantity": 657,
+                "active": true,
+                "created_at": "2026-05-17T21:11:51Z",
+                "created_by": 14,
+                "updated_at": "2026-06-02T07:05:27.536722Z",
+                "updated_by": 6301,
+                "delivery_date": "2026-05-19T18:29:59Z",
+                "pm_name": "Ashish Upadhyay",
+                "pm_phone": "7619920354",
+                "pm_email": "ashish.upadhyay@zomato.com",
+                "grn_report_excel_url": "https://grofers.retail.s3.amazonaws.com/purchase-order/grn-reports/511166100001156997756752031177106.xlsx",
+                "multiple_grn": 0,
+                "po_excel_report_url": "https://s3.ap-southeast-1.amazonaws.com/grofers.retail/purchase-order/po/xls/51116610000115.xlsx",
+                "entity_vendor_cin": "U51900DL2022PTC393329",
+                "entity_vendor_legal_name": "SUPERWELL COMTRADE PRIVATE LIMITED",
+                "delivery_type": "COURIER_WAREHOUSE_UNLOADING",
+                "po_type_id": 2
+            },
+            {
+                "po_number": "3226410043628",
+                "vendor_id": 25141,
+                "vendor_name": "OXBOW BRANDS PRIVATE LIMITED",
+                "manufacturer_id": 2521,
+                "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+                "facility_id": 2947,
+                "facility_name": "Ludhiana L2 - Feeder Warehouse",
+                "city_name": "Ludhiana",
+                "address": "No-1838 Plot No,B-3 to B-8 & A4,Located at focal point,Ludhiana-141010",
+                "outlet_id": 5364,
+                "po_state": "Unscheduled",
+                "issue_date": "2026-06-10T07:49:53Z",
+                "expiry_date": "2026-06-28T18:29:59Z",
+                "schedule_date": null,
+                "scheduled_on": null,
+                "total_units_ordered": 432,
+                "total_po_amount": 15420.6,
+                "load_size": null,
+                "item_count": 6,
+                "download_url": "https://s3.ap-southeast-1.amazonaws.com/grofers.retail/purchase-order/po/3226410043628.pdf",
+                "total_grn_quantity": 0,
+                "active": true,
+                "created_at": "2026-06-09T19:26:49Z",
+                "created_by": 14,
+                "updated_at": "2026-06-10T07:49:58Z",
+                "updated_by": 4955,
+                "delivery_date": "2026-06-11T18:29:59Z",
+                "pm_name": "Nikhil Watts",
+                "pm_phone": "8198000908",
+                "pm_email": "Nikhil.watts@zomato.com",
+                "grn_report_excel_url": null,
+                "multiple_grn": 0,
+                "po_excel_report_url": "\"https://s3.ap-southeast-1.amazonaws.com/grofers.retail/purchase-order/po/xls/3226410043628.xlsx\"",
+                "entity_vendor_cin": "\"U51900DL2022PTC393329\"",
+                "entity_vendor_legal_name": "\"SUPERWELL COMTRADE PRIVATE LIMITED\"",
+                "delivery_type": "COURIER_WAREHOUSE_UNLOADING",
+                "po_type_id": 2
+            },
+            {
+                "po_number": "2940010044190",
+                "vendor_id": 25141,
+                "vendor_name": "OXBOW BRANDS PRIVATE LIMITED",
+                "manufacturer_id": 2521,
+                "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+                "facility_id": 2577,
+                "facility_name": "Lucknow L5 - Feeder Warehouse",
+                "city_name": "Lucknow",
+                "address": "Opposite memora airforce station, junabganj to mohanlalganj road, Lucknow 226401",
+                "outlet_id": 5003,
+                "po_state": "Scheduled",
+                "issue_date": "2026-06-04T07:35:32Z",
+                "expiry_date": "2026-06-22T18:29:59Z",
+                "schedule_date": "2026-06-12T02:30:00Z",
+                "scheduled_on": "2026-06-09T10:09:09.744000Z",
+                "total_units_ordered": 396,
+                "total_po_amount": 15514.2,
+                "load_size": null,
+                "item_count": 7,
+                "download_url": "https://s3.ap-southeast-1.amazonaws.com/grofers.retail/purchase-order/po/2940010044190.pdf",
+                "total_grn_quantity": 0,
+                "active": true,
+                "created_at": "2026-06-03T22:07:40Z",
+                "created_by": 14,
+                "updated_at": "2026-06-04T07:35:50Z",
+                "updated_by": 4955,
+                "delivery_date": "2026-06-05T18:29:59Z",
+                "pm_name": "Sunny Prajapati",
+                "pm_phone": "9936035702",
+                "pm_email": "sunny.prajapati@zomato.com",
+                "grn_report_excel_url": null,
+                "multiple_grn": 0,
+                "po_excel_report_url": "\"https://s3.ap-southeast-1.amazonaws.com/grofers.retail/purchase-order/po/xls/2940010044190.xlsx\"",
+                "entity_vendor_cin": "\"U51900DL2022PTC393329\"",
+                "entity_vendor_legal_name": "\"SUPERWELL COMTRADE PRIVATE LIMITED\"",
+                "delivery_type": "COURIER_WAREHOUSE_UNLOADING",
+                "po_type_id": 2
+            }
+        ],
+        "total_count": 6035,
+        "offset": 0,
+        "limit": 30
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+
+curl 'https://partnersbiz.com/v1/get-po-amount/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"issue_date__gte":"2026-05-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_amount": 9866555
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-item-delivered-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"issue_date__gte":"2026-05-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "items_delivered": 82041
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"issue_date__gte":"2026-05-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 261
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"total_grn_quantity":0,"issue_date__gte":"2026-05-10","po_state":"Expired"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 9
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"po_state__in":["cancelled","Cancelled post Creation"],"issue_date__gte":"2026-05-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 0
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"po_state__in":["Created","Cancelled","Expired","Fulfilled","Cancelled post Creation","Scheduled","Unscheduled","Rescheduled","Delivered","Partially Scheduled"],"issue_date__gte":"2025-06-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 3175
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"po_state__in":["Scheduled","Rescheduled"],"issue_date__gte":"2025-06-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 87
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"po_state":"Expired","total_grn_quantity":0,"issue_date__gte":"2025-06-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 449
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"po_state":"Created","issue_date__gte":"2025-06-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 0
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-po-count/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781081800170; _ga_29600K57ZR=GS2.1.s1781080899$o16$g1$t1781080900$j59$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"po_state":"Expired","total_grn_quantity__gt":0,"issue_date__gte":"2025-06-10"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "po_count": 2472
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/client-po-items/51116610000115/?is_paginate=false' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A6acf593a-2606-47c8-a47e-9361b8652fde; refresh_token=97063963-5e54-43ba-815a-7e1bb64fa538; _ga_29600K57ZR=GS2.1.s1781083619$o17$g1$t1781086442$j52$l0$h0; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781087345110' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::6acf593a-2606-47c8-a47e-9361b8652fde' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "data": [
+            {
+                "id": 4350851603,
+                "po_number_id": "51116610000115",
+                "item_id": 10196278,
+                "upc": "8908019882025",
+                "name": "Dobra Pop Goli Soda - Grape(PET Bottle)",
+                "uom_text": "225 ml",
+                "variant_id": "c39b559f-051e-4abe-a179-e7cf3b59a205",
+                "units_ordered": 24,
+                "cost_price": 34.82,
+                "tax_value": 40.0,
+                "cgst_value": 20.0,
+                "sgst_value": 20.0,
+                "igst_value": 40.0,
+                "cess_value": 0.0,
+                "landing_rate": 48.75,
+                "mrp": 75.0,
+                "margin_percentage": 35.0,
+                "total_amount": 1170.0,
+                "remaining_quantity": 0,
+                "bucket_type": null,
+                "created_at": "2026-05-17T21:11:51.305621"
+            },
+            {
+                "id": 4350851604,
+                "po_number_id": "51116610000115",
+                "item_id": 10197566,
+                "upc": "8908019882162",
+                "name": "Dobra Mango Goli Soda(PET Bottle)",
+                "uom_text": "225 ml",
+                "variant_id": "24ee69f8-64fc-458d-ade2-959195f02cda",
+                "units_ordered": 144,
+                "cost_price": 34.82,
+                "tax_value": 40.0,
+                "cgst_value": 20.0,
+                "sgst_value": 20.0,
+                "igst_value": 40.0,
+                "cess_value": 0.0,
+                "landing_rate": 48.75,
+                "mrp": 75.0,
+                "margin_percentage": 35.0,
+                "total_amount": 7020.0,
+                "remaining_quantity": 1,
+                "bucket_type": null,
+                "created_at": "2026-05-17T21:11:51.337849"
+            },
+            {
+                "id": 4350851602,
+                "po_number_id": "51116610000115",
+                "item_id": 10161333,
+                "upc": "8908019882117",
+                "name": "Dobra Pop Goli Soda - Apple Mojito(PET Bottle)",
+                "uom_text": "225 ML",
+                "variant_id": "ae413851-6fae-48fa-adc6-18756428a05f",
+                "units_ordered": 96,
+                "cost_price": 37.14,
+                "tax_value": 40.0,
+                "cgst_value": 20.0,
+                "sgst_value": 20.0,
+                "igst_value": 40.0,
+                "cess_value": 0.0,
+                "landing_rate": 52.0,
+                "mrp": 80.0,
+                "margin_percentage": 35.0,
+                "total_amount": 4992.0,
+                "remaining_quantity": 0,
+                "bucket_type": null,
+                "created_at": "2026-05-17T21:11:51.275007"
+            }
+        ],
+        "total_count": 7,
+        "offset": null,
+        "limit": null
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+
+======= SCORE CARD (https://partnersbiz.com/app/scorecard) =========
+
+curl 'https://partnersbiz.com/v1/get-manufacturer-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 265334,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:56.886179Z",
+            "total_grn_quantity": 39744,
+            "total_po_quantity": 48396,
+            "fill_rate": 82.12,
+            "weighted_fill_rate_percent": 84.06,
+            "potential_loss": 159153,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 82.12,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 620
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-highest-rank-category/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "id": 347948,
+        "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+        "manufacturer_id": 2521,
+        "from_date_ist": "2026-06-01",
+        "created_at": "2026-06-08T06:37:35.397598Z",
+        "total_grn_quantity": 39744,
+        "total_po_quantity": 48396,
+        "fill_rate": 82.12,
+        "weighted_fill_rate_percent": 84.0,
+        "potential_loss": 159153,
+        "total_gmv": 8572989.21,
+        "manufacturer_fill_rate": 82.12,
+        "best_fill_rate": 100.0,
+        "manufacturer_rank": 17,
+        "proxy_category": "Food & Beverage"
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-manufacturer-category-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 347948,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:35.397598Z",
+            "total_grn_quantity": 39744,
+            "total_po_quantity": 48396,
+            "fill_rate": 82.12,
+            "weighted_fill_rate_percent": 84.0,
+            "potential_loss": 159153,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 82.12,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 17,
+            "proxy_category": "Food & Beverage"
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-facility-manufacturer-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"params":{"paginate":false},"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 2882892,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:38.017895Z",
+            "total_grn_quantity": 1068,
+            "total_po_quantity": 1644,
+            "fill_rate": 65.0,
+            "weighted_fill_rate_percent": 74.0,
+            "potential_loss": 10241,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 65.0,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 27,
+            "facility_id": 92,
+            "facility_name": "Super Store Dasna 2 (HOT)",
+            "city_id": 10,
+            "city_name": "Ghaziabad"
+        },
+        {
+            "id": 2882893,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:38.017895Z",
+            "total_grn_quantity": 1087,
+            "total_po_quantity": 2436,
+            "fill_rate": 45.0,
+            "weighted_fill_rate_percent": 46.0,
+            "potential_loss": 25499,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 45.0,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 53,
+            "facility_id": 264,
+            "facility_name": "HOT Farukhnagar - SR Feeder",
+            "city_id": 204,
+            "city_name": "Jhajjar"
+        },
+        {
+            "id": 2882922,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:38.017895Z",
+            "total_grn_quantity": 657,
+            "total_po_quantity": 660,
+            "fill_rate": 100.0,
+            "weighted_fill_rate_percent": 99.0,
+            "potential_loss": 0,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 100.0,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 2,
+            "facility_id": 5833,
+            "facility_name": "HOT Varanasi V2 - Feeder",
+            "city_id": 131,
+            "city_name": "Varanasi"
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-manufacturer-category-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"params":{"paginate":false},"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 347948,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:35.397598Z",
+            "total_grn_quantity": 39744,
+            "total_po_quantity": 48396,
+            "fill_rate": 82.12,
+            "weighted_fill_rate_percent": 84.0,
+            "potential_loss": 159153,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 82.12,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 17,
+            "proxy_category": "Food & Beverage"
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-manufacturer-key-skus/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 1670946,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:58.404835Z",
+            "item_id": 10161331,
+            "item_name": "Dobra Pop Goli Soda - Nimbu Masala(PET Bottle)",
+            "potential_loss": 118238.41,
+            "total_gmv": 8572989.21,
+            "upc": "8908019882049",
+            "variant_description": "225 ml - Rs 75.0",
+            "proxy_category": "Food & Beverage"
+        },
+        {
+            "id": 1670948,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:58.404835Z",
+            "item_id": 10161328,
+            "item_name": "Dobra Sour Mango Cotton Candy(Cup)",
+            "potential_loss": 9032.53,
+            "total_gmv": 8572989.21,
+            "upc": "8908019882148",
+            "variant_description": "13 gm - Rs 42.0",
+            "proxy_category": "Food & Beverage"
+        },
+        {
+            "id": 1670949,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:58.404835Z",
+            "item_id": 10161330,
+            "item_name": "Dobra Spicy Kari Tapioca Chips /Crisps(Packet)",
+            "potential_loss": 1713.33,
+            "total_gmv": 8572989.21,
+            "upc": "8908019882193",
+            "variant_description": "60 gm - Rs 65.0",
+            "proxy_category": "Food & Beverage"
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-manufacturer-category-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist__gte":"2026-04-27","from_date_ist__lte":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 334205,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-04-27",
+            "created_at": "2026-05-04T06:35:58.121359Z",
+            "total_grn_quantity": 77038,
+            "total_po_quantity": 82884,
+            "fill_rate": 92.95,
+            "weighted_fill_rate_percent": 91.0,
+            "potential_loss": 91427,
+            "total_gmv": 7849959.29,
+            "manufacturer_fill_rate": 92.95,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 10,
+            "proxy_category": "Food & Beverage"
+        },
+        {
+            "id": 336909,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-05-04",
+            "created_at": "2026-05-11T06:37:14.103572Z",
+            "total_grn_quantity": 63024,
+            "total_po_quantity": 80304,
+            "fill_rate": 78.48,
+            "weighted_fill_rate_percent": 77.0,
+            "potential_loss": 281434,
+            "total_gmv": 8019822.26,
+            "manufacturer_fill_rate": 78.48,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 24,
+            "proxy_category": "Food & Beverage"
+        },
+        {
+            "id": 347948,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:35.397598Z",
+            "total_grn_quantity": 39744,
+            "total_po_quantity": 48396,
+            "fill_rate": 82.12,
+            "weighted_fill_rate_percent": 84.0,
+            "potential_loss": 159153,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 82.12,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 17,
+            "proxy_category": "Food & Beverage"
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-manufacturer-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist__gte":"2026-03-16","from_date_ist__lte":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 244093,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-03-16",
+            "created_at": "2026-03-23T06:31:28.505080Z",
+            "total_grn_quantity": 43265,
+            "total_po_quantity": 45720,
+            "fill_rate": 94.63,
+            "weighted_fill_rate_percent": 94.09,
+            "potential_loss": 10337,
+            "total_gmv": 4969548.65,
+            "manufacturer_fill_rate": 94.63,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 341
+        },
+        {
+            "id": 245972,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-03-23",
+            "created_at": "2026-03-30T06:33:28.105291Z",
+            "total_grn_quantity": 55941,
+            "total_po_quantity": 58296,
+            "fill_rate": 95.96,
+            "weighted_fill_rate_percent": 93.62,
+            "potential_loss": 6731,
+            "total_gmv": 5286638.02,
+            "manufacturer_fill_rate": 95.96,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 335
+        },
+        {
+            "id": 265334,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:56.886179Z",
+            "total_grn_quantity": 39744,
+            "total_po_quantity": 48396,
+            "fill_rate": 82.12,
+            "weighted_fill_rate_percent": 84.06,
+            "potential_loss": 159153,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 82.12,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 620
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+curl 'https://partnersbiz.com/v1/get-facility-manufacturer-score/' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781163612522; _ga_29600K57ZR=GS2.1.s1781162153$o21$g1$t1781162713$j13$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{"manufacturer_id":"2521","from_date_ist":"2026-06-01"}}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": [
+        {
+            "id": 2882892,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:38.017895Z",
+            "total_grn_quantity": 1068,
+            "total_po_quantity": 1644,
+            "fill_rate": 65.0,
+            "weighted_fill_rate_percent": 74.0,
+            "potential_loss": 10241,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 65.0,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 27,
+            "facility_id": 92,
+            "facility_name": "Super Store Dasna 2 (HOT)",
+            "city_id": 10,
+            "city_name": "Ghaziabad"
+        },
+        {
+            "id": 2882893,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:38.017895Z",
+            "total_grn_quantity": 1087,
+            "total_po_quantity": 2436,
+            "fill_rate": 45.0,
+            "weighted_fill_rate_percent": 46.0,
+            "potential_loss": 25499,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 45.0,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 53,
+            "facility_id": 264,
+            "facility_name": "HOT Farukhnagar - SR Feeder",
+            "city_id": 204,
+            "city_name": "Jhajjar"
+        },
+        {
+            "id": 2882922,
+            "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+            "manufacturer_id": 2521,
+            "from_date_ist": "2026-06-01",
+            "created_at": "2026-06-08T06:37:38.017895Z",
+            "total_grn_quantity": 657,
+            "total_po_quantity": 660,
+            "fill_rate": 100.0,
+            "weighted_fill_rate_percent": 99.0,
+            "potential_loss": 0,
+            "total_gmv": 8572989.21,
+            "manufacturer_fill_rate": 100.0,
+            "best_fill_rate": 100.0,
+            "manufacturer_rank": 2,
+            "facility_id": 5833,
+            "facility_name": "HOT Varanasi V2 - Feeder",
+            "city_id": 131,
+            "city_name": "Varanasi"
+        }
+    ],
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}
+
+
+===== Stock on Hand Page (https://partnersbiz.com/app/soh) ======
+
+curl 'https://partnersbiz.com/v1/get-soh-details/?offset=0&limit=30' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.9' \
+  -H 'access_token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'app_client: partnerbiz-web' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; _ga=GA1.1.1601935375.1780918255; access_token=v2%3A%3A7bcd0b45-987b-4ea3-933d-012a274ec5fa; refresh_token=ad7ceedf-f7d9-4132-9b66-b66c1392289c; _dd_s=aid=08826f17-6469-461d-80ee-5f06424ba057&rum=0&expire=1781185801363; _ga_29600K57ZR=GS2.1.s1781184833$o23$g1$t1781184901$j55$l0$h0' \
+  -H 'origin: https://partnersbiz.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://partnersbiz.com/' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'service: partnersbiz' \
+  -H 'token: v2::7bcd0b45-987b-4ea3-933d-012a274ec5fa' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  -H 'x-api-key: fe25a1da-d76e-4da1-a7bf-175e8ecf130f' \
+  -H 'x-entity-id: 1511' \
+  -H 'x-entity-type: manufacturer' \
+  --data-raw '{"filters":{},"order_by":[]}'
+
+{
+    "status": 1,
+    "instance_name": "local",
+    "data": {
+        "data": [
+            {
+                "id": 1087786503,
+                "backend_facility_name": "Super Store Lucknow L4 - Warehouse",
+                "backend_facility_id": 1206,
+                "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+                "manufacturer_id": 2521,
+                "item_name": "Dobra Strawberry Blast Cotton Candy(Cup) 13 gm - Rs 42.0",
+                "item_id": 10161314,
+                "created_at": "2026-06-11",
+                "backend_inv_qty": 0,
+                "frontend_inv_qty": 77
+            },
+            {
+                "id": 1087788425,
+                "backend_facility_name": "Varanasi V2 - Feeder Warehouse",
+                "backend_facility_id": 5833,
+                "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+                "manufacturer_id": 2521,
+                "item_name": "Dobra Strawberry Blast Cotton Candy(Cup) 13 gm - Rs 42.0",
+                "item_id": 10161314,
+                "created_at": "2026-06-11",
+                "backend_inv_qty": 35,
+                "frontend_inv_qty": 0
+            },
+            {
+                "id": 1087881234,
+                "backend_facility_name": "Noida N1 - Feeder Warehouse",
+                "backend_facility_id": 2576,
+                "manufacturer_name": "D.C. Johar and Sons (P) Ltd",
+                "manufacturer_id": 2521,
+                "item_name": "Dobra Strawberry Blast Cotton Candy(Cup) 13 gm - Rs 42.0",
+                "item_id": 10161314,
+                "created_at": "2026-06-11",
+                "backend_inv_qty": 8,
+                "frontend_inv_qty": 129
+            }
+        ],
+        "total_count": 894,
+        "offset": 0,
+        "limit": 30
+    },
+    "git_branch": "`GIT_BRANCH` is not defined in settings"
+}

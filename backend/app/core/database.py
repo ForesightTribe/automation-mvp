@@ -1,28 +1,22 @@
-from motor.motor_asyncio import AsyncIOMotorClient
-from beanie import init_beanie
+from motor.motor_asyncio import AsyncIOMotorClient, AsyncIOMotorDatabase
 from app.core.config import settings
 
-client: AsyncIOMotorClient = None
+_client: AsyncIOMotorClient | None = None
 
 
-async def connect_db():
-    global client
-    client = AsyncIOMotorClient(settings.MONGODB_URL)
-
-    from app.models.user import User
-    from app.models.tenant import Tenant
-    from app.models.product import Product
-    from app.models.sales import Sales
-    from app.models.inventory import Inventory
-    from app.models.scrape_job import ScrapeJob
-
-    await init_beanie(
-        database=client[settings.DB_NAME],
-        document_models=[User, Tenant, Product, Sales, Inventory, ScrapeJob],
-    )
+async def connect_db() -> None:
+    global _client
+    _client = AsyncIOMotorClient(settings.MONGODB_URL)
 
 
-async def close_db():
-    global client
-    if client:
-        client.close()
+async def close_db() -> None:
+    global _client
+    if _client:
+        _client.close()
+        _client = None
+
+
+def get_db() -> AsyncIOMotorDatabase:
+    if _client is None:
+        raise RuntimeError("Database not connected. Call connect_db() first.")
+    return _client[settings.DB_NAME]

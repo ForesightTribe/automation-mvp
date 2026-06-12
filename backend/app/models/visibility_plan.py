@@ -1,30 +1,28 @@
 from beanie import Document
 from datetime import datetime, date
 from typing import Optional
-from pymongo import IndexModel, ASCENDING, DESCENDING
+from pymongo import IndexModel, ASCENDING
 
 
-class Product(Document):
+class VisibilityPlan(Document):
     # Envelope
     tenant_id: str
     platform: str
     dashboard: str
-    data_type: str = "product"
+    data_type: str = "visibility_plan"
     scrape_job_id: str
     scraped_at: datetime
     date: date
-    upsert_key: str             # {tenant_id}:{platform}:product:{product_id}
+    upsert_key: str             # {tenant_id}:{platform}:visibility_plan:{plan}:{period}
 
-    # Product fields
-    product_id: str
-    name: str
-    sku: Optional[str] = None
-    category: Optional[str] = None
-    price: float
-    mrp: Optional[float] = None
+    # Visibility plan fields
+    plan: str
+    period: Optional[str] = None
+    budget: Optional[float] = None
+    status: Optional[str] = None
 
     class Settings:
-        name = "product_catalog"
+        name = "visibility_plans"
         indexes = [
             IndexModel([("upsert_key", ASCENDING)], unique=True),
             IndexModel([("tenant_id", ASCENDING), ("platform", ASCENDING)]),

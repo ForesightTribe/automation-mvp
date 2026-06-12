@@ -1,0 +1,431 @@
+=======CAMPAIGNS PAGE (https://brands.blinkit.com/diy/list)==========
+
+------CAMPAIGNS------
+curl 'https://brands.blinkit.com/adservice/v1/advertisers/campaigns' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.7' \
+  -H 'baggage: sentry-environment=production,sentry-release=brand-central-dashboard%401.0.3,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=a100338aa24c4ba783dde86a8d9c2706,sentry-replay_id=d234d8d2946f4744a34373465a624a0a,sentry-sample_rate=1,sentry-sampled=true' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; city=New Delhi; _cfuvid=lJ._WClsn2NUt.vm09zSgPvNyRMxg_MwpfvKQn5voLU-1780986463.0266821-1.0.1.1-5rx8z0V9zDJ9xK2vwR0QhyUMX9LZbvxIkwQQeMB86rs; __cf_bm=IYw66aKbrJcIOUkm82hUEy8.Ty.aQ6mkNm9jCI11Dpg-1780989794.456472-1.0.1.1-4W0aVFb3H2ag51XMEs.04Jx6IKCapG35w4vfRiDR5VujJDG3wQbBd.HYrjwUALlpPqaxgZlnYa2i5NJolnJM4foSqZugBKhRNyhQH7Hjr3FB12f_eweFvlha.Vg1GaZm; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e&rum=2&id=985119b4-1dbf-4e25-ab3a-effa7f718cab&created=1780986462804&expire=1780991562765' \
+  -H 'firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Ijc5OTRiNGYzMTU2MzJiMjk3NzAwNmQ5M2U5NGIyYWNiZTMwNWZlNDYiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODA5MDk1MDUsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MDk5MDY0NywiZXhwIjoxNzgwOTk0MjQ3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.nWYLklc654jy2GLpPSCpbnXAXxF4eXQr9gJXsMsOo_a7fkmHfzy6jwOAVnXhsoXLA7w-l7tvh-PXZ9FD-rkj80lCT8LwnZyfR_SPOjuieIMVUTq4fwi94YKGiB_Zo3UCx77VZYBY5JuVACXPXIL5ZdEi4TGpOBWrKnr-dsifJ4Cl2fU_4Pg3wlfj8amBraG6Ot6R4U0XmRjtJNocADyMhAR2k8_dRrySSPSXq8gSr-G0bli1oiexkvflA1aMjUvFau5XARYxYSLy0Y0MosXpsYmV7VUEbIS2pD_ArIGCvhyYyQB3m0uBYs74KjT62eNz9EHja4ZYegXSFpFIJmsCyg' \
+  -H 'origin: https://blinkit.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://brands.blinkit.com/diy/list' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'sentry-trace: a100338aa24c4ba783dde86a8d9c2706-9a8898b6b3a911fb-1' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  --data-raw '{"from_date":"3/10/2026","to_date":"6/9/2026","campaign_types":["PRODUCT_LISTING","PRODUCT_RECOMMENDATION","SEARCH_SUGGESTION","SHELF_DIY","STORY_DIY","BANNER_DIY","BRAND_SPOTLIGHT_DIY","BANNER_LISTING","BRAND_BOOSTER"]}'
+
+Sample Response:
+{
+    "status": true,
+    "message": "success",
+    "data": {
+        "campaigns": [
+            {
+                "id": 533237,
+                "campaign_name": "Foresight | Grape KWs [MUM]",
+                "campaign_type": "PRODUCT_LISTING",
+                "campaign_status": "ACTIVE",
+                "start_ts": "2026-06-08 18:30:00+00:00",
+                "end_ts": "9999-12-31 18:29:59+00:00",
+                "infinite_campaign": true,
+                "budget_consumed": 0,
+                "impressions": 0,
+                "atcs": 0,
+                "roas": 0,
+                "reach": 0,
+                "alerts": null,
+                "comments": [],
+                "comments_v2": [],
+                "updated_ts": "2026-06-09 06:46:25.196736+00:00",
+                "no_of_changes_scheduled": 0,
+                "no_of_campaign_changes": 0
+            },
+            {
+                "id": 531619,
+                "campaign_name": "Foresight | Grape KWs [BLR]",
+                "campaign_type": "PRODUCT_LISTING",
+                "campaign_status": "ACTIVE",
+                "start_ts": "2026-06-06 18:30:00+00:00",
+                "end_ts": "9999-12-31 18:29:59+00:00",
+                "infinite_campaign": true,
+                "budget_consumed": 99,
+                "impressions": 248,
+                "atcs": 0,
+                "roas": 0.0,
+                "reach": 0,
+                "alerts": null,
+                "comments": [],
+                "comments_v2": [],
+                "updated_ts": "2026-06-09 06:40:46.560522+00:00",
+                "no_of_changes_scheduled": 0,
+                "no_of_campaign_changes": 0
+            },
+            {
+                "id": 117285,
+                "campaign_name": "July_Tapioca",
+                "campaign_type": "PRODUCT_LISTING",
+                "campaign_status": "STOPPED",
+                "start_ts": "2024-07-17 18:30:00+00:00",
+                "end_ts": "9999-12-31 18:29:59+00:00",
+                "infinite_campaign": true,
+                "budget_consumed": 0,
+                "impressions": 0,
+                "atcs": 0,
+                "roas": 0,
+                "reach": 0,
+                "alerts": null,
+                "comments": [],
+                "comments_v2": [],
+                "updated_ts": "2026-04-29 20:41:24.140604+00:00",
+                "no_of_changes_scheduled": 0,
+                "no_of_campaign_changes": 0
+            },
+            {
+                "id": 117292,
+                "campaign_name": "July_Pop Goli",
+                "campaign_type": "PRODUCT_LISTING",
+                "campaign_status": "STOPPED",
+                "start_ts": "2024-07-17 18:30:00+00:00",
+                "end_ts": "9999-12-31 18:29:59+00:00",
+                "infinite_campaign": true,
+                "budget_consumed": 0,
+                "impressions": 0,
+                "atcs": 0,
+                "roas": 0,
+                "reach": 0,
+                "alerts": null,
+                "comments": [],
+                "comments_v2": [],
+                "updated_ts": "2026-04-29 20:41:24.140604+00:00",
+                "no_of_changes_scheduled": 0,
+                "no_of_campaign_changes": 0
+            }
+        ]
+    }
+}
+
+
+--------SOV------------
+curl 'https://brands.blinkit.com/adservice/v1/campaigns/sponsored-sov' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.7' \
+  -H 'baggage: sentry-environment=production,sentry-release=brand-central-dashboard%401.0.3,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=a100338aa24c4ba783dde86a8d9c2706,sentry-replay_id=d234d8d2946f4744a34373465a624a0a,sentry-sample_rate=1,sentry-sampled=true' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; city=New Delhi; _cfuvid=lJ._WClsn2NUt.vm09zSgPvNyRMxg_MwpfvKQn5voLU-1780986463.0266821-1.0.1.1-5rx8z0V9zDJ9xK2vwR0QhyUMX9LZbvxIkwQQeMB86rs; __cf_bm=IYw66aKbrJcIOUkm82hUEy8.Ty.aQ6mkNm9jCI11Dpg-1780989794.456472-1.0.1.1-4W0aVFb3H2ag51XMEs.04Jx6IKCapG35w4vfRiDR5VujJDG3wQbBd.HYrjwUALlpPqaxgZlnYa2i5NJolnJM4foSqZugBKhRNyhQH7Hjr3FB12f_eweFvlha.Vg1GaZm; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e&rum=2&id=985119b4-1dbf-4e25-ab3a-effa7f718cab&created=1780986462804&expire=1780991562765' \
+  -H 'firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Ijc5OTRiNGYzMTU2MzJiMjk3NzAwNmQ5M2U5NGIyYWNiZTMwNWZlNDYiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODA5MDk1MDUsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MDk5MDY0NywiZXhwIjoxNzgwOTk0MjQ3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.nWYLklc654jy2GLpPSCpbnXAXxF4eXQr9gJXsMsOo_a7fkmHfzy6jwOAVnXhsoXLA7w-l7tvh-PXZ9FD-rkj80lCT8LwnZyfR_SPOjuieIMVUTq4fwi94YKGiB_Zo3UCx77VZYBY5JuVACXPXIL5ZdEi4TGpOBWrKnr-dsifJ4Cl2fU_4Pg3wlfj8amBraG6Ot6R4U0XmRjtJNocADyMhAR2k8_dRrySSPSXq8gSr-G0bli1oiexkvflA1aMjUvFau5XARYxYSLy0Y0MosXpsYmV7VUEbIS2pD_ArIGCvhyYyQB3m0uBYs74KjT62eNz9EHja4ZYegXSFpFIJmsCyg' \
+  -H 'origin: https://blinkit.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://brands.blinkit.com/diy/list' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'sentry-trace: a100338aa24c4ba783dde86a8d9c2706-9a8898b6b3a911fb-1' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  --data-raw '{"from_date":"3/10/2026","to_date":"6/9/2026","campaign_types":["PRODUCT_LISTING","PRODUCT_RECOMMENDATION","SEARCH_SUGGESTION","SHELF_DIY","STORY_DIY","BANNER_DIY","BRAND_SPOTLIGHT_DIY","BANNER_LISTING","BRAND_BOOSTER"]}'
+
+Sample Response:
+{
+    "status": true,
+    "message": "success",
+    "data": {
+        "sponsored_sov": [
+            {
+                "keyword": "mango",
+                "monthly_searches": 8516402,
+                "searches": 8516402,
+                "sov": 2.72
+            },
+            {
+                "keyword": "soda",
+                "monthly_searches": 3168325,
+                "searches": 3168325,
+                "sov": 8.61
+            },
+            {
+                "keyword": "pop g",
+                "monthly_searches": 52,
+                "searches": 52,
+                "sov": 100.0
+            },
+            {
+                "keyword": "nimbu cold drink",
+                "monthly_searches": 51,
+                "searches": 51,
+                "sov": 100.0
+            }
+        ]
+    }
+}
+
+--------PERFORMANCE SUMMARY----------
+curl 'https://brands.blinkit.com/adservice/v1/campaigns/performance-summary' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.7' \
+  -H 'baggage: sentry-environment=production,sentry-release=brand-central-dashboard%401.0.3,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=a100338aa24c4ba783dde86a8d9c2706,sentry-replay_id=d234d8d2946f4744a34373465a624a0a,sentry-sample_rate=1,sentry-sampled=true' \
+  -H 'content-type: application/json' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; city=New Delhi; _cfuvid=lJ._WClsn2NUt.vm09zSgPvNyRMxg_MwpfvKQn5voLU-1780986463.0266821-1.0.1.1-5rx8z0V9zDJ9xK2vwR0QhyUMX9LZbvxIkwQQeMB86rs; __cf_bm=IYw66aKbrJcIOUkm82hUEy8.Ty.aQ6mkNm9jCI11Dpg-1780989794.456472-1.0.1.1-4W0aVFb3H2ag51XMEs.04Jx6IKCapG35w4vfRiDR5VujJDG3wQbBd.HYrjwUALlpPqaxgZlnYa2i5NJolnJM4foSqZugBKhRNyhQH7Hjr3FB12f_eweFvlha.Vg1GaZm; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e&rum=2&id=985119b4-1dbf-4e25-ab3a-effa7f718cab&created=1780986462804&expire=1780991558944' \
+  -H 'firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Ijc5OTRiNGYzMTU2MzJiMjk3NzAwNmQ5M2U5NGIyYWNiZTMwNWZlNDYiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODA5MDk1MDUsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MDk5MDY0NywiZXhwIjoxNzgwOTk0MjQ3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.nWYLklc654jy2GLpPSCpbnXAXxF4eXQr9gJXsMsOo_a7fkmHfzy6jwOAVnXhsoXLA7w-l7tvh-PXZ9FD-rkj80lCT8LwnZyfR_SPOjuieIMVUTq4fwi94YKGiB_Zo3UCx77VZYBY5JuVACXPXIL5ZdEi4TGpOBWrKnr-dsifJ4Cl2fU_4Pg3wlfj8amBraG6Ot6R4U0XmRjtJNocADyMhAR2k8_dRrySSPSXq8gSr-G0bli1oiexkvflA1aMjUvFau5XARYxYSLy0Y0MosXpsYmV7VUEbIS2pD_ArIGCvhyYyQB3m0uBYs74KjT62eNz9EHja4ZYegXSFpFIJmsCyg' \
+  -H 'origin: https://blinkit.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://brands.blinkit.com/diy/list' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'sentry-trace: a100338aa24c4ba783dde86a8d9c2706-a865e50379818c4c-1' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36' \
+  --data-raw '{"campaign_types":["PRODUCT_LISTING","PRODUCT_RECOMMENDATION","SEARCH_SUGGESTION","SHELF_DIY","STORY_DIY","BANNER_DIY","BRAND_SPOTLIGHT_DIY","BANNER_LISTING","BRAND_BOOSTER"],"from_date":"03/10/2026","to_date":"06/9/2026"}'
+
+Sample Response:
+{
+    "status": true,
+    "message": "success",
+    "data": {
+        "summary": {
+            "budget_consumed": 3700042,
+            "impressions": 15260104
+        },
+        "budget_distribution": {
+            "BANNER_LISTING": {
+                "budget_consumed": 166163,
+                "consumed_percentage": 4.49
+            },
+            "PRODUCT_RECOMMENDATION": {
+                "budget_consumed": 438871,
+                "consumed_percentage": 11.86
+            },
+            "PRODUCT_LISTING": {
+                "budget_consumed": 2862265,
+                "consumed_percentage": 77.36
+            },
+            "SHELF_DIY": {
+                "budget_consumed": 3375,
+                "consumed_percentage": 0.09
+            },
+            "BANNER_DIY": {
+                "budget_consumed": 229368,
+                "consumed_percentage": 6.2
+            }
+        }
+    }
+}
+
+
+==========BRAND COLLECTIONS (https://brands.blinkit.com/diy/brand-pages)============
+curl 'https://brands.blinkit.com/adservice/v1/brand-pages' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.7' \
+  -H 'baggage: sentry-environment=production,sentry-release=brand-central-dashboard%401.0.3,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=8a219df072cf472d90eb38e14b3eaa7f,sentry-sample_rate=1,sentry-sampled=true' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; city=New Delhi; _cfuvid=lJ._WClsn2NUt.vm09zSgPvNyRMxg_MwpfvKQn5voLU-1780986463.0266821-1.0.1.1-5rx8z0V9zDJ9xK2vwR0QhyUMX9LZbvxIkwQQeMB86rs; __cf_bm=J_LUYCpaSzWHgdUA7HtDJRxk3KkEx.LHDE7BxEVH8qM-1780990929.71441-1.0.1.1-LPCnGR5HJHqsP6gDT73oLpkn6NEeupK45r7QGNq81LrhTNWYYQGPu4M0MN72sw73jr1lCSXI_p5.BUOE.En7EOsYkTO95tfC42yfeHPF7H7saY4mePRocWVla3vkWVlg; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e&rum=2&id=985119b4-1dbf-4e25-ab3a-effa7f718cab&created=1780986462804&expire=1780992305370' \
+  -H 'firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Ijc5OTRiNGYzMTU2MzJiMjk3NzAwNmQ5M2U5NGIyYWNiZTMwNWZlNDYiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODA5MDk1MDUsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MDk5MDY0NywiZXhwIjoxNzgwOTk0MjQ3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.nWYLklc654jy2GLpPSCpbnXAXxF4eXQr9gJXsMsOo_a7fkmHfzy6jwOAVnXhsoXLA7w-l7tvh-PXZ9FD-rkj80lCT8LwnZyfR_SPOjuieIMVUTq4fwi94YKGiB_Zo3UCx77VZYBY5JuVACXPXIL5ZdEi4TGpOBWrKnr-dsifJ4Cl2fU_4Pg3wlfj8amBraG6Ot6R4U0XmRjtJNocADyMhAR2k8_dRrySSPSXq8gSr-G0bli1oiexkvflA1aMjUvFau5XARYxYSLy0Y0MosXpsYmV7VUEbIS2pD_ArIGCvhyYyQB3m0uBYs74KjT62eNz9EHja4ZYegXSFpFIJmsCyg' \
+  -H 'origin: https://blinkit.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://brands.blinkit.com/diy/brand-pages' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'sentry-trace: 8a219df072cf472d90eb38e14b3eaa7f-9894333278af696f-1' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
+
+Sample Response:
+{
+    "status": true,
+    "message": "success",
+    "data": {
+        "collections": [
+            {
+                "id": 32488,
+                "collection_id": null,
+                "collection_uuid": "f99a6533-950d-41e5-bf6a-eac91d480878",
+                "collection_name": "Pop Goli All SKUs",
+                "number_of_products": 0,
+                "created_on": "2026-05-19 13:22:22.023704+00:00",
+                "created_by": "OX",
+                "updated_on": "2026-05-19 13:22:22.023704+00:00",
+                "updated_by": null,
+                "collection_filters": [
+                    {
+                        "brand_id": [
+                            17724
+                        ],
+                        "l1_cat_id": [
+                            "1599"
+                        ],
+                        "keyterm_ids": [
+                            58988,
+                            2039,
+                            1457
+                        ]
+                    }
+                ],
+                "sort": "",
+                "manual_boost_product_ids": [],
+                "is_dynamic": true,
+                "collection_products": []
+            },
+            {
+                "id": 31906,
+                "collection_id": null,
+                "collection_uuid": "227094c9-9316-4162-87da-6e8deaacfd85",
+                "collection_name": "Cotton Candy All SKUs",
+                "number_of_products": 0,
+                "created_on": "2026-05-08 10:46:34.191819+00:00",
+                "created_by": "OX",
+                "updated_on": "2026-05-08 10:46:34.191819+00:00",
+                "updated_by": null,
+                "collection_filters": [
+                    {
+                        "brand_id": [
+                            17724
+                        ],
+                        "l1_cat_id": [
+                            "1930"
+                        ],
+                        "keyterm_ids": [
+                            717
+                        ]
+                    }
+                ],
+                "sort": "",
+                "manual_boost_product_ids": [],
+                "is_dynamic": true,
+                "collection_products": []
+            },
+            {
+                "id": 24787,
+                "collection_id": null,
+                "collection_uuid": "2572f2d4-8d1b-40e6-bdd0-0c89c8add94e",
+                "collection_name": "Cotton Candy",
+                "number_of_products": 5,
+                "created_on": "2025-12-10 06:48:47.576020+00:00",
+                "created_by": "OX",
+                "updated_on": "2025-12-10 06:48:47.576020+00:00",
+                "updated_by": null,
+                "collection_filters": [],
+                "sort": "bestsellers",
+                "manual_boost_product_ids": [],
+                "is_dynamic": false,
+                "collection_products": [
+                    {
+                        "id": 554766,
+                        "is_critical": false
+                    },
+                    {
+                        "id": 554767,
+                        "is_critical": false
+                    },
+                    {
+                        "id": 558816,
+                        "is_critical": false
+                    },
+                    {
+                        "id": 558820,
+                        "is_critical": false
+                    },
+                    {
+                        "id": 558818,
+                        "is_critical": false
+                    }
+                ]
+            }
+        ]
+    }
+}
+
+=========VISIBILITY PLANS (https://brands.blinkit.com/diy/plans)=============
+curl 'https://brands.blinkit.com/adservice/v1/plans' \
+  -H 'accept: application/json, text/plain, */*' \
+  -H 'accept-language: en-US,en;q=0.7' \
+  -H 'baggage: sentry-environment=production,sentry-release=brand-central-dashboard%401.0.3,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=f26d758a766a42ba8efa157f49f753f5,sentry-sample_rate=1,sentry-sampled=true' \
+  -b 'ext_name=ojplmecpdpgccookcobabopnaifgidhf; city=New Delhi; _cfuvid=lJ._WClsn2NUt.vm09zSgPvNyRMxg_MwpfvKQn5voLU-1780986463.0266821-1.0.1.1-5rx8z0V9zDJ9xK2vwR0QhyUMX9LZbvxIkwQQeMB86rs; __cf_bm=J_LUYCpaSzWHgdUA7HtDJRxk3KkEx.LHDE7BxEVH8qM-1780990929.71441-1.0.1.1-LPCnGR5HJHqsP6gDT73oLpkn6NEeupK45r7QGNq81LrhTNWYYQGPu4M0MN72sw73jr1lCSXI_p5.BUOE.En7EOsYkTO95tfC42yfeHPF7H7saY4mePRocWVla3vkWVlg; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e&rum=2&id=985119b4-1dbf-4e25-ab3a-effa7f718cab&created=1780986462804&expire=1780992465992' \
+  -H 'firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6Ijc5OTRiNGYzMTU2MzJiMjk3NzAwNmQ5M2U5NGIyYWNiZTMwNWZlNDYiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODA5MDk1MDUsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MDk5MDY0NywiZXhwIjoxNzgwOTk0MjQ3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.nWYLklc654jy2GLpPSCpbnXAXxF4eXQr9gJXsMsOo_a7fkmHfzy6jwOAVnXhsoXLA7w-l7tvh-PXZ9FD-rkj80lCT8LwnZyfR_SPOjuieIMVUTq4fwi94YKGiB_Zo3UCx77VZYBY5JuVACXPXIL5ZdEi4TGpOBWrKnr-dsifJ4Cl2fU_4Pg3wlfj8amBraG6Ot6R4U0XmRjtJNocADyMhAR2k8_dRrySSPSXq8gSr-G0bli1oiexkvflA1aMjUvFau5XARYxYSLy0Y0MosXpsYmV7VUEbIS2pD_ArIGCvhyYyQB3m0uBYs74KjT62eNz9EHja4ZYegXSFpFIJmsCyg' \
+  -H 'origin: https://blinkit.com' \
+  -H 'priority: u=1, i' \
+  -H 'referer: https://brands.blinkit.com/diy/plans' \
+  -H 'sec-ch-ua: "Brave";v="149", "Chromium";v="149", "Not)A;Brand";v="24"' \
+  -H 'sec-ch-ua-mobile: ?0' \
+  -H 'sec-ch-ua-platform: "Windows"' \
+  -H 'sec-fetch-dest: empty' \
+  -H 'sec-fetch-mode: cors' \
+  -H 'sec-fetch-site: same-origin' \
+  -H 'sec-gpc: 1' \
+  -H 'sentry-trace: f26d758a766a42ba8efa157f49f753f5-9c9992c0700ded20-1' \
+  -H 'user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36'
+
+Sample Response:
+{
+    "status": true,
+    "message": "success",
+    "data": [
+        {
+            "id": 30073,
+            "name": "Dobra_BAU_June",
+            "type": "BASIC",
+            "budget": 520000,
+            "total_aligned_budget": null,
+            "start_date": "2026-05-31 18:30:00+00:00",
+            "end_date": "2026-06-30 18:29:59.999000+00:00",
+            "status": "Approved"
+        },
+        {
+            "id": 29927,
+            "name": "Dobra_BAU_May",
+            "type": "BASIC",
+            "budget": 121500,
+            "total_aligned_budget": null,
+            "start_date": "2026-04-30 18:30:00+00:00",
+            "end_date": "2026-05-31 18:29:59.999000+00:00",
+            "status": "Approved"
+        },
+        {
+            "id": 29828,
+            "name": "Dobra_BAU_May",
+            "type": "BASIC",
+            "budget": 121500,
+            "total_aligned_budget": null,
+            "start_date": "2026-04-30 18:30:00+00:00",
+            "end_date": "2026-05-31 18:29:59.999000+00:00",
+            "status": "Approved"
+        },
+        {
+            "id": 29724,
+            "name": "Dobra_BAU_May",
+            "type": "BASIC",
+            "budget": 120000,
+            "total_aligned_budget": null,
+            "start_date": "2026-04-30 18:30:00+00:00",
+            "end_date": "2026-05-31 18:29:59.999000+00:00",
+            "status": "Approved"
+        },
+        {
+            "id": 29302,
+            "name": "Dobra_BAU_April",
+            "type": "BASIC",
+            "budget": 600000,
+            "total_aligned_budget": null,
+            "start_date": "2026-03-31 18:30:00+00:00",
+            "end_date": "2026-04-30 18:29:59.999000+00:00",
+            "status": "Approved"
+        }
+    ]
+}
+
