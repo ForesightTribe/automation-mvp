@@ -1,10 +1,6 @@
-from app.models.sales import Sales
-from app.models.product import Product
+"""Analytics aggregations over first-party (tenant-scoped) seller data.
 
-
-async def get_overview(tenant_id: str, platform: str) -> dict:
-    pass
-
-
-async def get_revenue_over_time(tenant_id: str, platform: str, days: int = 30) -> list:
-    pass
+To be implemented in the analytics slice — see competition_service.py for the
+established query/return pattern. Every function takes `session` first and
+filters by `tenant_id`.
+"""

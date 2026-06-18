@@ -1,5 +1,9 @@
+import logging
+
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
+
+logger = logging.getLogger("app")
 
 
 class AppException(Exception):
@@ -37,14 +41,17 @@ class CredentialError(AppException):
 def register_exception_handlers(app: FastAPI):
     @app.exception_handler(AppException)
     async def app_exception_handler(request: Request, exc: AppException):
+        # Same `{"detail": ...}` shape as FastAPI's HTTPException, so the
+        # frontend has a single error contract across all endpoints.
         return JSONResponse(
             status_code=exc.status_code,
-            content={"success": False, "data": None, "message": exc.message},
+            content={"detail": exc.message},
         )
 
     @app.exception_handler(Exception)
     async def generic_exception_handler(request: Request, exc: Exception):
+        logger.exception("Unhandled error on %s %s", request.method, request.url.path)
         return JSONResponse(
             status_code=500,
-            content={"success": False, "data": None, "message": "Internal server error"},
+            content={"detail": "Internal server error"},
         )

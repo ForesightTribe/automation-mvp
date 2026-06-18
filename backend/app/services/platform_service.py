@@ -1,9 +1,5 @@
-from app.utils.encryption import encrypt, decrypt
+"""Platform connection management — encrypt/store and load tenant sessions.
 
-
-async def save_credentials(tenant_id: str, platform: str, credentials: dict) -> None:
-    pass
-
-
-async def get_credentials(tenant_id: str, platform: str) -> dict:
-    pass
+To be implemented in the platforms slice. Functions take `session` first and
+are scoped by `tenant_id`. Uses app.utils.encryption for the session blob.
+"""
