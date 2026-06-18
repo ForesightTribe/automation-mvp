@@ -1,6 +1,14 @@
 from playwright.async_api import Browser, BrowserContext, Playwright, Route, Request
 from app.utils.logger import logger
 
+PLAYWRIGHT_ARGS = [
+    "--no-sandbox",
+    "--disable-setuid-sandbox",
+    "--disable-dev-shm-usage",
+    "--disable-gpu",
+    "--disable-extensions",
+]
+
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
     "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36"

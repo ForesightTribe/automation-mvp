@@ -2,76 +2,59 @@
 
 ## Prerequisites
 
-| Tool | Version | Download |
-|------|---------|----------|
-| Python | 3.11+ | https://python.org/downloads |
-| Node.js | 18+ | https://nodejs.org |
-| MongoDB | 7+ | https://www.mongodb.com/try/download/community |
-| Git | any | https://git-scm.com |
+| Tool | Version |
+|---|---|
+| Python | 3.11+ |
+| Node.js | 18+ (frontend only) |
+| Git | any |
+
+No local database needed — PostgreSQL is hosted on Supabase.
 
 ---
 
-## 1. Backend Setup
+## 1. Backend
 
-### Step 1 — Create a virtual environment
+### Create virtual environment
 
-The virtual environment keeps project dependencies isolated from your system Python.
-Always create it inside the `backend/` folder.
+Run from inside `automation-mvp/backend/`.
 
-**Windows (PowerShell)**
 ```powershell
-cd backend
+# Windows (PowerShell)
 python -m venv .venv
 ```
 
-**Mac / Linux**
 ```bash
-cd backend
+# Mac / Linux
 python3 -m venv .venv
 ```
 
----
+### Activate
 
-### Step 2 — Activate the virtual environment
-
-You must activate the venv every time you open a new terminal session.
-
-**Windows (PowerShell)**
 ```powershell
+# Windows (PowerShell)
 .venv\Scripts\Activate.ps1
 ```
 
-> If you see an error about execution policy, run this first:
+> If you get an execution policy error:
 > ```powershell
 > Set-ExecutionPolicy -ExecutionPolicy RemoteSigned -Scope CurrentUser
 > ```
-> Then try activating again.
+> Then activate again.
 
-**Windows (Command Prompt)**
-```cmd
-.venv\Scripts\activate.bat
-```
-
-**Mac / Linux**
 ```bash
+# Mac / Linux
 source .venv/bin/activate
 ```
 
-When activated, your terminal prompt will show `(.venv)` at the start.
+Prompt shows `(.venv)` when active. You must activate every new terminal session.
 
----
-
-### Step 3 — Install Python dependencies
+### Install dependencies
 
 ```bash
 pip install -r requirements.txt
 ```
 
----
-
-### Step 4 — Install Playwright browsers
-
-Playwright needs to download the actual browser binaries separately.
+### Install Playwright browser
 
 ```bash
 playwright install chromium
@@ -79,122 +62,103 @@ playwright install chromium
 
 ---
 
-### Step 5 — Set up environment variables
+## 2. Environment Variables
 
 ```bash
-# Copy the example file
-cp .env.example .env        # Mac/Linux
-copy .env.example .env      # Windows
+cp .env.example .env     # Mac/Linux
+copy .env.example .env   # Windows
 ```
 
-Open `.env` and fill in the values:
+Open `.env` and set these three values:
 
 ```env
-MONGODB_URL=mongodb://localhost:27017
-DB_NAME=foresight
+# Supabase Session Pooler URL — NOT the direct connection URL (direct is IPv6-only)
+# Format: postgresql://postgres.PROJECT_REF:PASSWORD@aws-0-REGION.pooler.supabase.com:5432/postgres
+DATABASE_URL=postgresql://...
 
-# Generate ENCRYPTION_KEY — run this in your terminal:
-# python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
-ENCRYPTION_KEY=paste-generated-key-here
+# Fernet encryption key for stored sessions
+# Generate: python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
+ENCRYPTION_KEY=...
 
-# Generate SECRET_KEY — run this in your terminal:
-# python -c "import secrets; print(secrets.token_hex(32))"
-SECRET_KEY=paste-generated-key-here
+# JWT signing secret
+# Generate: python -c "import secrets; print(secrets.token_hex(32))"
+SECRET_KEY=...
 ```
 
 ---
 
-### Step 6 — Start MongoDB
+## 3. Database Setup
 
-Make sure MongoDB is running locally before starting the backend.
+Run once to create all tables:
 
-**Windows** — MongoDB runs as a Windows Service after installation. Check Services or run:
-```powershell
-net start MongoDB
+```bash
+# from automation-mvp/backend/ with venv active
+alembic upgrade head
 ```
 
-**Mac (with Homebrew)**
+This applies the Alembic migration in `alembic/versions/` and creates the full schema in Supabase.
+
+---
+
+## 4. First Run
+
+### Public scraper — no login needed
+
 ```bash
-brew services start mongodb-community
+# Dry run — print results, no DB write
+python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit
+
+# Save to DB
+python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --save
+```
+
+Brand and marketplace rows are created automatically on first `--save`. No manual seeding.
+
+### Private scrapers — requires seller login
+
+```bash
+# 1. Create a tenant
+python -m cli tenant create --name "My Brand"
+#    Prints a UUID — copy it for use in all subsequent commands
+
+# 2. Authenticate (browser opens)
+python -m cli auth blinkit --tenant <uuid>           # marketing dashboard
+python -m cli auth blinkit-seller --tenant <uuid>    # seller dashboard
+
+# 3. Scrape
+python -m cli scrape blinkit --tenant <uuid>
+python -m cli scrape blinkit-seller --tenant <uuid>
 ```
 
 ---
 
-### Step 7 — Run the backend server
+## 5. VS Code — Fix Import Squiggles
 
-```bash
-uvicorn app.main:app --reload
-```
+1. Open Command Palette: `Ctrl+Shift+P`
+2. Select **Python: Select Interpreter**
+3. Choose the `.venv` entry:
+   - Windows: `.\backend\.venv\Scripts\python.exe`
+   - Mac/Linux: `./backend/.venv/bin/python`
 
-The API will be available at `http://localhost:8000`.  
-Interactive docs (Swagger UI) at `http://localhost:8000/docs`.
+Tip: open VS Code from inside `backend/` and it auto-detects the venv.
 
 ---
 
-## 2. Frontend Setup
-
-Open a separate terminal in the `frontend/` folder.
-
-### Step 1 — Install Node dependencies
+## 6. Frontend (optional)
 
 ```bash
-cd frontend
+cd automation-mvp/frontend
 npm install
 ```
 
----
-
-### Step 2 — Set up environment variables
-
-Create a `.env.local` file in the `frontend/` folder:
+Create `frontend/.env.local`:
 
 ```env
 VITE_API_URL=http://localhost:8000/api
 ```
 
----
-
-### Step 3 — Run the dev server
-
 ```bash
-npm run dev
-```
-
-The app will be available at `http://localhost:5173`.
-
----
-
-## 3. Fix Squiggly Lines in VS Code
-
-Squiggly lines under imports (e.g. `from fastapi import ...`) appear because VS Code's
-Python language server (Pylance) doesn't know which Python interpreter to use — it defaults
-to your system Python, which doesn't have the project's packages installed.
-
-### Fix: Point VS Code to the venv interpreter
-
-1. Open the Command Palette: `Ctrl+Shift+P` (Windows) or `Cmd+Shift+P` (Mac)
-2. Type **"Python: Select Interpreter"** and select it
-3. You'll see a list of available interpreters. Choose the one that shows:
-   - **Windows:** `Python 3.x.x ('.venv': venv) .\backend\.venv\Scripts\python.exe`
-   - **Mac/Linux:** `Python 3.x.x ('.venv': venv) ./backend/.venv/bin/python`
-
-If the venv doesn't appear in the list, click **"Enter interpreter path..."** and paste the path manually:
-- **Windows:** `backend\.venv\Scripts\python.exe`
-- **Mac/Linux:** `backend/.venv/bin/python`
-
-### Why this works
-
-VS Code uses the selected interpreter to resolve import paths. When pointed to the `.venv`,
-Pylance can find all installed packages (fastapi, beanie, loguru, etc.) and the squiggles disappear.
-
-### Tip: Open VS Code from the `backend/` folder
-
-If you open VS Code directly inside `backend/` (not the root), VS Code will automatically
-detect the `.venv` folder and select the correct interpreter without any manual steps.
-
-```bash
-cd backend
-code .
+npm run dev   # → http://localhost:5173
 ```
 
 ---
@@ -202,11 +166,10 @@ code .
 ## Quick Reference
 
 | Command | What it does |
-|---------|-------------|
+|---|---|
 | `.venv\Scripts\Activate.ps1` | Activate venv (Windows PS) |
 | `source .venv/bin/activate` | Activate venv (Mac/Linux) |
-| `deactivate` | Deactivate venv |
-| `pip install -r requirements.txt` | Install/update backend deps |
-| `uvicorn app.main:app --reload` | Start backend with hot reload |
-| `npm run dev` | Start frontend dev server |
+| `alembic upgrade head` | Apply all migrations |
+| `alembic revision --autogenerate -m "msg"` | Generate migration after model change |
+| `python -m cli --help` | Show CLI commands |
 | `playwright install chromium` | Download Playwright browser |

@@ -1,377 +1,285 @@
-# Architecture Guide
+# Architecture
 
-## Overview
-
-Foresight is a unified seller intelligence platform for quick-commerce (Blinkit, Zepto, Instamart).
-It scrapes seller dashboards, normalizes the data into a common format, stores it in MongoDB,
-and serves it through a REST API to a React frontend.
+## Directory Layout
 
 ```
 automation-mvp/
-├── backend/        Python — FastAPI server + Playwright scraper
-├── frontend/       JavaScript — React dashboard
-└── docs/           This documentation
+├── backend/
+│   ├── app/
+│   │   ├── core/
+│   │   │   ├── config.py              # Pydantic Settings — loads .env, all config lives here
+│   │   │   ├── database.py            # engine, AsyncSessionLocal, get_session()
+│   │   │   └── security.py            # JWT encode/decode, password hashing
+│   │   ├── models/                    # SQLModel table classes — source of truth for schema
+│   │   │   ├── brand.py               # Brand, Marketplace
+│   │   │   ├── tenant.py              # Tenant, User, TenantWatchlist
+│   │   │   ├── job.py                 # ScrapeJob, PlatformSession
+│   │   │   ├── search.py              # SearchResult, CompetitorRanking, BrandSnapshot, ScrapedProduct, InventoryDepth
+│   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
+│   │   │   └── blinkit_marketing.py   # AdPerformanceSummary, AdCampaign, SponsoredSOV, BrandCollection, VisibilityPlan
+│   │   ├── api/
+│   │   │   ├── routes/                # FastAPI route handlers (thin — call scraper functions directly)
+│   │   │   └── deps.py                # get_current_user dependency
+│   │   └── utils/
+│   │       ├── encryption.py          # encrypt() / decrypt() via Fernet
+│   │       ├── logger.py              # loguru setup — always import from here
+│   │       ├── exceptions.py          # AppException subclasses + FastAPI handlers
+│   │       └── response.py            # success_response() / error_response()
+│   ├── alembic/                       # DB migrations
+│   │   ├── env.py                     # async Alembic config (imports app.models for autogenerate)
+│   │   ├── script.py.mako             # migration template (includes `import sqlmodel`)
+│   │   └── versions/                  # generated migration files
+│   ├── scraper/
+│   │   ├── platforms/
+│   │   │   ├── blinkit/
+│   │   │   │   ├── selectors.py       # ALL CSS selectors and URL paths — change platform UI here only
+│   │   │   │   ├── auth.py            # login flow → returns and saves session to DB
+│   │   │   │   ├── dashboard_data/
+│   │   │   │   │   ├── marketing/     # scraper.py, parser.py, storage.py
+│   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
+│   │   │   │   └── public_data/       # scraper.py, parser.py, storage.py
+│   │   │   ├── instamart/
+│   │   │   │   └── public_data/       # scraper.py, parser.py, storage.py (pending Playwright fix)
+│   │   │   └── zepto/
+│   │   │       └── public_data/       # scraper.py, parser.py, storage.py (pending)
+│   │   └── utils/
+│   │       ├── browser.py             # create_browser_context(), write_blocker(), PLAYWRIGHT_ARGS
+│   │       ├── cities.py              # CITIES dict — 20+ Indian cities with zones (lat/lon/pincode)
+│   │       ├── search_result.py       # build_result(), norm_price(), brand_in(), dig()
+│   │       ├── session.py             # save_session(), load_session() → platform_sessions table
+│   │       ├── storage.py             # ensure_refs() — auto-upserts brands + marketplaces
+│   │       ├── jobs.py                # create_scrape_job(), complete_scrape_job(), fail_scrape_job()
+│   │       └── retry.py               # @retry decorator with exponential backoff
+│   └── cli/
+│       ├── main.py                    # typer app entry point: python -m cli
+│       └── commands/
+│           ├── tenant.py              # cli tenant create / list
+│           ├── auth.py                # cli auth blinkit / blinkit-seller / status
+│           └── scrape.py              # cli scrape blinkit / blinkit-seller / blinkit-scorecard / public
+├── frontend/                          # React + Vite (skeleton)
+└── docs/                              # This documentation
 ```
-
-The backend and scraper share the same codebase and Python process. They share the database
-connection, models, config, and utilities. The scraper writes to MongoDB; the FastAPI app reads from it.
 
 ---
 
 ## Data Flow
 
 ```
-[Blinkit Seller Dashboard]
-         │
-         │  Playwright browser / HTTP session
-         ▼
-[scraper/platforms/blinkit/scraper.py]   ← fetches raw API responses
-         │
-         │  parser.py maps raw → normalized schema
-         ▼
-[scraper/normalizer/schema.py]           ← canonical dataclasses
-         │
-         │  writes to MongoDB
-         ▼
-[MongoDB]
-         │
-         │  FastAPI reads
-         ▼
-[app/api/routes/]                        ← REST endpoints
-         │
-         │  HTTP/JSON
-         ▼
-[React Frontend]                         ← renders charts and tables
+[CLI command]
+     │
+     ├── public scrape ──► platforms/{platform}/public_data/scraper.py
+     │                          │  Playwright in-page fetch (Blinkit)
+     │                          │  or direct API (Zepto/Instamart — pending)
+     │                     parser.py  normalises raw → typed dicts
+     │                     storage.py  calls ensure_refs() → appends to search_results
+     │
+     └── private scrape ─► platforms/blinkit/{dashboard}/scraper.py
+                                │  Playwright session restored from platform_sessions
+                                │  intercepts auth headers → httpx / in-page API calls
+                           parser.py  cleans raw strings → typed values
+                           storage.py  upserts by upsert_key → platform-specific tables
+                                │
+                                ▼
+                          [PostgreSQL — Supabase]
+                                │
+                                ▼
+                          FastAPI routes (when frontend is wired up)
+                                │
+                                ▼
+                          React dashboard
 ```
 
 ---
 
-## Backend
-
-### `app/`
-
-The FastAPI application. Handles HTTP requests, authentication, and serving data from MongoDB.
-
----
-
-#### `app/main.py`
-
-The entry point. Creates the FastAPI app, registers middleware, exception handlers, and routes.
-Also manages the application lifespan — connects to MongoDB on startup, closes on shutdown.
-The scheduler (scraper jobs) will be started here once it's ready.
-
----
-
-#### `app/core/`
-
-Foundational pieces that everything else depends on. Nothing in `core/` depends on the rest of the app.
-
-| File | Purpose |
-|------|---------|
-| `config.py` | Reads environment variables from `.env` using pydantic-settings. All config lives here — never hardcode URLs or secrets anywhere else. Import `settings` from here. |
-| `database.py` | Opens the MongoDB connection using Motor (async driver) and initializes Beanie (ODM) with all document models. Called once on app startup. |
-| `security.py` | Password hashing (bcrypt), JWT creation, and JWT decoding. Used by auth routes and the auth dependency. |
-
----
-
-#### `app/models/`
-
-MongoDB document definitions using Beanie (an ODM built on Motor). Each class maps directly
-to a MongoDB collection. These are the source of truth for what's stored in the database.
-Both the FastAPI app and the scraper import from here.
-
-| File | Collection | Purpose |
-|------|-----------|---------|
-| `user.py` | `users` | Platform users (email, hashed password, tenant reference) |
-| `tenant.py` | `tenants` | A tenant is one seller account / brand using the platform |
-| `product.py` | `products` | Normalized product listings scraped from platforms |
-| `sales.py` | `sales` | Daily sales records (units sold, revenue) per product per platform |
-| `inventory.py` | `inventory` | Stock levels and days-of-inventory per product |
-| `scrape_job.py` | `scrape_jobs` | Audit log of every scraper run — status, timestamps, errors |
-
----
-
-#### `app/schemas/`
-
-Pydantic models for what goes **in and out of the API**. These are separate from `models/`
-because what the API accepts/returns is often a subset or transformation of what's stored.
-
-For example, `models/user.py` stores a `hashed_password`, but `schemas/auth.py` accepts
-`password` (plain) on login and returns only a token — never the hash.
-
-| File | Purpose |
-|------|---------|
-| `auth.py` | LoginRequest, RegisterRequest, TokenResponse |
-| `product.py` | ProductOut — the shape returned by the products API |
-| `analytics.py` | OverviewStats, RevenuePoint — shapes for analytics endpoints |
-
----
-
-#### `app/services/`
-
-Business logic. Routes call services; services call models. This keeps route handlers thin
-and logic testable in isolation.
-
-| File | Purpose |
-|------|---------|
-| `analytics_service.py` | Aggregates sales/product data for dashboard metrics |
-| `platform_service.py` | Saves and retrieves encrypted platform credentials |
-
----
-
-#### `app/api/`
-
-The HTTP layer. Defines URL routes and calls into services.
-
-| File | Purpose |
-|------|---------|
-| `router.py` | Registers all route modules under `/api`. Add new route files here. |
-| `deps.py` | Shared FastAPI dependencies. Currently: `get_current_user` — validates JWT and returns the user payload. Inject into any route that requires auth. |
-
-**`app/api/routes/`** — one file per resource:
-
-| File | Prefix | Purpose |
-|------|--------|---------|
-| `auth.py` | `/api/auth` | Login, register, logout |
-| `analytics.py` | `/api/analytics` | Revenue trends, overview stats |
-| `products.py` | `/api/products` | List and view products |
-| `inventory.py` | `/api/inventory` | Stock levels |
-| `ads.py` | `/api/ads` | Campaign performance |
-| `platforms.py` | `/api/platforms` | Connect/disconnect seller accounts |
-
----
-
-#### `app/utils/`
-
-Shared utilities used across both the FastAPI app and the scraper.
-
-| File | Purpose |
-|------|---------|
-| `logger.py` | Configures Loguru — structured logging to stdout and `logs/app.log`. Import `logger` from here everywhere instead of using `print`. |
-| `response.py` | `success_response()` and `error_response()` — every API endpoint returns the same JSON shape: `{ success, data, message }`. |
-| `exceptions.py` | Custom exception classes (`NotFoundError`, `UnauthorizedError`, `ScraperError`, etc.) and the FastAPI exception handlers that convert them to `response.py` format. Registered in `main.py`. |
-| `pagination.py` | `PaginationParams` — a FastAPI dependency that reads `?page=1&limit=20` from query params. `paginate()` wraps a list result with total/page/limit metadata. |
-| `encryption.py` | Symmetric encryption using Fernet. Used to encrypt seller credentials before storing them in MongoDB. `generate_key()` produces a key to put in `.env`. |
-
----
-
-### `scraper/`
-
-The data acquisition layer. Runs on a schedule, logs into seller dashboards, pulls data,
-and writes normalized records to MongoDB. Shares `app/models/`, `app/core/`, and `app/utils/`.
-
----
-
-#### `scraper/platforms/`
-
-Each platform is an isolated adapter. Adding a new platform never touches existing code.
-
-**`base.py`** — Abstract base class that defines the contract every platform must implement:
-- `login()` — authenticate and establish a session
-- `fetch_products()` — pull product listings
-- `fetch_sales(days)` — pull sales history
-- `fetch_inventory()` — pull stock levels
-- `fetch_ads()` — pull ad campaign data
-- `run_all()` — calls all of the above in sequence
-
-**`blinkit/`** — Blinkit implementation (currently stubbed, ready to implement):
-
-| File | Purpose |
-|------|---------|
-| `auth.py` | Handles Blinkit's OTP login flow using Playwright. Returns session cookies. |
-| `scraper.py` | Implements `BasePlatformScraper` for Blinkit. Makes HTTP calls to Blinkit's internal API using the session cookies from auth. Each method has the `@retry` decorator. |
-| `parser.py` | Maps Blinkit's raw API response fields to the normalized schema types. All platform-specific field name quirks are handled here — nowhere else. |
-
-**`zepto/` and `instamart/`** — Empty stubs. When implementing a new platform: create `auth.py`, `scraper.py`, `parser.py` inside the folder following the same pattern as Blinkit. Register a job in `scheduler/jobs.py`. That's it.
-
----
-
-#### `scraper/normalizer/`
-
-The bridge between platform-specific data and the database.
-
-| File | Purpose |
-|------|---------|
-| `schema.py` | Canonical dataclasses: `NormalizedProduct`, `NormalizedSales`, `NormalizedInventory`, `NormalizedAd`. Every platform's `parser.py` outputs these types. The database models mirror these shapes. |
-| `transformer.py` | Shared helper functions used by parsers across platforms (e.g. `safe_float`, `safe_int` for handling missing/malformed API values). |
-
-**Why a separate normalizer?** Each platform uses different field names, types, and structures.
-The parser handles the translation. Once data is in the normalized schema, the rest of the
-system (storage, API, frontend) never needs to know which platform it came from.
-
----
-
-#### `scraper/scheduler/`
-
-Controls when scraping runs.
-
-| File | Purpose |
-|------|---------|
-| `runner.py` | Sets up APScheduler and starts it. Called from `app/main.py` on startup. Add new cron jobs here as platforms are implemented. |
-| `jobs.py` | One async function per platform job. Each function instantiates the platform's scraper, calls `run_all()`, and handles the result. Kept separate from `runner.py` so jobs are testable without the scheduler. |
-
----
-
-#### `scraper/utils/`
-
-Scraper-specific utilities.
-
-| File | Purpose |
-|------|---------|
-| `browser.py` | Factory function that launches a Playwright browser context with stealth configuration — custom user agent, masked `navigator.webdriver` property, realistic viewport. Use this instead of launching Playwright directly. |
-| `retry.py` | `@retry(max_attempts, delay, backoff)` decorator for async functions. Retries with exponential backoff on any exception. Used on all scraper fetch methods to handle transient network failures. |
-
----
-
-## Frontend
-
-### `src/`
-
-React application built with Vite.
-
----
-
-#### `src/api/`
-
-All HTTP communication with the backend. Nothing outside this folder should call `fetch` or `axios` directly.
-
-| File | Purpose |
-|------|---------|
-| `client.js` | Configured axios instance. Automatically attaches the JWT from localStorage to every request. Redirects to `/login` on 401. All other API files import from here. |
-| `auth.js` | `login()`, `register()`, `logout()` |
-| `analytics.js` | `getOverview()`, `getRevenue()` |
-| `products.js` | `listProducts()`, `getProduct()` |
-
----
-
-#### `src/store/`
-
-Global client-side state using Zustand. Keep stores small — only truly global state lives here.
-Component-local state (open/closed, form values) stays in `useState`.
-
-| File | Purpose |
-|------|---------|
-| `authStore.js` | Tracks the logged-in user, JWT token, and `isAuthenticated`. `login()` saves the token to localStorage; `logout()` clears it. |
-| `platformStore.js` | Tracks which platform is currently active (Blinkit / Zepto / Instamart). All data-fetching components read from this to know what to request. |
-
----
-
-#### `src/features/`
-
-Self-contained modules organized by business domain. Each feature owns its own components
-and hooks. This prevents cross-feature coupling and makes features easy to find.
-
-```
-features/
-├── auth/           Login form, auth hooks
-├── dashboard/      Overview cards, summary widgets
-├── analytics/      Revenue charts, trends
-├── products/       Product table, filters
-├── inventory/      Stock table, low-stock alerts
-└── ads/            Campaign table, performance metrics
+## Database Schema
+
+**Connection**: Always use the Supabase Session Pooler URL. The direct connection URL is IPv6-only and will not work in most environments.
+
+### Reference tables (no tenant scope)
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `brands` | `slug` (PK), `name`, `category` | Auto-upserted by `ensure_refs()` — no manual seeding |
+| `marketplaces` | `slug` (PK), `name`, `color` | Auto-upserted by `ensure_refs()` — no manual seeding |
+
+### Tenant tables
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `tenants` | `id` (UUID PK), `name`, `is_active` | Create with `cli tenant create` |
+| `users` | `id`, `tenant_id`, `email`, `hashed_password` | FK to tenants |
+| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `cities`, `keywords` | Brands to monitor per tenant |
+| `platform_sessions` | `tenant_id`, `platform`, `encrypted_session` | Fernet-encrypted Playwright sessions |
+| `scrape_jobs` | `id`, `tenant_id`, `platform`, `dashboard`, `status` | Audit log for every scrape run |
+
+### Public search tables (scoped to brand + marketplace, not tenant)
+
+| Table | Key columns | Notes |
+|---|---|---|
+| `search_results` | `brand_slug`, `mp_slug`, `city`, `zone`, `keyword` | One row per keyword × location × scrape run |
+| `competitor_rankings` | `brand_slug`, `mp_slug`, `competitor`, `position` | Per-product competitor rows |
+| `brand_snapshots` | `brand_slug`, `mp_slug`, `date`, `metrics` | Daily aggregate metrics per brand |
+| `scraped_products` | `brand_slug`, `mp_slug`, `name`, `position`, `keyword` | Individual product appearances |
+| `inventory_depth` | `brand_slug`, `mp_slug`, `sku`, `city`, `zone` | Stock depth per SKU per zone |
+
+### Blinkit marketing tables (tenant-scoped)
+
+| Table | Key columns |
+|---|---|
+| `ad_performance_summary` | `tenant_id`, `date`, `budget_consumed`, `impressions` |
+| `ad_campaigns` | `tenant_id`, `campaign_id`, `date`, `budget_consumed`, `atcs`, `roas` |
+| `sponsored_sov` | `tenant_id`, `keyword`, `date`, `sov` |
+| `brand_collections` | `tenant_id`, `collection_id`, `name`, `number_of_products` |
+| `visibility_plans` | `tenant_id`, `plan_id`, `name`, `budget`, `status` |
+
+### Blinkit seller tables (tenant-scoped)
+
+| Table | Key columns |
+|---|---|
+| `blinkit_seller_sales` | `tenant_id`, `date`, `item_id`, `city_id`, `qty_sold` |
+| `blinkit_seller_sales_summary` | `tenant_id`, `date`, `distinct_skus`, `max_sell_item` |
+| `blinkit_pos` | `tenant_id`, `po_number`, `raw` (full JSON) |
+| `blinkit_po_snapshots` | `tenant_id`, `window_start`, `raw` (rolling 90-day summary) |
+| `blinkit_soh` | `tenant_id`, `date`, `item_id`, `backend_facility_id`, `backend_inv_qty` |
+| `blinkit_scorecard_weekly` | `tenant_id`, `from_date_ist`, `overall`, `categories` |
+| `blinkit_scorecard_facilities` | `tenant_id`, `from_date_ist`, `facility_id`, `fill_rate` |
+| `blinkit_scorecard_key_skus` | `tenant_id`, `from_date_ist`, `item_id`, `potential_loss` |
+
+### Upsert key convention
+
+Every private data table has a `upsert_key: str` with a unique constraint. All writes use:
+
+```python
+INSERT INTO ... ON CONFLICT (upsert_key) DO UPDATE SET ...
 ```
 
-When building a new feature, everything related to it lives in its folder.
-Pages import from features — not the other way around.
+Re-running the same scrape updates existing rows rather than creating duplicates.
 
 ---
 
-#### `src/components/`
+## Public Scraper — How It Works
 
-Generic, reusable UI building blocks with no knowledge of business logic.
+### Location data
+
+`scraper/utils/cities.py` is a hardcoded dict of 20+ Indian cities. Each city has a default `lat`/`lon`/`pincode` plus named zones (dark-store service areas), each with their own coordinates. No external geocoding API is used.
 
 ```
-components/
-├── ui/       Button, Badge, Card, Table, Modal, Spinner, Input
-└── charts/   Wrappers around the charting library (LineChart, BarChart, MetricCard)
+bengaluru → default + zones: koramangala, indiranagar, whitefield, ...
+mumbai    → default + zones: andheri, bandra, powai, ...
 ```
 
-A component in `ui/` should work in any project. If a component needs to know about
-"products" or "platforms", it belongs in `features/`, not `components/`.
+`--all-zones` scrapes every zone sequentially to capture location-specific ranking differences.
+
+### Why direct HTTP doesn't work (Cloudflare)
+
+Blinkit's search API (`/v1/layout/search`) is behind Cloudflare bot protection. Direct `httpx` requests always return 403 regardless of headers or cookies — Python's SSL library has a different TLS fingerprint from real browsers.
+
+### The in-page fetch technique (Blinkit reference implementation)
+
+Make the API call from *inside* the Playwright browser using `page.evaluate()`. Because the request originates from a real browser process with a Cloudflare-verified TLS fingerprint, session cookies, and bot-detection tokens, it passes through cleanly.
+
+```
+Step 1 — Set location context
+   page.goto("https://blinkit.com/?lat={lat}&lon={lon}")
+   Blinkit reads lat/lon from URL query params to determine the dark store.
+
+Step 2 — Warmup search (header capture)
+   page.goto("https://blinkit.com/s/?q=water")
+   Triggers a real /v1/layout/search request from the browser.
+   Intercepted via page.on("request") to capture session-bound headers:
+   app_client, auth_key, session_uuid, device_id, web_app_version, etc.
+
+Step 3 — In-page POST for actual keyword
+   page.evaluate(fetch("/v1/layout/search", {headers: captured, body: {q: keyword}}))
+   Runs inside the browser — Cloudflare treats it as a legitimate user action.
+   Response format: response.snippets[] — snippets with atc_action are products.
+```
+
+Reference implementation: `backend/scraper/platforms/blinkit/public_data/scraper.py`
+
+This is the established pattern for Cloudflare-protected endpoints. Check whether Instamart/Zepto also block direct requests before deciding httpx vs Playwright.
 
 ---
 
-#### `src/pages/`
+## Private Scraper — How It Works
 
-Thin route-level components. A page composes features together — it doesn't contain logic itself.
+### Blinkit marketing — magic link auth
 
-| File | Route | Purpose |
-|------|-------|---------|
-| `DashboardPage.jsx` | `/` | Main overview |
-| `AnalyticsPage.jsx` | `/analytics` | Revenue and trend charts |
-| `ProductsPage.jsx` | `/products` | Product listing |
-| `LoginPage.jsx` | `/login` | Auth screen |
+```
+1. cli auth blinkit --tenant <uuid>
+2. Browser opens (headless=False), navigates to brands.blinkit.com
+3. User enters email → receives magic link by email
+4. User pastes magic link URL into terminal
+5. Browser navigates to magic link, waits for session on /diy/
+6. Three-layer session captured: cookies + localStorage + Firebase IndexedDB
+7. Encrypted with Fernet → saved to platform_sessions table
+```
 
----
+### Blinkit seller — OTP auth
 
-#### `src/layouts/`
+```
+1. cli auth blinkit-seller --tenant <uuid>
+2. Browser opens, navigates to partnersbiz.com
+3. User enters email → receives 6-digit OTP by email
+4. User enters OTP into terminal
+5. Session captured and stored (same three-layer approach)
+```
 
-Shell wrappers that wrap groups of pages with shared chrome (sidebar, topbar, etc.).
+### Session restore — critical ordering
 
-| File | Wraps | Purpose |
-|------|-------|---------|
-| `AppLayout.jsx` | All authenticated pages | Renders sidebar navigation + main content area |
-| `AuthLayout.jsx` | Login/register pages | Centered card layout, no sidebar |
+When restoring a saved session for scraping, these three steps must happen in this exact order:
 
----
+```python
+ctx = await browser.new_context(storage_state=state)           # 1. cookies + localStorage
+await ctx.add_init_script(firebase_idb_inject(session_data))   # 2. Firebase IndexedDB injection
+await ctx.route("**/*", write_blocker)                         # 3. block write requests
+```
 
-#### `src/router.jsx`
-
-React Router configuration. Maps URL paths to page components and wraps them in the correct layout.
-Add new pages here.
-
----
-
-#### `src/hooks/`
-
-Shared React hooks used across multiple features. If a hook is only used by one feature, it lives
-in `features/<name>/hooks/` instead.
-
-| File | Purpose |
-|------|---------|
-| `useDebounce.js` | Delays a value update — used for search inputs to avoid firing an API call on every keystroke |
+Step 2 must run before any page JavaScript executes. Firebase JS SDK v9+ stores the refresh token in IndexedDB, not localStorage. Without pre-populating IndexedDB at init time, Firebase treats the session as expired even though cookies are valid.
 
 ---
 
-#### `src/utils/`
+## Adding a New Platform
 
-Pure functions with no React dependencies.
+### Public scraper (Zepto, Instamart)
 
-| File | Purpose |
-|------|---------|
-| `formatters.js` | Display formatting for Indian market: `formatCurrency` (₹), `formatNumber` (L/Cr/K), `formatPercent`, `formatDate`, `formatROAS`. Use these everywhere instead of inline formatting. |
-| `constants.js` | `PLATFORMS`, `PLATFORM_LABELS`, `ROUTES`, `DATE_RANGES`. Single source of truth for string values used across the app. |
+Create three files:
 
----
+```
+scraper/platforms/{platform}/public_data/
+├── scraper.py   — async scrape(keyword, brand_slug, city_slug, ...) → dict
+├── parser.py    — normalise raw API response → list of product dicts
+└── storage.py   — save(session, result): call ensure_refs(), append SearchResult rows
+```
 
-## Adding a New Platform (Zepto example)
+Contract for `scraper.py`:
 
-1. **Create the scraper** — implement `auth.py`, `scraper.py`, `parser.py` in `scraper/platforms/zepto/`
-   following the same structure as `blinkit/`. Extend `BasePlatformScraper`.
+```python
+async def scrape(
+    keyword: str,
+    brand_slug: str,
+    city_slug: str = "bengaluru",
+    zone: str = "",
+    pincode: str = "",
+    lat: float | None = None,
+    lon: float | None = None,
+    aliases: list[str] | None = None,
+) -> dict:
+    # returns: {platform, keyword, brand_slug, city, zone, pincode, lat, lon, aliases, products}
+```
 
-2. **Add a job** — add `scrape_zepto()` to `scraper/scheduler/jobs.py` and register it in `runner.py`.
+Use the Blinkit implementation as reference. Test whether the platform's API blocks direct requests — if yes, use the in-page fetch technique.
 
-3. **Add the constant** — `PLATFORMS.ZEPTO` already exists in `frontend/src/utils/constants.js`.
+### Private scraper (Instamart, Zepto seller dashboards)
 
-4. **Connect UI** — the platform switcher in the frontend reads from `platformStore`. No other
-   changes needed — all data-fetching components already pass `activePlatform` to the API.
+```
+scraper/platforms/{platform}/
+├── auth.py              — login flow → captures and saves session
+└── dashboard_data/
+    └── {dashboard}/
+        ├── scraper.py   — fetch raw data using restored session
+        ├── parser.py    — raw strings → typed Python values
+        └── storage.py   — upsert to platform-specific tables
+```
 
-That's it. The normalizer, models, API routes, and frontend are already platform-agnostic.
-
----
-
-## Key Design Decisions
-
-**Scraper inside backend** — They share MongoDB models, config, and utilities. Keeping them
-in one deployable unit avoids a network boundary and duplication. They can be split into
-separate services later if scale requires it.
-
-**Normalized schema** — Platform-specific field names and quirks are handled in `parser.py`.
-Once data is normalized, nothing else in the system knows or cares which platform it came from.
-This is what makes adding platforms cheap.
-
-**Schemas separate from Models** — `models/` defines what's stored; `schemas/` defines what
-the API accepts and returns. They often differ (e.g. passwords, computed fields, partial updates).
-
-**No v1 prefix on routes** — Added when there's an actual second version with clients on it.
-Not before.
+Then add the new `cli scrape` subcommand in `cli/commands/scrape.py`.

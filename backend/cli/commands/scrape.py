@@ -1,10 +1,11 @@
 import asyncio
 from datetime import date as _date, timedelta
+from typing import Optional
 import typer
 from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
-from app.core.database import connect_db, close_db, get_db
+from app.core.database import AsyncSessionLocal
 from scraper.utils.session import load_session
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
@@ -48,43 +49,42 @@ def scrape_blinkit(
 
 
 async def _scrape_blinkit(tenant_id: str, save: bool) -> None:
-    await connect_db()
-    db = get_db()
-    job_id = None
-    try:
-        session = await load_session(db, tenant_id, "blinkit")
-        if not session:
-            console.print("[red]No session found. Run `cli auth blinkit` first.[/red]")
+    async with AsyncSessionLocal() as db:
+        job_id = None
+        try:
+            storage_state = await load_session(db, tenant_id, "blinkit")
+            if not storage_state:
+                console.print("[red]No session found. Run `cli auth blinkit` first.[/red]")
+                raise typer.Exit(1)
+
+            job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
+
+            with console.status("[cyan]Scraping Blinkit dashboard...[/cyan]"):
+                raw = await scrape(storage_state)
+
+            summary = parse_performance_summary(raw["performance_summary"], tenant_id, job_id)
+            campaigns = [parse_campaign(c, tenant_id, job_id) for c in raw["campaigns"]]
+            sov = [parse_sponsored_sov(s, tenant_id, job_id) for s in raw["sponsored_sov"]]
+            collections = [parse_brand_collection(c, tenant_id, job_id) for c in raw["brand_collections"]]
+            plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
+
+            if save:
+                await save_scrape_results(db, summary, campaigns, sov, collections, plans)
+                await complete_scrape_job(db, job_id)
+
+            _print_summary(summary)
+            _print_campaigns(campaigns)
+            _print_sov(sov)
+            _print_collections(collections)
+            _print_plans(plans)
+
+        except typer.Exit:
+            raise
+        except Exception as e:
+            if job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
             raise typer.Exit(1)
-
-        job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
-
-        with console.status("[cyan]Scraping Blinkit dashboard...[/cyan]"):
-            raw = await scrape(session)
-
-        summary = parse_performance_summary(raw["performance_summary"], tenant_id, job_id)
-        campaigns = [parse_campaign(c, tenant_id, job_id) for c in raw["campaigns"]]
-        sov = [parse_sponsored_sov(s, tenant_id, job_id) for s in raw["sponsored_sov"]]
-        collections = [parse_brand_collection(c, tenant_id, job_id) for c in raw["brand_collections"]]
-        plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
-
-        if save:
-            await save_scrape_results(db, summary, campaigns, sov, collections, plans)
-            await complete_scrape_job(db, job_id)
-
-        _print_summary(summary)
-        _print_campaigns(campaigns)
-        _print_sov(sov)
-        _print_collections(collections)
-        _print_plans(plans)
-
-    except Exception as e:
-        if job_id:
-            await fail_scrape_job(db, job_id, str(e))
-        console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
-        raise typer.Exit(1)
-    finally:
-        await close_db()
 
 
 def _print_summary(summary: dict) -> None:
@@ -226,17 +226,14 @@ async def _scrape_blinkit_seller(
     po_days_back: int,
     save: bool,
 ) -> None:
-    # No flags passed → run all three
     run_all = not sales_flag and not po_flag and not soh_flag
     run_sales = sales_flag or run_all
     run_po = po_flag or run_all
     run_soh = soh_flag or run_all
 
-    await connect_db()
-    db = get_db()
-    try:
-        session = await load_session(db, tenant_id, "blinkit_seller")
-        if not session:
+    async with AsyncSessionLocal() as db:
+        storage_state = await load_session(db, tenant_id, "blinkit_seller")
+        if not storage_state:
             console.print("[red]No session found. Run `cli auth blinkit-seller` first.[/red]")
             raise typer.Exit(1)
 
@@ -249,7 +246,7 @@ async def _scrape_blinkit_seller(
                     job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_sales")
 
                     with console.status(f"[cyan]Scraping sales {day}...[/cyan]"):
-                        raw = await seller_scraper.scrape(session, day)
+                        raw = await seller_scraper.scrape(storage_state, day)
 
                     parsed_sales = [parse_sale_row(r, tenant_id, job_id, raw["date"]) for r in raw["sales"]]
                     summary = parse_sales_summary(raw, tenant_id, job_id, raw["date"])
@@ -274,10 +271,16 @@ async def _scrape_blinkit_seller(
             try:
                 known_po_numbers: set[str] = set()
                 if save:
-                    existing = await db["blinkit_pos"].distinct(
-                        "po_number", {"tenant_id": tenant_id}
+                    import uuid as _uuid
+                    from sqlmodel import select as _select
+                    from app.models.blinkit_seller import BlinkitPO as _BlinkitPO
+                    from sqlalchemy import distinct as _distinct
+                    rows = await db.execute(
+                        _select(_distinct(_BlinkitPO.po_number)).where(
+                            _BlinkitPO.tenant_id == _uuid.UUID(tenant_id)
+                        )
                     )
-                    known_po_numbers = set(existing)
+                    known_po_numbers = set(rows.scalars().all())
                     console.print(
                         f"\n[dim]{len(known_po_numbers)} existing POs in DB — skipping their SKU fetch[/dim]"
                     )
@@ -286,7 +289,7 @@ async def _scrape_blinkit_seller(
 
                 with console.status("[cyan]Scraping PO data...[/cyan]"):
                     raw_po = await seller_scraper.scrape_po(
-                        session,
+                        storage_state,
                         po_days_back=po_days_back,
                         known_po_numbers=known_po_numbers,
                     )
@@ -316,7 +319,7 @@ async def _scrape_blinkit_seller(
                 soh_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_soh")
 
                 with console.status("[cyan]Scraping stock on hand...[/cyan]"):
-                    raw_soh = await seller_scraper.scrape_soh(session)
+                    raw_soh = await seller_scraper.scrape_soh(storage_state)
 
                 rows = [parse_soh_row(r, tenant_id, soh_job_id, raw_soh["date"]) for r in raw_soh["rows"]]
 
@@ -331,9 +334,6 @@ async def _scrape_blinkit_seller(
                     await fail_scrape_job(db, soh_job_id, str(e))
                 console.print(f"[red]SOH scrape failed: {escape(str(e))}[/red]")
                 raise typer.Exit(1)
-
-    finally:
-        await close_db()
 
 
 # ── Print helpers ─────────────────────────────────────────────────────────────
@@ -439,48 +439,47 @@ def scrape_blinkit_scorecard(
 
 
 async def _scrape_blinkit_scorecard(tenant_id: str, week: str | None, save: bool) -> None:
-    await connect_db()
-    db = get_db()
-    job_id = None
-    try:
-        session = await load_session(db, tenant_id, "blinkit_seller")
-        if not session:
-            console.print("[red]No session found. Run `cli auth blinkit-seller` first.[/red]")
+    async with AsyncSessionLocal() as db:
+        job_id = None
+        try:
+            storage_state = await load_session(db, tenant_id, "blinkit_seller")
+            if not storage_state:
+                console.print("[red]No session found. Run `cli auth blinkit-seller` first.[/red]")
+                raise typer.Exit(1)
+
+            job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_scorecard")
+
+            with console.status("[cyan]Scraping scorecard...[/cyan]"):
+                raw = await seller_scraper.scrape_scorecard(storage_state, week=week)
+
+            manufacturer_id = raw["manufacturer_id"]
+            from_date = raw["from_date_ist"]
+
+            weekly = parse_scorecard_weekly(raw, tenant_id, job_id)
+            facilities = [
+                parse_scorecard_facility(f, tenant_id, job_id, manufacturer_id, from_date)
+                for f in raw["facilities"]
+            ]
+            key_skus = [
+                parse_scorecard_key_sku(s, tenant_id, job_id, manufacturer_id, from_date)
+                for s in raw["key_skus"]
+            ]
+
+            if save:
+                await save_scorecard_results(db, weekly, facilities, key_skus)
+                await complete_scrape_job(db, job_id)
+
+            _print_scorecard_summary(weekly)
+            _print_scorecard_facilities(facilities)
+            _print_scorecard_key_skus(key_skus)
+
+        except typer.Exit:
+            raise
+        except Exception as e:
+            if job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
             raise typer.Exit(1)
-
-        job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_scorecard")
-
-        with console.status("[cyan]Scraping scorecard...[/cyan]"):
-            raw = await seller_scraper.scrape_scorecard(session, week=week)
-
-        manufacturer_id = raw["manufacturer_id"]
-        from_date = raw["from_date_ist"]
-
-        weekly = parse_scorecard_weekly(raw, tenant_id, job_id)
-        facilities = [
-            parse_scorecard_facility(f, tenant_id, job_id, manufacturer_id, from_date)
-            for f in raw["facilities"]
-        ]
-        key_skus = [
-            parse_scorecard_key_sku(s, tenant_id, job_id, manufacturer_id, from_date)
-            for s in raw["key_skus"]
-        ]
-
-        if save:
-            await save_scorecard_results(db, weekly, facilities, key_skus)
-            await complete_scrape_job(db, job_id)
-
-        _print_scorecard_summary(weekly)
-        _print_scorecard_facilities(facilities)
-        _print_scorecard_key_skus(key_skus)
-
-    except Exception as e:
-        if job_id:
-            await fail_scrape_job(db, job_id, str(e))
-        console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
-        raise typer.Exit(1)
-    finally:
-        await close_db()
 
 
 def _print_scorecard_summary(weekly: dict) -> None:
@@ -549,6 +548,125 @@ def _print_scorecard_key_skus(key_skus: list) -> None:
             f"₹{s.get('potential_loss', 0):,.0f}",
         )
     console.print(table)
+
+
+# ── Public search scraping ────────────────────────────────────────────────────
+
+@app.command("public")
+def scrape_public(
+    keyword: str = typer.Option(..., "--keyword", "-k", help="Search keyword (e.g. 'cola', 'sunflower oil')"),
+    brand: str = typer.Option(..., "--brand", "-b", help="Brand slug for classification (e.g. 'dobra')"),
+    city: str = typer.Option("bengaluru", "--city", "-c", help="City slug (see scraper/utils/cities.py)"),
+    platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | zepto | instamart | all"),
+    all_zones: bool = typer.Option(False, "--all-zones", help="Scrape all zones defined for the city"),
+    aliases: Optional[str] = typer.Option(None, "--aliases", help="Comma-separated brand name aliases (e.g. 'dobra,dobra cola')"),
+    save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL"),
+):
+    """Scrape public product search results — no login required."""
+    alias_list = [a.strip() for a in aliases.split(",")] if aliases else None
+    asyncio.run(_scrape_public(keyword, brand, city, platform, all_zones, alias_list, save))
+
+
+async def _scrape_public(
+    keyword: str,
+    brand_slug: str,
+    city_slug: str,
+    platform: str,
+    all_zones: bool,
+    aliases: list[str] | None,
+    save: bool,
+) -> None:
+    from scraper.utils.cities import CITIES, PLATFORM_CITIES
+    from scraper.platforms.blinkit.public_data import scraper as bl_scraper, parser as bl_parser, storage as bl_storage
+    from scraper.platforms.instamart.public_data import scraper as im_scraper, parser as im_parser, storage as im_storage
+    from scraper.platforms.zepto.public_data import scraper as ze_scraper, parser as ze_parser, storage as ze_storage
+
+    city = CITIES.get(city_slug)
+    if not city:
+        console.print(f"[red]Unknown city slug '{city_slug}'. Check scraper/utils/cities.py for valid slugs.[/red]")
+        raise typer.Exit(1)
+
+    platforms_to_run = (
+        [p for p in ["blinkit", "zepto", "instamart"] if p in city["platforms"]]
+        if platform == "all"
+        else [platform]
+    )
+    invalid = [p for p in platforms_to_run if p not in {"blinkit", "zepto", "instamart"}]
+    if invalid:
+        console.print(f"[red]Unknown platform(s): {', '.join(invalid)}[/red]")
+        raise typer.Exit(1)
+
+    scrapers = {
+        "blinkit":   (bl_scraper, bl_parser, bl_storage),
+        "instamart": (im_scraper, im_parser, im_storage),
+        "zepto":     (ze_scraper, ze_parser, ze_storage),
+    }
+
+    async with AsyncSessionLocal() as db:
+        for plat in platforms_to_run:
+            if plat not in city["platforms"]:
+                console.print(f"  [dim]{plat} not available in {city['name']}[/dim]")
+                continue
+
+            plat_zones = city["platforms"][plat]["zones"] if all_zones else [
+                {"zone": "", "pincode": city["pincode"], "lat": city["lat"], "lon": city["lon"]}
+            ]
+
+            scraper_mod, parser_mod, storage_mod = scrapers[plat]
+
+            for zone_def in plat_zones:
+                zone_label = zone_def.get("zone", "")
+                zone_display = f" [{zone_label}]" if zone_label else ""
+                console.print(f"\n[bold cyan]{city['name']}{zone_display}[/bold cyan]  [dim]{plat}[/dim]")
+
+                with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
+                    raw = await scraper_mod.scrape(
+                        keyword=keyword,
+                        brand_slug=brand_slug,
+                        city_slug=city_slug,
+                        zone=zone_label,
+                        pincode=zone_def.get("pincode", city["pincode"]),
+                        lat=zone_def.get("lat"),
+                        lon=zone_def.get("lon"),
+                        aliases=aliases,
+                    )
+                result = parser_mod.parse(raw)
+                _print_public_result(plat, result)
+
+                if save:
+                    await storage_mod.save(db, result)
+
+
+def _print_public_result(platform: str, result: dict) -> None:
+    sov = result.get("brand_sov_pct", 0)
+    rank = result.get("brand_rank")
+    total = result.get("total_results", 0)
+    brand_count = result.get("brand_product_count", 0)
+
+    rank_str = f"#{rank}" if rank else "not ranked"
+    colour = "green" if sov >= 20 else ("yellow" if sov >= 5 else "red")
+
+    console.print(
+        f"  [bold]{platform}[/bold]  "
+        f"total={total}  brand={brand_count}  "
+        f"rank={rank_str}  sov=[{colour}]{sov}%[/{colour}]"
+    )
+
+    brand_prods = result.get("brand_products", [])
+    if brand_prods:
+        table = Table(show_header=True, header_style="bold", box=None, padding=(0, 2))
+        table.add_column("#", style="dim", width=4)
+        table.add_column("Product")
+        table.add_column("Price", justify="right")
+        for p in brand_prods:
+            price_str = f"₹{p['price']:.0f}" if p.get("price") else "—"
+            table.add_row(str(p.get("position", "")), p.get("name", ""), price_str)
+        console.print(table)
+
+    comps = result.get("competitors", [])[:3]
+    if comps:
+        comp_names = ", ".join(f"{c['name']} ({c['count_in_results']})" for c in comps)
+        console.print(f"  [dim]Top competitors: {comp_names}[/dim]")
 
 
 def _print_soh(rows: list, date: str) -> None:

@@ -5,8 +5,7 @@ class Settings(BaseSettings):
     APP_NAME: str = "Foresight API"
     DEBUG: bool = False
 
-    MONGODB_URL: str = "mongodb://localhost:27017"
-    DB_NAME: str = "foresight"
+    DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/foresight"
 
     SECRET_KEY: str = "change-me-in-production"
     ENCRYPTION_KEY: str = ""  # Generate with: Fernet.generate_key().decode()
@@ -17,6 +16,7 @@ class Settings(BaseSettings):
 
     class Config:
         env_file = ".env"
+        extra = "ignore"
 
 
 settings = Settings()

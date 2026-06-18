@@ -4,33 +4,45 @@ Export Blinkit scraped data for a single tenant to an Excel workbook.
 Usage:
     python export_to_excel.py <tenant_id>
     python export_to_excel.py <tenant_id> --output report.xlsx
-
-Reads MONGODB_URL and DB_NAME from .env (same as the backend).
 """
 
 import asyncio
 import argparse
 import json
+import uuid
 from datetime import date, datetime
 from pathlib import Path
 
 import openpyxl
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
-from motor.motor_asyncio import AsyncIOMotorClient
 from dotenv import load_dotenv
-import os
+from sqlmodel import select
 
 load_dotenv(Path(__file__).parent / ".env")
 
-MONGODB_URL = os.getenv("MONGODB_URL", "mongodb://localhost:27017")
-DB_NAME = os.getenv("DB_NAME", "foresight")
+from app.core.database import AsyncSessionLocal
+from app.models.blinkit_marketing import (
+    AdPerformanceSummary,
+    AdCampaign,
+    SponsoredSOV,
+    BrandCollection,
+    VisibilityPlan,
+)
+from app.models.blinkit_seller import (
+    BlinkitSellerSale,
+    BlinkitSellerSalesSummary,
+    BlinkitPO,
+    BlinkitPOSnapshot,
+    BlinkitSOH,
+    BlinkitScorecardWeekly,
+    BlinkitScorecardFacility,
+    BlinkitScorecardKeySku,
+)
 
 _HEADER_FILL = PatternFill("solid", fgColor="1F4E79")
 _HEADER_FONT = Font(color="FFFFFF", bold=True)
-
-# Internal MongoDB / system fields — not shown to clients
-_STRIP = {"_id", "upsert_key", "tenant_id"}
+_STRIP = {"id", "upsert_key", "tenant_id", "scrape_job_id", "platform"}
 
 
 def _to_header(key: str) -> str:
@@ -39,9 +51,9 @@ def _to_header(key: str) -> str:
 
 def _clean_value(val):
     if isinstance(val, datetime):
-        return val.replace(tzinfo=None)  # Excel doesn't support tz-aware datetimes
+        return val.replace(tzinfo=None)
     if isinstance(val, (dict, list)):
-        return json.dumps(val, default=str)  # fallback for any unexpected nested structures
+        return json.dumps(val, default=str)
     return val
 
 
@@ -71,113 +83,111 @@ def _write_sheet(ws, rows: list[dict]) -> None:
         ws.column_dimensions[col_letter].width = min(max_len + 2, 55)
 
 
-def _strip(doc: dict) -> dict:
-    return {k: v for k, v in doc.items() if k not in _STRIP}
+def _strip(obj) -> dict:
+    return {k: v for k, v in obj.__dict__.items() if k not in _STRIP and not k.startswith("_")}
 
 
 async def export(tenant_id: str, output_path: str) -> None:
-    client = AsyncIOMotorClient(MONGODB_URL)
-    db = client[DB_NAME]
+    tid = uuid.UUID(tenant_id)
     wb = openpyxl.Workbook()
     wb.remove(wb.active)
 
-    async def fetch(collection: str) -> list[dict]:
-        cursor = db[collection].find({"tenant_id": tenant_id}, {"_id": 0})
-        return await cursor.to_list(length=None)
+    async with AsyncSessionLocal() as session:
 
-    def add_sheet(name: str, rows: list[dict]) -> None:
-        _write_sheet(wb.create_sheet(name), rows)
+        async def fetch(model):
+            result = await session.execute(select(model).where(model.tenant_id == tid))
+            return result.scalars().all()
 
-    # ── Ad Performance Summary ────────────────────────────────────────────────
-    # budget_distribution is a dict — flatten inline with budget_dist_ prefix
-    raw_perf = await fetch("ad_performance_summary")
-    flat_perf = []
-    for doc in raw_perf:
-        row: dict = {}
-        for k, v in _strip(doc).items():
-            if k == "budget_distribution" and isinstance(v, dict):
-                for bk, bv in v.items():
-                    row[f"budget_dist_{bk}"] = bv
-            else:
-                row[k] = v
-        flat_perf.append(row)
-    add_sheet("Ad Performance Summary", flat_perf)
+        def add_sheet(name: str, rows: list[dict]) -> None:
+            _write_sheet(wb.create_sheet(name), rows)
 
-    # ── Ad Campaigns ─────────────────────────────────────────────────────────
-    add_sheet("Ad Campaigns", [_strip(d) for d in await fetch("ad_campaigns")])
+        # ── Ad Performance Summary ────────────────────────────────────────────
+        raw_perf = await fetch(AdPerformanceSummary)
+        flat_perf = []
+        for obj in raw_perf:
+            row: dict = {}
+            for k, v in _strip(obj).items():
+                if k == "budget_distribution" and isinstance(v, dict):
+                    for bk, bv in v.items():
+                        row[f"budget_dist_{bk}"] = bv
+                else:
+                    row[k] = v
+            flat_perf.append(row)
+        add_sheet("Ad Performance Summary", flat_perf)
 
-    # ── Sponsored SOV ────────────────────────────────────────────────────────
-    add_sheet("Sponsored SOV", [_strip(d) for d in await fetch("sponsored_sov")])
+        # ── Ad Campaigns ──────────────────────────────────────────────────────
+        add_sheet("Ad Campaigns", [_strip(o) for o in await fetch(AdCampaign)])
 
-    # ── Brand Collections ────────────────────────────────────────────────────
-    add_sheet("Brand Collections", [_strip(d) for d in await fetch("brand_collections")])
+        # ── Sponsored SOV ─────────────────────────────────────────────────────
+        add_sheet("Sponsored SOV", [_strip(o) for o in await fetch(SponsoredSOV)])
 
-    # ── Visibility Plans ─────────────────────────────────────────────────────
-    add_sheet("Visibility Plans", [_strip(d) for d in await fetch("visibility_plans")])
+        # ── Brand Collections ─────────────────────────────────────────────────
+        add_sheet("Brand Collections", [_strip(o) for o in await fetch(BrandCollection)])
 
-    # ── Seller Sales ─────────────────────────────────────────────────────────
-    add_sheet("Seller Sales", [_strip(d) for d in await fetch("blinkit_seller_sales")])
+        # ── Visibility Plans ──────────────────────────────────────────────────
+        add_sheet("Visibility Plans", [_strip(o) for o in await fetch(VisibilityPlan)])
 
-    # ── Sales Summary ────────────────────────────────────────────────────────
-    add_sheet("Sales Summary", [_strip(d) for d in await fetch("blinkit_seller_sales_summary")])
+        # ── Seller Sales ──────────────────────────────────────────────────────
+        add_sheet("Seller Sales", [_strip(o) for o in await fetch(BlinkitSellerSale)])
 
-    # ── Purchase Orders ──────────────────────────────────────────────────────
-    # Each PO doc may contain an `items` list of line items — extract to separate sheet
-    raw_pos = await fetch("blinkit_pos")
-    po_line_items: list[dict] = []
-    flat_pos = []
-    for doc in raw_pos:
-        items = doc.get("items") or []
-        po_number = doc.get("po_number")
-        for item in items:
-            po_line_items.append({"po_number": po_number, **item})
-        flat_pos.append({k: v for k, v in _strip(doc).items() if k != "items"})
-    add_sheet("Purchase Orders", flat_pos)
-    add_sheet("PO Line Items", po_line_items)
+        # ── Sales Summary ─────────────────────────────────────────────────────
+        add_sheet("Sales Summary", [_strip(o) for o in await fetch(BlinkitSellerSalesSummary)])
 
-    # ── PO Snapshots ─────────────────────────────────────────────────────────
-    add_sheet("PO Snapshots", [_strip(d) for d in await fetch("blinkit_po_snapshots")])
+        # ── Purchase Orders ───────────────────────────────────────────────────
+        raw_pos = await fetch(BlinkitPO)
+        po_line_items: list[dict] = []
+        flat_pos = []
+        for obj in raw_pos:
+            items = obj.raw.get("items") or [] if isinstance(obj.raw, dict) else []
+            for item in items:
+                po_line_items.append({"po_number": obj.po_number, **item})
+            d = _strip(obj)
+            d.pop("raw", None)
+            flat_pos.append(d)
+        add_sheet("Purchase Orders", flat_pos)
+        add_sheet("PO Line Items", po_line_items)
 
-    # ── Stock On Hand ────────────────────────────────────────────────────────
-    add_sheet("Stock On Hand", [_strip(d) for d in await fetch("blinkit_soh")])
+        # ── PO Snapshots ──────────────────────────────────────────────────────
+        add_sheet("PO Snapshots", [_strip(o) for o in await fetch(BlinkitPOSnapshot)])
 
-    # ── Scorecard Weekly ─────────────────────────────────────────────────────
-    # overall + best_category dicts → flattened inline
-    # categories list → separate sheet
-    raw_weekly = await fetch("blinkit_scorecard_weekly")
-    flat_weekly = []
-    all_categories: list[dict] = []
+        # ── Stock On Hand ─────────────────────────────────────────────────────
+        add_sheet("Stock On Hand", [_strip(o) for o in await fetch(BlinkitSOH)])
 
-    for doc in raw_weekly:
-        row: dict = {}
-        for k, v in _strip(doc).items():
-            if k == "overall" and isinstance(v, dict):
-                for sk, sv in v.items():
-                    row[f"overall_{sk}"] = sv
-            elif k == "best_category" and isinstance(v, dict):
-                for sk, sv in v.items():
-                    row[f"best_cat_{sk}"] = sv
-            elif k == "categories" and isinstance(v, list):
-                for cat in v:
-                    all_categories.append({
-                        "manufacturer_id": doc.get("manufacturer_id"),
-                        "from_date_ist": doc.get("from_date_ist"),
-                        **cat,
-                    })
-            else:
-                row[k] = v
-        flat_weekly.append(row)
+        # ── Scorecard Weekly ──────────────────────────────────────────────────
+        raw_weekly = await fetch(BlinkitScorecardWeekly)
+        flat_weekly = []
+        all_categories: list[dict] = []
 
-    add_sheet("Scorecard Weekly", flat_weekly)
-    add_sheet("Scorecard Categories", all_categories)
+        for obj in raw_weekly:
+            row = {}
+            d = _strip(obj)
+            for k, v in d.items():
+                if k == "overall" and isinstance(v, dict):
+                    for sk, sv in v.items():
+                        row[f"overall_{sk}"] = sv
+                elif k == "best_category" and isinstance(v, dict):
+                    for sk, sv in v.items():
+                        row[f"best_cat_{sk}"] = sv
+                elif k == "categories" and isinstance(v, list):
+                    for cat in v:
+                        all_categories.append({
+                            "manufacturer_id": obj.manufacturer_id,
+                            "from_date_ist": obj.from_date_ist,
+                            **cat,
+                        })
+                else:
+                    row[k] = v
+            flat_weekly.append(row)
 
-    # ── Scorecard Facilities ──────────────────────────────────────────────────
-    add_sheet("Scorecard Facilities", [_strip(d) for d in await fetch("blinkit_scorecard_facilities")])
+        add_sheet("Scorecard Weekly", flat_weekly)
+        add_sheet("Scorecard Categories", all_categories)
 
-    # ── Scorecard Key SKUs ────────────────────────────────────────────────────
-    add_sheet("Scorecard Key SKUs", [_strip(d) for d in await fetch("blinkit_scorecard_key_skus")])
+        # ── Scorecard Facilities ──────────────────────────────────────────────
+        add_sheet("Scorecard Facilities", [_strip(o) for o in await fetch(BlinkitScorecardFacility)])
 
-    client.close()
+        # ── Scorecard Key SKUs ────────────────────────────────────────────────
+        add_sheet("Scorecard Key SKUs", [_strip(o) for o in await fetch(BlinkitScorecardKeySku)])
+
     wb.save(output_path)
     print(f"Exported {len(wb.sheetnames)} sheets → {output_path}")
 
