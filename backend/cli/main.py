@@ -1,7 +1,7 @@
 import sys
 import asyncio
 import typer
-from cli.commands import auth, scrape, tenant
+from cli.commands import account, auth, scrape, tenant
 
 # Windows requires ProactorEventLoop for Playwright subprocess spawning
 if sys.platform == "win32":
@@ -13,6 +13,7 @@ app = typer.Typer(
     no_args_is_help=True,
 )
 
+app.add_typer(account.app, name="account")
 app.add_typer(auth.app, name="auth")
 app.add_typer(scrape.app, name="scrape")
 app.add_typer(tenant.app, name="tenant")

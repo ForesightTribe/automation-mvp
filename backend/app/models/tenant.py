@@ -7,21 +7,26 @@ from sqlmodel import Field, SQLModel
 
 
 class Tenant(SQLModel, table=True):
+    """A Client — the managed brand/seller and data unit. Belongs to an Account."""
+
     __tablename__ = "tenants"
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    account_id: uuid.UUID = Field(foreign_key="accounts.id")
     name: str
     is_active: bool = True
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
 
 class User(SQLModel, table=True):
+    """A person who logs in. Belongs to an Account, can act on its Clients."""
+
     __tablename__ = "users"
 
-    __table_args__ = (Index("idx_users_tenant", "tenant_id"),)
+    __table_args__ = (Index("idx_users_account", "account_id"),)
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
-    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    account_id: uuid.UUID = Field(foreign_key="accounts.id")
     email: str = Field(unique=True, index=True)
     hashed_password: str
     full_name: str

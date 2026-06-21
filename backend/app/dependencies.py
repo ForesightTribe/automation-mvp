@@ -6,6 +6,7 @@ Import the `*Dep` Annotated aliases into routes for clean signatures, e.g.:
     async def handler(session: SessionDep, user: CurrentUserDep):
         ...
 """
+import uuid
 from dataclasses import dataclass
 from typing import Annotated
 
@@ -16,6 +17,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_session
 from app.core.security import decode_token
+from app.models.tenant import Tenant
+from app.services import client_service
 
 # --- Database session -------------------------------------------------------
 
@@ -29,7 +32,7 @@ bearer = HTTPBearer()
 
 class CurrentUser(BaseModel):
     user_id: str
-    tenant_id: str
+    account_id: str
     email: str | None = None
 
 
@@ -43,28 +46,50 @@ async def get_current_user(
             detail="Invalid or expired token",
         )
     sub = payload.get("sub")
-    tenant_id = payload.get("tenant_id")
-    if not sub or not tenant_id:
+    account_id = payload.get("account_id")
+    if not sub or not account_id:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Malformed token",
         )
-    return CurrentUser(user_id=sub, tenant_id=tenant_id, email=payload.get("email"))
+    return CurrentUser(user_id=sub, account_id=account_id, email=payload.get("email"))
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
 
 
-async def get_tenant_id(user: CurrentUserDep) -> str:
-    """The tenant seam for multi-tenant isolation.
-
-    Private/first-party endpoints depend on this and pass the result into the
-    service layer so queries are always scoped to the caller's tenant.
+async def get_account_id(user: CurrentUserDep) -> str:
+    """The account seam. The active *client* is chosen per-request (path param)
+    and validated against this account before any tenant-scoped query runs.
     """
-    return user.tenant_id
+    return user.account_id
 
 
-TenantDep = Annotated[str, Depends(get_tenant_id)]
+AccountDep = Annotated[str, Depends(get_account_id)]
+
+
+# --- Active client (the access wall) ---------------------------------------
+
+async def get_client(
+    client_id: uuid.UUID,        # bound to the {client_id} path segment
+    account_id: AccountDep,
+    session: SessionDep,
+) -> Tenant:
+    """Resolve {client_id} from the URL, but only if it belongs to the caller's
+    account. Any other client (or a bogus id) returns 404 — so one account can
+    never reach another's data. Hands the route a validated Client (Tenant).
+    """
+    client = await client_service.get_client_for_account(
+        session, client_id, uuid.UUID(account_id)
+    )
+    if not client:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Client not found"
+        )
+    return client
+
+
+ClientDep = Annotated[Tenant, Depends(get_client)]
 
 
 # --- Pagination -------------------------------------------------------------

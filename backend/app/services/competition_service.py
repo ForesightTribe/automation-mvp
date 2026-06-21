@@ -1,10 +1,8 @@
-"""Competitive-intelligence queries over public scraped data.
-
-Public domain: keyed by brand_slug + marketplace + city, no tenant scoping.
-Pattern for the whole codebase: services take `session` first, accept filters
-as keyword args, and return plain dicts / Pydantic models that the route's
-`response_model` validates.
+"""Competitive intelligence over public scraped data, viewed through a client's
+watchlist. Scoped to the client's OWN brand(s) (relationship='own'); narrow
+further with optional keyword/city/marketplace filters.
 """
+import uuid
 from datetime import datetime, timedelta
 
 from sqlalchemy import func, select
@@ -14,6 +12,7 @@ from app.dependencies import Pagination
 from app.models.search import CompetitorRanking, SearchResult
 from app.schemas.common import Page
 from app.schemas.competition import CompetitorRankRow
+from app.services import watchlist_service
 
 
 def _round(value: float | None, digits: int = 4) -> float | None:
@@ -23,18 +22,30 @@ def _round(value: float | None, digits: int = 4) -> float | None:
 async def get_share_of_voice(
     session: AsyncSession,
     *,
-    brand_slug: str,
+    tenant_id: uuid.UUID,
     marketplace: str | None = None,
     keyword: str | None = None,
     city: str | None = None,
     days: int = 30,
 ) -> dict:
-    since = datetime.utcnow() - timedelta(days=days)
+    own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
+    summary = {
+        "brands": own,
+        "marketplace": marketplace,
+        "keyword": keyword,
+        "city": city,
+        "period_days": days,
+        "latest_sov": None,
+        "avg_sov": None,
+        "avg_rank": None,
+        "total_samples": 0,
+    }
+    if not own:
+        # No 'own' brand on the watchlist -> nothing to report.
+        return {"summary": summary, "trend": []}
 
-    conditions = [
-        SearchResult.brand_slug == brand_slug,
-        SearchResult.scraped_at >= since,
-    ]
+    since = datetime.utcnow() - timedelta(days=days)
+    conditions = [SearchResult.brand_slug.in_(own), SearchResult.scraped_at >= since]
     if marketplace:
         conditions.append(SearchResult.mp_slug == marketplace)
     if keyword:
@@ -42,64 +53,59 @@ async def get_share_of_voice(
     if city:
         conditions.append(SearchResult.city == city)
 
-    # Daily trend
     day = func.date(SearchResult.scraped_at).label("day")
-    trend_stmt = (
-        select(
-            day,
-            func.avg(SearchResult.brand_sov).label("avg_sov"),
-            func.avg(SearchResult.brand_rank).label("avg_rank"),
-            func.count().label("samples"),
+    rows = (
+        await session.execute(
+            select(
+                day,
+                func.avg(SearchResult.brand_sov),
+                func.avg(SearchResult.brand_rank),
+                func.count(),
+            )
+            .where(*conditions)
+            .group_by(day)
+            .order_by(day)
         )
-        .where(*conditions)
-        .group_by(day)
-        .order_by(day)
-    )
-    rows = (await session.execute(trend_stmt)).all()
+    ).all()
     trend = [
-        {
-            "date": r.day,
-            "avg_sov": _round(r.avg_sov),
-            "avg_rank": _round(r.avg_rank, 2),
-            "samples": r.samples,
-        }
-        for r in rows
+        {"date": d, "avg_sov": _round(sov), "avg_rank": _round(rank, 2), "samples": n}
+        for d, sov, rank, n in rows
     ]
 
-    # Period summary
-    summary_stmt = select(
-        func.avg(SearchResult.brand_sov),
-        func.avg(SearchResult.brand_rank),
-        func.count(),
-    ).where(*conditions)
-    avg_sov, avg_rank, total = (await session.execute(summary_stmt)).one()
+    avg_sov, avg_rank, total = (
+        await session.execute(
+            select(
+                func.avg(SearchResult.brand_sov),
+                func.avg(SearchResult.brand_rank),
+                func.count(),
+            ).where(*conditions)
+        )
+    ).one()
 
-    return {
-        "summary": {
-            "brand_slug": brand_slug,
-            "marketplace": marketplace,
-            "keyword": keyword,
-            "city": city,
-            "period_days": days,
-            "latest_sov": trend[-1]["avg_sov"] if trend else None,
-            "avg_sov": _round(avg_sov),
-            "avg_rank": _round(avg_rank, 2),
-            "total_samples": total,
-        },
-        "trend": trend,
-    }
+    summary.update(
+        latest_sov=trend[-1]["avg_sov"] if trend else None,
+        avg_sov=_round(avg_sov),
+        avg_rank=_round(avg_rank, 2),
+        total_samples=total,
+    )
+    return {"summary": summary, "trend": trend}
 
 
 async def get_rankings(
     session: AsyncSession,
     *,
+    tenant_id: uuid.UUID,
     pagination: Pagination,
     keyword: str | None = None,
     city: str | None = None,
     marketplace: str | None = None,
     competitor: str | None = None,
 ) -> Page[CompetitorRankRow]:
-    conditions = []
+    own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
+    if not own:
+        return Page.build([], 0, pagination)
+
+    conditions = [CompetitorRanking.brand_slug.in_(own)]
     if keyword:
         conditions.append(CompetitorRanking.keyword == keyword)
     if city:
@@ -114,7 +120,6 @@ async def get_rankings(
             select(func.count()).select_from(CompetitorRanking).where(*conditions)
         )
     ).scalar_one()
-
     rows = (
         await session.execute(
             select(CompetitorRanking)

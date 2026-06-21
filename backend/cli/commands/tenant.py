@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 import typer
 from rich.console import Console
@@ -8,27 +9,29 @@ from sqlmodel import select
 from app.core.database import AsyncSessionLocal
 from app.models.tenant import Tenant
 
-app = typer.Typer(help="Manage tenants.")
+app = typer.Typer(help="Manage tenants (clients).")
 console = Console()
 
 
 @app.command("create")
 def create_tenant(
-    name: str = typer.Option(..., "--name", "-n", help="Display name for the tenant"),
+    name: str = typer.Option(..., "--name", "-n", help="Display name for the client"),
+    account_id: str = typer.Option(..., "--account", "-a", help="Account UUID this client belongs to"),
 ):
-    """Create a new tenant and print its UUID."""
-    asyncio.run(_create_tenant(name))
+    """Create a new client (tenant) under an account and print its UUID."""
+    asyncio.run(_create_tenant(name, account_id))
 
 
-async def _create_tenant(name: str) -> None:
+async def _create_tenant(name: str, account_id: str) -> None:
     async with AsyncSessionLocal() as db:
-        tenant = Tenant(name=name)
+        tenant = Tenant(name=name, account_id=uuid.UUID(account_id))
         db.add(tenant)
         await db.commit()
         await db.refresh(tenant)
-        console.print(f"\n[green]Tenant created.[/green]")
-        console.print(f"  [dim]name[/dim]  {tenant.name}")
-        console.print(f"  [dim]id[/dim]    [bold]{tenant.id}[/bold]")
+        console.print(f"\n[green]Client created.[/green]")
+        console.print(f"  [dim]name[/dim]     {tenant.name}")
+        console.print(f"  [dim]account[/dim]  {tenant.account_id}")
+        console.print(f"  [dim]id[/dim]       [bold]{tenant.id}[/bold]")
         console.print(f"\n[dim]Use this UUID with --tenant in all scrape and auth commands.[/dim]\n")
 
 

@@ -1,14 +1,35 @@
+from datetime import date
+
 from pydantic import BaseModel
-from datetime import datetime
-from typing import Optional
 
 
-class ProductOut(BaseModel):
-    id: str
-    platform: str
-    name: str
-    sku: str
-    category: str
-    price: float
-    mrp: float
-    scraped_at: datetime
+class ProductListRow(BaseModel):
+    item_id: str
+    item_name: str | None
+    category: str | None
+    units_sold: int
+    revenue: float
+    last_sold: date | None
+
+
+class ProductStock(BaseModel):
+    date: date
+    backend_qty: int
+    frontend_qty: int
+
+
+class SkuTrendPoint(BaseModel):
+    date: date
+    units_sold: int
+    revenue: float
+
+
+class ProductDetail(BaseModel):
+    item_id: str
+    item_name: str | None
+    category: str | None
+    period_days: int
+    units_sold: int
+    revenue: float
+    stock: ProductStock | None
+    trend: list[SkuTrendPoint]

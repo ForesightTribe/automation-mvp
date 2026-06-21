@@ -1,7 +1,8 @@
-"""Competitive-intelligence endpoints (public scraped data, no auth)."""
+"""Client-scoped competitive intelligence (public data through the client's
+watchlist). Mounted under /clients/{client_id}/competition."""
 from fastapi import APIRouter, Query
 
-from app.dependencies import PaginationDep, SessionDep
+from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.common import Page
 from app.schemas.competition import CompetitorRankRow, ShareOfVoiceResponse
 from app.services import competition_service
@@ -12,7 +13,7 @@ router = APIRouter()
 @router.get("/share-of-voice", response_model=ShareOfVoiceResponse)
 async def share_of_voice(
     session: SessionDep,
-    brand: str = Query(..., description="Brand slug"),
+    client: ClientDep,
     marketplace: str | None = Query(None, description="Marketplace slug, e.g. blinkit"),
     keyword: str | None = None,
     city: str | None = None,
@@ -20,7 +21,7 @@ async def share_of_voice(
 ):
     return await competition_service.get_share_of_voice(
         session,
-        brand_slug=brand,
+        tenant_id=client.id,
         marketplace=marketplace,
         keyword=keyword,
         city=city,
@@ -31,6 +32,7 @@ async def share_of_voice(
 @router.get("/rankings", response_model=Page[CompetitorRankRow])
 async def rankings(
     session: SessionDep,
+    client: ClientDep,
     pagination: PaginationDep,
     keyword: str | None = None,
     city: str | None = None,
@@ -39,6 +41,7 @@ async def rankings(
 ):
     return await competition_service.get_rankings(
         session,
+        tenant_id=client.id,
         pagination=pagination,
         keyword=keyword,
         city=city,

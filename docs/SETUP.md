@@ -100,7 +100,44 @@ This applies the Alembic migration in `alembic/versions/` and creates the full s
 
 ---
 
-## 4. First Run
+## 4. Run the API Server
+
+Start the FastAPI backend — this serves the REST API the frontend calls.
+
+```bash
+# from automation-mvp/backend/ with venv active
+uvicorn app.main:app --reload --port 8000
+```
+
+- `--reload` auto-restarts on code changes (development only).
+- **API base:** http://localhost:8000/api
+- **Swagger UI (interactive docs):** http://localhost:8000/docs — lists every endpoint and lets you fire real requests from the browser.
+- **OpenAPI spec:** http://localhost:8000/openapi.json
+
+### Calling protected endpoints from Swagger
+
+Most endpoints need a logged-in user:
+
+1. Create an account + admin login (see First Run below).
+2. `POST /api/auth/login` with that email/password → copy the `access_token` from the response.
+3. Click **Authorize** (top-right in `/docs`), paste the token (Swagger adds the `Bearer ` prefix automatically), Authorize.
+4. **Try it out** now works on the `/clients/{client_id}/...` endpoints.
+
+> The server only serves the API. The scrapers below are separate CLI commands and don't need the server running.
+
+---
+
+## 5. First Run
+
+### Create an account + admin login
+
+Accounts and users are provisioned via the CLI — there is no public signup.
+
+```bash
+python -m cli account create --name "Foresight" --admin-email you@example.com
+#    Prompts for a password; creates the Account + its first admin User.
+#    Log in with this email/password at POST /api/auth/login.
+```
 
 ### Public scraper — no login needed
 
@@ -114,25 +151,25 @@ python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit 
 
 Brand and marketplace rows are created automatically on first `--save`. No manual seeding.
 
-### Private scrapers — requires seller login
+### Private scrapers — requires a client + seller login
 
 ```bash
-# 1. Create a tenant
-python -m cli tenant create --name "My Brand"
-#    Prints a UUID — copy it for use in all subsequent commands
+# 1. Create a client (tenant) UNDER your account
+python -m cli tenant create --name "My Brand" --account <account-id>
+#    Prints a client UUID — copy it for the commands below.
 
 # 2. Authenticate (browser opens)
-python -m cli auth blinkit --tenant <uuid>           # marketing dashboard
-python -m cli auth blinkit-seller --tenant <uuid>    # seller dashboard
+python -m cli auth blinkit --tenant <client-uuid>           # marketing dashboard
+python -m cli auth blinkit-seller --tenant <client-uuid>    # seller dashboard
 
 # 3. Scrape
-python -m cli scrape blinkit --tenant <uuid>
-python -m cli scrape blinkit-seller --tenant <uuid>
+python -m cli scrape blinkit --tenant <client-uuid>
+python -m cli scrape blinkit-seller --tenant <client-uuid>
 ```
 
 ---
 
-## 5. VS Code — Fix Import Squiggles
+## 6. VS Code — Fix Import Squiggles
 
 1. Open Command Palette: `Ctrl+Shift+P`
 2. Select **Python: Select Interpreter**
@@ -144,7 +181,7 @@ Tip: open VS Code from inside `backend/` and it auto-detects the venv.
 
 ---
 
-## 6. Frontend (optional)
+## 7. Frontend (optional)
 
 ```bash
 cd automation-mvp/frontend
@@ -171,5 +208,7 @@ npm run dev   # → http://localhost:5173
 | `source .venv/bin/activate` | Activate venv (Mac/Linux) |
 | `alembic upgrade head` | Apply all migrations |
 | `alembic revision --autogenerate -m "msg"` | Generate migration after model change |
+| `uvicorn app.main:app --reload --port 8000` | Start the API server (Swagger at `/docs`) |
+| `python -m cli account create --name N --admin-email E` | Create an account + admin login |
 | `python -m cli --help` | Show CLI commands |
 | `playwright install chromium` | Download Playwright browser |

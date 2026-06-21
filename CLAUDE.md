@@ -9,6 +9,7 @@
 | [docs/code-standards.md](docs/code-standards.md) | Functions-not-classes, selectors.py, raw→parsed, async, logging, DB patterns, currency parsing |
 | [docs/setup.md](docs/setup.md) | Env setup, Alembic, first run checklist |
 | [docs/cli.md](docs/cli.md) | Full CLI reference — all commands with examples |
+| [docs/api-reference.md](docs/api-reference.md) | REST API reference — every module (auth, clients, analytics, ads, competition, …), endpoints, scoping, conventions |
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend rules (TBD) |
 
 ---
@@ -70,10 +71,25 @@ alembic revision --autogenerate -m "describe change"
 alembic upgrade head
 ```
 
+## Accounts, Clients, Users
+
+The API is multi-tenant: **Account** (subscriber org, logs in & pays) → **Client**
+(the `tenants` table / `tenant_id`, the data unit) → **User** (login). A Client
+belongs to an Account; a User belongs to an Account and can act on any of its
+Clients. The JWT carries `account_id`; the active client is chosen per-request
+(`/api/clients/{client_id}/...`) and access-checked against the account.
+
+See [docs/api-reference.md](docs/api-reference.md) for the full surface.
+
 ## Seeding
 
 - `brands` and `marketplaces` are auto-upserted by `ensure_refs()` — no manual seeding for public scrapers.
-- Private scrapers require a `tenants` row: `python -m cli tenant create --name "My Brand"`
+- A `tenants` row (Client) now belongs to an **Account**. Create the account + its
+  first admin login, then the client under it:
+  ```bash
+  python -m cli account create --name "Foresight" --admin-email you@foresight.com
+  python -m cli tenant create --name "Dobra" --account <account-id>
+  ```
 
 ## Coding Rules (abbreviated — see docs/code-standards.md)
 
@@ -103,7 +119,10 @@ Step 2 must execute before any page JavaScript. Firebase JS SDK v9+ stores the r
 ## CLI (quick ref)
 
 ```bash
-python -m cli tenant create --name "Brand"
+python -m cli account create --name "Foresight" --admin-email you@foresight.com
+python -m cli account list
+
+python -m cli tenant create --name "Brand" --account <account-id>
 python -m cli tenant list
 
 python -m cli auth blinkit --tenant <uuid>

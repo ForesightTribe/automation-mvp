@@ -1,0 +1,202 @@
+# API Reference
+
+The FastAPI backend lives in `backend/app/`. It serves the React dashboard and
+is organised as **thin routes → services → models**, with Pydantic **schemas**
+as the request/response contracts and **dependencies** as the DI/middleware
+layer. See [architecture.md](architecture.md) for the directory layout.
+
+- **Base path:** all endpoints are under `/api`.
+- **Interactive docs:** `GET /docs` (Swagger) — fully typed from the route `response_model`s.
+
+---
+
+## Core concepts
+
+### Account → Client → User
+
+- **Account** — the subscriber org that logs in & pays. An *agency* (many
+  clients) or a *direct seller* (one client). Has no password.
+- **Client** — a managed brand/seller and the unit all data is keyed to
+  (`tenants` table, `tenant_id`). An Account has one or many.
+- **User** — a person who logs in (email + password). Belongs to an Account; can
+  act on any of the Account's Clients.
+
+A direct seller is just an Account with a single Client — same code path.
+
+### Two data planes
+
+| | Public data | Private (dashboard) data |
+|---|---|---|
+| Examples | rankings, SOV, availability | sales, SOH, ads, scorecards, POs |
+| Keyed by | `brand_slug` (shared/global) | `tenant_id` (per client) |
+| Scoped on read by | the client's **watchlist** | the client's `tenant_id` |
+
+### Routing convention
+
+Once a client is selected, **everything is under `/api/clients/{client_id}/...`**
+— private *and* public. The only non-client routes are `auth`, `clients`, and
+`reference`.
+
+### Auth & access
+
+- **Login-only.** No public signup; accounts/users are provisioned via the CLI
+  (`python -m cli account create ...`).
+- JWT (Bearer token) carries `account_id` + `user_id`. Send it as
+  `Authorization: Bearer <token>`. Token storage on the frontend is localStorage.
+- Every `/clients/{client_id}/...` route runs the **`ClientDep`** access check:
+  the client must belong to the caller's account, else **404** (so one account
+  can never reach another's data).
+
+### Response conventions
+
+- Success returns the typed body directly (no envelope), with real HTTP status
+  codes (200/201/204).
+- Errors are uniform: `{"detail": "..."}` (matches FastAPI's `HTTPException`).
+  Validation failures are automatic **422**.
+- **Pagination** — list endpoints return:
+  ```json
+  { "items": [...], "total": 0, "page": 1, "limit": 20, "pages": 0 }
+  ```
+  Controlled by `?page=` (≥1) and `?limit=` (1–100).
+- **Time windows** — dashboard endpoints take `?days=` (default 30) and
+  aggregate in SQL, so payloads stay small regardless of row volume.
+
+---
+
+## Modules
+
+### `auth` — `/api/auth`
+Authentication. The only place a password is used.
+
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/login` | Verify email+password, return a JWT carrying `account_id`. |
+| POST | `/logout` | No-op (stateless JWT); a hook for the frontend to drop the token. |
+| GET | `/me` | The current user (id, email, full_name, account_id). |
+
+### `clients` — `/api/clients`
+The account's clients + the client picker.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/clients` | List the clients under the caller's account (the switcher). |
+| GET | `/clients/{client_id}` | One client (access-checked by `ClientDep`). |
+
+### `reference` — `/api/reference`
+Global dropdown data (login required, not client-scoped).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/brands` | All brands (slug, name, category, logo, tint). |
+| GET | `/marketplaces` | All marketplaces (slug, name, color). |
+| GET | `/cities` | Cities → per-platform zones, from `scraper/utils/cities.py` (no DB). |
+
+### `analytics` — `/api/clients/{id}/analytics` *(private)*
+Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). All accept `?days=`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/overview` | Headline KPIs: revenue, units, SKUs, active campaigns, ad spend, impressions. |
+| GET | `/revenue` | Revenue + units **time-series** (per day). |
+| GET | `/top-skus` | Best-selling SKUs by revenue (`?limit=`). |
+| GET | `/sales-by-city` | Revenue/units grouped by city. |
+| GET | `/sales-by-category` | Revenue/units grouped by category. |
+
+### `products` — `/api/clients/{id}/products` *(private)*
+Per-SKU performance, derived from sales + stock.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/products` | Paginated SKU list. Filters: `?search=` (name), `?category=`, `?days=`. |
+| GET | `/products/{item_id}` | One SKU: totals, per-day trend, latest stock (summed across facilities). 404 if no sales in window. |
+
+### `ads` — `/api/clients/{id}/ads` *(private)*
+Paid marketing on the platform (sponsored placements, bidding, plans).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/campaigns` | Paginated campaigns — latest snapshot per campaign. Filter `?status=`. |
+| GET | `/performance` | Daily spend/impressions **time-series**. |
+| GET | `/sov` | Sponsored share-of-voice, latest per keyword. |
+| GET | `/visibility-plans` | Visibility/placement plans + budgets. |
+| GET | `/collections` | Curated brand collections. |
+
+### `inventory` — `/api/clients/{id}/inventory`
+Stock health: private SOH + fill-rate, plus public availability.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. |
+| GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. |
+| GET | `/availability` | **Public** stock-out monitoring for the client's own brand (out-of-stock first). Filters `?city=`, `?marketplace=`, `?days=`. Needs an `own` watchlist brand. |
+
+### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
+Blinkit brand-health scorecard.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/weekly` | Latest weekly scorecard (overall, best category, per-category JSON). `?from=`. 404 if none. |
+| GET | `/key-skus` | Paginated key SKUs ranked by potential loss. `?from=`. |
+| GET | `/facilities` | Paginated facilities ranked by potential loss. `?from=`. |
+
+### `competition` — `/api/clients/{id}/competition` *(public, watchlist-scoped)*
+Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlist.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/share-of-voice` | Own-brand SOV summary + daily trend. Filters `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
+| GET | `/rankings` | Paginated competitor positions/prices for the own brand. Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
+
+Empty results until the client has an `own` watchlist entry.
+
+### `purchase-orders` — `/api/clients/{id}/purchase-orders` *(private)*
+Blinkit POs (`raw` carries vendor + line items).
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/purchase-orders` | Paginated POs (po_number, scraped_at, full `raw`). |
+| GET | `/purchase-orders/snapshots` | Paginated PO window snapshots. |
+| GET | `/purchase-orders/{po_number}` | One PO with full `raw`. 404 if not found. |
+
+### `watchlist` — `/api/clients/{id}/watchlist` *(write)*
+What the client tracks: own + competitor brands, with keywords/cities/marketplaces.
+Drives the public-data scrape set and the client's view of `competition`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/watchlist` | List entries. |
+| POST | `/watchlist` | Add an entry (`brand_slug`, `relationship`, cities/keywords/marketplaces). Validates brand exists (400) and relationship enum (422). |
+| PUT | `/watchlist/{entry_id}` | Partial update. 404 if not the client's. |
+| DELETE | `/watchlist/{entry_id}` | Remove (204). |
+
+### `platforms` — `/api/clients/{id}/platforms`
+Platform connection state. **Connecting** is interactive (OTP/browser) and done
+via the CLI — the API only exposes status + disconnect.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/platforms` | Connected platforms + connected-at. |
+| DELETE | `/platforms/{platform}` | Disconnect (delete session). 204, or 404 if none. |
+
+### `jobs` — `/api/clients/{id}/jobs` *(private)*
+Scrape-job history — data freshness / failures.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/jobs` | Paginated jobs (status, dashboard, records_written, timing). Filter `?status=`. |
+| GET | `/jobs/{job_id}` | One job (incl. error). 404 if not the client's. |
+
+---
+
+## Adding a new endpoint
+
+1. **schema** (`schemas/<group>.py`) — Pydantic request/response shapes.
+2. **service** (`services/<group>_service.py`) — query logic; `session` first arg;
+   private services filter by `tenant_id`, public ones by the watchlist.
+3. **route** (`routes/<group>.py`) — thin handler; declare `session: SessionDep`,
+   `client: ClientDep` (for client-scoped), `pagination: PaginationDep` as needed.
+4. **mount** in `router.py` under `/clients/{client_id}/<group>` (or top-level).
+
+Patterns to reuse: `Page[T]` (paginated lists), `DISTINCT ON` (latest snapshot
+per entity), SQL aggregates for dashboards (never ship raw rows), JSON-column
+passthrough (`dict[str, Any]`) for scraped blobs.
