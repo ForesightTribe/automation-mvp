@@ -1,11 +1,9 @@
-from datetime import datetime, timezone, timedelta
 from scraper.utils.storage import make_upsert_key
-
-_IST = timezone(timedelta(hours=5, minutes=30))
+from app.utils.time import now_ist
 
 
 def parse_performance_summary(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
-    now = datetime.now(_IST)
+    now = now_ist()
     date = now.strftime("%Y-%m-%d")
     summary = raw.get("summary", {})
     return {
@@ -21,7 +19,7 @@ def parse_performance_summary(raw: dict, tenant_id: str, scrape_job_id: str) -> 
 
 
 def parse_campaign(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
-    now = datetime.now(_IST)
+    now = now_ist()
     date = now.strftime("%Y-%m-%d")
     return {
         "upsert_key": make_upsert_key(tenant_id, "blinkit", "campaign", str(raw["id"]), date),
@@ -45,7 +43,7 @@ def parse_campaign(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
 
 
 def parse_sponsored_sov(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
-    now = datetime.now(_IST)
+    now = now_ist()
     date = now.strftime("%Y-%m-%d")
     keyword = raw.get("keyword", "")
     return {
@@ -73,7 +71,7 @@ def parse_brand_collection(raw: dict, tenant_id: str, scrape_job_id: str) -> dic
         "is_dynamic": raw.get("is_dynamic", False),
         "created_by": raw.get("created_by"),
         "created_on": raw.get("created_on"),
-        "scraped_at": datetime.now(_IST),
+        "scraped_at": now_ist(),
     }
 
 
@@ -89,5 +87,5 @@ def parse_visibility_plan(raw: dict, tenant_id: str, scrape_job_id: str) -> dict
         "start_date": raw.get("start_date"),
         "end_date": raw.get("end_date"),
         "status": raw.get("status", ""),
-        "scraped_at": datetime.now(_IST),
+        "scraped_at": now_ist(),
     }

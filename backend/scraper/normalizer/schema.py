@@ -2,6 +2,8 @@ from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Optional
 
+from app.utils.time import now_ist
+
 
 # ---------------------------------------------------------------------------
 # Every normalized schema carries these envelope fields.
@@ -18,7 +20,7 @@ class NormalizedProduct:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:product:{product_id}
     data_type: str = "product"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Product fields
     product_id: str = ""
@@ -39,7 +41,7 @@ class NormalizedSales:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:sales:{product_id}:{date}
     data_type: str = "sales"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Sales fields
     product_id: str = ""
@@ -59,7 +61,7 @@ class NormalizedInventory:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:inventory:{product_id}:{date}
     data_type: str = "inventory"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Inventory fields
     product_id: str = ""
@@ -78,7 +80,7 @@ class NormalizedAdCampaign:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:campaign:{name}:{date}
     data_type: str = "campaign"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Campaign fields
     name: Optional[str] = None
@@ -102,7 +104,7 @@ class NormalizedAdSnapshot:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:snapshot:{date}
     data_type: str = "snapshot"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Aggregate snapshot fields
     total_budget_consumed: Optional[float] = None
@@ -124,7 +126,7 @@ class NormalizedBrandCollection:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:brand_collection:{name}
     data_type: str = "brand_collection"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Brand collection fields
     name: str = ""
@@ -144,7 +146,7 @@ class NormalizedVisibilityPlan:
     date: date
     upsert_key: str             # {tenant_id}:{platform}:visibility_plan:{plan}:{period}
     data_type: str = "visibility_plan"
-    scraped_at: datetime = field(default_factory=datetime.utcnow)
+    scraped_at: datetime = field(default_factory=now_ist)
 
     # Visibility plan fields
     plan: str = ""

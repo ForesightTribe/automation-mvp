@@ -2,7 +2,9 @@ import uuid
 from datetime import datetime
 from enum import Enum
 
-from sqlalchemy import Column, Index, LargeBinary
+from sqlalchemy import Column, Index, LargeBinary, UniqueConstraint
+
+from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
 
 
@@ -30,15 +32,18 @@ class ScrapeJob(SQLModel, table=True):
     completed_at: datetime | None = None
     error: str | None = None
     records_written: int = 0
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=now_ist)
 
 
 class PlatformSession(SQLModel, table=True):
     __tablename__ = "platform_sessions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "platform", name="uq_platform_sessions_tenant_platform"),
+    )
 
     id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
     platform: str
     encrypted_session: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=now_ist)
+    updated_at: datetime = Field(default_factory=now_ist)

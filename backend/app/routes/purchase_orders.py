@@ -3,7 +3,7 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.common import Page
-from app.schemas.purchase_order import POSnapshotOut, PurchaseOrderOut
+from app.schemas.purchase_order import PODetailOut, POSnapshotOut, PurchaseOrderOut
 from app.services import po_service
 
 router = APIRouter()
@@ -26,7 +26,7 @@ async def list_snapshots(
     )
 
 
-@router.get("/{po_number}", response_model=PurchaseOrderOut)
+@router.get("/{po_number}", response_model=PODetailOut)
 async def get_po(session: SessionDep, client: ClientDep, po_number: str):
     po = await po_service.get_po(session, tenant_id=client.id, po_number=po_number)
     if not po:

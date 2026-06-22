@@ -22,6 +22,7 @@ from scraper.platforms.blinkit.dashboard_data.seller.parser import (
     parse_sale_row,
     parse_sales_summary,
     parse_po_row,
+    parse_po_item,
     parse_po_summary,
     parse_soh_row,
     parse_scorecard_weekly,
@@ -116,7 +117,8 @@ def _print_campaigns(campaigns: list) -> None:
     if not campaigns:
         console.print("\n[dim]No campaigns found.[/dim]")
         return
-    console.print(f"\n[bold cyan]Campaigns[/bold cyan] ({len(campaigns)})")
+    preview = campaigns[:5]
+    console.print(f"\n[bold cyan]Campaigns[/bold cyan] (showing {len(preview)} of {len(campaigns)})")
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Type", style="dim")
@@ -125,7 +127,7 @@ def _print_campaigns(campaigns: list) -> None:
     table.add_column("Impressions", justify="right")
     table.add_column("ATCs", justify="right")
     table.add_column("RoAS", justify="right")
-    for c in campaigns:
+    for c in preview:
         status_style = {"ACTIVE": "green", "PAUSED": "yellow", "STOPPED": "red"}.get(c["status"], "")
         status_text = f"[{status_style}]{c['status']}[/{status_style}]" if status_style else c["status"]
         table.add_row(
@@ -143,12 +145,13 @@ def _print_campaigns(campaigns: list) -> None:
 def _print_sov(sov: list) -> None:
     if not sov:
         return
-    console.print(f"\n[bold cyan]Sponsored Share of Voice[/bold cyan] ({len(sov)} keywords)")
+    preview = sov[:5]
+    console.print(f"\n[bold cyan]Sponsored Share of Voice[/bold cyan] (showing {len(preview)} of {len(sov)} keywords)")
     table = Table(show_header=True, header_style="bold")
     table.add_column("Keyword")
     table.add_column("Monthly Searches", justify="right")
     table.add_column("SOV %", justify="right")
-    for s in sov:
+    for s in preview:
         table.add_row(s["keyword"], f"{s['monthly_searches']:,}", f"{s['sov']}%")
     console.print(table)
 
@@ -156,13 +159,14 @@ def _print_sov(sov: list) -> None:
 def _print_collections(collections: list) -> None:
     if not collections:
         return
-    console.print(f"\n[bold cyan]Brand Collections[/bold cyan] ({len(collections)})")
+    preview = collections[:5]
+    console.print(f"\n[bold cyan]Brand Collections[/bold cyan] (showing {len(preview)} of {len(collections)})")
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Type", style="dim")
     table.add_column("Products", justify="right")
     table.add_column("Created On")
-    for c in collections:
+    for c in preview:
         collection_type = "DYNAMIC" if c["is_dynamic"] else "STATIC"
         table.add_row(c["name"], collection_type, str(c["number_of_products"]), c.get("created_on", ""))
     console.print(table)
@@ -171,7 +175,8 @@ def _print_collections(collections: list) -> None:
 def _print_plans(plans: list) -> None:
     if not plans:
         return
-    console.print(f"\n[bold cyan]Visibility Plans[/bold cyan] ({len(plans)})")
+    preview = plans[:5]
+    console.print(f"\n[bold cyan]Visibility Plans[/bold cyan] (showing {len(preview)} of {len(plans)})")
     table = Table(show_header=True, header_style="bold")
     table.add_column("Name")
     table.add_column("Type", style="dim")
@@ -179,7 +184,7 @@ def _print_plans(plans: list) -> None:
     table.add_column("Start Date")
     table.add_column("End Date")
     table.add_column("Status")
-    for p in plans:
+    for p in preview:
         table.add_row(
             p["name"],
             p["type"],
@@ -295,12 +300,17 @@ async def _scrape_blinkit_seller(
                     )
 
                 pos = [parse_po_row(r, tenant_id, po_job_id) for r in raw_po["pos"]]
+                po_items = [
+                    parse_po_item(it, r["po_number"], tenant_id, po_job_id)
+                    for r in raw_po["pos"]
+                    for it in r.get("items", [])
+                ]
                 snapshot = parse_po_summary(
                     raw_po["po_summary"], tenant_id, po_job_id, raw_po["po_window_start"]
                 )
 
                 if save:
-                    await save_po_results(db, pos, snapshot)
+                    await save_po_results(db, pos, po_items, snapshot)
                     await complete_scrape_job(db, po_job_id)
 
                 _print_po_snapshot(snapshot, len(pos))
@@ -421,7 +431,7 @@ def _print_po_list(pos: list) -> None:
             po.get("facility_name", ""),
             str(po.get("total_units_ordered", 0)),
             f"₹{po.get('total_po_amount', 0):,.0f}",
-            str(len(po.get("items", []))),
+            str(po.get("item_count") or 0),
         )
     console.print(table)
 

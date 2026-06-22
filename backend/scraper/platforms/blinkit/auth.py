@@ -3,9 +3,12 @@ from playwright.async_api import async_playwright
 from scraper.utils.browser import create_browser_context
 from app.utils.logger import logger
 
-# Same login page selectors across all Blinkit dashboards
-_EMAIL_INPUT = 'input#login_email'
-_SUBMIT_BUTTON = 'button.login__form-submit-btn'
+# brands.blinkit.com login modal. The UI uses a generated "dock" design system,
+# so its utility classes are volatile — match on stable text / attributes.
+_LOGIN_BUTTON = 'button:has-text("Log In")'                  # opens the login modal
+_EMAIL_INPUT = 'input[type="email"]'                          # modal email field
+_KEEP_SIGNED_IN = 'button[role="checkbox"]'                   # "Keep me signed in" — persist Firebase session
+_SUBMIT_BUTTON = 'button:has-text("Request Sign in Link")'   # sends the magic link
 
 
 async def login(email: str, base_url: str) -> dict:
@@ -24,12 +27,18 @@ async def login(email: str, base_url: str) -> dict:
             await page.goto(base_url, wait_until="domcontentloaded", timeout=30_000)
 
             try:
-                # Click the Login button to open the modal first
-                await page.wait_for_selector("button.msqVi", timeout=5_000)
-                await page.click("button.msqVi")
-                # Fill email and submit
-                await page.wait_for_selector(_EMAIL_INPUT, timeout=5_000)
+                # Click the "Log In" button to open the modal first
+                await page.wait_for_selector(_LOGIN_BUTTON, timeout=10_000)
+                await page.click(_LOGIN_BUTTON)
+                # Fill email in the modal
+                await page.wait_for_selector(_EMAIL_INPUT, timeout=10_000)
                 await page.fill(_EMAIL_INPUT, email)
+                # Keep the session persistent so the Firebase refresh token survives.
+                try:
+                    await page.click(_KEEP_SIGNED_IN, timeout=3_000)
+                except Exception:
+                    logger.warning("'Keep me signed in' checkbox not found — continuing without it.")
+                # Request the magic link
                 await page.click(_SUBMIT_BUTTON)
                 logger.info(f"Email submitted: {email}")
             except Exception:

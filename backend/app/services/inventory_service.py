@@ -1,12 +1,13 @@
 """Client-scoped inventory: stock-on-hand (blinkit_soh) and PO fill-rate
 (blinkit_scorecard_facilities)."""
 import uuid
-from datetime import date, datetime, timedelta
+from datetime import date, timedelta
 
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
+from app.utils.time import now_ist
 from app.models.blinkit_seller import BlinkitSOH, BlinkitScorecardFacility
 from app.models.search import InventoryDepth
 from app.schemas.common import Page
@@ -128,7 +129,7 @@ async def get_availability(
     if not own:
         return Page.build([], 0, pagination)
 
-    since = datetime.utcnow() - timedelta(days=days)
+    since = now_ist() - timedelta(days=days)
     cond = [InventoryDepth.brand_slug.in_(own), InventoryDepth.scraped_at >= since]
     if city:
         cond.append(InventoryDepth.city == city)

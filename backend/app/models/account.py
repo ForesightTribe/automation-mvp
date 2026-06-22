@@ -3,6 +3,8 @@ from datetime import datetime
 
 from sqlmodel import Field, SQLModel
 
+from app.utils.time import now_ist
+
 
 class Account(SQLModel, table=True):
     """The subscriber org that logs in and pays.
@@ -17,4 +19,4 @@ class Account(SQLModel, table=True):
     name: str
     type: str = Field(default="agency")  # 'agency' | 'direct'
     is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=now_ist)

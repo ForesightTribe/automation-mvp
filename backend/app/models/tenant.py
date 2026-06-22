@@ -3,6 +3,8 @@ from datetime import datetime
 from typing import Any
 
 from sqlalchemy import Column, Index, JSON
+
+from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
 
 
@@ -15,7 +17,7 @@ class Tenant(SQLModel, table=True):
     account_id: uuid.UUID = Field(foreign_key="accounts.id")
     name: str
     is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=now_ist)
 
 
 class User(SQLModel, table=True):
@@ -31,7 +33,7 @@ class User(SQLModel, table=True):
     hashed_password: str
     full_name: str
     is_active: bool = True
-    created_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=now_ist)
 
 
 class TenantWatchlist(SQLModel, table=True):
@@ -44,5 +46,5 @@ class TenantWatchlist(SQLModel, table=True):
     cities: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     keywords: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     marketplaces: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
+    created_at: datetime = Field(default_factory=now_ist)
+    updated_at: datetime = Field(default_factory=now_ist)

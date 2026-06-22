@@ -1,8 +1,10 @@
 import uuid
-from datetime import datetime
+from datetime import date as date_cls, datetime as datetime_cls
 
+from sqlalchemy import Date, DateTime, String, Uuid
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlmodel.sql.sqltypes import AutoString
 
 from app.models.blinkit_marketing import (
     AdCampaign,
@@ -40,24 +42,62 @@ async def save_scrape_results(
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
     if not rows:
         return
-    stmt = (
-        insert(model)
-        .values([_prepare(model, r) for r in rows])
-        .on_conflict_do_update(
-            index_elements=["upsert_key"],
-            set_={c: insert(model).excluded[c] for c in _update_cols(model)},
+    prepared = [_prepare(model, r) for r in rows]
+    # Postgres caps bind parameters per statement at 32767 (one per column per
+    # row). Use the table's full column count as a safe upper bound — SQLAlchemy
+    # also binds columns with Python-side defaults (platform, scraped_at) that
+    # aren't in the parser dict, so the dict's key count underestimates it.
+    cols = max(1, len(model.__table__.columns))
+    chunk = max(1, 32000 // cols)
+    update_cols = _update_cols(model)
+    for i in range(0, len(prepared), chunk):
+        stmt = (
+            insert(model)
+            .values(prepared[i:i + chunk])
+            .on_conflict_do_update(
+                index_elements=["upsert_key"],
+                set_={c: insert(model).excluded[c] for c in update_cols},
+            )
         )
-    )
-    await session.execute(stmt)
+        await session.execute(stmt)
 
 
 def _prepare(model, row: dict) -> dict:
+    """Coerce raw parser values to the types asyncpg expects per column.
+
+    Parsers emit convenient Python values (str UUIDs, "YYYY-MM-DD" date strings
+    reused in the upsert key, ISO timestamp strings from the API, int ids), but
+    asyncpg binds strictly by column type: UUID columns need uuid.UUID, DATE
+    needs date, TIMESTAMP needs datetime, and VARCHAR needs str. Coerce based on
+    the column's SQL type so every model is covered.
+    """
     data = dict(row)
-    if "tenant_id" in data and isinstance(data["tenant_id"], str):
-        data["tenant_id"] = uuid.UUID(data["tenant_id"])
-    if "scrape_job_id" in data and isinstance(data["scrape_job_id"], str):
-        data["scrape_job_id"] = uuid.UUID(data["scrape_job_id"])
+    for col in model.__table__.columns:
+        if col.name not in data:
+            continue
+        val = data[col.name]
+        if val is None:
+            continue
+        if isinstance(col.type, Uuid):
+            if isinstance(val, str):
+                data[col.name] = uuid.UUID(val)
+        elif isinstance(col.type, DateTime):  # check before Date (distinct types)
+            if isinstance(val, str) and val:
+                data[col.name] = _parse_dt(val)
+        elif isinstance(col.type, Date):
+            if isinstance(val, str) and val:
+                data[col.name] = date_cls.fromisoformat(val)
+        elif isinstance(col.type, (String, AutoString)):
+            if not isinstance(val, str):
+                data[col.name] = str(val)
     return data
+
+
+def _parse_dt(val: str) -> datetime_cls:
+    """Parse an API ISO timestamp to a naive datetime, preserving the source
+    value as-is (UTC) — scraped business timestamps are never shifted to IST."""
+    dt = datetime_cls.fromisoformat(val.replace("Z", "+00:00"))
+    return dt.replace(tzinfo=None) if dt.tzinfo is not None else dt
 
 
 def _update_cols(model) -> list[str]:

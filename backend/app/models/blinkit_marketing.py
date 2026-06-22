@@ -3,6 +3,8 @@ from datetime import datetime, date
 from typing import Any
 
 from sqlalchemy import Column, Index, JSON
+
+from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
 
 
@@ -20,7 +22,7 @@ class AdPerformanceSummary(SQLModel, table=True):
     budget_distribution: dict[str, Any] = Field(
         default_factory=dict, sa_column=Column(JSON, nullable=False)
     )
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
 
 
 class AdCampaign(SQLModel, table=True):
@@ -46,7 +48,7 @@ class AdCampaign(SQLModel, table=True):
     atcs: int = 0
     roas: float = 0.0
     reach: int = 0
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
 
 
 class SponsoredSOV(SQLModel, table=True):
@@ -64,7 +66,7 @@ class SponsoredSOV(SQLModel, table=True):
     monthly_searches: int = 0
     searches: int = 0
     sov: float = 0.0
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
 
 
 class BrandCollection(SQLModel, table=True):
@@ -82,7 +84,7 @@ class BrandCollection(SQLModel, table=True):
     is_dynamic: bool = False
     created_by: str | None = None
     created_on: str | None = None
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
 
 
 class VisibilityPlan(SQLModel, table=True):
@@ -100,4 +102,4 @@ class VisibilityPlan(SQLModel, table=True):
     start_date: str | None = None
     end_date: str | None = None
     status: str | None = None
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)

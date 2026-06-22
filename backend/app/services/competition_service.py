@@ -3,12 +3,13 @@ watchlist. Scoped to the client's OWN brand(s) (relationship='own'); narrow
 further with optional keyword/city/marketplace filters.
 """
 import uuid
-from datetime import datetime, timedelta
+from datetime import timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
+from app.utils.time import now_ist
 from app.models.search import CompetitorRanking, SearchResult
 from app.schemas.common import Page
 from app.schemas.competition import CompetitorRankRow
@@ -44,7 +45,7 @@ async def get_share_of_voice(
         # No 'own' brand on the watchlist -> nothing to report.
         return {"summary": summary, "trend": []}
 
-    since = datetime.utcnow() - timedelta(days=days)
+    since = now_ist() - timedelta(days=days)
     conditions = [SearchResult.brand_slug.in_(own), SearchResult.scraped_at >= since]
     if marketplace:
         conditions.append(SearchResult.mp_slug == marketplace)

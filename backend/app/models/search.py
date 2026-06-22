@@ -3,6 +3,8 @@ from datetime import datetime, date
 from typing import Any
 
 from sqlalchemy import Column, Index, JSON, Numeric
+
+from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
 
 
@@ -26,7 +28,7 @@ class SearchResult(SQLModel, table=True):
     keyword: str
     merchant_id: str = ""
     store_type: str = ""
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
     brand_rank: int | None = None
     brand_sov: float | None = None
     total_results: int | None = None
@@ -50,7 +52,7 @@ class CompetitorRanking(SQLModel, table=True):
     zone: str = ""
     pincode: str = ""
     keyword: str
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
     competitor: str
     position: int | None = None
     price: float | None = None
@@ -72,7 +74,7 @@ class ScrapedProduct(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     brand_slug: str = Field(foreign_key="brands.slug")
     mp_slug: str = Field(foreign_key="marketplaces.slug")
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
     name: str | None = None
     sku: str | None = None
     price: float | None = None
@@ -97,7 +99,7 @@ class InventoryDepth(SQLModel, table=True):
     pincode: str = ""
     sku: str
     product_name: str | None = None
-    scraped_at: datetime = Field(default_factory=datetime.utcnow)
+    scraped_at: datetime = Field(default_factory=now_ist)
     depth: int | None = None
     max_allowed: int | None = None
     in_stock: bool = True

@@ -2,7 +2,7 @@
 keywords/cities/marketplaces to track. Drives the public-data scrape set and
 the client-scoped view of competition data."""
 import uuid
-from datetime import datetime
+from app.utils.time import now_ist
 
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -84,7 +84,7 @@ async def update_entry(
         entry.keywords = data.keywords
     if data.marketplaces is not None:
         entry.marketplaces = data.marketplaces
-    entry.updated_at = datetime.utcnow()
+    entry.updated_at = now_ist()
     session.add(entry)
     await session.commit()
     await session.refresh(entry)

@@ -6,9 +6,14 @@ from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
-from app.models.blinkit_seller import BlinkitPO, BlinkitPOSnapshot
+from app.models.blinkit_seller import BlinkitPO, BlinkitPOItem, BlinkitPOSnapshot
 from app.schemas.common import Page
-from app.schemas.purchase_order import POSnapshotOut, PurchaseOrderOut
+from app.schemas.purchase_order import (
+    PODetailOut,
+    POItemOut,
+    POSnapshotOut,
+    PurchaseOrderOut,
+)
 
 
 async def list_pos(
@@ -36,14 +41,27 @@ async def list_pos(
 
 async def get_po(
     session: AsyncSession, *, tenant_id: uuid.UUID, po_number: str
-) -> BlinkitPO | None:
-    return (
+) -> PODetailOut | None:
+    po = (
         await session.execute(
             select(BlinkitPO).where(
                 BlinkitPO.tenant_id == tenant_id, BlinkitPO.po_number == po_number
             )
         )
     ).scalar_one_or_none()
+    if not po:
+        return None
+    items = (
+        await session.execute(
+            select(BlinkitPOItem).where(
+                BlinkitPOItem.tenant_id == tenant_id,
+                BlinkitPOItem.po_number == po_number,
+            )
+        )
+    ).scalars().all()
+    detail = PODetailOut.model_validate(po)
+    detail.items = [POItemOut.model_validate(it) for it in items]
+    return detail
 
 
 async def list_snapshots(
