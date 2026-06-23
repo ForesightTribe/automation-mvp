@@ -10,6 +10,7 @@
 | [docs/setup.md](docs/setup.md) | Env setup, Alembic, first run checklist |
 | [docs/cli.md](docs/cli.md) | Full CLI reference — all commands with examples |
 | [docs/api-reference.md](docs/api-reference.md) | REST API reference — every module (auth, clients, analytics, ads, competition, …), endpoints, scoping, conventions |
+| [docs/dashboard-views.md](docs/dashboard-views.md) | Dashboard insight catalog — questions → page/section → tables+columns → API. Build reference for the frontend |
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend rules (TBD) |
 
 ---
