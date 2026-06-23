@@ -11,7 +11,8 @@
 | [docs/cli.md](docs/cli.md) | Full CLI reference — all commands with examples |
 | [docs/api-reference.md](docs/api-reference.md) | REST API reference — every module (auth, clients, analytics, ads, competition, …), endpoints, scoping, conventions |
 | [docs/dashboard-views.md](docs/dashboard-views.md) | Dashboard insight catalog — questions → page/section → tables+columns → API. Build reference for the frontend |
-| [docs/ui-rules.md](docs/ui-rules.md) | Frontend rules (TBD) |
+| [docs/frontend-architecture.md](docs/frontend-architecture.md) | Frontend stack, feature-first folder structure, state split (Context vs React Query), data flow, how to add a page |
+| [docs/ui-rules.md](docs/ui-rules.md) | Frontend coding/styling conventions — arrow components, Tailwind v4 theme tokens, error layers, logging |
 
 ---
 
@@ -24,6 +25,7 @@
 - **Encryption**: Fernet (`cryptography`)
 - **Logging**: loguru — `from app.utils.logger import logger`, never `print()`
 - **CLI**: typer + rich
+- **Frontend**: Vite 8 + React 19, Tailwind v4, react-router v7, React Query v5 — see [docs/frontend-architecture.md](docs/frontend-architecture.md)
 
 ## Environment
 

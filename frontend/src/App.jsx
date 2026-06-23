@@ -1,9 +1,14 @@
-import React from "react";
 import { RouterProvider } from "react-router-dom";
-import router from "./router";
+import { Providers } from "./app/providers";
+import { router } from "./app/router";
 
+/** Root: global providers wrapping the router. Wiring only — no UI lives here. */
 const App = () => {
-  return <RouterProvider router={router} />;
+	return (
+		<Providers>
+			<RouterProvider router={router} />
+		</Providers>
+	);
 };
 
 export default App;
