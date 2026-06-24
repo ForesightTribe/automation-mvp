@@ -17,6 +17,9 @@ class MarketplaceOut(BaseModel):
     slug: str
     name: str
     color: str | None
+    # Whether this marketplace has real, trusted data. The selector shows all
+    # marketplaces but disables/labels the unconnected ones.
+    connected: bool = False
 
 
 class ZoneOut(BaseModel):

@@ -2,6 +2,7 @@ import { useAuth } from "../context/AuthContext";
 import { useClient } from "../context/ClientContext";
 import { Button } from "../components/ui/Button";
 import { DateRangePicker } from "./DateRangePicker";
+import { MarketplacePicker } from "./MarketplacePicker";
 
 /**
  * Top bar: client switcher (left) + user/logout (right). The switcher writes to
@@ -34,6 +35,8 @@ export const Navbar = () => {
 						</option>
 					))}
 				</select>
+
+				<MarketplacePicker />
 
 				<DateRangePicker />
 			</div>

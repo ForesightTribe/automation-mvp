@@ -1,31 +1,66 @@
 import { createContext, useContext, useState, useCallback } from "react";
 import {
 	STORAGE_KEYS,
-	DEFAULT_DAYS,
 	DATE_RANGE_PRESETS,
+	DEFAULT_DAYS,
 } from "../lib/constants";
+import {
+	rangeFromDays,
+	rangeFromPresetKey,
+	presetKeyForRange,
+	daysInRange,
+} from "../lib/dates";
 
 /**
- * Owns the global date window (`days`) that dashboard endpoints take as `?days=`.
- * Many pages depend on it, so it's app-owned state in Context — not duplicated
- * per page. Feature query hooks read `days` and put it in their queryKey, so
- * changing the range here refetches every page that uses it (same mechanism as
- * the client switcher).
+ * Owns the global reporting window. The canonical value is a { from, to } pair
+ * of YYYY-MM-DD strings that endpoints take as `?start=&end=` (via PeriodDep).
+ * Presets (7/30/90d) are shortcuts that set such a window ending today; a custom
+ * range sets from/to directly. App-owned state -> Context (no React Query):
+ * feature hooks read `range` and key on it, so changing the window here refetches
+ * every page that uses it (same mechanism as the client switcher).
+ *
+ * `days` is a derived convenience for endpoints not yet migrated to start/end.
  */
 const DateRangeContext = createContext(null);
 
-export const DateRangeProvider = ({ children }) => {
-	const [days, setDaysState] = useState(() => {
-		const stored = Number(localStorage.getItem(STORAGE_KEYS.dateRangeDays));
-		return Number.isFinite(stored) && stored > 0 ? stored : DEFAULT_DAYS;
-	});
+const loadRange = () => {
+	try {
+		const stored = JSON.parse(localStorage.getItem(STORAGE_KEYS.dateRange));
+		if (stored?.from && stored?.to) return stored;
+	} catch {
+		// fall through to default
+	}
+	return rangeFromDays(DEFAULT_DAYS);
+};
 
-	const setDays = useCallback((next) => {
-		setDaysState(next);
-		localStorage.setItem(STORAGE_KEYS.dateRangeDays, String(next));
+export const DateRangeProvider = ({ children }) => {
+	const [range, setRange] = useState(loadRange);
+
+	const persist = useCallback((next) => {
+		setRange(next);
+		localStorage.setItem(STORAGE_KEYS.dateRange, JSON.stringify(next));
 	}, []);
 
-	const value = { days, setDays, presets: DATE_RANGE_PRESETS };
+	// Select a preset by key ("7d" | "30d" | "90d").
+	const setPreset = useCallback(
+		(key) => persist(rangeFromPresetKey(key)),
+		[persist],
+	);
+
+	// Select an explicit { from, to } window.
+	const setCustomRange = useCallback(
+		(from, to) => persist({ from, to }),
+		[persist],
+	);
+
+	const value = {
+		range, // { from, to } — canonical, send as ?start=&end=
+		days: daysInRange(range), // derived, for endpoints still on ?days=
+		activePreset: presetKeyForRange(range), // for chip highlighting
+		presets: DATE_RANGE_PRESETS,
+		setPreset,
+		setCustomRange,
+	};
 
 	return (
 		<DateRangeContext.Provider value={value}>

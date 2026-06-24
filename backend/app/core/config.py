@@ -14,6 +14,11 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
+    # Marketplaces with real, trusted data today. Everything else is shown but
+    # gated as "not connected" in the UI (no real scrapers yet). Stopgap until
+    # connectivity is derived from successful scrape_jobs per platform.
+    CONNECTED_MARKETPLACES: list[str] = ["blinkit"]
+
     class Config:
         env_file = ".env"
         extra = "ignore"

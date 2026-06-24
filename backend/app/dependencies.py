@@ -8,6 +8,7 @@ Import the `*Dep` Annotated aliases into routes for clean signatures, e.g.:
 """
 import uuid
 from dataclasses import dataclass
+from datetime import date, timedelta
 from typing import Annotated
 
 from fastapi import Depends, HTTPException, Query, status
@@ -110,6 +111,65 @@ async def get_client(
 
 
 ClientDep = Annotated[Tenant, Depends(get_client)]
+
+
+# --- Reporting period (the global date window) ------------------------------
+
+@dataclass
+class Period:
+    """A resolved date window plus the immediately-preceding window of equal
+    length, so any handler can compute period-over-period growth without
+    redoing the math. `start`/`end` are inclusive calendar dates.
+    """
+
+    start: date
+    end: date
+    prev_start: date
+    prev_end: date
+
+    @property
+    def length_days(self) -> int:
+        return (self.end - self.start).days + 1
+
+
+def get_period(
+    start: date | None = Query(
+        None, description="Window start (inclusive, YYYY-MM-DD)."
+    ),
+    end: date | None = Query(
+        None, description="Window end (inclusive, YYYY-MM-DD)."
+    ),
+    days: int | None = Query(
+        None, ge=1, le=365, description="Legacy: last N days ending today."
+    ),
+) -> Period:
+    """Resolve the reporting window from either an explicit `start`/`end` range
+    or the legacy `days` count (last N days ending today). `start`/`end` win if
+    given; otherwise `days` (defaulting to 30) anchors the window to today. The
+    previous window is the same length immediately before `start`.
+    """
+    if start and end:
+        if end < start:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="end must not be before start",
+            )
+        win_start, win_end = start, end
+    else:
+        n = days or 30
+        win_end = date.today()
+        win_start = win_end - timedelta(days=n - 1)
+
+    length = (win_end - win_start).days + 1
+    return Period(
+        start=win_start,
+        end=win_end,
+        prev_end=win_start - timedelta(days=1),
+        prev_start=win_start - timedelta(days=length),
+    )
+
+
+PeriodDep = Annotated[Period, Depends(get_period)]
 
 
 # --- Pagination -------------------------------------------------------------
