@@ -44,12 +44,14 @@ async def create_user(
     email: str,
     password: str,
     full_name: str,
+    role: str = "member",
 ) -> User:
     user = User(
         account_id=account_id,
         email=email,
         hashed_password=hash_password(password),
         full_name=full_name,
+        role=role,
     )
     session.add(user)
     await session.flush()

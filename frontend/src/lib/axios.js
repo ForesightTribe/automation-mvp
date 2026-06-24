@@ -57,7 +57,7 @@ api.interceptors.response.use(
 		// Session expiry: a 401 *while we hold a token* means it's stale. Clear it
 		// and signal AuthContext to end the session (RequireAuth then redirects).
 		// Guarded by token presence so a 401 from the login attempt itself — bad
-		// credentials, no token yet — is left for LoginPage to show inline.
+		// credentials, no token yet — is left for the login modal to show inline.
 		if (status === 401 && localStorage.getItem(STORAGE_KEYS.token)) {
 			localStorage.removeItem(STORAGE_KEYS.token);
 			window.dispatchEvent(new Event(AUTH_EXPIRED_EVENT));

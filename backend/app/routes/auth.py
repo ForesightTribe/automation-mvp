@@ -24,6 +24,7 @@ async def login(payload: LoginRequest, session: SessionDep):
             "sub": str(user.id),
             "account_id": str(user.account_id),
             "email": user.email,
+            "role": user.role,
         }
     )
     return TokenResponse(access_token=token)

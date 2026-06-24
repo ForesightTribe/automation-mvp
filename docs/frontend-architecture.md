@@ -46,10 +46,12 @@ src/
     ui/                    # domain-agnostic primitives (Button, Card)
     feedback/              # ErrorBoundary, ErrorState, EmptyState, Loading, PagePlaceholder
     charts/                # EChart wrapper + ECharts theme (mirrors index.css tokens)
+    auth/                  # LoginModal (login UI; opened from the landing page)
 
   layout/                  # app shell: AppLayout, Navbar, Sidebar, Footer, DateRangePicker
 
-  routes/                  # non-feature pages: LoginPage, NotFoundPage, RequireAuth
+  routes/                  # non-feature pages + guards: LandingPage, NotFoundPage,
+                           #   RequireAuth, RequireAdmin, RedirectIfAuth
 
   features/                # ONE folder per dashboard page (= per question)
     overview/              # reference impl: api.js + hooks.js + OverviewPage + components/
@@ -79,9 +81,18 @@ src/
 - **HTTP via one axios instance** `api` (`lib/axios.js`). Interceptors attach the
   Bearer token, trace requests/responses (dev), unwrap `response.data`, and reject
   with a normalized `{ message, status, data }`. Base URL from `VITE_API_BASE_URL`.
-- **Auth:** JWT in `localStorage`, attached by the `api` client as `Bearer`. `RequireAuth`
-  guards the app shell; `/login` is the only public route. No public signup
-  (accounts provisioned via CLI).
+- **Auth:** JWT in `localStorage`, attached by the `api` client as `Bearer`.
+  `RequireAuth` guards the app shell (Overview lives at `/overview`). The only
+  public route is `/` (marketing landing), behind `RedirectIfAuth` which bounces
+  logged-in users to `/overview`. **Login is a modal** (`components/auth/LoginModal`)
+  opened from the landing page — there is no `/login` route. A logged-out hit to a
+  protected route redirects to `/` with the attempted path as `from`; the landing
+  page auto-opens the modal and returns the user there after sign-in. No public
+  signup (accounts provisioned via CLI).
+- **Roles:** the JWT/`/auth/me` carry `role` (`admin` | `member`), exposed as
+  `isAdmin` from `useAuth()`. The Sidebar hides `adminOnly` nav items from
+  members and `RequireAdmin` guards admin-only routes (e.g. `/settings`) — the
+  backend's `require_admin` is the real enforcement.
 - **Session expiry (401):** the axios response interceptor, on a 401 *with* a
   stored token, clears it and fires `AUTH_EXPIRED_EVENT` on `window`.
   `AuthContext` listens, ends the session, and `RequireAuth` redirects to

@@ -55,7 +55,7 @@ export const AuthProvider = ({ children }) => {
 	}, [token]);
 
 	const login = useCallback(async (email, password) => {
-		// Backend returns the JWT; field assumed `access_token` (verify vs API).
+		// Backend returns the JWT as `access_token` (see /api/auth/login).
 		const res = await api.post("/auth/login", { email, password });
 		localStorage.setItem(STORAGE_KEYS.token, res.access_token);
 		setToken(res.access_token); // triggers the /auth/me effect above
@@ -92,6 +92,7 @@ export const AuthProvider = ({ children }) => {
 		user,
 		loading,
 		isAuthenticated: Boolean(token),
+		isAdmin: user?.role === "admin",
 		login,
 		logout,
 	};

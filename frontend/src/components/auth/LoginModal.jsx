@@ -1,20 +1,31 @@
-import { useState } from "react";
-import { useNavigate, useLocation } from "react-router-dom";
-import { useAuth } from "../context/AuthContext";
-import { Button } from "../components/ui/Button";
-import { Card } from "../components/ui/Card";
+import { useState, useEffect } from "react";
+import { useNavigate } from "react-router-dom";
+import { useAuth } from "../../context/AuthContext";
+import { Button } from "../ui/Button";
 
-/** Login screen. The only place a password is entered (no public signup). */
-export const LoginPage = () => {
+/**
+ * Login as a modal over the landing page (no standalone /login route). The only
+ * place a password is entered (no public signup). On success it navigates to
+ * `from` — the protected route the user was bounced from, else /overview.
+ */
+export const LoginModal = ({ open, onClose, from = "/overview" }) => {
 	const { login } = useAuth();
 	const navigate = useNavigate();
-	const location = useLocation();
-	const from = location.state?.from?.pathname ?? "/";
 
 	const [email, setEmail] = useState("");
 	const [password, setPassword] = useState("");
 	const [error, setError] = useState(null);
 	const [submitting, setSubmitting] = useState(false);
+
+	// Close on Escape while open.
+	useEffect(() => {
+		if (!open) return;
+		const onKey = (e) => e.key === "Escape" && onClose();
+		window.addEventListener("keydown", onKey);
+		return () => window.removeEventListener("keydown", onKey);
+	}, [open, onClose]);
+
+	if (!open) return null;
 
 	const onSubmit = async (e) => {
 		e.preventDefault();
@@ -34,8 +45,19 @@ export const LoginPage = () => {
 		"w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-content outline-none focus:border-primary";
 
 	return (
-		<div className="flex h-screen items-center justify-center p-4">
-			<Card className="w-full max-w-sm">
+		// Backdrop — click outside to dismiss.
+		<div
+			className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+			onClick={onClose}
+			role="presentation"
+		>
+			<div
+				className="w-full max-w-sm rounded-xl border border-border bg-card p-6"
+				onClick={(e) => e.stopPropagation()}
+				role="dialog"
+				aria-modal="true"
+				aria-label="Log in"
+			>
 				<h1 className="mb-1 font-display text-xl font-bold text-content">
 					Foresight
 				</h1>
@@ -53,6 +75,7 @@ export const LoginPage = () => {
 							value={email}
 							onChange={(e) => setEmail(e.target.value)}
 							required
+							autoFocus
 							className={inputClass}
 						/>
 					</div>
@@ -71,15 +94,21 @@ export const LoginPage = () => {
 
 					{error && <p className="text-sm text-danger">{error}</p>}
 
-					<Button
-						type="submit"
-						disabled={submitting}
-						className="w-full"
-					>
-						{submitting ? "Signing in…" : "Sign in"}
-					</Button>
+					<div className="flex items-center justify-end gap-2">
+						<Button
+							type="button"
+							variant="secondary"
+							onClick={onClose}
+							disabled={submitting}
+						>
+							Cancel
+						</Button>
+						<Button type="submit" disabled={submitting}>
+							{submitting ? "Signing in…" : "Sign in"}
+						</Button>
+					</div>
 				</form>
-			</Card>
+			</div>
 		</div>
 	);
 };

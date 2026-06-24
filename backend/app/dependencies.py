@@ -34,6 +34,7 @@ class CurrentUser(BaseModel):
     user_id: str
     account_id: str
     email: str | None = None
+    role: str = "member"
 
 
 async def get_current_user(
@@ -52,10 +53,29 @@ async def get_current_user(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Malformed token",
         )
-    return CurrentUser(user_id=sub, account_id=account_id, email=payload.get("email"))
+    return CurrentUser(
+        user_id=sub,
+        account_id=account_id,
+        email=payload.get("email"),
+        role=payload.get("role", "member"),
+    )
 
 
 CurrentUserDep = Annotated[CurrentUser, Depends(get_current_user)]
+
+
+async def require_admin(user: CurrentUserDep) -> CurrentUser:
+    """Gate admin-only routes. Members get a 403. The frontend mirrors this by
+    hiding admin UI, but this dependency is the real wall."""
+    if user.role != "admin":
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Admin access required",
+        )
+    return user
+
+
+AdminDep = Annotated[CurrentUser, Depends(require_admin)]
 
 
 async def get_account_id(user: CurrentUserDep) -> str:

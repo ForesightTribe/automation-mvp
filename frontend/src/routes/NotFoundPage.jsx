@@ -9,7 +9,7 @@ export const NotFoundPage = () => {
 				This page doesn't exist.
 			</p>
 			<Link
-				to="/"
+				to="/overview"
 				className="text-sm font-medium text-primary hover:underline"
 			>
 				Back to overview

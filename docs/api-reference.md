@@ -41,11 +41,14 @@ Once a client is selected, **everything is under `/api/clients/{client_id}/...`*
 
 - **Login-only.** No public signup; accounts/users are provisioned via the CLI
   (`python -m cli account create ...`).
-- JWT (Bearer token) carries `account_id` + `user_id`. Send it as
+- JWT (Bearer token) carries `account_id` + `user_id` + `role`. Send it as
   `Authorization: Bearer <token>`. Token storage on the frontend is localStorage.
 - Every `/clients/{client_id}/...` route runs the **`ClientDep`** access check:
   the client must belong to the caller's account, else **404** (so one account
   can never reach another's data).
+- **Roles.** Each user is `admin` or `member` (column on `users`; the first user
+  of an account is `admin`). Admin-only routes use the **`AdminDep`** dependency
+  (`require_admin`) and return **403** for members.
 
 ### Response conventions
 
@@ -70,9 +73,9 @@ Authentication. The only place a password is used.
 
 | Method | Path | Purpose |
 |---|---|---|
-| POST | `/login` | Verify email+password, return a JWT carrying `account_id`. |
+| POST | `/login` | Verify email+password, return a JWT carrying `account_id` + `role`. |
 | POST | `/logout` | No-op (stateless JWT); a hook for the frontend to drop the token. |
-| GET | `/me` | The current user (id, email, full_name, account_id). |
+| GET | `/me` | The current user (id, email, full_name, account_id, role, is_active). |
 
 ### `clients` — `/api/clients`
 The account's clients + the client picker.

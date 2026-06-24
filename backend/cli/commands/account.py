@@ -39,6 +39,7 @@ async def _create_account(name, type_, email, full_name, password) -> None:
                 email=email,
                 password=password,
                 full_name=full_name,
+                role="admin",  # the first user of an account is its admin
             )
             await db.commit()
         except IntegrityError:

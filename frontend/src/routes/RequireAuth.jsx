@@ -4,8 +4,9 @@ import { Loading } from "../components/feedback/Loading";
 
 /**
  * Route guard. Wraps the authenticated app: while the boot session check runs
- * it shows a spinner; if there's no session it redirects to /login, preserving
- * where the user was headed.
+ * it shows a spinner; if there's no session it redirects to the landing page,
+ * passing the attempted route as `from` so the landing page can auto-open the
+ * login modal and send the user back there after signing in.
  */
 export const RequireAuth = () => {
 	const { isAuthenticated, loading } = useAuth();
@@ -14,6 +15,6 @@ export const RequireAuth = () => {
 	if (loading)
 		return <Loading label="Checking session…" className="h-screen" />;
 	if (!isAuthenticated)
-		return <Navigate to="/login" replace state={{ from: location }} />;
+		return <Navigate to="/" replace state={{ from: location }} />;
 	return <Outlet />;
 };

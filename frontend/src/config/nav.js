@@ -6,12 +6,14 @@
  * `icon` is a short glyph placeholder — swap for an icon component later.
  */
 export const NAV_ITEMS = [
-	{ label: "Overview", path: "/", icon: "▣" },
+	{ label: "Overview", path: "/overview", icon: "▣" },
 	{ label: "Sales & Analytics", path: "/analytics", icon: "▤" },
 	{ label: "Products", path: "/products", icon: "▦" },
 	{ label: "Inventory", path: "/inventory", icon: "▥" },
 	{ label: "Ads", path: "/ads", icon: "◈" },
 	{ label: "Competition", path: "/competition", icon: "◎" },
 	{ label: "Scorecard", path: "/scorecard", icon: "◍" },
-	{ label: "Settings", path: "/settings", icon: "⚙" },
+	// adminOnly: hidden from members in the Sidebar; the /settings route is also
+	// guarded by RequireAdmin and the backend's require_admin dependency.
+	{ label: "Settings", path: "/settings", icon: "⚙", adminOnly: true },
 ];

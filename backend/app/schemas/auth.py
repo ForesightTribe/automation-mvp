@@ -20,4 +20,5 @@ class UserOut(BaseModel):
     email: EmailStr
     full_name: str
     account_id: uuid.UUID
+    role: str
     is_active: bool

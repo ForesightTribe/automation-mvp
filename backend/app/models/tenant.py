@@ -32,6 +32,7 @@ class User(SQLModel, table=True):
     email: str = Field(unique=True, index=True)
     hashed_password: str
     full_name: str
+    role: str = Field(default="member")  # 'admin' | 'member'
     is_active: bool = True
     created_at: datetime = Field(default_factory=now_ist)
 
