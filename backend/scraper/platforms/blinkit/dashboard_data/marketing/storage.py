@@ -1,40 +1,46 @@
 import uuid
 from datetime import date as date_cls, datetime as datetime_cls
 
-from sqlalchemy import Date, DateTime, String, Uuid
+from sqlalchemy import Date, DateTime, Float, Integer, String, Uuid
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel.sql.sqltypes import AutoString
 
 from app.models.blinkit_marketing import (
-    AdCampaign,
-    AdPerformanceSummary,
-    BrandCollection,
-    SponsoredSOV,
-    VisibilityPlan,
+    BlinkitAdCampaign,
+    BlinkitAdCampaignDaily,
+    BlinkitAdCampaignDetail,
+    BlinkitBrandCollection,
+    BlinkitSponsoredSOV,
+    BlinkitVisibilityPlan,
 )
 from app.utils.logger import logger
 
 
 async def save_scrape_results(
     session: AsyncSession,
-    summary: dict,
     campaigns: list[dict],
+    daily: list[dict],
+    detail: list[dict],
     sov: list[dict],
     collections: list[dict],
     plans: list[dict],
 ) -> int:
-    await _upsert(session, AdPerformanceSummary, [summary])
-    await _upsert(session, AdCampaign, campaigns)
-    await _upsert(session, SponsoredSOV, sov)
-    await _upsert(session, BrandCollection, collections)
-    await _upsert(session, VisibilityPlan, plans)
+    await _upsert(session, BlinkitAdCampaign, campaigns)
+    await _upsert(session, BlinkitAdCampaignDaily, daily)
+    await _upsert(session, BlinkitAdCampaignDetail, detail)
+    await _upsert(session, BlinkitSponsoredSOV, sov)
+    await _upsert(session, BlinkitBrandCollection, collections)
+    await _upsert(session, BlinkitVisibilityPlan, plans)
     await session.commit()
 
-    total = 1 + len(campaigns) + len(sov) + len(collections) + len(plans)
+    total = (
+        len(campaigns) + len(daily) + len(detail)
+        + len(sov) + len(collections) + len(plans)
+    )
     logger.info(
-        f"Blinkit marketing saved — summary:1 campaigns:{len(campaigns)} "
-        f"sov:{len(sov)} collections:{len(collections)} plans:{len(plans)}"
+        f"Blinkit marketing saved — campaigns:{len(campaigns)} daily:{len(daily)} "
+        f"detail:{len(detail)} sov:{len(sov)} collections:{len(collections)} plans:{len(plans)}"
     )
     return total
 
@@ -43,6 +49,9 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
     if not rows:
         return
     prepared = [_prepare(model, r) for r in rows]
+    # ON CONFLICT can't update the same row twice in one statement, so drop
+    # in-batch duplicate upsert_keys (keep the last occurrence).
+    prepared = list({r["upsert_key"]: r for r in prepared}.values())
     # Postgres caps bind parameters per statement at 32767 (one per column per
     # row). Use the table's full column count as a safe upper bound — SQLAlchemy
     # also binds columns with Python-side defaults (platform, scraped_at) that
@@ -63,14 +72,7 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
 
 
 def _prepare(model, row: dict) -> dict:
-    """Coerce raw parser values to the types asyncpg expects per column.
-
-    Parsers emit convenient Python values (str UUIDs, "YYYY-MM-DD" date strings
-    reused in the upsert key, ISO timestamp strings from the API, int ids), but
-    asyncpg binds strictly by column type: UUID columns need uuid.UUID, DATE
-    needs date, TIMESTAMP needs datetime, and VARCHAR needs str. Coerce based on
-    the column's SQL type so every model is covered.
-    """
+    """Coerce raw parser values to the types asyncpg expects per column."""
     data = dict(row)
     for col in model.__table__.columns:
         if col.name not in data:
@@ -87,6 +89,16 @@ def _prepare(model, row: dict) -> dict:
         elif isinstance(col.type, Date):
             if isinstance(val, str) and val:
                 data[col.name] = date_cls.fromisoformat(val)
+        elif isinstance(col.type, Integer) and not isinstance(val, bool):
+            # asyncpg rejects float->INTEGER; the ad APIs return some counts /
+            # positions as floats (e.g. an average position), so round to int.
+            if isinstance(val, float):
+                data[col.name] = round(val)
+            elif isinstance(val, str) and val:
+                data[col.name] = round(float(val))
+        elif isinstance(col.type, Float):
+            if isinstance(val, str) and val:
+                data[col.name] = float(val)
         elif isinstance(col.type, (String, AutoString)):
             if not isinstance(val, str):
                 data[col.name] = str(val)

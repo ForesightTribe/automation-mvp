@@ -10,8 +10,9 @@ from scraper.utils.session import load_session
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
 from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
-    parse_performance_summary,
     parse_campaign,
+    parse_campaign_daily,
+    parse_campaign_detail,
     parse_sponsored_sov,
     parse_brand_collection,
     parse_visibility_plan,
@@ -43,13 +44,29 @@ console = Console()
 @app.command("blinkit")
 def scrape_blinkit(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    save: bool = typer.Option(True, "--save/--no-save", help="Save results to MongoDB"),
+    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: today)"),
+    limit: int = typer.Option(None, "--limit", help="Test mode: only the N most-active campaigns"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
-    """Scrape the Blinkit brands dashboard and display results."""
-    asyncio.run(_scrape_blinkit(tenant_id, save))
+    """Scrape the Blinkit marketing dashboard for a date window.
+
+    One pass fetches the campaign list, each campaign's daily metric series + its
+    keyword/recommendation breakdown, plus SOV / collections / plans. Use --from
+    to backfill (e.g. --from 30 days ago); the daily run defaults to the last week
+    so late metric revisions are picked up. Use --limit to smoke-test a few
+    campaigns without the full-volume run.
+    """
+    asyncio.run(_scrape_blinkit(tenant_id, date_from, date_to, limit, save))
 
 
-async def _scrape_blinkit(tenant_id: str, save: bool) -> None:
+async def _scrape_blinkit(
+    tenant_id: str, date_from: str | None, date_to: str | None, limit: int | None, save: bool
+) -> None:
+    start = _date.fromisoformat(date_from) if date_from else _date.today() - timedelta(days=7)
+    end = _date.fromisoformat(date_to) if date_to else _date.today()
+    snapshot_date = end.isoformat()
+
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
@@ -60,21 +77,45 @@ async def _scrape_blinkit(tenant_id: str, save: bool) -> None:
 
             job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
 
-            with console.status("[cyan]Scraping Blinkit dashboard...[/cyan]"):
-                raw = await scrape(storage_state)
+            with console.status(f"[cyan]Scraping Blinkit marketing {start}→{end}...[/cyan]"):
+                raw = await scrape(storage_state, start, end, limit=limit)
 
-            summary = parse_performance_summary(raw["performance_summary"], tenant_id, job_id)
             campaigns = [parse_campaign(c, tenant_id, job_id) for c in raw["campaigns"]]
-            sov = [parse_sponsored_sov(s, tenant_id, job_id) for s in raw["sponsored_sov"]]
+            type_by_id = {c["id"]: c.get("campaign_type") for c in raw["campaigns"]}
+
+            daily = [
+                parse_campaign_daily(row, cid, type_by_id.get(cid), tenant_id, job_id)
+                for cid, rows in raw["daily"].items()
+                for row in rows
+            ]
+            detail = [
+                d
+                for cid, report in raw["detail"].items()
+                for d in parse_campaign_detail(
+                    report, cid, type_by_id.get(cid), snapshot_date, tenant_id, job_id
+                )
+            ]
+            sov = [
+                parse_sponsored_sov(s, tenant_id, job_id, snapshot_date)
+                for s in raw["sponsored_sov"]
+            ]
             collections = [parse_brand_collection(c, tenant_id, job_id) for c in raw["brand_collections"]]
             plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
 
             if save:
-                await save_scrape_results(db, summary, campaigns, sov, collections, plans)
+                await save_scrape_results(db, campaigns, daily, detail, sov, collections, plans)
                 await complete_scrape_job(db, job_id)
 
-            _print_summary(summary)
+            console.print(
+                f"\n[bold cyan]Blinkit marketing[/bold cyan] ({start}→{end})\n"
+                f"  campaigns: {len(campaigns)}\n"
+                f"  daily rows: {len(daily)}\n"
+                f"  detail rows: {len(detail)}\n"
+                f"  sov: {len(sov)}  collections: {len(collections)}  plans: {len(plans)}"
+            )
             _print_campaigns(campaigns)
+            _print_daily(daily)
+            _print_detail(detail)
             _print_sov(sov)
             _print_collections(collections)
             _print_plans(plans)
@@ -82,35 +123,13 @@ async def _scrape_blinkit(tenant_id: str, save: bool) -> None:
         except typer.Exit:
             raise
         except Exception as e:
+            # For DB errors, e.orig is the short asyncpg message; str(e) would dump
+            # the entire (huge) statement + params, flooding the terminal.
+            err = getattr(e, "orig", None) or e
             if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
+                await fail_scrape_job(db, job_id, str(err))
+            console.print(f"[red]Scrape failed: {escape(str(err))}[/red]")
             raise typer.Exit(1)
-
-
-def _print_summary(summary: dict) -> None:
-    console.print("\n[bold cyan]Performance Summary[/bold cyan]")
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="dim")
-    table.add_column(style="bold")
-    table.add_row("Budget Consumed", f"₹{summary['budget_consumed']:,.0f}")
-    table.add_row("Impressions", f"{summary['impressions']:,}")
-    console.print(table)
-
-    dist = summary.get("budget_distribution", {})
-    if dist:
-        console.print("\n[bold cyan]Budget Distribution[/bold cyan]")
-        dist_table = Table(show_header=True, header_style="bold")
-        dist_table.add_column("Campaign Type")
-        dist_table.add_column("Budget Consumed", justify="right")
-        dist_table.add_column("Share %", justify="right")
-        for campaign_type, values in dist.items():
-            dist_table.add_row(
-                campaign_type,
-                f"₹{values['budget_consumed']:,.0f}",
-                f"{values['consumed_percentage']}%",
-            )
-        console.print(dist_table)
 
 
 def _print_campaigns(campaigns: list) -> None:
@@ -123,21 +142,65 @@ def _print_campaigns(campaigns: list) -> None:
     table.add_column("Name")
     table.add_column("Type", style="dim")
     table.add_column("Status")
-    table.add_column("Budget", justify="right")
-    table.add_column("Impressions", justify="right")
-    table.add_column("ATCs", justify="right")
-    table.add_column("RoAS", justify="right")
     for c in preview:
         status_style = {"ACTIVE": "green", "PAUSED": "yellow", "STOPPED": "red"}.get(c["status"], "")
         status_text = f"[{status_style}]{c['status']}[/{status_style}]" if status_style else c["status"]
+        table.add_row(c["name"], c["type"], status_text)
+    console.print(table)
+
+
+def _print_daily(rows: list) -> None:
+    if not rows:
+        console.print("\n[dim]No daily rows captured.[/dim]")
+        return
+    preview = rows[:15]
+    console.print(f"\n[bold cyan]Campaign Daily[/bold cyan] (showing {len(preview)} of {len(rows)} rows)")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Campaign", style="dim")
+    table.add_column("Date")
+    table.add_column("Budget", justify="right")
+    table.add_column("Impr", justify="right")
+    table.add_column("ATC", justify="right")
+    table.add_column("Qty", justify="right")
+    table.add_column("Ad Sales", justify="right")
+    table.add_column("RoAS", justify="right")
+    for r in preview:
         table.add_row(
-            c["name"],
-            c["type"],
-            status_text,
-            f"₹{c['budget_consumed']:,.0f}",
-            f"{c['impressions']:,}",
-            f"{c['atcs']:,}",
-            str(c["roas"]),
+            str(r["campaign_id"]),
+            str(r["date"]),
+            f"₹{r['budget_consumed']:,.0f}",
+            f"{r['impressions']:,}",
+            f"{r['atc']:,}",
+            f"{r['quantities_sold']:,}",
+            f"₹{r['ad_sales']:,.0f}",
+            f"{r['roas']}",
+        )
+    console.print(table)
+
+
+def _print_detail(rows: list) -> None:
+    if not rows:
+        console.print("\n[dim]No detail rows captured.[/dim]")
+        return
+    preview = rows[:15]
+    console.print(f"\n[bold cyan]Campaign Detail[/bold cyan] (showing {len(preview)} of {len(rows)} rows)")
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Campaign", style="dim")
+    table.add_column("Type", style="dim")
+    table.add_column("Target")
+    table.add_column("Impr", justify="right")
+    table.add_column("Budget", justify="right")
+    table.add_column("Direct RoAS", justify="right")
+    table.add_column("Total RoAS", justify="right")
+    for r in preview:
+        table.add_row(
+            str(r["campaign_id"]),
+            r["target_type"],
+            r["target"],
+            f"{r['impressions']:,}",
+            f"₹{r['budget_consumed']:,.0f}",
+            f"{r['direct_roas']}",
+            f"{r['total_roas']}",
         )
     console.print(table)
 

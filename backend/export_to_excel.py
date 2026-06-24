@@ -23,11 +23,12 @@ load_dotenv(Path(__file__).parent / ".env")
 
 from app.core.database import AsyncSessionLocal
 from app.models.blinkit_marketing import (
-    AdPerformanceSummary,
-    AdCampaign,
-    SponsoredSOV,
-    BrandCollection,
-    VisibilityPlan,
+    BlinkitAdCampaign,
+    BlinkitAdCampaignDaily,
+    BlinkitAdCampaignDetail,
+    BlinkitSponsoredSOV,
+    BlinkitBrandCollection,
+    BlinkitVisibilityPlan,
 )
 from app.models.blinkit_seller import (
     BlinkitSellerSale,
@@ -101,31 +102,23 @@ async def export(tenant_id: str, output_path: str) -> None:
         def add_sheet(name: str, rows: list[dict]) -> None:
             _write_sheet(wb.create_sheet(name), rows)
 
-        # ── Ad Performance Summary ────────────────────────────────────────────
-        raw_perf = await fetch(AdPerformanceSummary)
-        flat_perf = []
-        for obj in raw_perf:
-            row: dict = {}
-            for k, v in _strip(obj).items():
-                if k == "budget_distribution" and isinstance(v, dict):
-                    for bk, bv in v.items():
-                        row[f"budget_dist_{bk}"] = bv
-                else:
-                    row[k] = v
-            flat_perf.append(row)
-        add_sheet("Ad Performance Summary", flat_perf)
+        # ── Ad Campaigns (metadata) ───────────────────────────────────────────
+        add_sheet("Ad Campaigns", [_strip(o) for o in await fetch(BlinkitAdCampaign)])
 
-        # ── Ad Campaigns ──────────────────────────────────────────────────────
-        add_sheet("Ad Campaigns", [_strip(o) for o in await fetch(AdCampaign)])
+        # ── Ad Campaign Daily (metric backbone) ───────────────────────────────
+        add_sheet("Ad Campaign Daily", [_strip(o) for o in await fetch(BlinkitAdCampaignDaily)])
+
+        # ── Ad Campaign Detail (keyword / recommendation) ─────────────────────
+        add_sheet("Ad Campaign Detail", [_strip(o) for o in await fetch(BlinkitAdCampaignDetail)])
 
         # ── Sponsored SOV ─────────────────────────────────────────────────────
-        add_sheet("Sponsored SOV", [_strip(o) for o in await fetch(SponsoredSOV)])
+        add_sheet("Sponsored SOV", [_strip(o) for o in await fetch(BlinkitSponsoredSOV)])
 
         # ── Brand Collections ─────────────────────────────────────────────────
-        add_sheet("Brand Collections", [_strip(o) for o in await fetch(BrandCollection)])
+        add_sheet("Brand Collections", [_strip(o) for o in await fetch(BlinkitBrandCollection)])
 
         # ── Visibility Plans ──────────────────────────────────────────────────
-        add_sheet("Visibility Plans", [_strip(o) for o in await fetch(VisibilityPlan)])
+        add_sheet("Visibility Plans", [_strip(o) for o in await fetch(BlinkitVisibilityPlan)])
 
         # ── Seller Sales ──────────────────────────────────────────────────────
         add_sheet("Seller Sales", [_strip(o) for o in await fetch(BlinkitSellerSale)])

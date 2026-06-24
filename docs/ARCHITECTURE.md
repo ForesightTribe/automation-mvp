@@ -124,13 +124,19 @@ automation-mvp/
 
 ### Blinkit marketing tables (tenant-scoped)
 
-| Table | Key columns |
-|---|---|
-| `ad_performance_summary` | `tenant_id`, `date`, `budget_consumed`, `impressions` |
-| `ad_campaigns` | `tenant_id`, `campaign_id`, `date`, `budget_consumed`, `atcs`, `roas` |
-| `sponsored_sov` | `tenant_id`, `keyword`, `date`, `sov` |
-| `brand_collections` | `tenant_id`, `collection_id`, `name`, `number_of_products` |
-| `visibility_plans` | `tenant_id`, `plan_id`, `name`, `budget`, `status` |
+| Table | Key columns | Granularity |
+|---|---|---|
+| `blinkit_ad_campaign_daily` | `tenant_id`, `campaign_id`, `date`, `budget_consumed`, `impressions`, `atc`, `quantities_sold`, `ad_sales`, `roas` | per campaign × **day** (metric backbone; account totals = sum of these) |
+| `blinkit_ad_campaigns` | `tenant_id`, `campaign_id`, `name`, `type`, `status` | campaign metadata snapshot |
+| `blinkit_ad_campaign_detail` | `tenant_id`, `campaign_id`, `target_type`, `target`, `sub_campaign_id`, `match_type`, `budget_consumed`, `direct_roas`, `total_roas`, `snapshot_date` | per keyword/asset, window-aggregate snapshot |
+| `blinkit_sponsored_sov` | `tenant_id`, `keyword`, `date`, `sov` | snapshot |
+| `blinkit_brand_collections` | `tenant_id`, `collection_id`, `name`, `number_of_products` | snapshot |
+| `blinkit_visibility_plans` | `tenant_id`, `plan_id`, `name`, `budget`, `status` | snapshot |
+
+> RoAS is always recomputed over a window as `Σ ad_sales ÷ Σ budget_consumed` from
+> `blinkit_ad_campaign_daily` — never by averaging the daily `roas`. There is no
+> separate ad-performance-summary table; daily totals and budget-split-by-type are
+> derived by summing the daily backbone (it carries `campaign_type`).
 
 ### Blinkit seller tables (tenant-scoped)
 

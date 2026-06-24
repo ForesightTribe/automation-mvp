@@ -53,21 +53,43 @@ python -m cli auth status --tenant <tenant_id>
 ### Blinkit marketing dashboard
 
 ```bash
+# Daily run — defaults to the last 7 days (catches late metric revisions)
 python -m cli scrape blinkit --tenant <tenant_id>
+
+# Backfill a window (one pass) — e.g. last 30 days
+python -m cli scrape blinkit --tenant <tenant_id> --from 2026-05-25 --to 2026-06-24
+
 python -m cli scrape blinkit --tenant <tenant_id> --no-save   # dry run, print only
 ```
 
-Scrapes campaigns, sponsored SOV, brand collections, and visibility plans. No date range — always current state.
+One pass fetches the campaign list, then for **each campaign** its **daily** metric
+series and its **keyword / recommendation breakdown**, plus sponsored SOV, brand
+collections, and visibility plans. Cost ≈ `1 + 2·N` API calls (N = campaign count),
+each covering the whole `--from`/`--to` window — so a 30-day backfill is one pass,
+not 30 runs.
+
+| Option           | Default      | Notes                                               |
+| ---------------- | ------------ | --------------------------------------------------- |
+| `--from`         | 7 days ago   | Window start `YYYY-MM-DD`. Use to backfill history. |
+| `--to`           | today        | Window end `YYYY-MM-DD`.                            |
+| `--save/--no-save` | `--save`   | `--no-save` prints counts without writing.          |
 
 **What it saves:**
 
-| Table                    | Data                                                                     |
-| ------------------------ | ------------------------------------------------------------------------ |
-| `ad_performance_summary` | Total budget consumed, impressions, budget split by campaign type        |
-| `ad_campaigns`           | Per-campaign: name, type, status, budget, impressions, ATCs, RoAS, reach |
-| `sponsored_sov`          | Per keyword: monthly searches, your sponsored share of voice %           |
-| `brand_collections`      | Static/dynamic product collections you've set up                         |
-| `visibility_plans`       | Paid slot bookings: name, type, budget, dates, status                    |
+| Table                        | Granularity              | Data                                                                                   |
+| ---------------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
+| `blinkit_ad_campaign_daily`  | per campaign × **day**   | budget, impressions, ATC, qty sold, ad sales, RoAS — the metric **backbone**           |
+| `blinkit_ad_campaigns`       | per campaign (metadata)  | name, type, status, start/end, infinite — the catalog                                  |
+| `blinkit_ad_campaign_detail` | per campaign × keyword/asset (window aggregate) | keyword/recommendation: impressions, budget, CPM, direct/indirect ATC & sales, qty, new users, position, direct/total RoAS |
+| `blinkit_sponsored_sov`      | per keyword (snapshot)   | monthly searches, your sponsored share of voice %                                      |
+| `blinkit_brand_collections`  | snapshot                 | static/dynamic product collections you've set up                                       |
+| `blinkit_visibility_plans`   | snapshot                 | paid slot bookings: name, type, budget, dates, status                                  |
+
+Idempotent: daily rows upsert on `campaign_id + date`, detail on
+`campaign_id + target + snapshot_date`, so re-running a window updates in place.
+Account totals (spend/impressions) and budget-split-by-type are derived by
+summing `blinkit_ad_campaign_daily` — there is no separate performance-summary
+table. RoAS is always recomputed as `Σ ad_sales ÷ Σ budget` over the window.
 
 ---
 

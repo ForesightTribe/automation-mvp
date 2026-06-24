@@ -225,6 +225,395 @@ Sample Response:
     }
 }
 
+-------METRIC TRENDS------
+curl ^"https://brands.blinkit.com/adservice/v1/campaigns/metrics-trends^" ^
+  -H ^"accept: application/json, text/plain, */*^" ^
+  -H ^"accept-language: en-US,en;q=0.7^" ^
+  -H ^"baggage: sentry-environment=production,sentry-release=brand-central-dashboard^%^401.1.0,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=e9f1b1362c8d4aefa24f6de71a1a3698,sentry-replay_id=6723340cb1e549fa86206c8138c3376e,sentry-sample_rate=1,sentry-sampled=true^" ^
+  -H ^"content-type: application/json^" ^
+  -b ^"ext_name=ojplmecpdpgccookcobabopnaifgidhf; _cfuvid=KtKRWtTCfDLvys1nyK_FmqwGial0D.FHXw9g8B8cHow-1782300921.454984-1.0.1.1-HqhV2Dok.u.ESk08LEaNlwGM4uW_sMWVGZCWnDtnz2M; __cf_bm=wXgnt5_Gty1Kd7NeKOkZ.0_5GUD1rge7s0.I.v7QzJU-1782305922.7539024-1.0.1.1-oH1US7alp_xiTq18FuMLNgAVpMD0AZ2DwRyYyAlXOjAEx4zkak1BAm3rTvsnN11TKcwmPRCQyUlt7mMY4wnrX73SYkFxNSBpHUzH62AAWr3wCeYUbzgzQDPJ_Tu9CbQY; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e^&rum=2^&id=7410f13b-c17a-47a0-b3c9-a92cdcdd2d7c^&created=1782303974715^&expire=1782306835732^" ^
+  -H ^"firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6IjJmMjk1MGEyNGFlYWRkMjYzYzIxM2I2MDNhZjMxNWEzMjdiNmM3MjAiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODIxMTY3MzQsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MjMwNDkwNywiZXhwIjoxNzgyMzA4NTA3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.jJoxNZwtTuq4JNp3zspUORS07W9pTR42IiqgXrC3Hd66y93RdohLl6eAustZnpWTZmPYHCoIVXS15PafCq64lA_7xgUFe0hYldPNgLtgRyQOyRcS4Qq_eidND-QHKMTk1bNNY_VPVBpu9W-SBRlZKc49FbF3gOvN5pTXEdNZz8YoHM8s57OjgxYgiAgpt6lw-jbMVC9rDjQ6MmSlS79se6o_Wf1mQaKQkhJBcIoi1I-2zM4IUhwVzA7zeCYDlInh9IPRKkMwanx0H9ozbwyljfwTWwh40Ai-RkD42ygqxRLN1IKAdu0DI2JZKySEinKbyAyHLqnG_Dj79I3_rK-OmQ^" ^
+  -H ^"origin: https://blinkit.com^" ^
+  -H ^"priority: u=1, i^" ^
+  -H ^"referer: https://brands.blinkit.com/diy/list^" ^
+  -H ^"sec-ch-ua: ^\^"Brave^\^";v=^\^"149^\^", ^\^"Chromium^\^";v=^\^"149^\^", ^\^"Not)A;Brand^\^";v=^\^"24^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  -H ^"sec-fetch-dest: empty^" ^
+  -H ^"sec-fetch-mode: cors^" ^
+  -H ^"sec-fetch-site: same-origin^" ^
+  -H ^"sec-gpc: 1^" ^
+  -H ^"sentry-trace: e9f1b1362c8d4aefa24f6de71a1a3698-9d950003afa3b613-1^" ^
+  -H ^"user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36^" ^
+  --data-raw ^"^{^\^"metrics^\^":^[^\^"budget_consumed^\^",^\^"impressions^\^"^],^\^"from_date^\^":^\^"3/25/2026^\^",^\^"to_date^\^":^\^"6/24/2026^\^",^\^"campaign_types^\^":^[^\^"PRODUCT_LISTING^\^",^\^"PRODUCT_RECOMMENDATION^\^",^\^"SEARCH_SUGGESTION^\^",^\^"SHELF_DIY^\^",^\^"STORY_DIY^\^",^\^"BANNER_DIY^\^",^\^"BRAND_SPOTLIGHT_DIY^\^",^\^"BANNER_LISTING^\^",^\^"BRAND_BOOSTER^\^"^]^}^"
+
+Sample Response:
+{
+    "status": true,
+    "message": "success",
+    "data": [
+        {
+            "date_ist": "2026-03-25 11:00:00+05:30",
+            "impressions": 101725,
+            "budget_consumed": 24829
+        },
+        {
+            "date_ist": "2026-03-26 11:00:00+05:30",
+            "impressions": 111720,
+            "budget_consumed": 27639
+        },
+        {
+            "date_ist": "2026-03-27 11:00:00+05:30",
+            "impressions": 130703,
+            "budget_consumed": 34977
+        },
+        {
+            "date_ist": "2026-06-23 11:00:00+05:30",
+            "impressions": 172457,
+            "budget_consumed": 35752
+        }
+    ]
+}
+
+-----CAMPAIGN REPORT-----
+curl ^"https://brands.blinkit.com/adservice/v1/campaigns/reports/503576^" ^
+  -H ^"accept: application/json, text/plain, */*^" ^
+  -H ^"accept-language: en-US,en;q=0.7^" ^
+  -H ^"baggage: sentry-environment=production,sentry-release=brand-central-dashboard^%^401.1.0,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=e3fb3554314e4dd49e3275af92a591b4,sentry-sample_rate=1,sentry-sampled=true^" ^
+  -H ^"content-type: application/json^" ^
+  -b ^"ext_name=ojplmecpdpgccookcobabopnaifgidhf; _cfuvid=KtKRWtTCfDLvys1nyK_FmqwGial0D.FHXw9g8B8cHow-1782300921.454984-1.0.1.1-HqhV2Dok.u.ESk08LEaNlwGM4uW_sMWVGZCWnDtnz2M; __cf_bm=wXgnt5_Gty1Kd7NeKOkZ.0_5GUD1rge7s0.I.v7QzJU-1782305922.7539024-1.0.1.1-oH1US7alp_xiTq18FuMLNgAVpMD0AZ2DwRyYyAlXOjAEx4zkak1BAm3rTvsnN11TKcwmPRCQyUlt7mMY4wnrX73SYkFxNSBpHUzH62AAWr3wCeYUbzgzQDPJ_Tu9CbQY; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e^&rum=2^&id=7410f13b-c17a-47a0-b3c9-a92cdcdd2d7c^&created=1782303974715^&expire=1782306933993^" ^
+  -H ^"firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6IjJmMjk1MGEyNGFlYWRkMjYzYzIxM2I2MDNhZjMxNWEzMjdiNmM3MjAiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODIxMTY3MzQsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MjMwNDkwNywiZXhwIjoxNzgyMzA4NTA3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.jJoxNZwtTuq4JNp3zspUORS07W9pTR42IiqgXrC3Hd66y93RdohLl6eAustZnpWTZmPYHCoIVXS15PafCq64lA_7xgUFe0hYldPNgLtgRyQOyRcS4Qq_eidND-QHKMTk1bNNY_VPVBpu9W-SBRlZKc49FbF3gOvN5pTXEdNZz8YoHM8s57OjgxYgiAgpt6lw-jbMVC9rDjQ6MmSlS79se6o_Wf1mQaKQkhJBcIoi1I-2zM4IUhwVzA7zeCYDlInh9IPRKkMwanx0H9ozbwyljfwTWwh40Ai-RkD42ygqxRLN1IKAdu0DI2JZKySEinKbyAyHLqnG_Dj79I3_rK-OmQ^" ^
+  -H ^"origin: https://blinkit.com^" ^
+  -H ^"priority: u=1, i^" ^
+  -H ^"referer: https://brands.blinkit.com/diy/campaign/503576^" ^
+  -H ^"sec-ch-ua: ^\^"Brave^\^";v=^\^"149^\^", ^\^"Chromium^\^";v=^\^"149^\^", ^\^"Not)A;Brand^\^";v=^\^"24^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  -H ^"sec-fetch-dest: empty^" ^
+  -H ^"sec-fetch-mode: cors^" ^
+  -H ^"sec-fetch-site: same-origin^" ^
+  -H ^"sec-gpc: 1^" ^
+  -H ^"sentry-trace: e3fb3554314e4dd49e3275af92a591b4-985eb77f6bd7a0bf-1^" ^
+  -H ^"user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36^" ^
+  --data-raw ^"^{^\^"from_date^\^":^\^"3/25/2026^\^",^\^"to_date^\^":^\^"6/24/2026^\^"^}^"
+
+Sample Response 1:
+{
+    "status": true,
+    "message": "success",
+    "data": {
+        "campaign_id": 503576,
+        "reports": [],
+        "reporting": {
+            "product_recommendation": [
+                {
+                    "asset_type": "Recommendations",
+                    "impressions": 65578,
+                    "budget_consumed": 15148,
+                    "direct_atc": 445,
+                    "indirect_atc": 28,
+                    "direct_sales": 15845,
+                    "indirect_sales": 973,
+                    "new_users_acquired": 52,
+                    "cpm": 231,
+                    "direct_roas": 1.05,
+                    "total_roas": 1.11,
+                    "direct_quantities_sold": 275,
+                    "indirect_quantities_sold": 12
+                }
+            ]
+        }
+    }
+
+Sample Response 2:
+{
+    "status": true,
+    "message": "success",
+    "data": {
+        "campaign_id": 543483,
+        "reports": [
+            {
+                "sub_campaign_id": 26341993,
+                "keyword": "apple mojito",
+                "match_type": "EXACT_MATCH",
+                "impressions": 23,
+                "budget_consumed": 6,
+                "cpm": 302,
+                "is_parent": true,
+                "direct_atc": 5,
+                "indirect_atc": 0,
+                "direct_sales": 78,
+                "indirect_sales": 0,
+                "direct_quantities_sold": 1,
+                "indirect_quantities_sold": 0,
+                "most_viewed_position": 1,
+                "new_users_acquired": 1,
+                "direct_roas": 11.3,
+                "total_roas": 11.3
+            },
+            {
+                "sub_campaign_id": 26341997,
+                "keyword": "lemon mojito",
+                "match_type": "EXACT_MATCH",
+                "impressions": 58,
+                "budget_consumed": 17,
+                "cpm": 302,
+                "is_parent": true,
+                "direct_atc": 0,
+                "indirect_atc": 0,
+                "direct_sales": 0,
+                "indirect_sales": 0,
+                "direct_quantities_sold": 0,
+                "indirect_quantities_sold": 0,
+                "most_viewed_position": 5,
+                "new_users_acquired": 0,
+                "direct_roas": 0,
+                "total_roas": 0
+            },
+            {
+                "sub_campaign_id": 26341996,
+                "keyword": "mint mojito",
+                "match_type": "EXACT_MATCH",
+                "impressions": 1319,
+                "budget_consumed": 395,
+                "cpm": 302,
+                "is_parent": true,
+                "direct_atc": 9,
+                "indirect_atc": 0,
+                "direct_sales": 236,
+                "indirect_sales": 0,
+                "direct_quantities_sold": 3,
+                "indirect_quantities_sold": 0,
+                "most_viewed_position": 5,
+                "new_users_acquired": 2,
+                "direct_roas": 0.6,
+                "total_roas": 0.6
+            },
+            {
+                "sub_campaign_id": 26341994,
+                "keyword": "mojito",
+                "match_type": "EXACT_MATCH",
+                "impressions": 6955,
+                "budget_consumed": 2092,
+                "cpm": 302,
+                "is_parent": true,
+                "direct_atc": 68,
+                "indirect_atc": 2,
+                "direct_sales": 2698,
+                "indirect_sales": 84,
+                "direct_quantities_sold": 33,
+                "indirect_quantities_sold": 2,
+                "most_viewed_position": 5,
+                "new_users_acquired": 27,
+                "direct_roas": 1.29,
+                "total_roas": 1.33
+            },
+            {
+                "sub_campaign_id": 26341998,
+                "keyword": "mojito can",
+                "match_type": "EXACT_MATCH",
+                "impressions": 15,
+                "budget_consumed": 4,
+                "cpm": 302,
+                "is_parent": true,
+                "direct_atc": 0,
+                "indirect_atc": 0,
+                "direct_sales": 0,
+                "indirect_sales": 0,
+                "direct_quantities_sold": 0,
+                "indirect_quantities_sold": 0,
+                "most_viewed_position": 1,
+                "new_users_acquired": 0,
+                "direct_roas": 0,
+                "total_roas": 0
+            },
+            {
+                "sub_campaign_id": 26341995,
+                "keyword": "mojito drink",
+                "match_type": "EXACT_MATCH",
+                "impressions": 23,
+                "budget_consumed": 6,
+                "cpm": 302,
+                "is_parent": true,
+                "direct_atc": 0,
+                "indirect_atc": 0,
+                "direct_sales": 0,
+                "indirect_sales": 0,
+                "direct_quantities_sold": 0,
+                "indirect_quantities_sold": 0,
+                "most_viewed_position": 5,
+                "new_users_acquired": 0,
+                "direct_roas": 0,
+                "total_roas": 0
+            }
+        ],
+        "reporting": {
+            "keyword": [
+                {
+                    "sub_campaign_id": 26341993,
+                    "keyword": "apple mojito",
+                    "match_type": "EXACT_MATCH",
+                    "impressions": 23,
+                    "budget_consumed": 6,
+                    "cpm": 302,
+                    "is_parent": true,
+                    "direct_atc": 5,
+                    "indirect_atc": 0,
+                    "direct_sales": 78,
+                    "indirect_sales": 0,
+                    "direct_quantities_sold": 1,
+                    "indirect_quantities_sold": 0,
+                    "most_viewed_position": 1,
+                    "new_users_acquired": 1,
+                    "direct_roas": 11.3,
+                    "total_roas": 11.3
+                },
+                {
+                    "sub_campaign_id": 26341997,
+                    "keyword": "lemon mojito",
+                    "match_type": "EXACT_MATCH",
+                    "impressions": 58,
+                    "budget_consumed": 17,
+                    "cpm": 302,
+                    "is_parent": true,
+                    "direct_atc": 0,
+                    "indirect_atc": 0,
+                    "direct_sales": 0,
+                    "indirect_sales": 0,
+                    "direct_quantities_sold": 0,
+                    "indirect_quantities_sold": 0,
+                    "most_viewed_position": 5,
+                    "new_users_acquired": 0,
+                    "direct_roas": 0,
+                    "total_roas": 0
+                },
+                {
+                    "sub_campaign_id": 26341996,
+                    "keyword": "mint mojito",
+                    "match_type": "EXACT_MATCH",
+                    "impressions": 1319,
+                    "budget_consumed": 395,
+                    "cpm": 302,
+                    "is_parent": true,
+                    "direct_atc": 9,
+                    "indirect_atc": 0,
+                    "direct_sales": 236,
+                    "indirect_sales": 0,
+                    "direct_quantities_sold": 3,
+                    "indirect_quantities_sold": 0,
+                    "most_viewed_position": 5,
+                    "new_users_acquired": 2,
+                    "direct_roas": 0.6,
+                    "total_roas": 0.6
+                },
+                {
+                    "sub_campaign_id": 26341994,
+                    "keyword": "mojito",
+                    "match_type": "EXACT_MATCH",
+                    "impressions": 6955,
+                    "budget_consumed": 2092,
+                    "cpm": 302,
+                    "is_parent": true,
+                    "direct_atc": 68,
+                    "indirect_atc": 2,
+                    "direct_sales": 2698,
+                    "indirect_sales": 84,
+                    "direct_quantities_sold": 33,
+                    "indirect_quantities_sold": 2,
+                    "most_viewed_position": 5,
+                    "new_users_acquired": 27,
+                    "direct_roas": 1.29,
+                    "total_roas": 1.33
+                },
+                {
+                    "sub_campaign_id": 26341998,
+                    "keyword": "mojito can",
+                    "match_type": "EXACT_MATCH",
+                    "impressions": 15,
+                    "budget_consumed": 4,
+                    "cpm": 302,
+                    "is_parent": true,
+                    "direct_atc": 0,
+                    "indirect_atc": 0,
+                    "direct_sales": 0,
+                    "indirect_sales": 0,
+                    "direct_quantities_sold": 0,
+                    "indirect_quantities_sold": 0,
+                    "most_viewed_position": 1,
+                    "new_users_acquired": 0,
+                    "direct_roas": 0,
+                    "total_roas": 0
+                },
+                {
+                    "sub_campaign_id": 26341995,
+                    "keyword": "mojito drink",
+                    "match_type": "EXACT_MATCH",
+                    "impressions": 23,
+                    "budget_consumed": 6,
+                    "cpm": 302,
+                    "is_parent": true,
+                    "direct_atc": 0,
+                    "indirect_atc": 0,
+                    "direct_sales": 0,
+                    "indirect_sales": 0,
+                    "direct_quantities_sold": 0,
+                    "indirect_quantities_sold": 0,
+                    "most_viewed_position": 5,
+                    "new_users_acquired": 0,
+                    "direct_roas": 0,
+                    "total_roas": 0
+                }
+            ]
+        }
+    }
+}
+
+------PER CAMPAIGN DAILY-----
+curl ^"https://brands.blinkit.com/adservice/v1/campaigns/metrics-trends/503576^" ^
+  -H ^"accept: application/json, text/plain, */*^" ^
+  -H ^"accept-language: en-US,en;q=0.7^" ^
+  -H ^"baggage: sentry-environment=production,sentry-release=brand-central-dashboard^%^401.1.0,sentry-public_key=c0cb5b43b15f96f0ef2590dd58fa9168,sentry-trace_id=2c2c098c62714d0fba864315a571dda4,sentry-sample_rate=1,sentry-sampled=true^" ^
+  -H ^"content-type: application/json^" ^
+  -b ^"ext_name=ojplmecpdpgccookcobabopnaifgidhf; _cfuvid=KtKRWtTCfDLvys1nyK_FmqwGial0D.FHXw9g8B8cHow-1782300921.454984-1.0.1.1-HqhV2Dok.u.ESk08LEaNlwGM4uW_sMWVGZCWnDtnz2M; __cf_bm=LJ0Dg0I6DbXqa11w2SSZvwN9ROmppV.PJAHUg8WWvdU-1782306865.7114153-1.0.1.1-himgZFOo3rBh2PXkgbzFy80CW8xT4J0u.Ow6OtjUWL_DYv6CG93_jOwq8VkyDdEW0RKjY9u3.V.HtGsYs1a7YnlOcPbUon3yOf1x30EYK.oS_ONvdthPtVzuV3b44bHc; _dd_s=aid=986e2c06-74fe-44a2-a053-0669b6d8608e^&rum=2^&id=7410f13b-c17a-47a0-b3c9-a92cdcdd2d7c^&created=1782303974715^&expire=1782307951074^" ^
+  -H ^"firebase_user_token: eyJhbGciOiJSUzI1NiIsImtpZCI6IjJmMjk1MGEyNGFlYWRkMjYzYzIxM2I2MDNhZjMxNWEzMjdiNmM3MjAiLCJ0eXAiOiJKV1QifQ.eyJpc3MiOiJodHRwczovL3NlY3VyZXRva2VuLmdvb2dsZS5jb20vYWQtcGxhdGZvcm0tcHJvZCIsImF1ZCI6ImFkLXBsYXRmb3JtLXByb2QiLCJhdXRoX3RpbWUiOjE3ODIxMTY3MzQsInVzZXJfaWQiOiIycXBPVjBaamRxUnFoYllGeUNRSzhORU5Wc3cxIiwic3ViIjoiMnFwT1YwWmpkcVJxaGJZRnlDUUs4TkVOVnN3MSIsImlhdCI6MTc4MjMwNDkwNywiZXhwIjoxNzgyMzA4NTA3LCJlbWFpbCI6Im94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSIsImVtYWlsX3ZlcmlmaWVkIjp0cnVlLCJmaXJlYmFzZSI6eyJpZGVudGl0aWVzIjp7ImVtYWlsIjpbIm94Ym93YnJhbmRzQGpvaGFyc2dyb3VwLmNvbSJdfSwic2lnbl9pbl9wcm92aWRlciI6InBhc3N3b3JkIn19.jJoxNZwtTuq4JNp3zspUORS07W9pTR42IiqgXrC3Hd66y93RdohLl6eAustZnpWTZmPYHCoIVXS15PafCq64lA_7xgUFe0hYldPNgLtgRyQOyRcS4Qq_eidND-QHKMTk1bNNY_VPVBpu9W-SBRlZKc49FbF3gOvN5pTXEdNZz8YoHM8s57OjgxYgiAgpt6lw-jbMVC9rDjQ6MmSlS79se6o_Wf1mQaKQkhJBcIoi1I-2zM4IUhwVzA7zeCYDlInh9IPRKkMwanx0H9ozbwyljfwTWwh40Ai-RkD42ygqxRLN1IKAdu0DI2JZKySEinKbyAyHLqnG_Dj79I3_rK-OmQ^" ^
+  -H ^"origin: https://blinkit.com^" ^
+  -H ^"priority: u=1, i^" ^
+  -H ^"referer: https://brands.blinkit.com/diy/campaign/503576^" ^
+  -H ^"sec-ch-ua: ^\^"Brave^\^";v=^\^"149^\^", ^\^"Chromium^\^";v=^\^"149^\^", ^\^"Not)A;Brand^\^";v=^\^"24^\^"^" ^
+  -H ^"sec-ch-ua-mobile: ?0^" ^
+  -H ^"sec-ch-ua-platform: ^\^"Windows^\^"^" ^
+  -H ^"sec-fetch-dest: empty^" ^
+  -H ^"sec-fetch-mode: cors^" ^
+  -H ^"sec-fetch-site: same-origin^" ^
+  -H ^"sec-gpc: 1^" ^
+  -H ^"sentry-trace: 2c2c098c62714d0fba864315a571dda4-97478bda93b4ff33-1^" ^
+  -H ^"user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/149.0.0.0 Safari/537.36^" ^
+  --data-raw ^"^{^\^"metrics^\^":^[^\^"budget_consumed^\^",^\^"impressions^\^"^],^\^"from_date^\^":^\^"3/25/2026^\^",^\^"to_date^\^":^\^"6/24/2026^\^"^}^"
+
+Sample Response 1:
+{
+    "status": true,
+    "message": "success",
+    "data": [
+        {
+            "date_ist": "2026-05-08 05:30:00+05:30",
+            "budget_consumed": 133,
+            "impressions": 576
+        },
+        {
+            "date_ist": "2026-05-09 05:30:00+05:30",
+            "budget_consumed": 353,
+            "impressions": 1526
+        },
+        {
+            "date_ist": "2026-06-23 05:30:00+05:30",
+            "budget_consumed": 1583,
+            "impressions": 6851
+        }
+    ]
+}
+Exact names used: ["budget_consumed", "impressions","total_atc", "total_quantities_sold","total_sales", "total_roas", ]
+
 
 ==========BRAND COLLECTIONS (https://brands.blinkit.com/diy/brand-pages)============
 curl 'https://brands.blinkit.com/adservice/v1/brand-pages' \

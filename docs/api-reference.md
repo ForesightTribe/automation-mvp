@@ -95,11 +95,13 @@ Global dropdown data (login required, not client-scoped).
 | GET | `/cities` | Cities → per-platform zones, from `scraper/utils/cities.py` (no DB). |
 
 ### `analytics` — `/api/clients/{id}/analytics` *(private)*
-Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). All accept `?days=`.
+Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). `/overview` and
+`/revenue` take the reporting window as `?start=&end=` (or legacy `?days=`) via
+`PeriodDep` and an optional comma-separated `?marketplaces=`; the rest take `?days=`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/overview` | Headline KPIs: revenue, units, SKUs, active campaigns, ad spend, impressions. |
+| GET | `/overview` | Headline KPIs, each as `{value, prev, delta_pct}`: revenue, units, SKUs, ad spend, impressions, **RoAS** (= ad_sales÷spend), **visibility** (avg brand_sov), **avg_rank**. Performance plane from `blinkit_ad_campaign_daily`; market plane from `search_results` via the own-brand watchlist. |
 | GET | `/revenue` | Revenue + units **time-series** (per day). |
 | GET | `/top-skus` | Best-selling SKUs by revenue (`?limit=`). |
 | GET | `/sales-by-city` | Revenue/units grouped by city. |
@@ -118,8 +120,8 @@ Paid marketing on the platform (sponsored placements, bidding, plans).
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/campaigns` | Paginated campaigns — latest snapshot per campaign. Filter `?status=`. |
-| GET | `/performance` | Daily spend/impressions **time-series**. |
+| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window metric rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`. |
+| GET | `/performance` | Daily spend / impressions / ad_sales **time-series** (summed from `blinkit_ad_campaign_daily`). |
 | GET | `/sov` | Sponsored share-of-voice, latest per keyword. |
 | GET | `/visibility-plans` | Visibility/placement plans + budgets. |
 | GET | `/collections` | Curated brand collections. |

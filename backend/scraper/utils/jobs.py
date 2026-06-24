@@ -35,6 +35,10 @@ async def complete_scrape_job(session: AsyncSession, job_id: str, records_writte
 
 
 async def fail_scrape_job(session: AsyncSession, job_id: str, error: str) -> None:
+    # The failure may have aborted the current transaction (e.g. a bad INSERT);
+    # roll back so we can still record the failure instead of masking the real
+    # error with InFailedSQLTransactionError.
+    await session.rollback()
     result = await session.execute(select(ScrapeJob).where(ScrapeJob.id == uuid.UUID(job_id)))
     job = result.scalars().first()
     if job:
