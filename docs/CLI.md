@@ -68,22 +68,22 @@ collections, and visibility plans. Cost ≈ `1 + 2·N` API calls (N = campaign c
 each covering the whole `--from`/`--to` window — so a 30-day backfill is one pass,
 not 30 runs.
 
-| Option           | Default      | Notes                                               |
-| ---------------- | ------------ | --------------------------------------------------- |
-| `--from`         | 7 days ago   | Window start `YYYY-MM-DD`. Use to backfill history. |
-| `--to`           | today        | Window end `YYYY-MM-DD`.                            |
+| Option             | Default    | Notes                                               |
+| ------------------ | ---------- | --------------------------------------------------- |
+| `--from`           | 7 days ago | Window start `YYYY-MM-DD`. Use to backfill history. |
+| `--to`             | today      | Window end `YYYY-MM-DD`.                            |
 | `--save/--no-save` | `--save`   | `--no-save` prints counts without writing.          |
 
 **What it saves:**
 
-| Table                        | Granularity              | Data                                                                                   |
-| ---------------------------- | ------------------------ | -------------------------------------------------------------------------------------- |
-| `blinkit_ad_campaign_daily`  | per campaign × **day**   | budget, impressions, ATC, qty sold, ad sales, RoAS — the metric **backbone**           |
-| `blinkit_ad_campaigns`       | per campaign (metadata)  | name, type, status, start/end, infinite — the catalog                                  |
+| Table                        | Granularity                                     | Data                                                                                                                       |
+| ---------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------- |
+| `blinkit_ad_campaign_daily`  | per campaign × **day**                          | budget, impressions, ATC, qty sold, ad sales, RoAS — the metric **backbone**                                               |
+| `blinkit_ad_campaigns`       | per campaign (metadata)                         | name, type, status, start/end, infinite — the catalog                                                                      |
 | `blinkit_ad_campaign_detail` | per campaign × keyword/asset (window aggregate) | keyword/recommendation: impressions, budget, CPM, direct/indirect ATC & sales, qty, new users, position, direct/total RoAS |
-| `blinkit_sponsored_sov`      | per keyword (snapshot)   | monthly searches, your sponsored share of voice %                                      |
-| `blinkit_brand_collections`  | snapshot                 | static/dynamic product collections you've set up                                       |
-| `blinkit_visibility_plans`   | snapshot                 | paid slot bookings: name, type, budget, dates, status                                  |
+| `blinkit_sponsored_sov`      | per keyword (snapshot)                          | monthly searches, your sponsored share of voice %                                                                          |
+| `blinkit_brand_collections`  | snapshot                                        | static/dynamic product collections you've set up                                                                           |
+| `blinkit_visibility_plans`   | snapshot                                        | paid slot bookings: name, type, budget, dates, status                                                                      |
 
 Idempotent: daily rows upsert on `campaign_id + date`, detail on
 `campaign_id + target + snapshot_date`, so re-running a window updates in place.

@@ -2,13 +2,14 @@
 every handler gets `client: ClientDep` (access already enforced)."""
 from fastapi import APIRouter, Query
 
-from app.dependencies import ClientDep, SessionDep
+from app.dependencies import ClientDep, PeriodDep, SessionDep
 from app.schemas.analytics import (
     AnalyticsOverview,
     CategoryBreakdown,
     CityBreakdown,
     RevenuePoint,
     TopSku,
+    TrendPoint,
 )
 from app.services import analytics_service
 
@@ -19,19 +20,58 @@ router = APIRouter()
 async def overview(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
 ):
-    return await analytics_service.get_overview(session, tenant_id=client.id, days=days)
+    mps = [m for m in marketplaces.split(",") if m] if marketplaces else None
+    return await analytics_service.get_overview(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        prev_start=period.prev_start,
+        prev_end=period.prev_end,
+        marketplaces=mps,
+    )
 
 
 @router.get("/revenue", response_model=list[RevenuePoint])
 async def revenue(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
 ):
+    mps = [m for m in marketplaces.split(",") if m] if marketplaces else None
     return await analytics_service.get_revenue_series(
-        session, tenant_id=client.id, days=days
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=mps,
+    )
+
+
+@router.get("/trends", response_model=list[TrendPoint])
+async def trends(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
+):
+    mps = [m for m in marketplaces.split(",") if m] if marketplaces else None
+    return await analytics_service.get_trends(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=mps,
     )
 
 

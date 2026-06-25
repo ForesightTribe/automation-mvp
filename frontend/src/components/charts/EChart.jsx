@@ -1,11 +1,28 @@
 import { useEffect, useRef } from "react";
-import * as echarts from "echarts";
+import * as echarts from "echarts/core";
+import { BarChart, LineChart } from "echarts/charts";
+import {
+	GridComponent,
+	TooltipComponent,
+	LegendComponent,
+} from "echarts/components";
+import { CanvasRenderer } from "echarts/renderers";
 import { CHART_THEME } from "./theme";
 
+// Register only what we use — keeps the bundle small vs. importing all of echarts.
+echarts.use([
+	BarChart,
+	LineChart,
+	GridComponent,
+	TooltipComponent,
+	LegendComponent,
+	CanvasRenderer,
+]);
+
 /**
- * Thin React wrapper around core ECharts (no `echarts-for-react` — it lags React
- * 19). Pass an ECharts `option` object; the wrapper inits once with our theme,
- * re-applies `option` on change, and resizes with its container.
+ * Thin React wrapper around modular ECharts (no `echarts-for-react` — it lags
+ * React 19). Pass an ECharts `option` object; the wrapper inits once with our
+ * theme, re-applies `option` on change, and resizes with its container.
  *
  * Usage:
  *   <EChart option={{ xAxis: {...}, yAxis: {...}, series: [...] }} height={320} />

@@ -20,11 +20,12 @@ from app.models.blinkit_seller import (
     BlinkitScorecardKeySku,
 )
 from app.models.blinkit_marketing import (
-    AdPerformanceSummary,
-    AdCampaign,
-    SponsoredSOV,
-    BrandCollection,
-    VisibilityPlan,
+    BlinkitAdCampaign,
+    BlinkitAdCampaignDaily,
+    BlinkitAdCampaignDetail,
+    BlinkitSponsoredSOV,
+    BlinkitBrandCollection,
+    BlinkitVisibilityPlan,
 )
 
 __all__ = [
@@ -35,5 +36,6 @@ __all__ = [
     "SearchResult", "CompetitorRanking", "BrandSnapshot", "ScrapedProduct", "InventoryDepth",
     "BlinkitSellerSale", "BlinkitSellerSalesSummary", "BlinkitPO", "BlinkitPOSnapshot",
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",
-    "AdPerformanceSummary", "AdCampaign", "SponsoredSOV", "BrandCollection", "VisibilityPlan",
+    "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",
+    "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
 ]

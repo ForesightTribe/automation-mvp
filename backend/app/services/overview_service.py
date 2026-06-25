@@ -1,0 +1,355 @@
+"""Overview-page aggregations that span both data planes. The marketplace
+breakdown reuses the per-window aggregate helpers from analytics_service, scoping
+each metric to a single marketplace."""
+import uuid
+from datetime import date, timedelta
+
+from sqlalchemy import distinct, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.blinkit_seller import (
+    BlinkitSOH,
+    BlinkitPO,
+    BlinkitScorecardKeySku,
+    BlinkitScorecardWeekly,
+)
+from app.models.job import ScrapeJob
+from app.models.search import InventoryDepth
+from app.utils.time import now_ist
+from app.services import reference_service, watchlist_service
+from app.services.analytics_service import (
+    _ads_agg,
+    _market_agg,
+    _metric,
+    _roas,
+    _sales_agg,
+)
+
+# Severity sort order for the attention feed (lower = more urgent).
+_SEVERITY_ORDER = {"critical": 0, "warning": 1, "info": 2}
+
+
+async def _marketplace_metrics(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    slug: str,
+    own_brands: list[str],
+    start: date,
+    end: date,
+    prev_start: date,
+    prev_end: date,
+) -> dict:
+    """The metric set for a single (connected) marketplace, current vs previous
+    window. `marketplaces=[slug]` scopes both the private (platform) and public
+    (mp_slug) queries to just this marketplace."""
+    mp = [slug]
+    rev, units, _ = await _sales_agg(
+        session, tenant_id=tenant_id, start=start, end=end, marketplaces=mp
+    )
+    p_rev, p_units, _ = await _sales_agg(
+        session, tenant_id=tenant_id, start=prev_start, end=prev_end, marketplaces=mp
+    )
+    spend, _, ad_sales = await _ads_agg(
+        session, tenant_id=tenant_id, start=start, end=end, marketplaces=mp
+    )
+    p_spend, _, p_ad_sales = await _ads_agg(
+        session, tenant_id=tenant_id, start=prev_start, end=prev_end, marketplaces=mp
+    )
+    sov, rank = await _market_agg(
+        session, own_brands=own_brands, start=start, end=end, marketplaces=mp
+    )
+    p_sov, p_rank = await _market_agg(
+        session,
+        own_brands=own_brands,
+        start=prev_start,
+        end=prev_end,
+        marketplaces=mp,
+    )
+    return {
+        "revenue": _metric(rev, p_rev),
+        "roas": _metric(_roas(ad_sales, spend), _roas(p_ad_sales, p_spend)),
+        "ad_spend": _metric(spend, p_spend),
+        "units_sold": _metric(units, p_units),
+        "visibility": _metric(sov, p_sov),
+        "avg_rank": _metric(rank, p_rank),
+    }
+
+
+async def get_marketplace_breakdown(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    prev_start: date,
+    prev_end: date,
+) -> list[dict]:
+    """One row per marketplace. Connected marketplaces carry per-marketplace
+    metrics; unconnected ones are returned bare (connected=False, metrics None)
+    so the UI can show them as 'coming soon' without faking data."""
+    marketplaces = await reference_service.list_marketplaces(session)
+    own = await watchlist_service.get_brands_by_relationship(
+        session, tenant_id, "own"
+    )
+
+    rows: list[dict] = []
+    for mp in marketplaces:
+        row = {
+            "slug": mp["slug"],
+            "name": mp["name"],
+            "color": mp["color"],
+            "connected": mp["connected"],
+        }
+        if mp["connected"]:
+            row.update(
+                await _marketplace_metrics(
+                    session,
+                    tenant_id=tenant_id,
+                    slug=mp["slug"],
+                    own_brands=own,
+                    start=start,
+                    end=end,
+                    prev_start=prev_start,
+                    prev_end=prev_end,
+                )
+            )
+        rows.append(row)
+    return rows
+
+
+def _month_spine(months: int) -> list[str]:
+    """Last `months` months as 'YYYY-MM', oldest first (includes current month)."""
+    today = date.today()
+    y, m = today.year, today.month
+    out = []
+    for _ in range(months):
+        out.append(f"{y:04d}-{m:02d}")
+        m -= 1
+        if m == 0:
+            m, y = 12, y - 1
+    return list(reversed(out))
+
+
+async def get_monthly_trends(
+    session: AsyncSession, *, tenant_id: uuid.UUID, months: int = 3
+) -> list[dict]:
+    """Month-on-month operations trends for the Overview: OSA % (SOH), fill rate %
+    (scorecard), and PO value. Aligned on a month spine; None where a source has
+    no data that month. Tenant-wide (not day-range / marketplace scoped)."""
+    spine = _month_spine(months)
+    start = date(int(spine[0][:4]), int(spine[0][5:7]), 1)
+
+    # OSA: per-day in-stock ratio from SOH, then averaged per month.
+    soh_rows = (
+        await session.execute(
+            select(
+                BlinkitSOH.date,
+                func.count(distinct(BlinkitSOH.item_id)),
+                func.count(distinct(BlinkitSOH.item_id)).filter(
+                    BlinkitSOH.frontend_inv_qty > 0
+                ),
+            )
+            .where(BlinkitSOH.tenant_id == tenant_id, BlinkitSOH.date >= start)
+            .group_by(BlinkitSOH.date)
+        )
+    ).all()
+    osa_by_month: dict[str, list[float]] = {}
+    for d, total, in_stock in soh_rows:
+        if total:
+            osa_by_month.setdefault(d.strftime("%Y-%m"), []).append(
+                in_stock / total * 100
+            )
+    osa_map = {k: sum(v) / len(v) for k, v in osa_by_month.items() if v}
+
+    # Fill rate: weekly scorecard, averaged per month.
+    sc_rows = (
+        await session.execute(
+            select(
+                BlinkitScorecardWeekly.from_date_ist,
+                BlinkitScorecardWeekly.overall,
+            ).where(
+                BlinkitScorecardWeekly.tenant_id == tenant_id,
+                BlinkitScorecardWeekly.from_date_ist >= start,
+            )
+        )
+    ).all()
+    fr_by_month: dict[str, list[float]] = {}
+    for fdate, overall in sc_rows:
+        fr = (overall or {}).get("fill_rate")
+        if fr is not None:
+            fr_by_month.setdefault(fdate.strftime("%Y-%m"), []).append(float(fr))
+    fr_map = {k: sum(v) / len(v) for k, v in fr_by_month.items() if v}
+
+    # PO: total amount + count per issue-date month.
+    po_month = func.to_char(func.date_trunc("month", BlinkitPO.issue_date), "YYYY-MM")
+    po_rows = (
+        await session.execute(
+            select(
+                po_month,
+                func.coalesce(func.sum(BlinkitPO.total_po_amount), 0.0),
+                func.count(),
+            )
+            .where(BlinkitPO.tenant_id == tenant_id, BlinkitPO.issue_date >= start)
+            .group_by(po_month)
+        )
+    ).all()
+    po_map = {m: (float(amt), int(cnt)) for m, amt, cnt in po_rows}
+
+    out = []
+    for ym in spine:
+        po = po_map.get(ym)
+        out.append(
+            {
+                "month": ym,
+                "osa_pct": round(osa_map[ym], 1) if ym in osa_map else None,
+                "fill_rate": round(fr_map[ym], 1) if ym in fr_map else None,
+                "po_amount": round(po[0], 2) if po else None,
+                "po_count": po[1] if po else None,
+            }
+        )
+    return out
+
+
+async def get_freshness(
+    session: AsyncSession, *, tenant_id: uuid.UUID
+) -> list[dict]:
+    """Latest scrape per dashboard (DISTINCT ON dashboard, newest first), with
+    its age — for the 'synced Xh ago' chips."""
+    rows = (
+        await session.execute(
+            select(ScrapeJob)
+            .where(ScrapeJob.tenant_id == tenant_id)
+            .order_by(ScrapeJob.dashboard, ScrapeJob.created_at.desc())
+            .distinct(ScrapeJob.dashboard)
+        )
+    ).scalars().all()
+
+    now = now_ist()
+    out = []
+    for j in rows:
+        ts = j.completed_at or j.started_at or j.created_at
+        age = round((now - ts).total_seconds() / 3600, 1) if ts else None
+        out.append(
+            {
+                "dashboard": j.dashboard,
+                "platform": j.platform,
+                "status": j.status,
+                "last_synced_at": ts,
+                "age_hours": age,
+            }
+        )
+    return out
+
+
+async def get_alerts(session: AsyncSession, *, tenant_id: uuid.UUID) -> list[dict]:
+    """Attention feed: scrape failures, out-of-stock, and fill-loss signals.
+    Each generator contributes only when there's something to report, so an
+    empty list legitimately means 'all clear'."""
+    alerts: list[dict] = []
+
+    # 1. Recent scrape failures.
+    failed = (
+        await session.execute(
+            select(ScrapeJob.dashboard, ScrapeJob.error)
+            .where(ScrapeJob.tenant_id == tenant_id, ScrapeJob.status == "failed")
+            .order_by(ScrapeJob.created_at.desc())
+            .limit(5)
+        )
+    ).all()
+    for dashboard, error in failed:
+        alerts.append(
+            {
+                "severity": "critical",
+                "category": "scrape",
+                "title": f"{dashboard} scrape failed",
+                "detail": (error or "").strip()[:160] or None,
+            }
+        )
+
+    # 2. Out-of-stock SKUs on the latest stock snapshot.
+    latest_soh = (
+        await session.execute(
+            select(func.max(BlinkitSOH.date)).where(
+                BlinkitSOH.tenant_id == tenant_id
+            )
+        )
+    ).scalar_one_or_none()
+    if latest_soh:
+        oos = (
+            await session.execute(
+                select(func.count(distinct(BlinkitSOH.item_id))).where(
+                    BlinkitSOH.tenant_id == tenant_id,
+                    BlinkitSOH.date == latest_soh,
+                    BlinkitSOH.frontend_inv_qty == 0,
+                )
+            )
+        ).scalar_one()
+        if oos:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "category": "stock",
+                    "title": f"{oos} SKU(s) out of stock (front-end)",
+                    "detail": f"As of the {latest_soh} stock snapshot.",
+                }
+            )
+
+    # 3. Potential fill loss on the latest scorecard week.
+    latest_week = (
+        await session.execute(
+            select(func.max(BlinkitScorecardKeySku.from_date_ist)).where(
+                BlinkitScorecardKeySku.tenant_id == tenant_id
+            )
+        )
+    ).scalar_one_or_none()
+    if latest_week:
+        loss_sum, loss_count = (
+            await session.execute(
+                select(
+                    func.coalesce(func.sum(BlinkitScorecardKeySku.potential_loss), 0.0),
+                    func.count(),
+                ).where(
+                    BlinkitScorecardKeySku.tenant_id == tenant_id,
+                    BlinkitScorecardKeySku.from_date_ist == latest_week,
+                    BlinkitScorecardKeySku.potential_loss > 0,
+                )
+            )
+        ).one()
+        if loss_count:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "category": "fill",
+                    "title": f"₹{int(loss_sum):,} potential fill loss",
+                    "detail": f"Across {loss_count} key SKU(s), week of {latest_week}.",
+                }
+            )
+
+    # 4. Own-brand listings out of stock on the public shelf (last 2 days).
+    own = await watchlist_service.get_brands_by_relationship(
+        session, tenant_id, "own"
+    )
+    if own:
+        since = now_ist() - timedelta(days=2)
+        shelf_oos = (
+            await session.execute(
+                select(func.count(distinct(InventoryDepth.sku))).where(
+                    InventoryDepth.brand_slug.in_(own),
+                    InventoryDepth.scraped_at >= since,
+                    InventoryDepth.in_stock.is_(False),
+                )
+            )
+        ).scalar_one()
+        if shelf_oos:
+            alerts.append(
+                {
+                    "severity": "warning",
+                    "category": "visibility",
+                    "title": f"{shelf_oos} listing(s) out of stock on shelf",
+                    "detail": "Own-brand SKUs marked unavailable in the last 2 days.",
+                }
+            )
+
+    alerts.sort(key=lambda a: _SEVERITY_ORDER.get(a["severity"], 9))
+    return alerts

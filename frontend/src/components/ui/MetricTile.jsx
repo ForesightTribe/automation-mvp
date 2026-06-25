@@ -1,0 +1,38 @@
+import { Card } from "./Card";
+import { DeltaBadge } from "./DeltaBadge";
+import { Sparkline } from "../charts/Sparkline";
+
+/**
+ * One headline KPI: label, a preformatted value, and its growth badge. The
+ * caller formats `value` (currency, percent, etc.) since formatting is
+ * metric-specific; this tile only handles layout. `delta` is a fraction or null;
+ * `goodWhenDown` flips the badge colors for lower-is-better metrics like rank.
+ * Pass `series` (array of daily values) to render a sparkline under the number.
+ */
+export const MetricTile = ({
+	label,
+	value,
+	delta,
+	goodWhenDown = false,
+	series,
+	sparkColor,
+}) => {
+	return (
+		<Card>
+			<p className="text-xs font-medium uppercase tracking-wide text-content-subtle">
+				{label}
+			</p>
+			<div className="mt-2 flex items-baseline justify-between gap-2">
+				<p className="font-display text-2xl font-bold text-content">
+					{value}
+				</p>
+				<DeltaBadge delta={delta} goodWhenDown={goodWhenDown} />
+			</div>
+			{series && (
+				<div className="mt-2">
+					<Sparkline values={series} color={sparkColor} />
+				</div>
+			)}
+		</Card>
+	);
+};

@@ -1,4 +1,4 @@
-import * as echarts from "echarts";
+import * as echarts from "echarts/core";
 
 /**
  * ECharts theme mirroring the index.css design tokens (kept in sync by hand —

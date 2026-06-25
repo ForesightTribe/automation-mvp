@@ -4,7 +4,7 @@ from pydantic import BaseModel, ConfigDict
 
 
 class CampaignRow(BaseModel):
-    """Latest snapshot of a campaign within the window."""
+    """Campaign metadata + its metric rollup over the window."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -12,18 +12,19 @@ class CampaignRow(BaseModel):
     name: str | None
     type: str | None
     status: str | None
-    date: date
     budget_consumed: float
     impressions: int
-    atcs: int
+    atc: int
+    quantities_sold: int
+    ad_sales: float
     roas: float
-    reach: int
 
 
 class AdPerformancePoint(BaseModel):
     date: date
     budget_consumed: float
     impressions: int
+    ad_sales: float
 
 
 class SponsoredSovRow(BaseModel):
