@@ -95,9 +95,9 @@ Global dropdown data (login required, not client-scoped).
 | GET | `/cities` | Cities → per-platform zones, from `scraper/utils/cities.py` (no DB). |
 
 ### `analytics` — `/api/clients/{id}/analytics` *(private)*
-Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). `/overview` and
-`/revenue` take the reporting window as `?start=&end=` (or legacy `?days=`) via
-`PeriodDep` and an optional comma-separated `?marketplaces=`; the rest take `?days=`.
+Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). Every endpoint
+takes the reporting window as `?start=&end=` (or legacy `?days=`) via `PeriodDep` and
+an optional comma-separated `?marketplaces=`.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -107,6 +107,8 @@ Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). `/overview`
 | GET | `/top-skus` | Best-selling SKUs by revenue (`?limit=`). |
 | GET | `/sales-by-city` | Revenue/units grouped by city. |
 | GET | `/sales-by-category` | Revenue/units grouped by category. |
+| GET | `/category-trend` | Per-day revenue/units **per category** (`{date, category, revenue, units_sold}`) for the stacked-area trend; one row per (date, category) with sales. |
+| GET | `/city-category` | City × category revenue matrix (`{city, category, revenue, units_sold}`) for the heatmap, scoped to the top `?limit=` cities (default 15) by revenue. |
 
 ### `overview` — `/api/clients/{id}/overview` *(private)*
 Composite endpoints for the Overview page that span multiple domains.

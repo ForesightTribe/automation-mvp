@@ -70,3 +70,23 @@ class CategoryBreakdown(BaseModel):
     category: str
     revenue: float
     units_sold: int
+
+
+class CategoryTrendPoint(BaseModel):
+    """One (date, category) cell of the stacked-area trend. Only categories with
+    sales on a given day are present; the frontend pivots into per-category series."""
+
+    date: date
+    category: str
+    revenue: float
+    units_sold: int
+
+
+class CityCategoryCell(BaseModel):
+    """One (city, category) cell of the heatmap. Scoped to the top cities by
+    revenue in the window (see `analytics/city-category` `?limit=`)."""
+
+    city: str
+    category: str
+    revenue: float
+    units_sold: int

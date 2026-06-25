@@ -274,9 +274,17 @@ async def get_trends(
 
 
 async def get_top_skus(
-    session: AsyncSession, *, tenant_id: uuid.UUID, days: int = 30, limit: int = 10
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    limit: int = 10,
 ) -> list[dict]:
-    since = date.today() - timedelta(days=days)
+    conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
+    if marketplaces is not None:
+        conds.append(Sale.platform.in_(marketplaces))
     revenue = func.coalesce(func.sum(Sale.mrp_value), 0.0)
     rows = (
         await session.execute(
@@ -286,7 +294,7 @@ async def get_top_skus(
                 revenue,
                 func.coalesce(func.sum(Sale.qty_sold), 0),
             )
-            .where(Sale.tenant_id == tenant_id, Sale.date >= since)
+            .where(*conds)
             .group_by(Sale.item_id)
             .order_by(revenue.desc())
             .limit(limit)
@@ -304,9 +312,16 @@ async def get_top_skus(
 
 
 async def get_sales_by_city(
-    session: AsyncSession, *, tenant_id: uuid.UUID, days: int = 30
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
 ) -> list[dict]:
-    since = date.today() - timedelta(days=days)
+    conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
+    if marketplaces is not None:
+        conds.append(Sale.platform.in_(marketplaces))
     revenue = func.coalesce(func.sum(Sale.mrp_value), 0.0)
     rows = (
         await session.execute(
@@ -316,7 +331,7 @@ async def get_sales_by_city(
                 revenue,
                 func.coalesce(func.sum(Sale.qty_sold), 0),
             )
-            .where(Sale.tenant_id == tenant_id, Sale.date >= since)
+            .where(*conds)
             .group_by(Sale.city_id)
             .order_by(revenue.desc())
         )
@@ -332,9 +347,16 @@ async def get_sales_by_city(
 
 
 async def get_sales_by_category(
-    session: AsyncSession, *, tenant_id: uuid.UUID, days: int = 30
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
 ) -> list[dict]:
-    since = date.today() - timedelta(days=days)
+    conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
+    if marketplaces is not None:
+        conds.append(Sale.platform.in_(marketplaces))
     revenue = func.coalesce(func.sum(Sale.mrp_value), 0.0)
     category = func.coalesce(Sale.category, "Uncategorized")
     rows = (
@@ -344,7 +366,7 @@ async def get_sales_by_category(
                 revenue,
                 func.coalesce(func.sum(Sale.qty_sold), 0),
             )
-            .where(Sale.tenant_id == tenant_id, Sale.date >= since)
+            .where(*conds)
             .group_by(category)
             .order_by(revenue.desc())
         )
@@ -352,4 +374,101 @@ async def get_sales_by_category(
     return [
         {"category": cat, "revenue": round(float(rev), 2), "units_sold": int(units)}
         for cat, rev, units in rows
+    ]
+
+
+async def get_category_trend(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+) -> list[dict]:
+    """Per-day revenue/units per category for the stacked-area trend. Returns one
+    row per (date, category) that has sales — the frontend pivots categories into
+    series and fills gaps. Ordered by date then category for stable rendering."""
+    conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
+    if marketplaces is not None:
+        conds.append(Sale.platform.in_(marketplaces))
+    category = func.coalesce(Sale.category, "Uncategorized")
+    rows = (
+        await session.execute(
+            select(
+                Sale.date,
+                category,
+                func.coalesce(func.sum(Sale.mrp_value), 0.0),
+                func.coalesce(func.sum(Sale.qty_sold), 0),
+            )
+            .where(*conds)
+            .group_by(Sale.date, category)
+            .order_by(Sale.date, category)
+        )
+    ).all()
+    return [
+        {
+            "date": d,
+            "category": cat,
+            "revenue": round(float(rev), 2),
+            "units_sold": int(units),
+        }
+        for d, cat, rev, units in rows
+    ]
+
+
+async def get_city_category(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    limit: int = 15,
+) -> list[dict]:
+    """City × category revenue matrix for the heatmap. There are hundreds of
+    cities, so we scope to the top `limit` cities by revenue in the window and
+    return their per-category cells — the frontend renders cities (rows) ×
+    categories (columns)."""
+    conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
+    if marketplaces is not None:
+        conds.append(Sale.platform.in_(marketplaces))
+    revenue = func.coalesce(func.sum(Sale.mrp_value), 0.0)
+
+    # Top cities by total revenue in the window (the heatmap's row set).
+    top_rows = (
+        await session.execute(
+            select(Sale.city_id, func.max(Sale.city_name), revenue)
+            .where(*conds)
+            .group_by(Sale.city_id)
+            .order_by(revenue.desc())
+            .limit(limit)
+        )
+    ).all()
+    if not top_rows:
+        return []
+    name_by_id = {cid: (cname or cid) for cid, cname, _ in top_rows}
+    top_ids = list(name_by_id)
+
+    category = func.coalesce(Sale.category, "Uncategorized")
+    cells = (
+        await session.execute(
+            select(
+                Sale.city_id,
+                category,
+                revenue,
+                func.coalesce(func.sum(Sale.qty_sold), 0),
+            )
+            .where(*conds, Sale.city_id.in_(top_ids))
+            .group_by(Sale.city_id, category)
+            .order_by(revenue.desc())
+        )
+    ).all()
+    return [
+        {
+            "city": name_by_id[cid],
+            "category": cat,
+            "revenue": round(float(rev), 2),
+            "units_sold": int(units),
+        }
+        for cid, cat, rev, units in cells
     ]
