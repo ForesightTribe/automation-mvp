@@ -101,11 +101,22 @@ Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). `/overview`
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/overview` | Headline KPIs, each as `{value, prev, delta_pct}`: revenue, units, SKUs, ad spend, impressions, **RoAS** (= ad_sales÷spend), **visibility** (avg brand_sov), **avg_rank**. Performance plane from `blinkit_ad_campaign_daily`; market plane from `search_results` via the own-brand watchlist. |
+| GET | `/overview` | Headline KPIs, each as `{value, prev, delta_pct}`: revenue, **organic_revenue** (= revenue − ad_sales, clamped ≥0), units, SKUs, ad spend, **ad_sales**, impressions, **RoAS** (= ad_sales÷spend), **visibility** (avg brand_sov), **avg_rank**. Performance plane from `blinkit_ad_campaign_daily`; market plane from `search_results` via the own-brand watchlist. |
+| GET | `/trends` | Unified daily series for the Overview charts + KPI sparklines: `{date, ad_spend, ad_sales, impressions, revenue, units}`, built on a full date spine (None on gap days). |
 | GET | `/revenue` | Revenue + units **time-series** (per day). |
 | GET | `/top-skus` | Best-selling SKUs by revenue (`?limit=`). |
 | GET | `/sales-by-city` | Revenue/units grouped by city. |
 | GET | `/sales-by-category` | Revenue/units grouped by category. |
+
+### `overview` — `/api/clients/{id}/overview` *(private)*
+Composite endpoints for the Overview page that span multiple domains.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/marketplaces` | Per-marketplace breakdown (rev, RoAS, spend, units, visibility, rank), each `{value, prev, delta_pct}`. Unconnected marketplaces return bare (`connected=false`). Takes `PeriodDep`. |
+| GET | `/monthly-trends` | **Month-on-month** ops trends: `{month, osa_pct, fill_rate, po_amount, po_count}` over a month spine (`?months=`, default 3). OSA from `blinkit_soh` (frontend stock %), fill-rate from `blinkit_scorecard_weekly`, PO from `blinkit_pos`. Tenant-wide (no day-range/marketplace scope). |
+| GET | `/alerts` | Attention feed: failed scrapes, OOS (SOH), fill-loss (scorecard), shelf-OOS (public), ordered by severity. |
+| GET | `/freshness` | Latest scrape per dashboard with age — the "synced Xh ago" chips. |
 
 ### `products` — `/api/clients/{id}/products` *(private)*
 Per-SKU performance, derived from sales + stock.

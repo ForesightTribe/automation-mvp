@@ -99,10 +99,13 @@ src/
   `/login`. (Event bus because interceptors live outside React.) A 401 from the
   login attempt itself is excluded — `LoginPage` shows it inline.
 - **Charts:** Apache **ECharts**, wrapped in `components/charts/EChart.jsx` (thin
-  wrapper over core `echarts` — no `echarts-for-react`, which lags React 19).
-  Themed from the index.css tokens via `charts/theme.js`. Chosen for native
-  heatmap/scatter support the catalog needs. (When charts ship, switch to modular
-  `echarts/core` imports to trim bundle.)
+  wrapper over **modular `echarts/core`** — only the Line/Bar charts, Grid/Tooltip/
+  Legend components, and Canvas renderer are registered, to keep the bundle small;
+  no `echarts-for-react`, which lags React 19). Themed from the index.css tokens
+  via `charts/theme.js`. Shared `option` builders live in `charts/options.js`
+  (`spendRevenueOption`, `revenueOption`, `monthlySeriesOption`, `sparklineOption`)
+  so chart components stay thin and styling stays consistent; `charts/Sparkline.jsx`
+  renders the inline KPI-tile trend lines.
 
 ## Adding a page
 
