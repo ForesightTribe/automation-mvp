@@ -71,14 +71,14 @@ null when there are no samples. Rendered by the shared `DeltaBadge`/`MetricTile`
 
 ## Overview — "what needs my attention today"
 
-| Insight                                                                                          | Subsection        | Tables.columns                                                                                                          | API                                                                            |
-| ----------------------------------------------------------------------------------------------- | ----------------- | --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| Headline KPIs + growth + sparklines (Ad Spend, **Ad Revenue**, **Ad RoAS**, Total Revenue, **Organic Revenue**, units, SKUs, impressions, **visibility**, **avg rank**) | KPI strip | `blinkit_seller_sales` + `blinkit_ad_campaign_daily`(budget, ad_sales) + `search_results`(brand_sov, brand_rank via own watchlist) | `analytics/overview` **[B]** (PeriodDep + `marketplaces`, deltas; RoAS = ad_sales÷spend; organic = revenue−ad_sales) |
-| **Marketplace-wise overview** — per-MP rev/RoAS/spend/units/visibility/rank + growth; "Not connected" for MPs without data | Marketplace cards | per-MP slice of the same tables, scoped by `platform` + `mp_slug`                                                      | `/overview/marketplaces` **[B]**                                               |
-| **Ad spend vs ad revenue** + **Total revenue** trends (daily) | Two charts | `blinkit_ad_campaign_daily`(budget, ad_sales) + `blinkit_seller_sales`(mrp_value) on a date spine | `analytics/trends` **[B]** (one aligned series for charts + sparklines) |
-| **Operations (month-on-month): OSA, fill-rate, PO value** | 3 bar charts | `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_weekly`(overall.fill_rate) + `blinkit_pos`(total_po_amount) by month | `/overview/monthly-trends` **[B]** (`?months=`, default 3; tenant-wide, not day-range scoped) |
-| **Attention feed** — failed scrapes, OOS, fill-loss                                             | Alerts list       | `scrape_jobs`(status) + `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_key_skus`(potential_loss) + `inventory_depth`(in_stock) | `/overview/alerts` **[B]**                                                      |
-| Data freshness ("sales last synced 2d ago")                                                     | Status chips      | `scrape_jobs`(dashboard, status, completed_at) latest per dashboard                                                    | `/overview/freshness` **[B]**                                                   |
+| Insight                                                                                                                                                                 | Subsection        | Tables.columns                                                                                                                       | API                                                                                                                  |
+| ----------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| Headline KPIs + growth + sparklines (Ad Spend, **Ad Revenue**, **Ad RoAS**, Total Revenue, **Organic Revenue**, units, SKUs, impressions, **visibility**, **avg rank**) | KPI strip         | `blinkit_seller_sales` + `blinkit_ad_campaign_daily`(budget, ad_sales) + `search_results`(brand_sov, brand_rank via own watchlist)   | `analytics/overview` **[B]** (PeriodDep + `marketplaces`, deltas; RoAS = ad_sales÷spend; organic = revenue−ad_sales) |
+| **Marketplace-wise overview** — per-MP rev/RoAS/spend/units/visibility/rank + growth; "Not connected" for MPs without data                                              | Marketplace cards | per-MP slice of the same tables, scoped by `platform` + `mp_slug`                                                                    | `/overview/marketplaces` **[B]**                                                                                     |
+| **Ad spend vs ad revenue** + **Total revenue** trends (daily)                                                                                                           | Two charts        | `blinkit_ad_campaign_daily`(budget, ad_sales) + `blinkit_seller_sales`(mrp_value) on a date spine                                    | `analytics/trends` **[B]** (one aligned series for charts + sparklines)                                              |
+| **Operations (month-on-month): OSA, fill-rate, PO value**                                                                                                               | 3 bar charts      | `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_weekly`(overall.fill_rate) + `blinkit_pos`(total_po_amount) by month            | `/overview/monthly-trends` **[B]** (`?months=`, default 3; tenant-wide, not day-range scoped)                        |
+| **Attention feed** — failed scrapes, OOS, fill-loss                                                                                                                     | Alerts list       | `scrape_jobs`(status) + `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_key_skus`(potential_loss) + `inventory_depth`(in_stock) | `/overview/alerts` **[B]**                                                                                           |
+| Data freshness ("sales last synced 2d ago")                                                                                                                             | Status chips      | `scrape_jobs`(dashboard, status, completed_at) latest per dashboard                                                                  | `/overview/freshness` **[B]**                                                                                        |
 
 ## Sales & Analytics — "where is revenue coming from"
 
@@ -86,14 +86,15 @@ Single page. Each section is a `ChartTableCard` — a chart with a Chart/Table
 toggle over the same data (the table view shows exact numbers / full lists where
 the chart truncates).
 
-| Insight                      | Subsection        | Tables.columns                                                  | API                                   |
-| ---------------------------- | ----------------- | --------------------------------------------------------------- | ------------------------------------- |
-| Revenue/units over time      | Main chart (metric toggle) | `blinkit_seller_sales`(date, mrp_value, qty_sold)     | `analytics/revenue` **[E]**           |
-| Top SKUs by revenue          | Ranked bars/table | `blinkit_seller_sales`(item_id, item_name, mrp_value, qty_sold) | `analytics/top-skus` **[E]** (now PeriodDep + `marketplaces`) |
-| Revenue by city              | Bar list / table  | `blinkit_seller_sales`(city_name, mrp_value)                    | `analytics/sales-by-city` **[E]** (now PeriodDep + `marketplaces`) |
-| Revenue by category          | Donut / table     | `blinkit_seller_sales`(category, mrp_value)                     | `analytics/sales-by-category` **[E]** (now PeriodDep + `marketplaces`) |
-| **Category trend over time** | Stacked area / table | `blinkit_seller_sales`(date, category, mrp_value)           | `/analytics/category-trend` **[B]**   |
-| **City × category matrix**   | Heatmap / table   | `blinkit_seller_sales`(city_name, category, mrp_value)          | `/analytics/city-category` **[B]** (top-`limit` cities) |
+| Insight                      | Subsection                 | Tables.columns                                                  | API                                                                    |
+| ---------------------------- | -------------------------- | --------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| KPIs: revenue, units, SKUs, avg price/unit (+ deltas, sparklines) | KPI strip | `blinkit_seller_sales`(mrp_value, qty_sold, item_id) | `analytics/overview` **[E]** + `analytics/trends` (sparklines). Sales-plane only; blended ad tiles (organic rev, ad spend, RoAS) are present in code but commented out — re-enable if a blended read is wanted. |
+| Revenue/units over time      | Main chart (metric toggle) | `blinkit_seller_sales`(date, mrp_value, qty_sold)               | `analytics/revenue` **[E]**                                            |
+| Top SKUs by revenue          | Ranked bars/table          | `blinkit_seller_sales`(item_id, item_name, mrp_value, qty_sold) | `analytics/top-skus` **[E]** (now PeriodDep + `marketplaces`)          |
+| Revenue by city              | Bar list / table           | `blinkit_seller_sales`(city_name, mrp_value)                    | `analytics/sales-by-city` **[E]** (now PeriodDep + `marketplaces`)     |
+| Revenue by category          | Donut / table              | `blinkit_seller_sales`(category, mrp_value)                     | `analytics/sales-by-category` **[E]** (now PeriodDep + `marketplaces`) |
+| **Category trend over time** | Stacked area / table       | `blinkit_seller_sales`(date, category, mrp_value)               | `/analytics/category-trend` **[B]**                                    |
+| **City × category matrix**   | Heatmap / table            | `blinkit_seller_sales`(city_name, category, mrp_value)          | `/analytics/city-category` **[B]** (top-`limit` cities)                |
 
 ## Products — "per-SKU deep dive" (richest composed view)
 
@@ -118,27 +119,27 @@ the chart truncates).
 
 ## Ads — "is my spend working"
 
-| Insight                                                                      | Subsection    | Tables.columns                                                                      | API                                               |
-| ---------------------------------------------------------------------------- | ------------- | ----------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Spend/impressions/sales trend                                               | Chart         | `blinkit_ad_campaign_daily`(date, budget_consumed, impressions, ad_sales) summed     | `ads/performance` **[B]**                         |
-| Campaign table (RoAS, spend, status)                                        | Table         | `blinkit_ad_campaigns`(name, type, status) + `blinkit_ad_campaign_daily` rollup       | `ads/campaigns` **[B]**                           |
-| Budget split by campaign type                                                | Donut         | `blinkit_ad_campaign_daily`(campaign_type, budget_consumed) summed                    | `ads/performance` **[E→N]** (derive)              |
-| Sponsored SOV per keyword                                                    | Table w/ bars | `blinkit_sponsored_sov`(keyword, monthly_searches, sov)                               | `ads/sov` **[B]**                                 |
-| RoAS leaderboard / worst spenders                                            | Sorted cards  | `blinkit_ad_campaign_daily` rollup (ad_sales ÷ budget) ranked                         | `ads/campaigns?sort=roas` **[E→N]**               |
-| Visibility plans & collections                                               | Side lists    | `blinkit_visibility_plans`, `blinkit_brand_collections`                               | `ads/visibility-plans`, `ads/collections` **[B]** |
-| Blended (store) spend vs revenue                                            | KPI           | `blinkit_ad_campaign_daily`(budget) vs `blinkit_seller_sales`(mrp_value)              | fold into `analytics/overview` **[E]**            |
-| **Keyword / asset performance + per-keyword RoAS**                          | Keyword table | `blinkit_ad_campaign_detail`(target, match_type, budget, direct/total_roas, …)        | `/ads/keywords` **[N]** (data ready, view pending)|
+| Insight                                            | Subsection    | Tables.columns                                                                   | API                                                |
+| -------------------------------------------------- | ------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
+| Spend/impressions/sales trend                      | Chart         | `blinkit_ad_campaign_daily`(date, budget_consumed, impressions, ad_sales) summed | `ads/performance` **[B]**                          |
+| Campaign table (RoAS, spend, status)               | Table         | `blinkit_ad_campaigns`(name, type, status) + `blinkit_ad_campaign_daily` rollup  | `ads/campaigns` **[B]**                            |
+| Budget split by campaign type                      | Donut         | `blinkit_ad_campaign_daily`(campaign_type, budget_consumed) summed               | `ads/performance` **[E→N]** (derive)               |
+| Sponsored SOV per keyword                          | Table w/ bars | `blinkit_sponsored_sov`(keyword, monthly_searches, sov)                          | `ads/sov` **[B]**                                  |
+| RoAS leaderboard / worst spenders                  | Sorted cards  | `blinkit_ad_campaign_daily` rollup (ad_sales ÷ budget) ranked                    | `ads/campaigns?sort=roas` **[E→N]**                |
+| Visibility plans & collections                     | Side lists    | `blinkit_visibility_plans`, `blinkit_brand_collections`                          | `ads/visibility-plans`, `ads/collections` **[B]**  |
+| Blended (store) spend vs revenue                   | KPI           | `blinkit_ad_campaign_daily`(budget) vs `blinkit_seller_sales`(mrp_value)         | fold into `analytics/overview` **[E]**             |
+| **Keyword / asset performance + per-keyword RoAS** | Keyword table | `blinkit_ad_campaign_detail`(target, match_type, budget, direct/total_roas, …)   | `/ads/keywords` **[N]** (data ready, view pending) |
 
 ## Market / Competition — "how do I look on the shelf"
 
-| Insight                                             | Subsection                  | Tables.columns                                                     | API                                    |
-| --------------------------------------------------- | --------------------------- | ------------------------------------------------------------------ | -------------------------------------- |
-| Own-brand SOV summary + trend                       | Card + line                 | `search_results`(brand_sov, scraped_at, keyword, city)             | `competition/share-of-voice` **[E]**   |
-| Competitor rankings & prices                        | Table, own rows highlighted | `competitor_rankings`(competitor, position, price, keyword, city)  | `competition/rankings` **[E]**         |
-| **Your rank by keyword × city** (where you're weak) | Heatmap                     | `search_results`(brand_rank, keyword, city)                        | `/competition/rank-matrix` **[N]**     |
-| **Organic vs paid visibility**                      | Dual bar per keyword        | `search_results`(brand_sov) + `blinkit_sponsored_sov`(sov) on **keyword**  | `/competition/visibility` **[N]**      |
-| **Price vs position** (priced out of top ranks?)    | Scatter                     | `competitor_rankings`(competitor, price, position) incl. own brand | `/competition/price-position` **[N]**  |
-| **Competitor watch** (who keeps beating you)        | Ranked list                 | `competitor_rankings`(competitor, position) frequency              | `/competition/top-competitors` **[N]** |
+| Insight                                             | Subsection                  | Tables.columns                                                            | API                                    |
+| --------------------------------------------------- | --------------------------- | ------------------------------------------------------------------------- | -------------------------------------- |
+| Own-brand SOV summary + trend                       | Card + line                 | `search_results`(brand_sov, scraped_at, keyword, city)                    | `competition/share-of-voice` **[E]**   |
+| Competitor rankings & prices                        | Table, own rows highlighted | `competitor_rankings`(competitor, position, price, keyword, city)         | `competition/rankings` **[E]**         |
+| **Your rank by keyword × city** (where you're weak) | Heatmap                     | `search_results`(brand_rank, keyword, city)                               | `/competition/rank-matrix` **[N]**     |
+| **Organic vs paid visibility**                      | Dual bar per keyword        | `search_results`(brand_sov) + `blinkit_sponsored_sov`(sov) on **keyword** | `/competition/visibility` **[N]**      |
+| **Price vs position** (priced out of top ranks?)    | Scatter                     | `competitor_rankings`(competitor, price, position) incl. own brand        | `/competition/price-position` **[N]**  |
+| **Competitor watch** (who keeps beating you)        | Ranked list                 | `competitor_rankings`(competitor, position) frequency                     | `/competition/top-competitors` **[N]** |
 
 ## Scorecard — "Blinkit's view of my brand health"
 
@@ -165,7 +166,9 @@ the chart truncates).
 
 **High value:** `/overview/alerts`, extend `products/{item_id}` (Product 360 + days-of-cover + city split), `/inventory/cover`, `/competition/visibility`, `/competition/rank-matrix`.
 
-**Medium:** `/analytics/category-trend`, `/analytics/city-category`, `/inventory/availability-history`, `/inventory/by-facility`, `/competition/price-position`, `/competition/top-competitors`, `/scorecard/trend`, `/scorecard/facility/{id}/pos`, `/products/{item_id}/pos`, `/ads/keywords` _(detail data ready in `blinkit_ad_campaign_detail`; just needs the endpoint + view)_.
+**Medium:** `/inventory/availability-history`, `/inventory/by-facility`, `/competition/price-position`, `/competition/top-competitors`, `/scorecard/trend`, `/scorecard/facility/{id}/pos`, `/products/{item_id}/pos`, `/ads/keywords` _(detail data ready in `blinkit_ad_campaign_detail`; just needs the endpoint + view)_.
+
+**Done (Sales & Analytics):** `/analytics/category-trend`, `/analytics/city-category` built; `top-skus` / `sales-by-city` / `sales-by-category` migrated to `PeriodDep` + `marketplaces`. Page is live (single page, `ChartTableCard` per section).
 
 **Extend existing (cheap):** sort/filter params on `ads/campaigns`; blended spend-vs-revenue into `analytics/overview`.
 
