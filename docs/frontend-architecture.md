@@ -43,7 +43,7 @@ src/
     DateRangeContext.jsx   # global `?days=` window; DateRangeProvider + useDateRange
 
   components/
-    ui/                    # domain-agnostic primitives (Button, Card)
+    ui/                    # domain-agnostic primitives (Button, Card, Pagination, ChartTableCard, …)
     feedback/              # ErrorBoundary, ErrorState, EmptyState, Loading, PagePlaceholder
     charts/                # EChart wrapper + ECharts theme (mirrors index.css tokens)
     auth/                  # LoginModal (login UI; opened from the landing page)

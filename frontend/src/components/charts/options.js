@@ -141,11 +141,59 @@ export const dailyMetricOption = (rows, { metric = "revenue" } = {}) => {
 };
 
 /**
+ * Per-day units sold (bars, left axis) against frontend stock-on-hand (line,
+ * right axis) for a single SKU — surfaces the sell-through vs. stock story, so a
+ * stockout that flattened sales is visible at a glance. `rows` = [{ date,
+ * units_sold, frontend_qty }]; nulls stay gaps.
+ */
+export const salesStockOption = (rows) => ({
+	tooltip: { trigger: "axis" },
+	legend: { data: ["Units sold", "Frontend stock"], bottom: 0 },
+	grid: { ...baseGrid, bottom: 28 },
+	xAxis: {
+		type: "category",
+		data: rows.map((r) => formatDate(r.date)),
+	},
+	yAxis: [
+		{
+			type: "value",
+			axisLabel: { formatter: (v) => formatNumber(v) },
+		},
+		{
+			type: "value",
+			axisLabel: { formatter: (v) => formatNumber(v) },
+			splitLine: { show: false },
+		},
+	],
+	series: [
+		{
+			name: "Units sold",
+			type: "bar",
+			data: rows.map((r) => r.units_sold),
+			itemStyle: { color: WARNING, borderRadius: [3, 3, 0, 0] },
+		},
+		{
+			name: "Frontend stock",
+			type: "line",
+			yAxisIndex: 1,
+			data: rows.map((r) => r.frontend_qty),
+			smooth: true,
+			showSymbol: false,
+			lineStyle: { width: 2, color: INFO },
+			itemStyle: { color: INFO },
+		},
+	],
+});
+
+/**
  * Horizontal ranked bars (top SKUs, top cities). `items` = [{ label, value }],
  * ordered best-first; rendered top-to-bottom. `money` picks the ₹ vs plain number
  * formatter.
  */
-export const rankedBarOption = (items, { color = PRIMARY, money = true } = {}) => {
+export const rankedBarOption = (
+	items,
+	{ color = PRIMARY, money = true } = {},
+) => {
 	const fmt = money ? formatCompactCurrency : formatNumber;
 	// ECharts category axis draws bottom-up, so reverse to put the largest on top.
 	const rows = [...items].reverse();
@@ -264,7 +312,9 @@ export const heatmapOption = (cities, categories, cells, max) => ({
 			type: "heatmap",
 			data: cells,
 			label: { show: false },
-			emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" } },
+			emphasis: {
+				itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" },
+			},
 		},
 	],
 });

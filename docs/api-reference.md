@@ -123,10 +123,13 @@ Composite endpoints for the Overview page that span multiple domains.
 ### `products` — `/api/clients/{id}/products` *(private)*
 Per-SKU performance, derived from sales + stock.
 
+Window via `PeriodDep` (`?start=&end=`, legacy `?days=`); `?marketplaces=` (comma-sep slugs, omit for all).
+
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/products` | Paginated SKU list. Filters: `?search=` (name), `?category=`, `?days=`. |
-| GET | `/products/{item_id}` | One SKU: totals, per-day trend, latest stock (summed across facilities). 404 if no sales in window. |
+| GET | `/products` | SKU list joined with latest stock + days-of-cover + health `status`. Returns `{summary, products: Page}` — `summary` = KPI strip (active SKUs, revenue, units, avg price, #out-of-stock, #low-cover) for the search/category/window scope. Params: `?search=` (name), `?category=`, `?sort=revenue\|units\|price\|cover`, `?sku_status=out_of_stock\|low_cover\|no_sales\|healthy`, pagination. |
+| GET | `/products/{item_id}` | Product 360: totals + avg price, current stock, days-of-cover + status, scorecard potential loss, daily sales `trend`, daily `stock_trend`, per-`facilities` stock, per-`cities` split. 404 if no sales in window. |
+| GET | `/products/{item_id}/pos` | Paginated PO line history for the SKU (`blinkit_po_items` ⨝ `blinkit_pos`): po_number, state, issue_date, facility, units ordered/received/remaining, cost, amount. |
 
 ### `ads` — `/api/clients/{id}/ads` *(private)*
 Paid marketing on the platform (sponsored placements, bidding, plans).

@@ -98,13 +98,17 @@ the chart truncates).
 
 ## Products — "per-SKU deep dive" (richest composed view)
 
+**Live.** List view = KPI strip + filterable/sortable/paginated SKU table (rows
+link to detail); detail = Product 360 route `/products/:itemId`. Private plane
+only (no public shelf/rank join yet — gap #2).
+
 | Insight                                              | Subsection             | Tables.columns                                                                                                    | API                                   |
 | ---------------------------------------------------- | ---------------------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------- |
-| SKU list with sales + latest stock                   | Table                  | `blinkit_seller_sales` + `blinkit_soh`(frontend_inv_qty, backend_inv_qty)                                         | `products` **[E]**                    |
-| **Product 360**: sales trend + stock + days-of-cover | Detail page            | `blinkit_seller_sales`(date, qty_sold, mrp_value) + `blinkit_soh`(backend_inv_qty, frontend_inv_qty per facility) | extend `products/{item_id}` **[E→N]** |
-| **Days of cover** = stock ÷ avg daily sales          | Detail KPI + list sort | `blinkit_soh`(frontend_inv_qty) ÷ `blinkit_seller_sales`(qty_sold avg)                                            | `/inventory/cover` **[N]**            |
-| SKU sold across which cities                         | Detail breakdown       | `blinkit_seller_sales`(city_name, qty_sold) WHERE item_id                                                         | extend `products/{item_id}` **[N]**   |
-| SKU's PO history                                     | Detail tab             | `blinkit_po_items`(po_number, units_ordered, total_amount) WHERE item_id                                          | `/products/{item_id}/pos` **[N]**     |
+| SKU list + latest stock + cover + health status; KPI strip (active SKUs, rev, units, avg price, #OOS, #low-cover) | Table + KPI strip | `blinkit_seller_sales` + latest `blinkit_soh`(frontend_inv_qty, backend_inv_qty) | `products` **[B]** (`PeriodDep` + `marketplaces`; `sort=revenue\|units\|price\|cover`, `sku_status` filter, `search`, `category`; returns `{summary, products: Page}`) |
+| **Product 360**: sales trend + stock-over-time + per-facility stock + days-of-cover + scorecard loss | Detail page | `blinkit_seller_sales`(date, qty_sold, mrp_value, city) + `blinkit_soh`(backend/frontend per facility & per day) + `blinkit_scorecard_key_skus`(potential_loss) | `products/{item_id}` **[B]** (`PeriodDep` + `marketplaces`) |
+| **Days of cover** = current frontend stock ÷ avg daily sales | List sort/status + detail KPI | `blinkit_soh`(frontend_inv_qty) ÷ `blinkit_seller_sales`(qty_sold ÷ window-days) | helpers `cover_metrics`/`cover_status` in `product_service` **[B]**; `/inventory/cover` page endpoint still **[N]** (reuse helpers) |
+| SKU sold across which cities                         | Detail breakdown       | `blinkit_seller_sales`(city_name, qty_sold, mrp_value) WHERE item_id                                              | `products/{item_id}` (`cities[]`) **[B]** |
+| SKU's PO history                                     | Detail tab             | `blinkit_po_items`(units_ordered, remaining_quantity, cost_price, total_amount) ⨝ `blinkit_pos`(issue_date, po_state, facility_name) WHERE item_id | `/products/{item_id}/pos` **[B]** (paginated; received = ordered − remaining) |
 
 ## Inventory — "what's out or about to be"
 
@@ -164,9 +168,9 @@ the chart truncates).
 
 ## New endpoints implied (build with their page)
 
-**High value:** `/overview/alerts`, extend `products/{item_id}` (Product 360 + days-of-cover + city split), `/inventory/cover`, `/competition/visibility`, `/competition/rank-matrix`.
+**High value:** `/overview/alerts`, `/inventory/cover`, `/competition/visibility`, `/competition/rank-matrix`. _(Products page endpoints — extended list, Product 360, `/products/{item_id}/pos` — now built; `/inventory/cover` can reuse `product_service.cover_metrics`/`cover_status`.)_
 
-**Medium:** `/inventory/availability-history`, `/inventory/by-facility`, `/competition/price-position`, `/competition/top-competitors`, `/scorecard/trend`, `/scorecard/facility/{id}/pos`, `/products/{item_id}/pos`, `/ads/keywords` _(detail data ready in `blinkit_ad_campaign_detail`; just needs the endpoint + view)_.
+**Medium:** `/inventory/availability-history`, `/inventory/by-facility`, `/competition/price-position`, `/competition/top-competitors`, `/scorecard/trend`, `/scorecard/facility/{id}/pos`, `/ads/keywords` _(detail data ready in `blinkit_ad_campaign_detail`; just needs the endpoint + view)_.
 
 **Done (Sales & Analytics):** `/analytics/category-trend`, `/analytics/city-category` built; `top-skus` / `sales-by-city` / `sales-by-category` migrated to `PeriodDep` + `marketplaces`. Page is live (single page, `ChartTableCard` per section).
 
