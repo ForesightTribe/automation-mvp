@@ -77,6 +77,14 @@ Authentication. The only place a password is used.
 | POST | `/logout` | No-op (stateless JWT); a hook for the frontend to drop the token. |
 | GET | `/me` | The current user (id, email, full_name, account_id, role, is_active). |
 
+**User creation is CLI-only — there is no signup/user endpoint.** `cli account
+create` makes an account + its first `admin`; `cli account add-user --account
+<id> --email <e> [--name <n>] [--admin]` adds more users (`member` by default) to
+an existing account. Both prompt for the password (bcrypt-hashed). Data is
+account-scoped, so every user of an account sees all its clients; `role` only
+gates the admin UI + `require_admin` routes. See
+[setup.md](setup.md) and [cli.md](cli.md).
+
 ### `clients` — `/api/clients`
 The account's clients + the client picker.
 
@@ -134,11 +142,19 @@ Window via `PeriodDep` (`?start=&end=`, legacy `?days=`); `?marketplaces=` (comm
 ### `ads` — `/api/clients/{id}/ads` *(private)*
 Paid marketing on the platform (sponsored placements, bidding, plans).
 
+Window endpoints take `PeriodDep` (`?start=&end=`, legacy `?days=`) + optional
+comma-separated `?marketplaces=` (omit = all). Only Blinkit has ad data today, so
+the marketplace filter is a no-op until more platforms connect.
+
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window metric rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`. |
-| GET | `/performance` | Daily spend / impressions / ad_sales **time-series** (summed from `blinkit_ad_campaign_daily`). |
-| GET | `/sov` | Sponsored share-of-voice, latest per keyword. |
+| GET | `/summary` | KPI strip: ad_spend, ad_sales, RoAS, ACoS, impressions, atc, units_sold, active_campaigns — each a `Metric` (value + prev window + delta). RoAS = ad_sales÷spend; ACoS = spend÷ad_sales. |
+| GET | `/performance` | Daily spend / impressions / ad_sales / RoAS **time-series** (summed from `blinkit_ad_campaign_daily`). |
+| GET | `/budget-split` | Spend + recomputed RoAS per `campaign_type` (donut + by-type table). |
+| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`; `?sort=spend\|roas\|sales\|impressions` + `?order=asc\|desc` (sort `roas` = RoAS leaderboard / worst spenders). |
+| GET | `/keywords` | Paginated keyword/asset performance from the latest `blinkit_ad_campaign_detail` snapshot per campaign (target, match_type, cpm, direct/indirect sales, direct/total RoAS, position, new users). Filter `?campaign_id=`, `?target_type=keyword\|recommendation`; same `?sort`/`?order`. |
+| GET | `/sov` | Sponsored share-of-voice, latest per keyword in the window. |
+| GET | `/marketplaces` | Per-marketplace ad slice (spend, ad_sales, RoAS, impressions as `Metric`); unconnected MPs returned bare (`connected=false`) for "Not connected" cards. |
 | GET | `/visibility-plans` | Visibility/placement plans + budgets. |
 | GET | `/collections` | Curated brand collections. |
 
@@ -152,13 +168,19 @@ Stock health: private SOH + fill-rate, plus public availability.
 | GET | `/availability` | **Public** stock-out monitoring for the client's own brand (out-of-stock first). Filters `?city=`, `?marketplace=`, `?days=`. Needs an `own` watchlist brand. |
 
 ### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
-Blinkit brand-health scorecard.
+Blinkit brand-health scorecard. **Weekly snapshots** keyed on `from_date_ist`
+(not daily) and Blinkit-only, so these navigate by week (`?from=`, default latest)
+rather than the global date range / marketplace selectors. Fill-rate fields are
+0–100 numbers, not 0–1 fractions.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/weekly` | Latest weekly scorecard (overall, best category, per-category JSON). `?from=`. 404 if none. |
+| GET | `/weeks` | Available weeks (`from_date_ist`), newest first — powers the page's week picker. |
+| GET | `/weekly` | Selected (or latest) week: raw `overall`, `best_category`, per-category JSON, plus `metrics{value,prev,delta_pct}` vs the prior week and `prev_from_date`. `?from=`. 404 if none. |
+| GET | `/trend` | Per-week overall metrics across the last `?weeks=` snapshots (default 12, oldest first) — fill rate, weighted fill, potential loss, GMV, PO/GRN qty, rank. |
 | GET | `/key-skus` | Paginated key SKUs ranked by potential loss. `?from=`. |
 | GET | `/facilities` | Paginated facilities ranked by potential loss. `?from=`. |
+| GET | `/facility/{facility_id}/pos` | Paginated POs behind a facility's fill loss (`blinkit_pos` joined on `facility_id`), newest issue date first — the "fill loss → which POs" drill-down. |
 
 ### `competition` — `/api/clients/{id}/competition` *(public, watchlist-scoped)*
 Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlist.

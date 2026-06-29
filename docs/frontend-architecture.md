@@ -86,9 +86,10 @@ src/
   public route is `/` (marketing landing), behind `RedirectIfAuth` which bounces
   logged-in users to `/overview`. **Login is a modal** (`components/auth/LoginModal`)
   opened from the landing page — there is no `/login` route. A logged-out hit to a
-  protected route redirects to `/` with the attempted path as `from`; the landing
-  page auto-opens the modal and returns the user there after sign-in. No public
-  signup (accounts provisioned via CLI).
+  protected route redirects to `/` with the attempted path as `from`; the modal
+  opens only on an explicit "Log in" click (not auto — that would re-pop after
+  logout, since router state survives refresh) and returns the user to `from`
+  after sign-in. No public signup (accounts provisioned via CLI).
 - **Roles:** the JWT/`/auth/me` carry `role` (`admin` | `member`), exposed as
   `isAdmin` from `useAuth()`. The Sidebar hides `adminOnly` nav items from
   members and `RequireAdmin` guards admin-only routes (e.g. `/settings`) — the

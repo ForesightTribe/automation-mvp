@@ -125,14 +125,16 @@ only (no public shelf/rank join yet — gap #2).
 
 | Insight                                            | Subsection    | Tables.columns                                                                   | API                                                |
 | -------------------------------------------------- | ------------- | -------------------------------------------------------------------------------- | -------------------------------------------------- |
-| Spend/impressions/sales trend                      | Chart         | `blinkit_ad_campaign_daily`(date, budget_consumed, impressions, ad_sales) summed | `ads/performance` **[B]**                          |
-| Campaign table (RoAS, spend, status)               | Table         | `blinkit_ad_campaigns`(name, type, status) + `blinkit_ad_campaign_daily` rollup  | `ads/campaigns` **[B]**                            |
-| Budget split by campaign type                      | Donut         | `blinkit_ad_campaign_daily`(campaign_type, budget_consumed) summed               | `ads/performance` **[E→N]** (derive)               |
-| Sponsored SOV per keyword                          | Table w/ bars | `blinkit_sponsored_sov`(keyword, monthly_searches, sov)                          | `ads/sov` **[B]**                                  |
-| RoAS leaderboard / worst spenders                  | Sorted cards  | `blinkit_ad_campaign_daily` rollup (ad_sales ÷ budget) ranked                    | `ads/campaigns?sort=roas` **[E→N]**                |
+| KPI strip: spend, ad revenue, RoAS, ACoS, impressions, ATC, units, #active campaigns (+ deltas, sparklines) | KPI strip | `blinkit_ad_campaign_daily`(budget, ad_sales, impressions, atc, quantities_sold, campaign_id) | `ads/summary` **[B]** (PeriodDep + `marketplaces`, `Metric` per tile); sparklines reuse `ads/performance` |
+| Spend/impressions/sales + RoAS trend               | Chart         | `blinkit_ad_campaign_daily`(date, budget_consumed, impressions, ad_sales) summed | `ads/performance` **[B]** (now PeriodDep + `marketplaces`, emits daily `roas`) |
+| Campaign table (RoAS, spend, status)               | Table         | `blinkit_ad_campaigns`(name, type, status) + `blinkit_ad_campaign_daily` rollup  | `ads/campaigns` **[B]** (now `?sort`/`?order` + PeriodDep + `marketplaces`) |
+| Budget split by campaign type                      | Donut         | `blinkit_ad_campaign_daily`(campaign_type, budget_consumed, ad_sales) summed     | `ads/budget-split` **[B]**                         |
+| Sponsored SOV per keyword                          | Table w/ bars | `blinkit_sponsored_sov`(keyword, monthly_searches, sov)                          | `ads/sov` **[B]** (now PeriodDep + `marketplaces`) |
+| RoAS leaderboard / worst spenders                  | Sorted cards  | `blinkit_ad_campaign_daily` rollup (ad_sales ÷ budget) ranked                    | `ads/campaigns?sort=roas&order=asc\|desc` **[B]**  |
+| **Ads by marketplace** — per-MP spend/revenue/RoAS; "Not connected" for MPs without ad data | Marketplace cards | per-MP slice of `blinkit_ad_campaign_daily`, scoped by `platform`         | `ads/marketplaces` **[B]**                         |
 | Visibility plans & collections                     | Side lists    | `blinkit_visibility_plans`, `blinkit_brand_collections`                          | `ads/visibility-plans`, `ads/collections` **[B]**  |
 | Blended (store) spend vs revenue                   | KPI           | `blinkit_ad_campaign_daily`(budget) vs `blinkit_seller_sales`(mrp_value)         | fold into `analytics/overview` **[E]**             |
-| **Keyword / asset performance + per-keyword RoAS** | Keyword table | `blinkit_ad_campaign_detail`(target, match_type, budget, direct/total_roas, …)   | `/ads/keywords` **[N]** (data ready, view pending) |
+| **Keyword / asset performance + per-keyword RoAS** | Keyword table | `blinkit_ad_campaign_detail`(target, match_type, budget, direct/total_roas, …)   | `ads/keywords` **[B]**                             |
 
 ## Market / Competition — "how do I look on the shelf"
 
@@ -147,14 +149,25 @@ only (no public shelf/rank join yet — gap #2).
 
 ## Scorecard — "Blinkit's view of my brand health"
 
+**Built (2026-06-29).** Scorecard data is **weekly snapshots** keyed on
+`from_date_ist`, and Blinkit-only — so the page navigates by a **page-local week
+picker** (`/scorecard/weeks`, latest by default), and the global date-range +
+marketplace selectors are no-ops here (like Overview's monthly-trends takes its
+own `?months=`). `scorecard/weekly` was extended to also return the previous
+week's metrics so the KPI tiles get period-over-period deltas via the shared
+`MetricTile`/`DeltaBadge` (fill-rate & GMV better-up; potential-loss & rank
+better-down). Note `fill_rate`/`weighted_fill_rate_percent` are stored as 0–100
+numbers (not 0–1 fractions) — format directly, don't ×100.
+
 | Insight                                  | Subsection              | Tables.columns                                                                                                                    | API                                    |
 | ---------------------------------------- | ----------------------- | --------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------- |
-| Weekly headline (fill rate, GMV, rank)   | KPI cards + week picker | `blinkit_scorecard_weekly`(overall, best_category JSON)                                                                           | `scorecard/weekly` **[E]**             |
-| Per-category fill                        | Bars                    | `blinkit_scorecard_weekly`(categories JSON)                                                                                       | `scorecard/weekly` **[E]**             |
+| Available weeks (for the picker)         | Week dropdown           | `blinkit_scorecard_weekly`(from_date_ist DISTINCT)                                                                                | `scorecard/weeks` **[B]**              |
+| Weekly headline + deltas (fill rate, GMV, potential loss, rank, PO/GRN) | KPI cards + week picker | `blinkit_scorecard_weekly`(overall, best_category JSON) — current + prior week | `scorecard/weekly` **[E→N]** (now returns `metrics{value,prev,delta_pct}` + `prev_from_date`) |
+| Per-category fill                        | Bars + table            | `blinkit_scorecard_weekly`(categories JSON)                                                                                       | `scorecard/weekly` **[E]** (fed from the same fetch) |
 | Key SKUs by potential loss               | Table                   | `blinkit_scorecard_key_skus`(item_name, potential_loss, total_gmv, proxy_category)                                                | `scorecard/key-skus` **[E]**           |
-| Facilities by potential loss             | Table                   | `blinkit_scorecard_facilities`(facility_name, fill_rate, potential_loss, manufacturer_rank)                                       | `scorecard/facilities` **[E]**         |
-| **Fill-rate trend across weeks**         | Line                    | `blinkit_scorecard_weekly`(from_date_ist, overall) multi-week                                                                     | `/scorecard/trend` **[N]**             |
-| **Fill loss → which POs** (supply story) | Drill-down              | `blinkit_scorecard_facilities`(facility_id, potential_loss) + `blinkit_pos`(facility_id, total_units_ordered, total_grn_quantity) | `/scorecard/facility/{id}/pos` **[N]** |
+| Facilities by potential loss             | Table (expandable rows) | `blinkit_scorecard_facilities`(facility_name, fill_rate, potential_loss, manufacturer_rank)                                       | `scorecard/facilities` **[E]**         |
+| **Fill-rate trend across weeks**         | Line (metric toggle) + table | `blinkit_scorecard_weekly`(from_date_ist, overall) multi-week                                                                | `/scorecard/trend` **[B]** (`?weeks=`, default 12) |
+| **Fill loss → which POs** (supply story) | Row drill-down          | `blinkit_scorecard_facilities`(facility_id, potential_loss) + `blinkit_pos`(facility_id, total_units_ordered, total_grn_quantity) | `/scorecard/facility/{id}/pos` **[B]** (paginated, lazy on expand) |
 
 ## Ops / Settings
 
@@ -170,11 +183,15 @@ only (no public shelf/rank join yet — gap #2).
 
 **High value:** `/overview/alerts`, `/inventory/cover`, `/competition/visibility`, `/competition/rank-matrix`. _(Products page endpoints — extended list, Product 360, `/products/{item_id}/pos` — now built; `/inventory/cover` can reuse `product_service.cover_metrics`/`cover_status`.)_
 
-**Medium:** `/inventory/availability-history`, `/inventory/by-facility`, `/competition/price-position`, `/competition/top-competitors`, `/scorecard/trend`, `/scorecard/facility/{id}/pos`, `/ads/keywords` _(detail data ready in `blinkit_ad_campaign_detail`; just needs the endpoint + view)_.
+**Medium:** `/inventory/availability-history`, `/inventory/by-facility`, `/competition/price-position`, `/competition/top-competitors`.
+
+**Done (Scorecard):** full page surface built — `scorecard/weeks` + `scorecard/trend` + `scorecard/facility/{id}/pos` added; `scorecard/weekly` extended with prev-week deltas. Frontend `features/scorecard/` built (week picker, KPI strip, fill-rate trend, category fill, key-SKUs table, facilities table with PO drill-down).
 
 **Done (Sales & Analytics):** `/analytics/category-trend`, `/analytics/city-category` built; `top-skus` / `sales-by-city` / `sales-by-category` migrated to `PeriodDep` + `marketplaces`. Page is live (single page, `ChartTableCard` per section).
 
-**Extend existing (cheap):** sort/filter params on `ads/campaigns`; blended spend-vs-revenue into `analytics/overview`.
+**Done (Ads):** full page surface built — `ads/summary`, `ads/budget-split`, `ads/keywords`, `ads/marketplaces` added; `ads/campaigns` (`?sort`/`?order`), `ads/performance` (daily RoAS), `ads/sov` migrated to `PeriodDep` + `marketplaces`. Frontend `features/ads/` built (KPI strip, spend-vs-revenue trend, budget-split donut, campaigns table, keyword/asset table, ads-by-marketplace breakdown, SOV table, visibility-plans/collections side rail).
+
+**Extend existing (cheap):** blended spend-vs-revenue into `analytics/overview`.
 
 ## Suggested build order
 

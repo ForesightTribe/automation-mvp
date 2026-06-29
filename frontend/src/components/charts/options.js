@@ -85,6 +85,66 @@ export const spendRevenueOption = (rows) => ({
 	],
 });
 
+/**
+ * Ads page spend-vs-revenue trend: ad spend + ad revenue as gradient areas on a ₹
+ * axis, with an optional RoAS line on a secondary axis (toggled in the card).
+ * `rows` are `ads/performance` points (budget_consumed, ad_sales, roas).
+ */
+export const adTrendOption = (rows, { showRoas = false } = {}) => {
+	const series = [
+		areaSeries(
+			"Ad Spend",
+			rows.map((r) => r.budget_consumed),
+			PRIMARY,
+		),
+		areaSeries(
+			"Ad Revenue",
+			rows.map((r) => r.ad_sales),
+			SUCCESS,
+		),
+	];
+	if (showRoas) {
+		series.push({
+			name: "RoAS",
+			type: "line",
+			yAxisIndex: 1,
+			data: rows.map((r) => r.roas),
+			smooth: true,
+			showSymbol: false,
+			lineStyle: { width: 2, color: WARNING },
+			itemStyle: { color: WARNING },
+		});
+	}
+	return {
+		tooltip: { trigger: "axis" },
+		legend: {
+			data: showRoas
+				? ["Ad Spend", "Ad Revenue", "RoAS"]
+				: ["Ad Spend", "Ad Revenue"],
+			bottom: 0,
+		},
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.date)),
+		},
+		yAxis: [
+			{
+				type: "value",
+				axisLabel: { formatter: (v) => formatCompactCurrency(v) },
+			},
+			{
+				type: "value",
+				show: showRoas,
+				axisLabel: { formatter: (v) => `${v.toFixed(1)}x` },
+				splitLine: { show: false },
+			},
+		],
+		series,
+	};
+};
+
 /** Total store revenue per day (bars). */
 export const revenueOption = (rows) => ({
 	tooltip: {
@@ -362,6 +422,76 @@ export const monthlySeriesOption = (
 						itemStyle: { color, borderRadius: [3, 3, 0, 0] },
 					}
 				: areaSeries(label, data, color),
+		],
+	};
+};
+
+const DANGER = "#dc2626";
+
+/** Percent value (0–100) formatter for scorecard axes/tooltips. */
+const pctFmt = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
+
+const SCORECARD_TREND_META = {
+	fill_rate: { label: "Fill rate", percent: true, color: SUCCESS },
+	weighted_fill_rate_percent: {
+		label: "Weighted fill rate",
+		percent: true,
+		color: INFO,
+	},
+	potential_loss: { label: "Potential loss", percent: false, color: DANGER },
+	total_gmv: { label: "Total GMV", percent: false, color: PRIMARY },
+};
+
+/**
+ * Scorecard week-over-week trend (single gradient area). `rows` are
+ * `scorecard/trend` points (from_date + overall metrics); `metric` picks the
+ * series — percent metrics (fill rate) use a 0–100 axis, the rest a ₹ axis.
+ */
+export const scorecardTrendOption = (rows, { metric = "fill_rate" } = {}) => {
+	const meta = SCORECARD_TREND_META[metric] ?? SCORECARD_TREND_META.fill_rate;
+	const fmt = meta.percent ? pctFmt : (v) => formatCompactCurrency(v);
+	return {
+		tooltip: { trigger: "axis", valueFormatter: fmt },
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.from_date)),
+		},
+		yAxis: {
+			type: "value",
+			axisLabel: { formatter: fmt },
+			...(meta.percent ? { max: 100 } : {}),
+		},
+		series: [areaSeries(meta.label, rows.map((r) => r[metric]), meta.color)],
+	};
+};
+
+/**
+ * Per-category fill rate as horizontal bars (best-first). `items` =
+ * [{ label, value }] where value is a 0–100 fill-rate percent.
+ */
+export const categoryFillOption = (items) => {
+	const rows = [...items].reverse(); // ECharts draws category axis bottom-up
+	return {
+		tooltip: { trigger: "axis", valueFormatter: pctFmt },
+		grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
+		xAxis: {
+			type: "value",
+			max: 100,
+			axisLabel: { formatter: (v) => `${v}%` },
+		},
+		yAxis: {
+			type: "category",
+			data: rows.map((r) => r.label),
+			axisLabel: { width: 140, overflow: "truncate" },
+		},
+		series: [
+			{
+				type: "bar",
+				data: rows.map((r) => r.value),
+				itemStyle: { color: SUCCESS, borderRadius: [0, 3, 3, 0] },
+			},
 		],
 	};
 };
