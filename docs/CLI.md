@@ -9,6 +9,28 @@ python -m cli --help
 
 ---
 
+## Account
+
+An **account** is the subscriber org that logs in. Create it first; it also makes
+the first user (an `admin`). Add more users (teammates) to the same account so
+they can see all of its clients' data — `member` by default, or `--admin`.
+
+```bash
+# Create an account + its first admin user (prompts for password)
+python -m cli account create --name "Dobra" --admin-email anita@dobra.com
+
+# Add another user to an existing account (prompts for password)
+python -m cli account add-user --account <account-id> --email teammate@dobra.com
+python -m cli account add-user --account <account-id> --email lead@dobra.com --name "Team Lead" --admin
+
+python -m cli account list                       # show all accounts + their UUIDs
+```
+
+Data is account-scoped: any user under an account sees all of that account's
+clients. Role (`member`/`admin`) only gates Settings/admin UI, not data.
+
+---
+
 ## Tenant
 
 Create a tenant once before using any private (auth-required) scraper. The printed UUID is what you pass as `--tenant` in all subsequent commands.

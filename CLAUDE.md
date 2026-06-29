@@ -79,19 +79,26 @@ alembic upgrade head
 The API is multi-tenant: **Account** (subscriber org, logs in & pays) → **Client**
 (the `tenants` table / `tenant_id`, the data unit) → **User** (login). A Client
 belongs to an Account; a User belongs to an Account and can act on any of its
-Clients. The JWT carries `account_id`; the active client is chosen per-request
-(`/api/clients/{client_id}/...`) and access-checked against the account.
+Clients. The JWT carries `account_id` + `role`; the active client is chosen
+per-request (`/api/clients/{client_id}/...`) and access-checked against the account.
 
-See [docs/api-reference.md](docs/api-reference.md) for the full surface.
+**Users** are provisioned via the CLI only — no public signup. `account create`
+makes the account + its first `admin` user; `account add-user` adds more users to
+an existing account (`member` by default, `--admin` for admin). Data is
+**account-scoped** — every user of an account sees all its clients; `role`
+(`admin`/`member`) gates only the Settings/admin UI and `require_admin` routes,
+not data. See [docs/api-reference.md](docs/api-reference.md) and the user-creation
+flow in [docs/setup.md](docs/setup.md).
 
 ## Seeding
 
 - `brands` and `marketplaces` are auto-upserted by `ensure_refs()` — no manual seeding for public scrapers.
 - A `tenants` row (Client) now belongs to an **Account**. Create the account + its
-  first admin login, then the client under it:
+  first admin login, then the client under it, and optionally more users:
   ```bash
   python -m cli account create --name "Foresight" --admin-email you@foresight.com
   python -m cli tenant create --name "Dobra" --account <account-id>
+  python -m cli account add-user --account <account-id> --email teammate@foresight.com
   ```
 
 ## Coding Rules (abbreviated — see docs/code-standards.md)
@@ -123,6 +130,7 @@ Step 2 must execute before any page JavaScript. Firebase JS SDK v9+ stores the r
 
 ```bash
 python -m cli account create --name "Foresight" --admin-email you@foresight.com
+python -m cli account add-user --account <account-id> --email teammate@foresight.com [--name "Name"] [--admin]
 python -m cli account list
 
 python -m cli tenant create --name "Brand" --account <account-id>
