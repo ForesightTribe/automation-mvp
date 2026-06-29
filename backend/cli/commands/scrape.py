@@ -270,10 +270,14 @@ def scrape_blinkit_seller(
     po: bool = typer.Option(False, "--po", help="Scrape PO data"),
     soh: bool = typer.Option(False, "--soh", help="Scrape stock on hand"),
     po_days_back: int = typer.Option(90, "--po-days-back", help="Rolling window for PO fetch"),
+    refetch_po_items: bool = typer.Option(
+        False, "--refetch-po-items",
+        help="Re-fetch line items for every PO in the window (one-time backfill of stale received qty)",
+    ),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to MongoDB"),
 ):
     """Scrape Blinkit seller data. Pass --sales, --po, --soh, or none to run all three."""
-    asyncio.run(_scrape_blinkit_seller(tenant_id, date_from, date_to, sales, po, soh, po_days_back, save))
+    asyncio.run(_scrape_blinkit_seller(tenant_id, date_from, date_to, sales, po, soh, po_days_back, refetch_po_items, save))
 
 
 def _date_range(date_from: str | None, date_to: str | None) -> list[str]:
@@ -292,6 +296,7 @@ async def _scrape_blinkit_seller(
     po_flag: bool,
     soh_flag: bool,
     po_days_back: int,
+    refetch_po_items: bool,
     save: bool,
 ) -> None:
     run_all = not sales_flag and not po_flag and not soh_flag
@@ -337,20 +342,29 @@ async def _scrape_blinkit_seller(
         if run_po:
             po_job_id = None
             try:
-                known_po_numbers: set[str] = set()
+                # po_number -> (po_state, total_grn_quantity) for the targeted
+                # item refetch: a changed GRN or non-terminal state means the
+                # line items may have moved and must be re-pulled.
+                known_pos: dict[str, tuple[str | None, int | None]] = {}
                 if save:
                     import uuid as _uuid
                     from sqlmodel import select as _select
                     from app.models.blinkit_seller import BlinkitPO as _BlinkitPO
-                    from sqlalchemy import distinct as _distinct
                     rows = await db.execute(
-                        _select(_distinct(_BlinkitPO.po_number)).where(
-                            _BlinkitPO.tenant_id == _uuid.UUID(tenant_id)
-                        )
+                        _select(
+                            _BlinkitPO.po_number,
+                            _BlinkitPO.po_state,
+                            _BlinkitPO.total_grn_quantity,
+                        ).where(_BlinkitPO.tenant_id == _uuid.UUID(tenant_id))
                     )
-                    known_po_numbers = set(rows.scalars().all())
+                    known_pos = {pn: (state, grn) for pn, state, grn in rows.all()}
+                    detail = (
+                        "re-fetching ALL their line items"
+                        if refetch_po_items
+                        else "re-fetching only changed/in-flight ones"
+                    )
                     console.print(
-                        f"\n[dim]{len(known_po_numbers)} existing POs in DB — skipping their SKU fetch[/dim]"
+                        f"\n[dim]{len(known_pos)} existing POs in DB — {detail}[/dim]"
                     )
 
                 po_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_po")
@@ -359,7 +373,8 @@ async def _scrape_blinkit_seller(
                     raw_po = await seller_scraper.scrape_po(
                         storage_state,
                         po_days_back=po_days_back,
-                        known_po_numbers=known_po_numbers,
+                        known_pos=known_pos,
+                        refetch_all_items=refetch_po_items,
                     )
 
                 pos = [parse_po_row(r, tenant_id, po_job_id) for r in raw_po["pos"]]

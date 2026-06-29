@@ -17,6 +17,12 @@ _PO_ALL_STATES = [
     "Rescheduled", "Delivered", "Partially Scheduled",
 ]
 
+# PO states that are settled — their line items (and GRN) won't change again, so
+# once captured we never need to re-fetch their items.
+_PO_TERMINAL_STATES = {
+    "Fulfilled", "Delivered", "Cancelled", "Cancelled post Creation", "Expired",
+}
+
 
 def _yesterday() -> str:
     return (datetime.now(_IST) - timedelta(days=1)).strftime("%Y-%m-%d")
@@ -289,10 +295,40 @@ async def _fetch_po_skus_batch(
     return skus
 
 
+def _pos_needing_items(
+    pos: list[dict],
+    known_pos: dict[str, tuple[str | None, int | None]],
+    refetch_all: bool,
+) -> list[str]:
+    """PO numbers whose line items need (re)fetching.
+
+    Item-level quantities only change while a PO is still receiving stock, and
+    the header's `total_grn_quantity` is the sum of received across its items —
+    so a changed (or newly non-zero) GRN, or a still-in-flight state, is the
+    signal to refetch. Terminal POs with an unchanged GRN are skipped, since
+    their items can no longer move. `refetch_all` forces a full backfill."""
+    if refetch_all:
+        return [po["po_number"] for po in pos]
+    out: list[str] = []
+    for po in pos:
+        pn = po["po_number"]
+        prev = known_pos.get(pn)
+        if prev is None:                                  # never seen before
+            out.append(pn)
+            continue
+        prev_state, prev_grn = prev
+        if po.get("total_grn_quantity") != prev_grn:      # GRN moved → items moved
+            out.append(pn)
+        elif prev_state not in _PO_TERMINAL_STATES:       # still in flight
+            out.append(pn)
+    return out
+
+
 async def scrape_po(
     storage_state: dict,
     po_days_back: int = 90,
-    known_po_numbers: set[str] | None = None,
+    known_pos: dict[str, tuple[str | None, int | None]] | None = None,
+    refetch_all_items: bool = False,
 ) -> dict:
     issue_date_gte = (datetime.now(_IST) - timedelta(days=po_days_back)).strftime("%Y-%m-%d")
 
@@ -304,15 +340,12 @@ async def scrape_po(
             _fetch_po_summary(client, headers, issue_date_gte),
         )
 
-        new_po_numbers = [
-            po["po_number"] for po in pos
-            if po["po_number"] not in (known_po_numbers or set())
-        ]
+        to_fetch = _pos_needing_items(pos, known_pos or {}, refetch_all_items)
 
         sku_map: dict[str, list] = {}
-        if new_po_numbers:
-            sku_map = await _fetch_po_skus_batch(client, headers, new_po_numbers)
-            logger.info(f"SKUs fetched for {len(sku_map)}/{len(new_po_numbers)} new POs")
+        if to_fetch:
+            sku_map = await _fetch_po_skus_batch(client, headers, to_fetch)
+            logger.info(f"SKUs fetched for {len(sku_map)}/{len(to_fetch)} POs")
 
     for po in pos:
         if po["po_number"] in sku_map:
@@ -320,7 +353,7 @@ async def scrape_po(
 
     logger.info(
         f"Scraped {len(pos)} POs [{issue_date_gte}→today] | "
-        f"{len(new_po_numbers)} new, {len(sku_map)} SKU sets fetched"
+        f"{len(to_fetch)} item sets refetched ({len(sku_map)} ok)"
     )
 
     return {
