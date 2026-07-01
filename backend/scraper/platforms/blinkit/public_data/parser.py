@@ -10,7 +10,11 @@ from scraper.utils.search_result import classify_products
 
 
 def parse(raw: dict) -> dict[str, Any]:
-    cls = classify_products(raw["products"], raw["brand_slug"], raw.get("aliases"))
+    # raw["competitors"] (from the orchestrator) whitelists which competitors to
+    # store; absent (ad-hoc mode) → keep all.
+    cls = classify_products(
+        raw["products"], raw["brand_slug"], raw.get("aliases"), raw.get("competitors")
+    )
     return {
         "provider": "blinkit",
         "brand_slug": raw["brand_slug"],

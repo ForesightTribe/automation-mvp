@@ -45,6 +45,13 @@ lever (would take it under an hour).
 - **Page size is hard-capped at 12** server-side (Blinkit ignores `limit`>12), so
   `cap>12` costs extra API calls only on keywords with >12 real results
   (self-limiting); shallow keywords stay 1 call. `RESULT_CAP` currently 30.
+- **Competitor whitelist (2026-06-30).** `classify_products(..., competitors=)`
+  stores only own-brand + the tenant's **declared** competitors (watchlist rows
+  with `relationship=competitor`, matched by slug/aliases); other brands are
+  counted for rank/SoV but not stored. SoV/rank are computed over the FULL page,
+  not the filtered subset. **No competitor rows declared → keep ALL brands
+  (discovery mode); declare competitor rows to narrow to a whitelist.** Workflow:
+  run once to discover which brands appear, then curate the whitelist.
 - Reference only: `Foresight/foresight` is the teammate's old repo (unrelated to
   automation-mvp); consulted for technique, not reused.
 

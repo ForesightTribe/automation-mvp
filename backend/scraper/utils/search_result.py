@@ -136,61 +136,89 @@ def classify_products(
     products: list[dict],
     brand_slug: str,
     aliases: list[str] | None = None,
+    competitors: list[tuple[str, list[str]]] | None = None,
 ) -> dict[str, Any]:
     """Classify a list of product dicts into own-brand vs competitors.
 
     Uses each product's explicit ``brand`` field when present (e.g. Blinkit),
-    falling back to a name match otherwise. Enriches every product with
-    ``is_brand``, a normalized ``brand_slug``, and ``discount_pct`` — the rows
-    that become ``search_listings``. Also returns the snapshot-level summary
-    (rank, SoV, counts) and a grouped competitor view for display.
+    falling back to a name match. Enriches every product with ``is_brand``, a
+    normalized ``brand_slug``, and ``discount_pct``.
+
+    ``competitors`` is the whitelist of (slug, aliases) to KEEP as listing rows
+    (own brand is always kept). When given, only own + declared competitors are
+    returned as ``listings`` — everything else is still counted for rank/SoV but
+    not stored. When ``None`` (ad-hoc mode), every product is kept.
+
+    Rank and SoV are always computed over the FULL result page, not the filtered
+    subset.
     """
-    listings: list[dict] = []
+    keep = competitors  # None = keep all
+    all_rows: list[dict] = []
     own: list[dict] = []
-    comp_map: dict[str, dict] = {}
 
     for p in products:
         raw_brand = (p.get("brand") or "").strip()
         match_text = raw_brand or p.get("name", "")
         is_brand = brand_in(match_text, brand_slug, aliases)
         if is_brand:
-            norm_slug = brand_slug
-            comp_name = raw_brand or brand_slug
+            norm_slug, comp_name = brand_slug, raw_brand or brand_slug
         else:
             comp_name = raw_brand or _first_words(p.get("name", ""))
             norm_slug = slugify(comp_name)
 
-        listing = {
+        row = {
             **p,
             "is_brand": is_brand,
             "brand_slug": norm_slug,
+            "_comp_name": comp_name,
             "discount_pct": discount_pct(p.get("price"), p.get("mrp")),
         }
-        listings.append(listing)
-
+        all_rows.append(row)
         if is_brand:
-            own.append(listing)
-        else:
-            entry = comp_map.setdefault(
-                norm_slug,
-                {"name": comp_name, "brand_slug": norm_slug, "count_in_results": 0, "positions": []},
-            )
-            entry["count_in_results"] += 1
-            if listing.get("position"):
-                entry["positions"].append(listing["position"])
+            own.append(row)
 
-    best_rank = min((l["position"] for l in own if l.get("position")), default=None)
-    brand_sov = round(len(own) / len(listings) * 100, 1) if listings else 0.0
+    # Metrics over the full page (before filtering).
+    best_rank = min((r["position"] for r in own if r.get("position")), default=None)
+    brand_sov = round(len(own) / len(all_rows) * 100, 1) if all_rows else 0.0
 
-    competitors = sorted(comp_map.values(), key=lambda x: x["count_in_results"], reverse=True)
-    for c in competitors:
+    # Match on the slugified form so how you write the config (e.g. "Bombay Banta",
+    # "bombay banta", "bombay-banta") doesn't matter — all normalize to the same slug.
+    keep_slugs = {slugify(s) for s, _ in keep} if keep is not None else set()
+
+    def _keep(row: dict) -> bool:
+        if row["is_brand"] or keep is None:
+            return True
+        if row["brand_slug"] in keep_slugs:
+            return True
+        text = row.get("brand") or row.get("name", "")
+        return any(al and brand_in(text, slug, al) for slug, al in keep)
+
+    listings = [r for r in all_rows if _keep(r)]
+
+    comp_map: dict[str, dict] = {}
+    for r in listings:
+        if r["is_brand"]:
+            continue
+        entry = comp_map.setdefault(
+            r["brand_slug"],
+            {"name": r["_comp_name"], "brand_slug": r["brand_slug"], "count_in_results": 0, "positions": []},
+        )
+        entry["count_in_results"] += 1
+        if r.get("position"):
+            entry["positions"].append(r["position"])
+
+    competitors_out = sorted(comp_map.values(), key=lambda x: x["count_in_results"], reverse=True)
+    for c in competitors_out:
         c["best_position"] = min(c["positions"]) if c["positions"] else None
         del c["positions"]
+
+    for r in listings:
+        r.pop("_comp_name", None)  # internal only
 
     return {
         "listings": listings,
         "brand_products": own,
-        "competitors": competitors,
+        "competitors": competitors_out,
         "brand_rank": best_rank,
         "brand_sov_pct": brand_sov,
         "brand_product_count": len(own),

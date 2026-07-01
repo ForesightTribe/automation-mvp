@@ -54,6 +54,18 @@ async def _own_keyword_map(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, 
     return kw_map
 
 
+async def _competitor_list(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple[str, list[str]]]:
+    """(slug, aliases) of the tenant's declared competitors — the whitelist of
+    which competitor products to store (own is always stored). Empty → own only."""
+    rows = (await db.execute(
+        select(TenantWatchlist).where(
+            TenantWatchlist.tenant_id == tenant_id,
+            TenantWatchlist.relationship == "competitor",
+        )
+    )).scalars().all()
+    return [(e.brand_slug, e.aliases or []) for e in rows]
+
+
 async def _locations(db: AsyncSession, tenant_id: uuid.UUID) -> list[MarketplaceLocation]:
     return (await db.execute(
         select(MarketplaceLocation)
@@ -104,6 +116,7 @@ async def run_tenant(
     locations = await _locations(db, tid)
     if city:
         locations = [l for l in locations if l.city == city]
+    competitor_list = await _competitor_list(db, tid)
     summary = {
         "tenant_id": str(tid), "keywords": len(kw_map), "locations": len(locations),
         "snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "job_id": None,
@@ -177,6 +190,9 @@ async def run_tenant(
                                 "platform": MP, "keyword": keyword, "brand_slug": brand_slug,
                                 "city": loc.city, "zone": loc.zone, "pincode": loc.pincode,
                                 "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
+                                # Declared competitors → whitelist; none declared → keep all
+                                # (discovery mode: see who shows up, then narrow later).
+                                "competitors": competitor_list or None,
                                 "merchant_id": res["merchant_id"], "total_results": res["total_results"],
                                 "products": res["products"],
                             }
