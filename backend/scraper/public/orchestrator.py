@@ -144,6 +144,7 @@ async def run_tenant(
         done = set()
     summary["job_id"] = job_id
     rows = snapshots = errors = skipped = 0
+    ensured: set[str] = set()  # brand slugs upserted this run (ensure_refs once each)
 
     try:
         async with async_playwright() as pw:
@@ -154,9 +155,11 @@ async def run_tenant(
             if not session:
                 raise RuntimeError("failed to open Blinkit session")
             stale = 0  # consecutive failed fetches across stores → session expiry
+            total_stores = len(locations)
             try:
-                for loc in locations:
+                for idx, loc in enumerate(locations, 1):
                     store_fail = 0
+                    store_snaps = store_rows = 0
                     for keyword, brands in kw_map.items():
                         if store_fail >= _STORE_SKIP_AFTER:
                             break  # unserviceable store — skip its remaining keywords
@@ -197,8 +200,17 @@ async def run_tenant(
                                 "products": res["products"],
                             }
                             result = bl_parser.parse(raw)
-                            rows += await bl_storage.save(db, result, tid, job_id)
+                            n = await bl_storage.save(db, result, tid, job_id, ensured)
+                            rows += n
+                            store_rows += n
                             snapshots += 1
+                            store_snaps += 1
+
+                    logger.info(
+                        f"[{idx}/{total_stores}] {loc.city:<16} "
+                        f"{store_snaps} kw · {store_rows} rows   "
+                        f"| run: {snapshots} snapshots, {rows} rows, {errors} err"
+                    )
                     await asyncio.sleep(_PACING)
             finally:
                 if session:

@@ -14,12 +14,15 @@ def _as_uuid(value) -> uuid.UUID | None:
     return uuid.UUID(str(value))
 
 
-async def save(session: AsyncSession, result: dict, tenant_id, job_id=None) -> int:
+async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensured: set | None = None) -> int:
     """Persist one search as a header (`search_snapshots`) + N detail rows
     (`search_listings`), tagged with `tenant_id` + `job_id`. Returns rows written.
 
     Append-only (public data is never upserted). `ensure_refs` upserts the brand
-    rows for the own brand and every competitor slug so the FKs resolve.
+    rows for the own brand and every competitor slug so the FKs resolve. `ensured`
+    is a per-run cache of already-upserted slugs, so we call `ensure_refs` once per
+    brand per run instead of on every save (avoids ~7 redundant brand upserts per
+    save — a large DB-round-trip saving over a long run).
     """
     tid = _as_uuid(tenant_id)
     jid = _as_uuid(job_id)
@@ -29,7 +32,8 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None) -> i
     slugs = {result["brand_slug"]} | {
         l["brand_slug"] for l in listings if l.get("brand_slug")
     }
-    for slug in slugs:
+    new_slugs = slugs - ensured if ensured is not None else slugs
+    for slug in new_slugs:
         await ensure_refs(session, slug, "blinkit")
 
     snapshot = SearchSnapshot(
@@ -87,8 +91,10 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None) -> i
         )
 
     await session.commit()
+    if ensured is not None:
+        ensured |= new_slugs  # mark ensured only after a successful commit
     written = 1 + len(listings)
-    logger.info(
+    logger.debug(
         f"blinkit public | saved snapshot + {len(listings)} listings "
         f"tenant={tid} kw='{result['keyword']}' "
         f"rank={result.get('brand_rank')} sov={result.get('brand_sov_pct')}%"
