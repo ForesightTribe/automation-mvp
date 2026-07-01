@@ -15,6 +15,7 @@ task queue for concurrency is a later refinement; the unit of work is already a
 (location, keyword) task, so it slots in without reshaping this.
 """
 import asyncio
+import time
 import uuid
 
 from playwright.async_api import async_playwright
@@ -160,17 +161,20 @@ async def run_tenant(
                 for idx, loc in enumerate(locations, 1):
                     store_fail = 0
                     store_snaps = store_rows = 0
+                    store_fetch = store_db = 0.0
                     for keyword, brands in kw_map.items():
                         if store_fail >= _STORE_SKIP_AFTER:
                             break  # unserviceable store — skip its remaining keywords
                         if (keyword, loc.lat, loc.lon) in done:
                             skipped += 1
                             continue  # already scraped under this (resumed) job
+                        _t = time.monotonic()
                         try:
                             res = await bl_scraper.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
                         except Exception as e:
                             logger.debug(f"orchestrator: search '{keyword}' @ {loc.city} error: {e}")
                             res = {"ok": False, "products": [], "merchant_id": "", "total_results": 0}
+                        store_fetch += time.monotonic() - _t
 
                         if not res.get("ok"):
                             store_fail += 1
@@ -200,7 +204,9 @@ async def run_tenant(
                                 "products": res["products"],
                             }
                             result = bl_parser.parse(raw)
+                            _t = time.monotonic()
                             n = await bl_storage.save(db, result, tid, job_id, ensured)
+                            store_db += time.monotonic() - _t
                             rows += n
                             store_rows += n
                             snapshots += 1
@@ -209,7 +215,8 @@ async def run_tenant(
                     logger.info(
                         f"[{idx}/{total_stores}] {loc.city:<16} "
                         f"{store_snaps} kw · {store_rows} rows   "
-                        f"| run: {snapshots} snapshots, {rows} rows, {errors} err"
+                        f"[fetch {store_fetch:5.1f}s · db {store_db:4.1f}s]  "
+                        f"| run: {snapshots} snap, {rows} rows, {errors} err"
                     )
                     await asyncio.sleep(_PACING)
             finally:
