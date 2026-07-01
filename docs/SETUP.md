@@ -158,15 +158,17 @@ user just logs in fresh, and a role change takes effect on that user's next logi
 
 ### Public scraper — no login needed
 
-```bash
-# Dry run — print results, no DB write
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit
+Config-driven (Blinkit only). Fill `config.xlsx`, sync it, then run per tenant:
 
-# Save to DB
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --save
+```bash
+python -m cli sync --file config.xlsx                 # locations + watchlist + coverage → DB
+python -m cli scrape public-run --tenant <id>         # scrape the tenant's watchlist × coverage
+
+# ad-hoc single scrape (quick check); --save needs --tenant
+python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --city delhi
 ```
 
-Brand and marketplace rows are created automatically on first `--save`. No manual seeding.
+Brand and marketplace rows are created automatically (`ensure_refs`). No manual seeding.
 
 ### Private scrapers — requires a client + seller login
 

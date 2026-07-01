@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
 from app.utils.time import now_ist
-from app.models.search import CompetitorRanking, SearchResult
+from app.models.search import SearchListing, SearchSnapshot
 from app.schemas.common import Page
 from app.schemas.competition import CompetitorRankRow
 from app.services import watchlist_service
@@ -46,21 +46,25 @@ async def get_share_of_voice(
         return {"summary": summary, "trend": []}
 
     since = now_ist() - timedelta(days=days)
-    conditions = [SearchResult.brand_slug.in_(own), SearchResult.scraped_at >= since]
+    conditions = [
+        SearchSnapshot.tenant_id == tenant_id,
+        SearchSnapshot.brand_slug.in_(own),
+        SearchSnapshot.scraped_at >= since,
+    ]
     if marketplace:
-        conditions.append(SearchResult.mp_slug == marketplace)
+        conditions.append(SearchSnapshot.mp_slug == marketplace)
     if keyword:
-        conditions.append(SearchResult.keyword == keyword)
+        conditions.append(SearchSnapshot.keyword == keyword)
     if city:
-        conditions.append(SearchResult.city == city)
+        conditions.append(SearchSnapshot.city == city)
 
-    day = func.date(SearchResult.scraped_at).label("day")
+    day = func.date(SearchSnapshot.scraped_at).label("day")
     rows = (
         await session.execute(
             select(
                 day,
-                func.avg(SearchResult.brand_sov),
-                func.avg(SearchResult.brand_rank),
+                func.avg(SearchSnapshot.brand_sov),
+                func.avg(SearchSnapshot.brand_rank),
                 func.count(),
             )
             .where(*conditions)
@@ -76,8 +80,8 @@ async def get_share_of_voice(
     avg_sov, avg_rank, total = (
         await session.execute(
             select(
-                func.avg(SearchResult.brand_sov),
-                func.avg(SearchResult.brand_rank),
+                func.avg(SearchSnapshot.brand_sov),
+                func.avg(SearchSnapshot.brand_rank),
                 func.count(),
             ).where(*conditions)
         )
@@ -102,34 +106,45 @@ async def get_rankings(
     marketplace: str | None = None,
     competitor: str | None = None,
 ) -> Page[CompetitorRankRow]:
-    own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
-    if not own:
-        return Page.build([], 0, pagination)
-
-    conditions = [CompetitorRanking.brand_slug.in_(own)]
+    # Competitors are the non-own listing rows in this client's own searches.
+    # Tenant-scoped storage means a flat `tenant_id` filter replaces the old
+    # watchlist lens; `is_brand=False` excludes the client's own products.
+    conditions = [SearchListing.tenant_id == tenant_id, SearchListing.is_brand.is_(False)]
     if keyword:
-        conditions.append(CompetitorRanking.keyword == keyword)
+        conditions.append(SearchListing.keyword == keyword)
     if city:
-        conditions.append(CompetitorRanking.city == city)
+        conditions.append(SearchListing.city == city)
     if marketplace:
-        conditions.append(CompetitorRanking.mp_slug == marketplace)
+        conditions.append(SearchListing.mp_slug == marketplace)
     if competitor:
-        conditions.append(CompetitorRanking.competitor == competitor)
+        conditions.append(SearchListing.brand_slug == competitor)
 
     total = (
         await session.execute(
-            select(func.count()).select_from(CompetitorRanking).where(*conditions)
+            select(func.count()).select_from(SearchListing).where(*conditions)
         )
     ).scalar_one()
     rows = (
         await session.execute(
-            select(CompetitorRanking)
+            select(SearchListing)
             .where(*conditions)
-            .order_by(CompetitorRanking.scraped_at.desc(), CompetitorRanking.position)
+            .order_by(SearchListing.scraped_at.desc(), SearchListing.position)
             .offset(pagination.offset)
             .limit(pagination.limit)
         )
     ).scalars().all()
 
-    items = [CompetitorRankRow.model_validate(r) for r in rows]
+    items = [
+        CompetitorRankRow(
+            competitor=r.brand_slug or r.product_name,
+            keyword=r.keyword,
+            city=r.city,
+            zone=r.zone,
+            mp_slug=r.mp_slug,
+            position=r.position,
+            price=r.price,
+            scraped_at=r.scraped_at,
+        )
+        for r in rows
+    ]
     return Page.build(items, total, pagination)

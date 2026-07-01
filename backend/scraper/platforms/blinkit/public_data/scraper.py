@@ -1,5 +1,16 @@
+"""Blinkit public search scraper.
+
+Flow: open one headless-browser session per location (captures Cloudflare
+clearance + the session-bound headers once), then run many keyword searches as
+in-page fetch() calls, paginating via Blinkit's own next_url. The session is
+reused across keywords — the expensive browser warmup is paid once per location,
+not once per search.
+
+`scraper.py` returns raw extracted fields; `parser.py` types/classifies them.
+"""
+import asyncio
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import urlparse, parse_qs
 
 from playwright.async_api import async_playwright
 from playwright.async_api import TimeoutError as PWTimeout
@@ -7,139 +18,226 @@ from playwright.async_api import TimeoutError as PWTimeout
 from app.utils.logger import logger
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.cities import CITIES
-from scraper.utils.search_result import HEADERS_COMMON, norm_price
-
-# Headers Blinkit attaches to every /v1/layout/search request — session-bound,
-# captured from the browser's own request and replayed via in-page fetch().
-_SEARCH_HEADER_KEYS = (
-    "accept", "accept-language", "app_client", "app_version", "auth_key",
-    "content-type", "device_id", "session_uuid", "web_app_version",
-    "rn_bundle_version", "lat", "lon", "access_token",
-)
-_SEARCH_BODY = {"applied_filters": None, "sort": ""}
+from scraper.utils.search_result import HEADERS_COMMON, dig
+from scraper.platforms.blinkit.public_data import endpoints as ep
 
 
-def _parse_snippets(body: dict) -> list[dict]:
-    """Parse a /v1/layout/search response — products are snippets with atc_action."""
-    products = []
-    snippets = (body.get("response") or {}).get("snippets", [])
-    for sn in snippets:
-        d = sn.get("data", {})
-        if "atc_action" not in d or "name" not in d:
-            continue
-        name = (d.get("name") or {}).get("text", "")
-        price_text = (d.get("normal_price") or {}).get("text", "")
-        inventory = d.get("inventory", 0)
-        if name:
-            products.append({
-                "name": name,
-                "price": norm_price(price_text),
-                "position": len(products) + 1,
-                "in_stock": inventory != 0,
-            })
-    return products
+# ── Extraction ───────────────────────────────────────────────────────────────
 
+def _extract_product(snippet: dict) -> dict | None:
+    """Pull one product card into a flat raw dict. Returns None for non-product
+    snippets (banners, recommendations, etc.).
 
-async def _fetch_playwright(keyword: str, lat: float, lon: float) -> list[dict]:
+    Primary source is the typed `cart_item` (numeric price/mrp/inventory + brand);
+    rank/category come from the sibling `tracking.common_attributes`.
     """
-    Open blinkit.com with lat/lon in the URL to establish location context.
-    Capture the session-bound request headers from Blinkit's own /v1/layout/search
-    call, then replay them via in-page fetch() — requests originate from the real
-    browser session so Cloudflare passes them.
-    """
-    products = []
+    data = snippet.get("data") or {}
+    cart_item = dig(data, "atc_action", "add_to_cart", "cart_item")
+    if not cart_item or not cart_item.get("product_name"):
+        return None
+
+    common = dig(snippet, "tracking", "common_attributes") or {}
+    pos_raw = common.get("product_position")
     try:
-        async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
-            ctx = await browser.new_context(
-                user_agent=HEADERS_COMMON["User-Agent"],
-                locale="en-IN",
-                geolocation={"latitude": lat, "longitude": lon},
-                permissions=["geolocation"],
+        position = int(pos_raw) if pos_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        position = None
+
+    inventory = cart_item.get("inventory")
+    in_stock = not data.get("is_sold_out", False) and bool(inventory)
+
+    return {
+        "product_id": str(cart_item.get("product_id") or ""),
+        "name": cart_item.get("product_name") or "",
+        "brand": cart_item.get("brand") or "",
+        "price": cart_item.get("price"),
+        "mrp": cart_item.get("mrp"),
+        "unit": cart_item.get("unit") or "",
+        "inventory": inventory,
+        "in_stock": in_stock,
+        "position": position,
+        "group_id": cart_item.get("group_id"),
+        "merchant_id": str(cart_item.get("merchant_id") or ""),
+        "merchant_type": cart_item.get("merchant_type") or "",
+        "image_url": cart_item.get("image_url") or "",
+        "ptype": common.get("ptype"),
+        "category": {
+            "l0": common.get("l0_category"),
+            "l1": common.get("l1_category"),
+            "l2": common.get("l2_category"),
+        },
+        "match_reason": common.get("reason"),
+    }
+
+
+def _extract_products(body: dict) -> list[dict]:
+    snippets = dig(body, "response", "snippets") or []
+    out = []
+    for sn in snippets:
+        p = _extract_product(sn)
+        if p:
+            out.append(p)
+    return out
+
+
+def _pagination(body: dict) -> tuple[str | None, str | None, int | None]:
+    """(next_url, search_method, search_count) from a response. The method and
+    total live in the next_url query string."""
+    next_url = dig(body, "response", "pagination", "next_url")
+    if not next_url:
+        return None, None, None
+    qs = parse_qs(urlparse(next_url).query)
+    method = (qs.get("search_method") or [None])[0]
+    count_raw = (qs.get("search_count") or [None])[0]
+    count = int(count_raw) if count_raw and count_raw.isdigit() else None
+    return next_url, method, count
+
+
+# ── In-page fetch (Cloudflare bypass) ────────────────────────────────────────
+
+_FETCH_JS = """async ({url, h, b}) => {
+    try {
+        const opts = {method: "POST", headers: h, credentials: "include"};
+        if (b !== null) opts.body = JSON.stringify(b);
+        const r = await fetch(url, opts);
+        return {status: r.status, body: await r.json()};
+    } catch (e) {
+        return {status: 0, body: null, error: e.toString()};
+    }
+}"""
+
+
+# Transient 403/429/5xx/network blips happen mid-sweep and self-resolve, so
+# retry with backoff. A 200 (even empty) is a real result and returns immediately.
+_RETRY_DELAYS = (0.5, 1.5, 3.0)
+
+
+async def _in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dict:
+    """In-page fetch with retry + backoff on transient failures. Returns on the
+    first 200; otherwise the last response after exhausting retries."""
+    resp: dict = {"status": 0}
+    for delay in (0.0,) + _RETRY_DELAYS:
+        if delay:
+            await asyncio.sleep(delay)
+        try:
+            resp = await page.evaluate(_FETCH_JS, {"url": url, "h": headers, "b": body})
+        except Exception as e:
+            resp = {"status": 0, "error": str(e)}
+            continue
+        if resp.get("status") == 200:
+            return resp
+    return resp
+
+
+# ── Session lifecycle ────────────────────────────────────────────────────────
+
+async def open_session(pw, lat: float, lon: float) -> dict | None:
+    """Launch a headless session pinned to a location and capture the
+    session-bound search headers. Returns a session dict, or None on failure.
+    Caller must close_session() it.
+    """
+    browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+    ctx = await browser.new_context(
+        user_agent=HEADERS_COMMON["User-Agent"],
+        locale="en-IN",
+        geolocation={"latitude": lat, "longitude": lon},
+        permissions=["geolocation"],
+    )
+    page = await ctx.new_page()
+    captured: dict[str, str] = {}
+
+    async def _on_req(req):
+        if ep.SEARCH_PATH in req.url and not captured:
+            captured.update(req.headers)
+
+    page.on("request", _on_req)
+
+    try:
+        await page.goto(ep.HOMEPAGE_URL.format(lat=lat, lon=lon),
+                        wait_until="networkidle", timeout=20000)
+        await page.wait_for_timeout(1000)
+    except PWTimeout:
+        logger.debug("Blinkit: homepage timeout")
+    try:
+        await page.goto(ep.WARMUP_SEARCH_URL, wait_until="networkidle", timeout=20000)
+        await page.wait_for_timeout(1500)
+    except PWTimeout:
+        logger.debug("Blinkit: warmup timeout")
+
+    page.remove_listener("request", _on_req)
+
+    headers = {k: captured[k] for k in ep.SEARCH_HEADER_KEYS if k in captured}
+    if not headers:
+        logger.warning("Blinkit: no session headers captured — closing session")
+        await browser.close()
+        return None
+
+    headers["lat"] = str(lat)
+    headers["lon"] = str(lon)
+    return {"browser": browser, "context": ctx, "page": page, "headers": headers}
+
+
+async def close_session(session: dict) -> None:
+    try:
+        await session["browser"].close()
+    except Exception:
+        pass
+
+
+async def search(
+    session: dict, keyword: str, cap: int = ep.RESULT_CAP,
+    lat: float | None = None, lon: float | None = None,
+) -> dict:
+    """Run one keyword search in an open session, paginating Blinkit's basic
+    results up to `cap`. Pass `lat`/`lon` to target a specific store without
+    reopening the session — Blinkit selects the dark store from the lat/lon
+    headers. Returns {products, total_results, merchant_id, ok}; `ok` is False
+    when the first fetch didn't return 200 (failed/unserviceable, not just empty).
+    """
+    page = session["page"]
+    headers = session["headers"]
+    if lat is not None and lon is not None:
+        headers = {**headers, "lat": str(lat), "lon": str(lon)}
+
+    products: list[dict] = []
+    total_results: int | None = None
+    ok = False
+    url: str | None = ep.first_search_url(keyword)
+    body: dict | None = ep.SEARCH_BODY
+
+    while url and len(products) < cap:
+        resp = await _in_page_fetch(page, url, headers, body)
+        if resp.get("status") != 200:
+            logger.debug(
+                f"Blinkit search '{keyword}': status={resp.get('status')} "
+                f"error={resp.get('error', '')}"
             )
-            page = await ctx.new_page()
-            captured: dict[str, str] = {}
+            break
+        ok = True
+        page_body = resp.get("body") or {}
+        products.extend(_extract_products(page_body))
 
-            async def _on_req(req):
-                if "blinkit.com/v1/layout/search" in req.url and not captured:
-                    captured.update(req.headers)
+        next_url, method, count = _pagination(page_body)
+        if total_results is None:
+            total_results = count
+        if not next_url or method != ep.BASIC_SEARCH_METHOD:
+            break
+        url = ep.BASE_URL + next_url
+        body = None  # paged requests carry no body
 
-            page.on("request", _on_req)
+    products = products[:cap]
+    if total_results is None:
+        total_results = len(products)
+    # Fall back to running order where Blinkit didn't give a position.
+    for i, p in enumerate(products, 1):
+        if p.get("position") is None:
+            p["position"] = i
+    merchant_id = products[0]["merchant_id"] if products else ""
+    return {"products": products, "total_results": total_results,
+            "merchant_id": merchant_id, "ok": ok}
 
-            # ── 1. Homepage with lat/lon sets Blinkit's location context ─────
-            try:
-                await page.goto(
-                    f"https://blinkit.com/?lat={lat}&lon={lon}",
-                    wait_until="networkidle", timeout=20000,
-                )
-                await page.wait_for_timeout(1000)
-                logger.debug(f"Blinkit PW: homepage loaded, title='{await page.title()}'")
-            except PWTimeout:
-                logger.debug("Blinkit PW: homepage timeout")
 
-            # ── 2. Warmup search triggers a real /v1/layout/search request ───
-            # We navigate to capture the session headers; the results are discarded.
-            try:
-                await page.goto(
-                    "https://blinkit.com/s/?q=water",
-                    wait_until="networkidle", timeout=20000,
-                )
-                await page.wait_for_timeout(1500)
-                logger.debug(f"Blinkit PW: warmup search done, captured={len(captured)} headers")
-            except PWTimeout:
-                logger.debug("Blinkit PW: warmup search timeout")
-
-            page.remove_listener("request", _on_req)
-
-            fetch_headers = {k: captured[k] for k in _SEARCH_HEADER_KEYS if k in captured}
-            logger.debug(f"Blinkit PW: session headers captured: {list(fetch_headers.keys())}")
-
-            if not fetch_headers:
-                logger.warning("Blinkit PW: no session headers captured — cannot make in-page fetch")
-                await browser.close()
-                return []
-
-            # Override lat/lon for this specific zone
-            fetch_headers["lat"] = str(lat)
-            fetch_headers["lon"] = str(lon)
-
-            # ── 3. In-page POST — bypasses Cloudflare, uses browser session ──
-            url = f"https://blinkit.com/v1/layout/search?q={quote(keyword)}&search_type=type_to_search"
-            resp = await page.evaluate(
-                """async ({url, h, b}) => {
-                    try {
-                        const r = await fetch(url, {
-                            method: "POST",
-                            headers: h,
-                            credentials: "include",
-                            body: JSON.stringify(b),
-                        });
-                        return {status: r.status, body: await r.json()};
-                    } catch (e) {
-                        return {status: 0, body: null, error: e.toString()};
-                    }
-                }""",
-                {"url": url, "h": fetch_headers, "b": _SEARCH_BODY},
-            )
-
-            status = resp.get("status")
-            body = resp.get("body") or {}
-            logger.debug(f"Blinkit PW search: status={status} body_keys={list(body.keys())[:6]}")
-
-            if status == 200:
-                products = _parse_snippets(body)
-                logger.debug(f"Blinkit PW: {len(products)} products from /v1/layout/search")
-            else:
-                logger.warning(
-                    f"Blinkit PW: in-page fetch returned {status} "
-                    f"error={resp.get('error', '')}"
-                )
-
-            await browser.close()
-    except Exception as e:
-        logger.warning(f"Blinkit Playwright failed for '{keyword}': {e}")
-    return products
-
+# ── Public entrypoint (CLI-compatible) ───────────────────────────────────────
 
 async def scrape(
     keyword: str,
@@ -150,16 +248,36 @@ async def scrape(
     lat: float | None = None,
     lon: float | None = None,
     aliases: list[str] | None = None,
+    cap: int | None = None,
 ) -> dict[str, Any]:
+    """Scrape one keyword at one location (opens + closes its own session).
+    The orchestrator (Phase 5) will instead reuse one session across keywords."""
     city = CITIES.get(city_slug, CITIES["bengaluru"])
     _lat = lat if lat is not None else city["lat"]
     _lon = lon if lon is not None else city["lon"]
     _pincode = pincode or city["pincode"]
+    _cap = cap if cap is not None else ep.RESULT_CAP
 
-    products = await _fetch_playwright(keyword, _lat, _lon)
+    products: list[dict] = []
+    total_results = 0
+    merchant_id = ""
+    try:
+        async with async_playwright() as pw:
+            session = await open_session(pw, _lat, _lon)
+            if session:
+                try:
+                    res = await search(session, keyword, _cap)
+                    products = res["products"]
+                    total_results = res["total_results"]
+                    merchant_id = res["merchant_id"]
+                finally:
+                    await close_session(session)
+    except Exception as e:
+        logger.warning(f"Blinkit scrape failed for '{keyword}': {e}")
+
     if not products:
         logger.warning(
-            f"Blinkit: no products found for '{keyword}' in {city['name']}"
+            f"Blinkit: no products for '{keyword}' in {city['name']}"
             f"{f'/{zone}' if zone else ''}"
         )
 
@@ -173,5 +291,7 @@ async def scrape(
         "lat": _lat,
         "lon": _lon,
         "aliases": aliases,
+        "merchant_id": merchant_id,
+        "total_results": total_results,
         "products": products,
     }

@@ -12,6 +12,11 @@ engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
+    # Supabase's session-mode pooler caps at 15 clients. Each process (uvicorn,
+    # CLI, a migration) gets its own pool, so leave a hard per-process ceiling
+    # well under 15 — otherwise one busy process starves the others.
+    pool_size=5,
+    max_overflow=0,
 )
 
 AsyncSessionLocal = sessionmaker(

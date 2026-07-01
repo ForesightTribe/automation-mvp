@@ -185,51 +185,65 @@ The `--week` date must be a Monday (`YYYY-MM-DD`). A non-Monday will return empt
 
 ---
 
-### Public product search — no login required
+### Public product search (Blinkit) — no login required
 
-Scrapes consumer-facing search results from Blinkit, Instamart (Swiggy), and Zepto. No auth needed.
+Per-tenant and config-driven (Blinkit only; Instamart/Zepto out of scope). The
+darkstore catalog and each tenant's keywords/coverage live in a workbook
+(`config.xlsx`); the scraper reads them from the DB. `cities.py` is not used.
+
+**1. Configure — `cli sync`.** `config.xlsx` has three sheets:
+
+| Sheet | Columns | What it is |
+|---|---|---|
+| `locations` | `merchant_id, city, state, region, zone, pincode, lat, lon, active` | the global darkstore catalog (keyed on `merchant_id`) |
+| `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases` | per-tenant keywords + brands to track |
+| `coverage` | `tenant, city, zone` | which stores a tenant scrapes (blank zone = all zones in that city) |
 
 ```bash
-# Basic — scrapes all 3 platforms for default city (Bengaluru)
-python -m cli scrape public --keyword "cola" --brand "dobra"
-
-# Specific platform
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform instamart
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform zepto
-
-# Different city
-python -m cli scrape public --keyword "cola" --brand "dobra" --city mumbai
-
-# Scrape all zones within a city (different dark-store areas = different rankings)
-python -m cli scrape public --keyword "cola" --brand "dobra" --city bengaluru --all-zones
-
-# Brand name aliases — used to match products to your brand
-python -m cli scrape public --keyword "cola" --brand "dobra" --aliases "dobra,dobra cola,dobradrink"
-
-# Save results to PostgreSQL
-python -m cli scrape public --keyword "cola" --brand "dobra" --save
+python -m cli sync --file config.xlsx --template   # write a starter workbook
+python -m cli sync --file config.xlsx --dry-run     # preview changes
+python -m cli sync --file config.xlsx               # apply (upsert; --prune also deletes rows missing from the file)
 ```
 
-**Options:**
+Edit the workbook, re-sync. Tenants must already exist (`cli tenant create`); the
+workbook references them by name. Inspect what synced:
 
-| Flag                | Default     | Description                                              |
-| ------------------- | ----------- | -------------------------------------------------------- |
-| `--keyword` / `-k`  | required    | Search term (e.g. `"cola"`, `"sunflower oil"`)           |
-| `--brand` / `-b`    | required    | Brand slug used to classify your products vs competitors |
-| `--platform` / `-p` | `all`       | `blinkit` \| `instamart` \| `zepto` \| `all`             |
-| `--city` / `-c`     | `bengaluru` | City slug — see `scraper/utils/cities.py` for full list  |
-| `--all-zones`       | off         | Scrape every zone defined for the city (6–12 per city)   |
-| `--aliases`         | none        | Comma-separated brand name variants for product matching |
-| `--save`            | off         | Write results to PostgreSQL `search_results` table       |
+```bash
+python -m cli locations list [--city delhi] [--tenant <id>]   # catalog, or a tenant's coverage
+python -m cli watchlist list --tenant <id>                    # a tenant's brands + keywords
+```
 
-**Supported cities:** bengaluru, mumbai, delhi, hyderabad, pune, chennai, kolkata, ahmedabad, jaipur, surat, lucknow, kochi, chandigarh, nagpur, bhopal, indore, visakhapatnam, patna — full list in `scraper/utils/cities.py`.
+**2. Run — `cli scrape public-run`.** Scrapes every keyword × covered store for a
+tenant, reusing one browser session (Blinkit selects the store from lat/lon headers).
 
-**What it saves (per keyword per city/zone):**
+```bash
+python -m cli scrape public-run --tenant <id>                  # full run (new scrape_job)
+python -m cli scrape public-run --tenant <id> --resume         # continue an interrupted run
+python -m cli scrape public-run --tenant <id> --city delhi     # one city
+python -m cli scrape public-run --tenant <id> --keyword "soda" # one keyword
+python -m cli scrape public-run --tenant <id> --cap 30         # products per search (Blinkit pages 12 at a time)
+python -m cli scrape public-run --all                          # every active tenant
+```
 
-| Table            | Data                                                                                            |
-| ---------------- | ----------------------------------------------------------------------------------------------- |
-| `search_results` | Brand rank (best position), share of voice %, top 8 competitors with counts, brand product list |
+Each fresh run is a new `scrape_job` (full scrape) — run it 2–3×/day freely.
+`--resume` picks up the tenant's last incomplete job, **skipping already-scraped
+stores**; commits are incremental so a crash keeps its progress. Transient
+403/429/5xx are retried with backoff.
+
+**Ad-hoc single scrape — `cli scrape public`.** One keyword at one location for
+quick checks (no config needed). `--save` writes per-tenant rows and needs `--tenant`.
+
+```bash
+python -m cli scrape public --keyword "soda" --brand "dobra" --platform blinkit --city delhi          # print only
+python -m cli scrape public --keyword "soda" --brand "dobra" --tenant <id> --city delhi --save        # persist
+```
+
+**What it saves (both paths):**
+
+| Table | Data |
+|---|---|
+| `search_snapshots` | Per (tenant, keyword, store, scrape): brand rank, share-of-voice %, total results |
+| `search_listings`  | Per product in the result page: brand, price, MRP, discount %, in-stock, inventory, position, `extra` (group_id, merchant_id, unit, category…) |
 
 ---
 
@@ -252,4 +266,5 @@ Sheets produced: Ad Performance Summary, Ad Campaigns, Sponsored SOV, Brand Coll
 - Run `alembic upgrade head` once to create all tables before first use
 - Create a tenant with `cli tenant create` before running any auth or private scrape commands
 - Run `auth` before `scrape` for each tenant
-- `--save` on `scrape public` auto-creates brand and marketplace rows — no manual seeding needed
+- `cli sync` and `scrape public --save` auto-create brand + marketplace rows (`ensure_refs`) — no manual seeding
+- Public scraping is config-driven: `cli sync --file config.xlsx` before `cli scrape public-run`

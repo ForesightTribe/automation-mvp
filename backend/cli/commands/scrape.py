@@ -648,11 +648,17 @@ def scrape_public(
     platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | zepto | instamart | all"),
     all_zones: bool = typer.Option(False, "--all-zones", help="Scrape all zones defined for the city"),
     aliases: Optional[str] = typer.Option(None, "--aliases", help="Comma-separated brand name aliases (e.g. 'dobra,dobra cola')"),
-    save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL"),
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — required to --save (per-tenant storage)"),
+    save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL (requires --tenant)"),
 ):
-    """Scrape public product search results — no login required."""
+    """Scrape public product search results — no login required.
+
+    Without --save it just scrapes and prints (no tenant needed). With --save it
+    writes per-tenant header+detail rows (search_snapshots + search_listings) and
+    opens a scrape_job, so --tenant is required.
+    """
     alias_list = [a.strip() for a in aliases.split(",")] if aliases else None
-    asyncio.run(_scrape_public(keyword, brand, city, platform, all_zones, alias_list, save))
+    asyncio.run(_scrape_public(keyword, brand, city, platform, all_zones, alias_list, tenant_id, save))
 
 
 async def _scrape_public(
@@ -662,6 +668,7 @@ async def _scrape_public(
     platform: str,
     all_zones: bool,
     aliases: list[str] | None,
+    tenant_id: str | None,
     save: bool,
 ) -> None:
     from scraper.utils.cities import CITIES, PLATFORM_CITIES
@@ -690,39 +697,112 @@ async def _scrape_public(
         "zepto":     (ze_scraper, ze_parser, ze_storage),
     }
 
+    if save and not tenant_id:
+        console.print("[red]--tenant is required with --save (storage is per-tenant).[/red]")
+        raise typer.Exit(1)
+
     async with AsyncSessionLocal() as db:
-        for plat in platforms_to_run:
-            if plat not in city["platforms"]:
-                console.print(f"  [dim]{plat} not available in {city['name']}[/dim]")
-                continue
+        job_id = None
+        rows_written = 0
+        if save:
+            job_id = await create_scrape_job(db, tenant_id, "public_search", "blinkit")
 
-            plat_zones = city["platforms"][plat]["zones"] if all_zones else [
-                {"zone": "", "pincode": city["pincode"], "lat": city["lat"], "lon": city["lon"]}
-            ]
+        try:
+            for plat in platforms_to_run:
+                if plat not in city["platforms"]:
+                    console.print(f"  [dim]{plat} not available in {city['name']}[/dim]")
+                    continue
 
-            scraper_mod, parser_mod, storage_mod = scrapers[plat]
+                plat_zones = city["platforms"][plat]["zones"] if all_zones else [
+                    {"zone": "", "pincode": city["pincode"], "lat": city["lat"], "lon": city["lon"]}
+                ]
 
-            for zone_def in plat_zones:
-                zone_label = zone_def.get("zone", "")
-                zone_display = f" [{zone_label}]" if zone_label else ""
-                console.print(f"\n[bold cyan]{city['name']}{zone_display}[/bold cyan]  [dim]{plat}[/dim]")
+                scraper_mod, parser_mod, storage_mod = scrapers[plat]
 
-                with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
-                    raw = await scraper_mod.scrape(
-                        keyword=keyword,
-                        brand_slug=brand_slug,
-                        city_slug=city_slug,
-                        zone=zone_label,
-                        pincode=zone_def.get("pincode", city["pincode"]),
-                        lat=zone_def.get("lat"),
-                        lon=zone_def.get("lon"),
-                        aliases=aliases,
-                    )
-                result = parser_mod.parse(raw)
-                _print_public_result(plat, result)
+                for zone_def in plat_zones:
+                    zone_label = zone_def.get("zone", "")
+                    zone_display = f" [{zone_label}]" if zone_label else ""
+                    console.print(f"\n[bold cyan]{city['name']}{zone_display}[/bold cyan]  [dim]{plat}[/dim]")
 
-                if save:
-                    await storage_mod.save(db, result)
+                    with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
+                        raw = await scraper_mod.scrape(
+                            keyword=keyword,
+                            brand_slug=brand_slug,
+                            city_slug=city_slug,
+                            zone=zone_label,
+                            pincode=zone_def.get("pincode", city["pincode"]),
+                            lat=zone_def.get("lat"),
+                            lon=zone_def.get("lon"),
+                            aliases=aliases,
+                        )
+                    result = parser_mod.parse(raw)
+                    _print_public_result(plat, result)
+
+                    if save:
+                        rows_written += await storage_mod.save(db, result, tenant_id, job_id)
+
+            if save:
+                await complete_scrape_job(db, job_id, rows_written)
+                console.print(f"\n[green]Saved {rows_written} rows[/green] (job {job_id})")
+        except Exception as e:
+            if save and job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            raise
+
+
+@app.command("public-run")
+def public_run(
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
+    all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
+    cap: int = typer.Option(None, "--cap", help="Max products per search (default: RESULT_CAP=12)"),
+    keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
+    city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
+    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),
+):
+    """Orchestrate a tenant's full Blinkit watchlist (keywords × locations), all
+    sourced from the DB (watchlist + tenant_locations). Writes per-tenant
+    snapshot+listing rows under one scrape_job per tenant. --keyword/--city narrow
+    a run to a single keyword or city. --resume picks up an interrupted run.
+    """
+    if not tenant_id and not all_tenants:
+        console.print("[red]Provide --tenant <id> or --all.[/red]")
+        raise typer.Exit(1)
+    if resume and all_tenants:
+        console.print("[red]--resume works with a single --tenant, not --all.[/red]")
+        raise typer.Exit(1)
+    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume))
+
+
+async def _public_run(
+    tenant_id: str | None, all_tenants: bool, cap: int | None,
+    keyword: str | None, city: str | None, resume: bool,
+) -> None:
+    from scraper.public import orchestrator
+
+    async with AsyncSessionLocal() as db:
+        if all_tenants:
+            summaries = await orchestrator.run_all(db, cap, keyword, city)
+        else:
+            summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume)]
+
+    if not summaries:
+        console.print("[yellow]No active tenants to run.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Tenant")
+    table.add_column("Keywords", justify="right")
+    table.add_column("Locations", justify="right")
+    table.add_column("Snapshots", justify="right")
+    table.add_column("Rows", justify="right")
+    table.add_column("Skipped", justify="right")
+    table.add_column("Errors", justify="right")
+    for s in summaries:
+        table.add_row(
+            s["tenant_id"][:8], str(s["keywords"]), str(s["locations"]),
+            str(s["snapshots"]), str(s["rows"]), str(s.get("skipped", 0)),
+            f"[red]{s['errors']}[/red]" if s["errors"] else "0",
+        )
+    console.print(table)
 
 
 def _print_public_result(platform: str, result: dict) -> None:

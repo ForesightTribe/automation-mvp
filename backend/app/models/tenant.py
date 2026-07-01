@@ -44,6 +44,9 @@ class TenantWatchlist(SQLModel, table=True):
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
     brand_slug: str = Field(foreign_key="brands.slug")
     relationship: str = Field(default="own")  # 'own' | 'competitor'
+    # Brand-name variants used to match products to this brand during scraping
+    # (e.g. ["dobra", "dobra cola"]). Drives brand-vs-competitor classification.
+    aliases: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     cities: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     keywords: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))
     marketplaces: list[str] = Field(default_factory=list, sa_column=Column(JSON, nullable=False))

@@ -13,6 +13,7 @@
 | [docs/dashboard-views.md](docs/dashboard-views.md) | Dashboard insight catalog — questions → page/section → tables+columns → API. Build reference for the frontend |
 | [docs/frontend-architecture.md](docs/frontend-architecture.md) | Frontend stack, feature-first folder structure, state split (Context vs React Query), data flow, how to add a page |
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend coding/styling conventions — arrow components, Tailwind v4 theme tokens, error layers, logging |
+| [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Working plan — per-tenant public scraper refactor (header+detail storage, orchestrator, phases, open questions) |
 
 ---
 
@@ -122,9 +123,26 @@ Step 2 must execute before any page JavaScript. Firebase JS SDK v9+ stores the r
 
 ## Public Scraper — Key Facts
 
-- Location data comes entirely from `scraper/utils/cities.py` — hardcoded dict, no external geocoding.
-- Blinkit's API is Cloudflare-protected — direct `httpx` always returns 403. Use in-page `page.evaluate(fetch(...))` instead. See `scraper/platforms/blinkit/public_data/scraper.py` for the reference implementation.
-- Instamart and Zepto public scrapers are pending — they need the same Playwright treatment.
+Blinkit-only (Instamart/Zepto are out of scope). Fully per-tenant and DB-driven.
+Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md).
+
+- **Config is a workbook, applied via `cli sync`.** `config.xlsx` (sheets
+  `locations` / `brands` / `coverage`) is the source of truth: the darkstore
+  catalog, each tenant's keywords/aliases, and which stores it covers. `cli sync`
+  reconciles the DB (upsert; `--dry-run`, `--prune`). `scraper/utils/cities.py` is
+  legacy/unreliable and being retired — NOT used by this path.
+- **Location = lat/lon, not pincode.** Blinkit picks the dark store from the
+  lat/lon request headers. `marketplace_locations` is keyed on `merchant_id`;
+  pincode/zone are best-effort metadata.
+- **Cloudflare** blocks direct httpx (403, TLS fingerprint) even with cookies — must
+  fetch via in-page `page.evaluate(fetch(...))` in a real browser session. **One
+  session is reused across all stores** by swapping the lat/lon headers (no
+  per-store relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.
+- **Storage is per-tenant header+detail**: `search_snapshots` (rank/SoV per search)
+  + `search_listings` (per product: brand, price, mrp, discount, stock). Append-only.
+- **Orchestrator**: `scraper/public/orchestrator.py` (`run_tenant`/`run_all`) —
+  driven by watchlist + `tenant_locations`, one `scrape_job` per run, `--resume`
+  continues an interrupted job (skips already-scraped stores).
 
 ## CLI (quick ref)
 
@@ -144,6 +162,11 @@ python -m cli scrape blinkit --tenant <uuid>
 python -m cli scrape blinkit-seller --tenant <uuid> [--sales] [--po] [--soh]
 python -m cli scrape blinkit-scorecard --tenant <uuid>
 
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit [--save]
-python -m cli scrape public --keyword "cola" --brand "dobra" --city mumbai --all-zones
+python -m cli sync --file config.xlsx [--dry-run] [--prune]   # apply config workbook → DB
+python -m cli locations list [--city <slug>] [--tenant <uuid>]
+python -m cli watchlist list --tenant <uuid>
+python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]
+
+# ad-hoc single scrape (no config needed; --save requires --tenant)
+python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --tenant <uuid> --save
 ```

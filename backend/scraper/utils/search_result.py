@@ -108,3 +108,90 @@ def build_result(
         "competitors": competitors,
         "all_products": products[:20],
     }
+
+
+def slugify(name: str) -> str:
+    s = re.sub(r"[^a-z0-9]+", "-", (name or "").lower()).strip("-")
+    return s or "unknown"
+
+
+def _first_words(name: str, n: int = 2) -> str:
+    words = (name or "").split()
+    return " ".join(words[:n]) if words else "Unknown"
+
+
+def discount_pct(price: Any, mrp: Any) -> float | None:
+    """Discount % off MRP. None when prices are missing/incoherent."""
+    try:
+        price = float(price)
+        mrp = float(mrp)
+    except (TypeError, ValueError):
+        return None
+    if mrp <= 0 or price <= 0 or price > mrp:
+        return None
+    return round((mrp - price) / mrp * 100, 1)
+
+
+def classify_products(
+    products: list[dict],
+    brand_slug: str,
+    aliases: list[str] | None = None,
+) -> dict[str, Any]:
+    """Classify a list of product dicts into own-brand vs competitors.
+
+    Uses each product's explicit ``brand`` field when present (e.g. Blinkit),
+    falling back to a name match otherwise. Enriches every product with
+    ``is_brand``, a normalized ``brand_slug``, and ``discount_pct`` — the rows
+    that become ``search_listings``. Also returns the snapshot-level summary
+    (rank, SoV, counts) and a grouped competitor view for display.
+    """
+    listings: list[dict] = []
+    own: list[dict] = []
+    comp_map: dict[str, dict] = {}
+
+    for p in products:
+        raw_brand = (p.get("brand") or "").strip()
+        match_text = raw_brand or p.get("name", "")
+        is_brand = brand_in(match_text, brand_slug, aliases)
+        if is_brand:
+            norm_slug = brand_slug
+            comp_name = raw_brand or brand_slug
+        else:
+            comp_name = raw_brand or _first_words(p.get("name", ""))
+            norm_slug = slugify(comp_name)
+
+        listing = {
+            **p,
+            "is_brand": is_brand,
+            "brand_slug": norm_slug,
+            "discount_pct": discount_pct(p.get("price"), p.get("mrp")),
+        }
+        listings.append(listing)
+
+        if is_brand:
+            own.append(listing)
+        else:
+            entry = comp_map.setdefault(
+                norm_slug,
+                {"name": comp_name, "brand_slug": norm_slug, "count_in_results": 0, "positions": []},
+            )
+            entry["count_in_results"] += 1
+            if listing.get("position"):
+                entry["positions"].append(listing["position"])
+
+    best_rank = min((l["position"] for l in own if l.get("position")), default=None)
+    brand_sov = round(len(own) / len(listings) * 100, 1) if listings else 0.0
+
+    competitors = sorted(comp_map.values(), key=lambda x: x["count_in_results"], reverse=True)
+    for c in competitors:
+        c["best_position"] = min(c["positions"]) if c["positions"] else None
+        del c["positions"]
+
+    return {
+        "listings": listings,
+        "brand_products": own,
+        "competitors": competitors,
+        "brand_rank": best_rank,
+        "brand_sov_pct": brand_sov,
+        "brand_product_count": len(own),
+    }
