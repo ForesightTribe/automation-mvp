@@ -95,14 +95,20 @@ def _pagination(body: dict) -> tuple[str | None, str | None, int | None]:
 
 # ── In-page fetch (Cloudflare bypass) ────────────────────────────────────────
 
-_FETCH_JS = """async ({url, h, b}) => {
+# AbortController caps the in-browser fetch so a stalled connection can't hang the
+# worker forever — it aborts and surfaces as a normal transient failure for retry.
+_FETCH_JS = """async ({url, h, b, timeoutMs}) => {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
     try {
-        const opts = {method: "POST", headers: h, credentials: "include"};
+        const opts = {method: "POST", headers: h, credentials: "include", signal: ctrl.signal};
         if (b !== null) opts.body = JSON.stringify(b);
         const r = await fetch(url, opts);
         return {status: r.status, body: await r.json()};
     } catch (e) {
         return {status: 0, body: null, error: e.toString()};
+    } finally {
+        clearTimeout(t);
     }
 }"""
 
@@ -111,16 +117,28 @@ _FETCH_JS = """async ({url, h, b}) => {
 # retry with backoff. A 200 (even empty) is a real result and returns immediately.
 _RETRY_DELAYS = (0.5, 1.5, 3.0)
 
+# Per-attempt fetch ceiling. The JS AbortController enforces it in-browser; the
+# asyncio.wait_for is a belt-and-suspenders guard for a wedged page process (the
+# evaluate itself hanging), so the worker always unblocks.
+_FETCH_TIMEOUT_S = 20.0
+
 
 async def _in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dict:
-    """In-page fetch with retry + backoff on transient failures. Returns on the
-    first 200; otherwise the last response after exhausting retries."""
+    """In-page fetch with a hard per-attempt timeout + retry/backoff on transient
+    failures. Returns on the first 200; otherwise the last response after retries."""
     resp: dict = {"status": 0}
+    payload = {"url": url, "h": headers, "b": body, "timeoutMs": int(_FETCH_TIMEOUT_S * 1000)}
     for delay in (0.0,) + _RETRY_DELAYS:
         if delay:
             await asyncio.sleep(delay)
         try:
-            resp = await page.evaluate(_FETCH_JS, {"url": url, "h": headers, "b": body})
+            resp = await asyncio.wait_for(
+                page.evaluate(_FETCH_JS, payload),
+                timeout=_FETCH_TIMEOUT_S + 5,
+            )
+        except asyncio.TimeoutError:
+            resp = {"status": 0, "error": "evaluate timeout (page wedged)"}
+            continue
         except Exception as e:
             resp = {"status": 0, "error": str(e)}
             continue
