@@ -22,6 +22,7 @@ from playwright.async_api import async_playwright
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import AsyncSessionLocal
 from app.models.job import ScrapeJob, JobStatus
 from app.models.search import MarketplaceLocation, TenantLocation, SearchSnapshot
 from app.models.tenant import Tenant, TenantWatchlist
@@ -30,6 +31,7 @@ from scraper.platforms.blinkit.public_data import endpoints as ep
 from scraper.platforms.blinkit.public_data import parser as bl_parser
 from scraper.platforms.blinkit.public_data import scraper as bl_scraper
 from scraper.platforms.blinkit.public_data import storage as bl_storage
+from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.jobs import complete_scrape_job, create_scrape_job, fail_scrape_job
 
 MP = "blinkit"
@@ -99,15 +101,102 @@ async def _done_pairs(db: AsyncSession, job_id: str) -> set[tuple]:
     return {(kw, lat, lon) for kw, lat, lon in rows}
 
 
+async def _worker(
+    wid, browser, seed, queue, kw_map, competitor_list, done,
+    ensured, stats, total, tid, job_id, cap,
+) -> None:
+    """One concurrent worker: its own browser context + session + DB session,
+    pulling stores off the shared queue until it's empty."""
+    session = await bl_scraper.open_context_session(browser, seed[0], seed[1])
+    if not session:
+        logger.warning(f"worker {wid}: could not open session — exiting")
+        return
+    stale = 0
+    async with AsyncSessionLocal() as wdb:
+        try:
+            while True:
+                try:
+                    loc = queue.get_nowait()
+                except asyncio.QueueEmpty:
+                    break
+                store_fail = 0
+                store_snaps = store_rows = 0
+                store_fetch = store_db = 0.0
+                for keyword, brands in kw_map.items():
+                    if store_fail >= _STORE_SKIP_AFTER:
+                        break
+                    if (keyword, loc.lat, loc.lon) in done:
+                        stats["skipped"] += 1
+                        continue
+                    _t = time.monotonic()
+                    try:
+                        res = await bl_scraper.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
+                    except Exception as e:
+                        res = {"ok": False, "products": [], "merchant_id": "",
+                               "total_results": 0, "error": f"{type(e).__name__}: {e}"}
+                    store_fetch += time.monotonic() - _t
+
+                    if not res.get("ok"):
+                        store_fail += 1
+                        stale += 1
+                        stats["errors"] += 1
+                        logger.warning(
+                            f"w{wid} {loc.city} '{keyword}' failed: "
+                            f"{res.get('error') or 'no result'}"
+                        )
+                        if stale >= _REFRESH_AFTER:
+                            await bl_scraper.close_session(session)
+                            session = await bl_scraper.open_context_session(browser, loc.lat, loc.lon)
+                            stale = 0
+                            if not session:
+                                logger.warning(f"worker {wid}: session refresh failed — exiting")
+                                return
+                        continue
+
+                    stale = 0
+                    if not res["products"]:
+                        continue
+                    for brand_slug, aliases in brands:
+                        raw = {
+                            "platform": MP, "keyword": keyword, "brand_slug": brand_slug,
+                            "city": loc.city, "zone": loc.zone, "pincode": loc.pincode,
+                            "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
+                            "competitors": competitor_list or None,
+                            "merchant_id": res["merchant_id"], "total_results": res["total_results"],
+                            "products": res["products"],
+                        }
+                        result = bl_parser.parse(raw)
+                        _t = time.monotonic()
+                        n = await bl_storage.save(wdb, result, tid, job_id, ensured)
+                        store_db += time.monotonic() - _t
+                        stats["rows"] += n
+                        store_rows += n
+                        stats["snapshots"] += 1
+                        store_snaps += 1
+
+                stats["processed"] += 1
+                logger.info(
+                    f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
+                    f"{store_snaps} kw · {store_rows} rows  "
+                    f"[fetch {store_fetch:5.1f}s db {store_db:4.1f}s]  "
+                    f"| {stats['snapshots']} snap, {stats['rows']} rows, {stats['errors']} err"
+                )
+                await asyncio.sleep(_PACING)
+        finally:
+            if session:
+                await bl_scraper.close_session(session)
+
+
 async def run_tenant(
     db: AsyncSession, tenant_id, cap: int | None = None,
     keyword: str | None = None, city: str | None = None,
-    resume: bool = False,
+    resume: bool = False, workers: int = 5,
 ) -> dict:
     """Scrape a tenant's whole Blinkit watchlist across its selected locations.
-    `keyword`/`city` narrow the run to a single keyword or city (just-in-case).
-    `resume` continues the tenant's last incomplete job, skipping (keyword, store)
-    pairs it already saved — each fresh run is otherwise a new full job."""
+    `keyword`/`city` narrow the run to a single keyword or city. `resume` continues
+    the tenant's last incomplete job, skipping already-scraped stores. `workers` is
+    the concurrent pool size — N isolated browser contexts on one browser, each with
+    its own DB session, pulling stores off a shared queue."""
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
     cap = cap or ep.RESULT_CAP
 
@@ -144,102 +233,50 @@ async def run_tenant(
         job_id = await create_scrape_job(db, str(tid), "public_search", MP)
         done = set()
     summary["job_id"] = job_id
-    rows = snapshots = errors = skipped = 0
     ensured: set[str] = set()  # brand slugs upserted this run (ensure_refs once each)
+    stats = {"snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "processed": 0}
+    total = len(locations)
+    queue: asyncio.Queue = asyncio.Queue()
+    for loc in locations:
+        queue.put_nowait(loc)
+    seed = (locations[0].lat, locations[0].lon)
+    n_workers = max(1, min(workers, total))
 
     try:
         async with async_playwright() as pw:
-            # One session for the whole run: pay the ~13s browser warmup once, then
-            # sweep stores by swapping the lat/lon headers (Blinkit picks the store
-            # from those). See scraper.search(lat=, lon=).
-            session = await bl_scraper.open_session(pw, locations[0].lat, locations[0].lon)
-            if not session:
-                raise RuntimeError("failed to open Blinkit session")
-            stale = 0  # consecutive failed fetches across stores → session expiry
-            total_stores = len(locations)
+            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
             try:
-                for idx, loc in enumerate(locations, 1):
-                    store_fail = 0
-                    store_snaps = store_rows = 0
-                    store_fetch = store_db = 0.0
-                    for keyword, brands in kw_map.items():
-                        if store_fail >= _STORE_SKIP_AFTER:
-                            break  # unserviceable store — skip its remaining keywords
-                        if (keyword, loc.lat, loc.lon) in done:
-                            skipped += 1
-                            continue  # already scraped under this (resumed) job
-                        _t = time.monotonic()
-                        try:
-                            res = await bl_scraper.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
-                        except Exception as e:
-                            logger.debug(f"orchestrator: search '{keyword}' @ {loc.city} error: {e}")
-                            res = {"ok": False, "products": [], "merchant_id": "", "total_results": 0}
-                        store_fetch += time.monotonic() - _t
-
-                        if not res.get("ok"):
-                            store_fail += 1
-                            stale += 1
-                            errors += 1
-                            if stale >= _REFRESH_AFTER:
-                                logger.info("orchestrator: session looks stale — refreshing")
-                                await bl_scraper.close_session(session)
-                                session = await bl_scraper.open_session(pw, loc.lat, loc.lon)
-                                stale = 0
-                                if not session:
-                                    raise RuntimeError("session refresh failed")
-                            continue
-
-                        stale = 0
-                        if not res["products"]:
-                            continue
-                        for brand_slug, aliases in brands:
-                            raw = {
-                                "platform": MP, "keyword": keyword, "brand_slug": brand_slug,
-                                "city": loc.city, "zone": loc.zone, "pincode": loc.pincode,
-                                "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
-                                # Declared competitors → whitelist; none declared → keep all
-                                # (discovery mode: see who shows up, then narrow later).
-                                "competitors": competitor_list or None,
-                                "merchant_id": res["merchant_id"], "total_results": res["total_results"],
-                                "products": res["products"],
-                            }
-                            result = bl_parser.parse(raw)
-                            _t = time.monotonic()
-                            n = await bl_storage.save(db, result, tid, job_id, ensured)
-                            store_db += time.monotonic() - _t
-                            rows += n
-                            store_rows += n
-                            snapshots += 1
-                            store_snaps += 1
-
-                    logger.info(
-                        f"[{idx}/{total_stores}] {loc.city:<16} "
-                        f"{store_snaps} kw · {store_rows} rows   "
-                        f"[fetch {store_fetch:5.1f}s · db {store_db:4.1f}s]  "
-                        f"| run: {snapshots} snap, {rows} rows, {errors} err"
-                    )
-                    await asyncio.sleep(_PACING)
+                logger.info(
+                    f"orchestrator: tenant {tid} — {n_workers} workers × {total} stores, cap={cap}"
+                )
+                tasks = [
+                    asyncio.create_task(_worker(
+                        w, browser, seed, queue, kw_map, competitor_list, done,
+                        ensured, stats, total, tid, job_id, cap,
+                    ))
+                    for w in range(1, n_workers + 1)
+                ]
+                await asyncio.gather(*tasks)
             finally:
-                if session:
-                    await bl_scraper.close_session(session)
-
-        await complete_scrape_job(db, job_id, rows)
+                await browser.close()
+        await complete_scrape_job(db, job_id, stats["rows"])
     except Exception as e:
         await fail_scrape_job(db, job_id, str(e))
         logger.error(f"orchestrator: tenant {tid} run failed: {e}")
         raise
 
-    summary.update(snapshots=snapshots, rows=rows, errors=errors, skipped=skipped)
+    summary.update(snapshots=stats["snapshots"], rows=stats["rows"],
+                   errors=stats["errors"], skipped=stats["skipped"])
     logger.info(
-        f"orchestrator: tenant {tid} done — {snapshots} snapshots, {rows} rows, "
-        f"{errors} errors, {skipped} skipped, job={job_id}"
+        f"orchestrator: tenant {tid} done — {stats['snapshots']} snapshots, "
+        f"{stats['rows']} rows, {stats['errors']} errors, {stats['skipped']} skipped, job={job_id}"
     )
     return summary
 
 
 async def run_all(
     db: AsyncSession, cap: int | None = None,
-    keyword: str | None = None, city: str | None = None,
+    keyword: str | None = None, city: str | None = None, workers: int = 5,
 ) -> list[dict]:
     """Run every active tenant. Each gets its own scrape_job."""
     tenants = (await db.execute(
@@ -247,5 +284,5 @@ async def run_all(
     )).scalars().all()
     out = []
     for t in tenants:
-        out.append(await run_tenant(db, t.id, cap, keyword, city))
+        out.append(await run_tenant(db, t.id, cap, keyword, city, workers=workers))
     return out

@@ -12,10 +12,11 @@ engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    # Supabase's session-mode pooler caps at 15 clients. Each process (uvicorn,
-    # CLI, a migration) gets its own pool, so leave a hard per-process ceiling
-    # well under 15 — otherwise one busy process starves the others.
-    pool_size=5,
+    # Supabase's session-mode pooler caps at 15 clients. The concurrent public
+    # scraper uses one DB connection per worker (default 5) + the main session, so
+    # 10 fits a ~5–8 worker pool with headroom. Keep well under 15 so a second
+    # process (server/migration) still has room.
+    pool_size=10,
     max_overflow=0,
 )
 

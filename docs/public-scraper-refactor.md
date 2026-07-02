@@ -55,6 +55,18 @@ lever (would take it under an hour).
 - Reference only: `Foresight/foresight` is the teammate's old repo (unrelated to
   automation-mvp); consulted for technique, not reused.
 
+**Concurrency (2026-07-01).** `run_tenant(..., workers=N)` runs a pool of N isolated
+browser **contexts on one browser**, each with its own DB session, pulling stores
+off a shared `asyncio.Queue`. Since fetches are network-bound, N workers ≈ N×
+throughput (fetch-bound: ~40–50s/store at cap 36 → single-thread ~18h; pool of
+5–6 → ~3–4h). CLI: `--workers N` (default 5). Shared, safe under asyncio's single
+thread: `done` set (resume, read-only), `ensured` (idempotent brand upserts),
+`stats` counters. DB `pool_size` raised to 10 to fit ~5–8 workers + main (Supabase
+session pooler caps at 15, so keep workers ≤ ~8). Log line now carries the worker
+id (`w3`) and `[processed/total]`. **Not yet live-tested** — validate with a
+bounded run first (`--city <one> --workers 5`), watch for Cloudflare 403s (drop to
+3–4 if they appear).
+
 ## Operating it — command surface
 
 ```

@@ -758,11 +758,13 @@ def public_run(
     keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),
+    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). ~5–6 is a good balance."),
 ):
     """Orchestrate a tenant's full Blinkit watchlist (keywords × locations), all
     sourced from the DB (watchlist + tenant_locations). Writes per-tenant
     snapshot+listing rows under one scrape_job per tenant. --keyword/--city narrow
     a run to a single keyword or city. --resume picks up an interrupted run.
+    --workers sets the concurrent browser pool size.
     """
     if not tenant_id and not all_tenants:
         console.print("[red]Provide --tenant <id> or --all.[/red]")
@@ -770,20 +772,20 @@ def public_run(
     if resume and all_tenants:
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
-    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume))
+    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers))
 
 
 async def _public_run(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
-    keyword: str | None, city: str | None, resume: bool,
+    keyword: str | None, city: str | None, resume: bool, workers: int,
 ) -> None:
     from scraper.public import orchestrator
 
     async with AsyncSessionLocal() as db:
         if all_tenants:
-            summaries = await orchestrator.run_all(db, cap, keyword, city)
+            summaries = await orchestrator.run_all(db, cap, keyword, city, workers)
         else:
-            summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume)]
+            summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume, workers)]
 
     if not summaries:
         console.print("[yellow]No active tenants to run.[/yellow]")

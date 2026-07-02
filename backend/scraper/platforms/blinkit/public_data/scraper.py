@@ -131,12 +131,9 @@ async def _in_page_fetch(page, url: str, headers: dict, body: dict | None) -> di
 
 # ── Session lifecycle ────────────────────────────────────────────────────────
 
-async def open_session(pw, lat: float, lon: float) -> dict | None:
-    """Launch a headless session pinned to a location and capture the
-    session-bound search headers. Returns a session dict, or None on failure.
-    Caller must close_session() it.
-    """
-    browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+async def _make_session(browser, lat: float, lon: float) -> dict | None:
+    """Create an isolated context on `browser`, warm it up, and capture the
+    session-bound search headers. Returns {context, page, headers} or None."""
     ctx = await browser.new_context(
         user_agent=HEADERS_COMMON["User-Agent"],
         locale="en-IN",
@@ -168,18 +165,38 @@ async def open_session(pw, lat: float, lon: float) -> dict | None:
 
     headers = {k: captured[k] for k in ep.SEARCH_HEADER_KEYS if k in captured}
     if not headers:
-        logger.warning("Blinkit: no session headers captured — closing session")
-        await browser.close()
+        logger.warning("Blinkit: no session headers captured")
+        await ctx.close()
         return None
 
     headers["lat"] = str(lat)
     headers["lon"] = str(lon)
-    return {"browser": browser, "context": ctx, "page": page, "headers": headers}
+    return {"context": ctx, "page": page, "headers": headers}
+
+
+async def open_session(pw, lat: float, lon: float) -> dict | None:
+    """Launch a headless browser + one session (ad-hoc / single-worker use). The
+    session owns the browser; close_session() shuts it down."""
+    browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+    session = await _make_session(browser, lat, lon)
+    if not session:
+        await browser.close()
+        return None
+    session["browser"] = browser  # owned — closed by close_session
+    return session
+
+
+async def open_context_session(browser, lat: float, lon: float) -> dict | None:
+    """One session as an isolated context on a SHARED browser (the concurrent
+    pool). Does not own the browser — close_session() only closes the context."""
+    return await _make_session(browser, lat, lon)
 
 
 async def close_session(session: dict) -> None:
     try:
-        await session["browser"].close()
+        await session["context"].close()
+        if session.get("browser"):  # only ad-hoc sessions own the browser
+            await session["browser"].close()
     except Exception:
         pass
 
@@ -191,8 +208,9 @@ async def search(
     """Run one keyword search in an open session, paginating Blinkit's basic
     results up to `cap`. Pass `lat`/`lon` to target a specific store without
     reopening the session — Blinkit selects the dark store from the lat/lon
-    headers. Returns {products, total_results, merchant_id, ok}; `ok` is False
-    when the first fetch didn't return 200 (failed/unserviceable, not just empty).
+    headers. Returns {products, total_results, merchant_id, ok, error}; `ok` is
+    False when the first fetch didn't return 200 (failed/unserviceable, not just
+    empty), and `error` carries a short reason (HTTP status / exception text).
     """
     page = session["page"]
     headers = session["headers"]
@@ -202,16 +220,16 @@ async def search(
     products: list[dict] = []
     total_results: int | None = None
     ok = False
+    error = ""
     url: str | None = ep.first_search_url(keyword)
     body: dict | None = ep.SEARCH_BODY
 
     while url and len(products) < cap:
         resp = await _in_page_fetch(page, url, headers, body)
         if resp.get("status") != 200:
-            logger.debug(
-                f"Blinkit search '{keyword}': status={resp.get('status')} "
-                f"error={resp.get('error', '')}"
-            )
+            err_txt = resp.get("error", "")
+            error = f"HTTP {resp.get('status')}" + (f" · {err_txt}" if err_txt else "")
+            logger.debug(f"Blinkit search '{keyword}': {error}")
             break
         ok = True
         page_body = resp.get("body") or {}
@@ -234,7 +252,7 @@ async def search(
             p["position"] = i
     merchant_id = products[0]["merchant_id"] if products else ""
     return {"products": products, "total_results": total_results,
-            "merchant_id": merchant_id, "ok": ok}
+            "merchant_id": merchant_id, "ok": ok, "error": error}
 
 
 # ── Public entrypoint (CLI-compatible) ───────────────────────────────────────
