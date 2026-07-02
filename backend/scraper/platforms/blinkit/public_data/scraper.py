@@ -104,7 +104,14 @@ _FETCH_JS = """async ({url, h, b, timeoutMs}) => {
         const opts = {method: "POST", headers: h, credentials: "include", signal: ctrl.signal};
         if (b !== null) opts.body = JSON.stringify(b);
         const r = await fetch(url, opts);
-        return {status: r.status, body: await r.json()};
+        const text = await r.text();
+        try {
+            return {status: r.status, body: JSON.parse(text)};
+        } catch (_) {
+            // Non-JSON body: almost always a Cloudflare/HTML challenge. Keep the
+            // real HTTP status so the retry loop + logs see it for what it is.
+            return {status: r.status, body: null, error: "non-JSON body (Cloudflare?)"};
+        }
     } catch (e) {
         return {status: 0, body: null, error: e.toString()};
     } finally {
@@ -142,7 +149,9 @@ async def _in_page_fetch(page, url: str, headers: dict, body: dict | None) -> di
         except Exception as e:
             resp = {"status": 0, "error": str(e)}
             continue
-        if resp.get("status") == 200:
+        # A 200 with a non-JSON body (Cloudflare challenge) is not a real result —
+        # keep retrying rather than accepting it as an empty page.
+        if resp.get("status") == 200 and resp.get("body") is not None:
             return resp
     return resp
 
@@ -244,7 +253,7 @@ async def search(
 
     while url and len(products) < cap:
         resp = await _in_page_fetch(page, url, headers, body)
-        if resp.get("status") != 200:
+        if resp.get("status") != 200 or resp.get("body") is None:
             err_txt = resp.get("error", "")
             error = f"HTTP {resp.get('status')}" + (f" · {err_txt}" if err_txt else "")
             logger.debug(f"Blinkit search '{keyword}': {error}")
