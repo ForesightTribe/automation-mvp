@@ -35,11 +35,12 @@ See [api-reference.md](api-reference.md) for the existing endpoint surface and
    still not available — the report breaks down by keyword/asset, not by `item_id`
    — so that remains dependent on an `sku_map` (gap #2).
 2. **Private sales ↔ public availability can't be joined.** Private = `item_id` +
-   `item_name`; public = `sku`/`platform_product_id` + `product_name`. No shared
-   key (public has no UPC either). A unified "this SKU: selling + on-shelf +
-   ranked" view needs an **`sku_map` table** (`item_id` ↔ `brand_slug`+`sku`),
-   populated manually or by fuzzy name match. Until then, keep private and public
-   views **separate** rather than faking a join.
+   `item_name`; public own-SKU availability now lands in `sku_snapshots`
+   (`platform_product_id` + `product_name`, populated by `public-skus`). No shared
+   key across the two (public has no UPC either). A unified "this SKU: selling +
+   on-shelf + ranked" view needs an **`sku_map` table** (`item_id` ↔ `brand_slug` +
+   `platform_product_id`), populated manually or by fuzzy name match. Until then,
+   keep private and public views **separate** rather than faking a join.
 
 Legend: **[E]** existing endpoint · **[N]** new endpoint to build · **[E→N]** extend existing · **[B]** built for this catalog.
 
@@ -77,7 +78,7 @@ null when there are no samples. Rendered by the shared `DeltaBadge`/`MetricTile`
 | **Marketplace-wise overview** — per-MP rev/RoAS/spend/units/visibility/rank + growth; "Not connected" for MPs without data                                              | Marketplace cards | per-MP slice of the same tables, scoped by `platform` + `mp_slug`                                                                    | `/overview/marketplaces` **[B]**                                                                                     |
 | **Ad spend vs ad revenue** + **Total revenue** trends (daily)                                                                                                           | Two charts        | `blinkit_ad_campaign_daily`(budget, ad_sales) + `blinkit_seller_sales`(mrp_value) on a date spine                                    | `analytics/trends` **[B]** (one aligned series for charts + sparklines)                                              |
 | **Operations (month-on-month): OSA, fill-rate, PO value**                                                                                                               | 3 bar charts      | `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_weekly`(overall.fill_rate) + `blinkit_pos`(total_po_amount) by month            | `/overview/monthly-trends` **[B]** (`?months=`, default 3; tenant-wide, not day-range scoped)                        |
-| **Attention feed** — failed scrapes, OOS, fill-loss                                                                                                                     | Alerts list       | `scrape_jobs`(status) + `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_key_skus`(potential_loss) + `inventory_depth`(in_stock) | `/overview/alerts` **[B]**                                                                                           |
+| **Attention feed** — failed scrapes, OOS, fill-loss                                                                                                                     | Alerts list       | `scrape_jobs`(status) + `blinkit_soh`(frontend_inv_qty) + `blinkit_scorecard_key_skus`(potential_loss) + `sku_snapshots`(in_stock) | `/overview/alerts` **[B]**                                                                                           |
 | Data freshness ("sales last synced 2d ago")                                                                                                                             | Status chips      | `scrape_jobs`(dashboard, status, completed_at) latest per dashboard                                                                  | `/overview/freshness` **[B]**                                                                                        |
 
 ## Sales & Analytics — "where is revenue coming from"
@@ -117,8 +118,9 @@ only (no public shelf/rank join yet — gap #2).
 | Stock on hand, low-first                              | Table                    | `blinkit_soh`(item_id, backend_facility_name, backend_inv_qty, frontend_inv_qty)                 | `inventory/soh` **[E]**                   |
 | **Reorder list** (days-of-cover ascending)            | Table                    | `blinkit_soh` ÷ `blinkit_seller_sales` velocity                                                  | `/inventory/cover` **[N]**                |
 | Fill rate / PO vs GRN / potential loss                | Summary + facility table | `blinkit_scorecard_facilities`(total_po_quantity, total_grn_quantity, fill_rate, potential_loss) | `inventory/fill-rate` **[E]**             |
-| Public shelf availability (own brand OOS)             | Table, city/mp filter    | `inventory_depth`(sku, product_name, in_stock, depth, city, mp_slug)                             | `inventory/availability` **[E]**          |
-| **Stock-out timeline** (when/how long OOS)            | Trend                    | `inventory_depth`(scraped_at, in_stock) per sku                                                  | `/inventory/availability-history` **[N]** |
+| Public shelf availability (own brand OOS)             | Table, city/mp filter    | `sku_snapshots`(platform_product_id, product_name, in_stock, inventory, city, mp_slug)           | `inventory/availability` **[E]**          |
+| **Stock-out timeline** (when/how long OOS)            | Trend                    | `sku_snapshots`(scraped_at, in_stock) per platform_product_id                                    | `/inventory/availability-history` **[N]** |
+| **Own-SKU price/discount by store** (price dispersion)| Table/heatmap, city/mp   | `sku_snapshots`(platform_product_id, price, mrp, discount_pct, rating, city)                     | `/inventory/pricing` **[N]**              |
 | **Facility stock heatmap** (SKU × facility low spots) | Matrix                   | `blinkit_soh`(item_id, backend_facility_name, frontend_inv_qty)                                  | `/inventory/by-facility` **[N]**          |
 
 ## Ads — "is my spend working"

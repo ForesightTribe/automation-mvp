@@ -29,13 +29,16 @@ Tenants never see each other's data. Public search data is not tenant-scoped —
 
 ### Public data — no login required
 
-Consumer-facing search scraped across 20+ Indian cities, with 6–12 zones per city.
+Per-tenant and config-driven: a darkstore catalog of 2,000+ Blinkit stores, each
+tenant's keywords/brands/coverage kept in `config.xlsx` and synced to the DB.
+Scraped via Playwright in-page fetch (Cloudflare bypass), one session serving many
+stores by lat/lon header-swap, run through a concurrent worker pool.
 
 | Platform | Status |
 |---|---|
 | Blinkit | Working (Playwright in-page fetch — Cloudflare bypass) |
-| Instamart | Pending — needs the same Playwright fix as Blinkit |
-| Zepto | Pending |
+| Instamart | Out of scope (Blinkit-only) |
+| Zepto | Out of scope (Blinkit-only) |
 
 ### Private data — requires seller login
 
@@ -48,11 +51,21 @@ Consumer-facing search scraped across 20+ Indian cities, with 6–12 zones per c
 
 ## What Data Is Collected
 
-### Public search (all platforms)
+### Public search (Blinkit) — two complementary scrapes
+
+**Keyword scrape** (`public-run` → `search_snapshots` / `search_listings`) — the
+competitive lens, per category keyword × store:
 - Brand rank (best position in search results)
 - Share of voice % (brand products ÷ total products)
-- Top 8 competitors with product counts
-- Brand product list with prices and stock status
+- Declared competitors with prices, MRP, discount %, stock, position
+- Total results for the keyword
+
+**Targeted own-SKU scrape** (`public-skus` → `sku_snapshots`) — the own-inventory
+lens, per own product × store, keyed on `product_id`; guarantees coverage of every
+own SKU even when it doesn't rank in a keyword search:
+- Price, MRP, discount %
+- In-stock + inventory count
+- Rating
 
 ### Blinkit marketing dashboard
 - Ad performance summary (total spend, impressions)

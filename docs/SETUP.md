@@ -161,12 +161,16 @@ user just logs in fresh, and a role change takes effect on that user's next logi
 Config-driven (Blinkit only). Fill `config.xlsx`, sync it, then run per tenant:
 
 ```bash
-python -m cli sync --file config.xlsx                 # locations + watchlist + coverage → DB
-python -m cli scrape public-run --tenant <id>         # scrape the tenant's watchlist × coverage
+python -m cli sync --file config.xlsx                 # locations + watchlist (+ keyword_cap/brand_cap) + coverage → DB
+python -m cli scrape public-run   --tenant <id>       # keyword scrape: SoV/rank + competitors → search_snapshots/listings
+python -m cli scrape public-skus  --tenant <id>       # targeted own-SKU scrape: price/stock/inventory → sku_snapshots
 
 # ad-hoc single scrape (quick check); --save needs --tenant
 python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --city delhi
 ```
+
+`public-run` and `public-skus` are independent (separate `scrape_job`s, separate
+tables) — run them on their own cadences. Both take `--resume` and `--workers N`.
 
 Brand and marketplace rows are created automatically (`ensure_refs`). No manual seeding.
 

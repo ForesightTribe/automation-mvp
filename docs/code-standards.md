@@ -99,7 +99,7 @@ await session.commit()
 
 ### ensure_refs()
 
-Always call before saving public search data. Satisfies the FK constraints from `search_snapshots`/`search_listings` to `brands` and `marketplaces`:
+Always call before saving public search data. Satisfies the FK constraints from `search_snapshots`/`search_listings`/`sku_snapshots` to `brands` and `marketplaces`:
 
 ```python
 from scraper.utils.storage import ensure_refs

@@ -165,7 +165,7 @@ Stock health: private SOH + fill-rate, plus public availability.
 |---|---|---|
 | GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. |
 | GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. |
-| GET | `/availability` | **Public** stock-out monitoring for the client's own brand (out-of-stock first). Filters `?city=`, `?marketplace=`, `?days=`. Needs an `own` watchlist brand. |
+| GET | `/availability` | **Public** stock-out monitoring for the client's own brand (out-of-stock first). Filters `?city=`, `?marketplace=`, `?days=`. Needs an `own` watchlist brand. Authoritative source is now `sku_snapshots` (populated by `scrape public-skus` — complete own-SKU price/stock/inventory); rewire from the keyword-scrape tables is pending. |
 
 ### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
 Blinkit brand-health scorecard. **Weekly snapshots** keyed on `from_date_ist`

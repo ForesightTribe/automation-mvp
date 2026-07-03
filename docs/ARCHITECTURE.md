@@ -14,7 +14,7 @@ automation-mvp/
 │   │   │   ├── brand.py               # Brand, Marketplace
 │   │   │   ├── tenant.py              # Tenant, User, TenantWatchlist
 │   │   │   ├── job.py                 # ScrapeJob, PlatformSession
-│   │   │   ├── search.py              # SearchSnapshot, SearchListing, MarketplaceLocation, TenantLocation, InventoryDepth
+│   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, MarketplaceLocation, TenantLocation, InventoryDepth
 │   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
 │   │   │   └── blinkit_marketing.py   # AdPerformanceSummary, AdCampaign, SponsoredSOV, BrandCollection, VisibilityPlan
 │   │   ├── api/
@@ -37,10 +37,10 @@ automation-mvp/
 │   │   │   │   ├── dashboard_data/
 │   │   │   │   │   ├── marketing/     # scraper.py, parser.py, storage.py
 │   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
-│   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py
+│   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py (search_*), sku_storage.py (sku_snapshots)
 │   │   │   ├── instamart/             # public_data/ — OUT OF SCOPE (Blinkit-only)
 │   │   │   └── zepto/                 # public_data/ — OUT OF SCOPE (Blinkit-only)
-│   │   ├── public/                    # orchestrator.py — watchlist + tenant_locations → per-tenant scrape
+│   │   ├── public/                    # orchestrator.py (keyword scrape) + targeted.py (own-SKU scrape) — watchlist + tenant_locations → per-tenant, worker pool
 │   │   └── utils/
 │   │       ├── browser.py             # create_browser_context(), write_blocker(), PLAYWRIGHT_ARGS
 │   │       ├── cities.py              # LEGACY hardcoded cities — being retired (public scraper reads DB)
@@ -69,10 +69,14 @@ automation-mvp/
 ```
 [CLI command]
      │
-     ├── public scrape ──► scraper/public/orchestrator.py (watchlist + tenant_locations)
-     │                          │  one Blinkit session, lat/lon header-swap per store
-     │                          │  blinkit/public_data: scraper.py → parser.py (classify)
+     ├── public keyword scrape ─► scraper/public/orchestrator.py (watchlist + tenant_locations)
+     │                          │  one Blinkit browser, N context-workers, lat/lon header-swap per store
+     │                          │  blinkit/public_data: scraper.py → parser.py (classify own+competitors)
      │                     storage.py  ensure_refs() → append search_snapshots + search_listings
+     │
+     ├── public own-SKU scrape ─► scraper/public/targeted.py (brand query, own-only)
+     │                          │  same worker pool; paginates the brand's whole catalog
+     │                     sku_storage.py → append sku_snapshots (keyed on product_id)
      │
      └── private scrape ─► platforms/blinkit/{dashboard}/scraper.py
                                 │  Playwright session restored from platform_sessions
@@ -109,7 +113,7 @@ automation-mvp/
 |---|---|---|
 | `tenants` | `id` (UUID PK), `name`, `is_active` | Create with `cli tenant create` |
 | `users` | `id`, `tenant_id`, `email`, `hashed_password` | FK to tenants |
-| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `keywords`, `aliases` | Brands + keywords per tenant (`cities`/`marketplaces` are legacy — use `tenant_locations`) |
+| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `keywords`, `aliases`, `keyword_cap`, `brand_cap` | Brands + keywords per tenant; the two caps (own rows) tune the keyword vs brand scrape. `cities`/`marketplaces` are legacy — use `tenant_locations` |
 | `platform_sessions` | `tenant_id`, `platform`, `encrypted_session` | Fernet-encrypted Playwright sessions |
 | `scrape_jobs` | `id`, `tenant_id`, `platform`, `dashboard`, `status` | Audit log for every scrape run |
 
@@ -117,15 +121,18 @@ automation-mvp/
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **header** — one row per (tenant, keyword, store, scrape) |
-| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **detail** — one row per product in the result page |
+| `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **keyword scrape header** — one row per (tenant, keyword, store, scrape) |
+| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product in the result page |
+| `sku_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `platform_product_id` (key), `product_name`, `merchant_id`, `city`, `lat`/`lon`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `rating` | **targeted own-SKU scrape** — one flat row per (own product × store × scrape), keyed on `platform_product_id` |
 | `marketplace_locations` | `mp_slug`, `merchant_id` (key), `city`, `state`, `region`, `lat`/`lon` | shared darkstore catalog (from `config.xlsx`) |
 | `tenant_locations` | `tenant_id`, `mp_slug`, `location_id` | which catalog stores a tenant scrapes |
-| `inventory_depth` | `tenant_id`, `brand_slug`, `mp_slug`, `sku`, `city` | deep per-SKU stock probe (write path pending) |
+| `inventory_depth` | `tenant_id`, `brand_slug`, `mp_slug`, `sku`, `city` | old deep per-SKU stock probe — superseded by `sku_snapshots`, no write path |
 
-Append-only (no upsert). Written by `cli scrape public-run` via the orchestrator.
-The old `search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products`
-tables were dropped in migration `f3a9c1d7b2e5`.
+Append-only (no upsert). `search_*` written by `cli scrape public-run`;
+`sku_snapshots` by `cli scrape public-skus` — both via orchestrators under
+`scraper/public/`. The old
+`search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products` tables
+were dropped in migration `f3a9c1d7b2e5`.
 
 ### Blinkit marketing tables (tenant-scoped)
 
@@ -196,19 +203,33 @@ that store's catalog in ~0.4s, no per-store relaunch. The API pages **12 product
 a time** (server-capped, ignores higher `limit`), so `search()` follows Blinkit's
 `next_url` up to `RESULT_CAP`, stopping when results switch from `basic` to
 `similarity`. Extraction reads the typed `atc_action.cart_item` (brand, price, mrp,
-inventory, product_id) + `tracking.common_attributes` (position, category).
+inventory, product_id) + `tracking.common_attributes` (position, category, rating,
+state).
 
-### Orchestration & resilience
+### Two scrapes, orchestration & resilience
 
-`scraper/public/orchestrator.py` reads a tenant's watchlist (keywords + aliases) and
-`tenant_locations`, opens one session, and sweeps stores × keywords — classifying
-each result against the own brand via the API's explicit `brand` field, and writing
-`search_snapshots` + `search_listings`. One `scrape_job` per run. Resilience: retry
-with backoff on transient 403/429/5xx, session refresh on cookie expiry, incremental
-commits, and `--resume` to continue an interrupted job (skips already-scraped stores).
+Both scrapes share the same engine (session, in-page fetch, pagination) and a
+concurrent **worker pool**: one browser, N isolated contexts each with its own DB
+session, pulling stores off a shared queue (`--workers`, default 5). They differ in
+query, cap, classification, and storage target:
 
-Reference: `backend/scraper/platforms/blinkit/public_data/scraper.py` +
-`backend/scraper/public/orchestrator.py`. httpx is not usable here (Cloudflare).
+- **Keyword scrape** — `scraper/public/orchestrator.py`. Category keywords ×
+  stores → SoV/rank + declared competitors (`keyword_cap`, default 12), classifying
+  each result against the own brand via the API's explicit `brand` field. Writes
+  `search_snapshots` + `search_listings`.
+- **Targeted own-SKU scrape** — `scraper/public/targeted.py`. Searches the tenant's
+  **brand name**, paginates the whole catalog (`brand_cap`, default 60), own-brand
+  only. Writes the flat `sku_snapshots` (keyed on `platform_product_id`) —
+  guaranteeing coverage of every own SKU regardless of keyword ranking.
+
+One `scrape_job` per run (dashboards `public_search` / `public_skus`). Resilience:
+retry with backoff on transient failures, a hard per-fetch timeout (a stalled fetch
+can't hang a worker), non-JSON/Cloudflare detection surfaced with the real HTTP
+status, session refresh on staleness, incremental commits, and `--resume` to
+continue an interrupted job (skips already-scraped stores).
+
+Reference: `backend/scraper/platforms/blinkit/public_data/{scraper,storage,sku_storage}.py`
++ `backend/scraper/public/{orchestrator,targeted}.py`. httpx is not usable here (Cloudflare).
 
 ---
 

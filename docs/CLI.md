@@ -196,8 +196,13 @@ darkstore catalog and each tenant's keywords/coverage live in a workbook
 | Sheet | Columns | What it is |
 |---|---|---|
 | `locations` | `merchant_id, city, state, region, zone, pincode, lat, lon, active` | the global darkstore catalog (keyed on `merchant_id`) |
-| `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases` | per-tenant keywords + brands to track |
+| `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional) |
 | `coverage` | `tenant, city, zone` | which stores a tenant scrapes (blank zone = all zones in that city) |
+
+The two caps (own rows only; blank → code default): **`keyword_cap`** bounds the
+keyword scrape (`public-run`, default 12), **`brand_cap`** bounds the targeted
+brand scrape (`public-skus`, default 60). Precedence for both: CLI flag > config
+value > default.
 
 ```bash
 python -m cli sync --file config.xlsx --template   # write a starter workbook
@@ -213,22 +218,48 @@ python -m cli locations list [--city delhi] [--tenant <id>]   # catalog, or a te
 python -m cli watchlist list --tenant <id>                    # a tenant's brands + keywords
 ```
 
-**2. Run — `cli scrape public-run`.** Scrapes every keyword × covered store for a
-tenant, reusing one browser session (Blinkit selects the store from lat/lon headers).
+There are **two complementary scrapes**, run as separate commands (own SoV/rank vs
+own complete inventory). Both reuse one browser and a concurrent worker pool
+(Blinkit selects the store from lat/lon headers, so one session serves many stores).
+
+**2a. Keyword scrape — `cli scrape public-run`.** Every category keyword × covered
+store → SoV/rank + declared competitors. Writes `search_snapshots` + `search_listings`.
 
 ```bash
 python -m cli scrape public-run --tenant <id>                  # full run (new scrape_job)
 python -m cli scrape public-run --tenant <id> --resume         # continue an interrupted run
 python -m cli scrape public-run --tenant <id> --city delhi     # one city
 python -m cli scrape public-run --tenant <id> --keyword "soda" # one keyword
-python -m cli scrape public-run --tenant <id> --cap 30         # products per search (Blinkit pages 12 at a time)
+python -m cli scrape public-run --tenant <id> --cap 30         # override keyword_cap (Blinkit pages 12 at a time)
+python -m cli scrape public-run --tenant <id> --workers 5      # concurrent pool size (default 5)
 python -m cli scrape public-run --all                          # every active tenant
 ```
 
-Each fresh run is a new `scrape_job` (full scrape) — run it 2–3×/day freely.
-`--resume` picks up the tenant's last incomplete job, **skipping already-scraped
-stores**; commits are incremental so a crash keeps its progress. Transient
-403/429/5xx are retried with backoff.
+**2b. Targeted own-SKU scrape — `cli scrape public-skus`.** Searches the tenant's
+**brand name** and paginates its whole catalog to `brand_cap`, own-brand only →
+`sku_snapshots` (one row per product × store, keyed on `product_id`). This
+*guarantees* coverage of every own SKU's price/stock/inventory, closing the gap
+where an own product doesn't rank in a category-keyword search.
+
+```bash
+python -m cli scrape public-skus --tenant <id>                 # full run (new scrape_job)
+python -m cli scrape public-skus --tenant <id> --resume        # continue an interrupted run
+python -m cli scrape public-skus --tenant <id> --city delhi    # one city
+python -m cli scrape public-skus --tenant <id> --brand-cap 48  # override brand_cap
+python -m cli scrape public-skus --tenant <id> --workers 5     # concurrent pool size (default 5)
+python -m cli scrape public-skus --all                         # every active tenant
+```
+
+**Common behaviour (both).** Each fresh run is a new `scrape_job` — run freely.
+`--resume` picks up the tenant's last incomplete job of that type, **skipping
+already-scraped stores** (keyword scrape: by keyword+store; SKU scrape: by store);
+commits are incremental so a crash keeps its progress. `--workers N` runs N
+isolated browser contexts on one browser, each with its own DB connection (~5–6 is
+a good IP/DB balance; drop to 3 if Cloudflare throttles). Transient failures are
+retried with backoff and each fetch has a hard timeout; a persistent failure logs a
+single line with the reason — e.g. `HTTP 403 · non-JSON body (Cloudflare?)` (the
+throttle signal — reduce `--workers`) vs `HTTP 400` (a genuinely bad store/keyword,
+ignorable in small numbers).
 
 **Ad-hoc single scrape — `cli scrape public`.** One keyword at one location for
 quick checks (no config needed). `--save` writes per-tenant rows and needs `--tenant`.
@@ -238,12 +269,13 @@ python -m cli scrape public --keyword "soda" --brand "dobra" --platform blinkit 
 python -m cli scrape public --keyword "soda" --brand "dobra" --tenant <id> --city delhi --save        # persist
 ```
 
-**What it saves (both paths):**
+**What they save:**
 
-| Table | Data |
-|---|---|
-| `search_snapshots` | Per (tenant, keyword, store, scrape): brand rank, share-of-voice %, total results |
-| `search_listings`  | Per product in the result page: brand, price, MRP, discount %, in-stock, inventory, position, `extra` (group_id, merchant_id, unit, category…) |
+| Table | Written by | Data |
+|---|---|---|
+| `search_snapshots` | `public-run` | Per (tenant, keyword, store, scrape): brand rank, share-of-voice %, total results |
+| `search_listings`  | `public-run` | Per product in the result page: brand, price, MRP, discount %, in-stock, inventory, position, `extra` (group_id, merchant_id, unit, category…) |
+| `sku_snapshots`    | `public-skus` | Per (own product × store × scrape), keyed on `platform_product_id`: name, price, MRP, discount %, in-stock, inventory, rating |
 
 ---
 
@@ -267,4 +299,5 @@ Sheets produced: Ad Performance Summary, Ad Campaigns, Sponsored SOV, Brand Coll
 - Create a tenant with `cli tenant create` before running any auth or private scrape commands
 - Run `auth` before `scrape` for each tenant
 - `cli sync` and `scrape public --save` auto-create brand + marketplace rows (`ensure_refs`) — no manual seeding
-- Public scraping is config-driven: `cli sync --file config.xlsx` before `cli scrape public-run`
+- Public scraping is config-driven: `cli sync --file config.xlsx` before `cli scrape public-run` / `public-skus`
+- The two public scrapes are independent commands with independent `scrape_job`s — run them on separate cadences (e.g. `public-skus` daily, `public-run` weekly)
