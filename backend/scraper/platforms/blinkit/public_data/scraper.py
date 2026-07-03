@@ -46,6 +46,12 @@ def _extract_product(snippet: dict) -> dict | None:
     inventory = cart_item.get("inventory")
     in_stock = not data.get("is_sold_out", False) and bool(inventory)
 
+    rating_raw = common.get("rating")
+    try:
+        rating = float(rating_raw) if rating_raw not in (None, "") else None
+    except (TypeError, ValueError):
+        rating = None
+
     return {
         "product_id": str(cart_item.get("product_id") or ""),
         "name": cart_item.get("product_name") or "",
@@ -55,6 +61,8 @@ def _extract_product(snippet: dict) -> dict | None:
         "unit": cart_item.get("unit") or "",
         "inventory": inventory,
         "in_stock": in_stock,
+        "rating": rating,
+        "product_state": common.get("state") or "",
         "position": position,
         "group_id": cart_item.get("group_id"),
         "merchant_id": str(cart_item.get("merchant_id") or ""),

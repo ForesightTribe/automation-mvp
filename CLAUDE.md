@@ -128,9 +128,16 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
 
 - **Config is a workbook, applied via `cli sync`.** `config.xlsx` (sheets
   `locations` / `brands` / `coverage`) is the source of truth: the darkstore
-  catalog, each tenant's keywords/aliases, and which stores it covers. `cli sync`
+  catalog, each tenant's keywords/aliases, and which stores it covers. The `brands`
+  sheet also carries per-tenant `keyword_cap` / `brand_cap` (own rows). `cli sync`
   reconciles the DB (upsert; `--dry-run`, `--prune`). `scraper/utils/cities.py` is
   legacy/unreliable and being retired — NOT used by this path.
+- **Two complementary scrapes.** `public-run` = the **keyword scrape** (category
+  keywords → SoV/rank + competitors, `cap=keyword_cap`, → `search_snapshots` /
+  `search_listings`). `public-skus` = the **targeted scrape** (searches the
+  tenant's *brand name*, paginates the whole catalog to `brand_cap`, own-only →
+  `sku_snapshots`, keyed on `platform_product_id`). Own price/inventory truth comes
+  from the targeted scrape; SoV + competitors come from the keyword scrape.
 - **Location = lat/lon, not pincode.** Blinkit picks the dark store from the
   lat/lon request headers. `marketplace_locations` is keyed on `merchant_id`;
   pincode/zone are best-effort metadata.
@@ -165,7 +172,8 @@ python -m cli scrape blinkit-scorecard --tenant <uuid>
 python -m cli sync --file config.xlsx [--dry-run] [--prune]   # apply config workbook → DB
 python -m cli locations list [--city <slug>] [--tenant <uuid>]
 python -m cli watchlist list --tenant <uuid>
-python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]
+python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors
+python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → sku_snapshots
 
 # ad-hoc single scrape (no config needed; --save requires --tenant)
 python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --tenant <uuid> --save

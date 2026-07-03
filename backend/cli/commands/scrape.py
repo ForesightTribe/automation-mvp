@@ -807,6 +807,60 @@ async def _public_run(
     console.print(table)
 
 
+@app.command("public-skus")
+def public_skus(
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
+    all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
+    cap: int = typer.Option(None, "--brand-cap", help="Override brand_cap for this run (default: per-tenant / 60)"),
+    city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
+    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip scraped stores)"),
+    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size)."),
+):
+    """Targeted own-SKU scrape: search each tenant's brand name, paginate its whole
+    catalog, and write per-product rows to sku_snapshots (price/mrp/discount/stock/
+    inventory/rating), keyed on product_id. Complements `public-run` (which covers
+    SoV/rank + competitors). --resume picks up an interrupted run.
+    """
+    if not tenant_id and not all_tenants:
+        console.print("[red]Provide --tenant <id> or --all.[/red]")
+        raise typer.Exit(1)
+    if resume and all_tenants:
+        console.print("[red]--resume works with a single --tenant, not --all.[/red]")
+        raise typer.Exit(1)
+    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers))
+
+
+async def _public_skus(
+    tenant_id: str | None, all_tenants: bool, cap: int | None,
+    city: str | None, resume: bool, workers: int,
+) -> None:
+    from scraper.public import targeted
+
+    async with AsyncSessionLocal() as db:
+        if all_tenants:
+            summaries = await targeted.run_all_targeted(db, cap, city, workers)
+        else:
+            summaries = [await targeted.run_targeted(db, tenant_id, cap, city, resume, workers)]
+
+    if not summaries:
+        console.print("[yellow]No active tenants to run.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Tenant")
+    table.add_column("Brands", justify="right")
+    table.add_column("Locations", justify="right")
+    table.add_column("SKU Rows", justify="right")
+    table.add_column("Skipped", justify="right")
+    table.add_column("Errors", justify="right")
+    for s in summaries:
+        table.add_row(
+            s["tenant_id"][:8], str(s["brands"]), str(s["locations"]),
+            str(s["rows"]), str(s.get("skipped", 0)),
+            f"[red]{s['errors']}[/red]" if s["errors"] else "0",
+        )
+    console.print(table)
+
+
 def _print_public_result(platform: str, result: dict) -> None:
     sov = result.get("brand_sov_pct", 0)
     rank = result.get("brand_rank")

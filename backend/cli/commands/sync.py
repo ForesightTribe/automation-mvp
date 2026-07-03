@@ -9,7 +9,8 @@ Sheets
   locations : the global Blinkit darkstore catalog (keyed on merchant_id)
               cols: merchant_id, city, state, region, zone, pincode, lat, lon, active
   brands    : per-tenant keywords/aliases (the watchlist)
-              cols: tenant, brand, relationship, keywords, aliases
+              cols: tenant, brand, relationship, keywords, aliases,
+                    keyword_cap, brand_cap   (caps optional; own rows only)
   coverage  : which catalog locations each tenant scrapes
               cols: tenant, city, zone   (blank zone = all zones in the city)
 """
@@ -49,6 +50,15 @@ def _float(v):
         return None
     try:
         return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(v):
+    if v is None or v == "":
+        return None
+    try:
+        return int(float(v))
     except (TypeError, ValueError):
         return None
 
@@ -148,6 +158,8 @@ async def _sync_brands(db, rows, tenants, prune) -> dict:
             "relationship": _str(r.get("relationship")).lower() or "own",
             "keywords": _csv(r.get("keywords")),
             "aliases": _csv(r.get("aliases")),
+            "keyword_cap": _int(r.get("keyword_cap")),
+            "brand_cap": _int(r.get("brand_cap")),
         }
     ref_tenants = {tid for tid, _ in desired}
     existing = {
@@ -165,11 +177,13 @@ async def _sync_brands(db, rows, tenants, prune) -> dict:
                 tenant_id=tid, brand_slug=brand, cities=[], marketplaces=[MP], **vals
             ))
             added += 1
-        elif (cur.relationship, cur.keywords, cur.aliases) != (
-            vals["relationship"], vals["keywords"], vals["aliases"]
+        elif (cur.relationship, cur.keywords, cur.aliases, cur.keyword_cap, cur.brand_cap) != (
+            vals["relationship"], vals["keywords"], vals["aliases"],
+            vals["keyword_cap"], vals["brand_cap"],
         ):
-            cur.relationship, cur.keywords, cur.aliases = (
-                vals["relationship"], vals["keywords"], vals["aliases"]
+            (cur.relationship, cur.keywords, cur.aliases, cur.keyword_cap, cur.brand_cap) = (
+                vals["relationship"], vals["keywords"], vals["aliases"],
+                vals["keyword_cap"], vals["brand_cap"],
             )
             updated += 1
     if prune:
@@ -252,9 +266,9 @@ def _write_template(path: str) -> None:
     ws.append(["48967", "delhi", "Delhi", "North India", "", "110001", 28.6315, 77.2167, "yes"])
 
     b = wb.create_sheet("brands")
-    b.append(["tenant", "brand", "relationship", "keywords", "aliases"])
-    b.append(["Dobra", "dobra", "own", "dobra, soda, goli soda", "dobra"])
-    b.append(["Dobra", "bisleri", "competitor", "", "bisleri"])
+    b.append(["tenant", "brand", "relationship", "keywords", "aliases", "keyword_cap", "brand_cap"])
+    b.append(["Dobra", "dobra", "own", "dobra, soda, goli soda", "dobra", 12, 60])
+    b.append(["Dobra", "bisleri", "competitor", "", "bisleri", "", ""])
 
     c = wb.create_sheet("coverage")
     c.append(["tenant", "city", "zone"])

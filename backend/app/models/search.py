@@ -76,6 +76,42 @@ class SearchListing(SQLModel, table=True):
     extra: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
 
+class SkuSnapshot(SQLModel, table=True):
+    """Targeted own-SKU probe: one row per (product × store × scrape), keyed on
+    `platform_product_id` (the stable identity — names drift, ids don't). Fed by
+    the brand-query scrape, which searches a tenant's brand name and paginates the
+    whole catalog, so every own SKU is captured regardless of whether it surfaces
+    in a category-keyword search. Append-only; group/query by `platform_product_id`.
+    """
+
+    __tablename__ = "sku_snapshots"
+
+    __table_args__ = (
+        Index("idx_sku_tenant_product", "tenant_id", "platform_product_id", "scraped_at"),
+        Index("idx_sku_tenant_store", "tenant_id", "merchant_id", "scraped_at"),
+        Index("idx_sku_scraped", "scraped_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    mp_slug: str = Field(foreign_key="marketplaces.slug")
+    brand_slug: str = Field(foreign_key="brands.slug")
+    platform_product_id: str = ""
+    product_name: str = ""          # denormalized display label; not the identity
+    merchant_id: str = ""
+    city: str = ""
+    lat: float | None = None
+    lon: float | None = None
+    scraped_at: datetime = Field(default_factory=now_ist)
+    price: float | None = None
+    mrp: float | None = None
+    discount_pct: float | None = None
+    in_stock: bool = True
+    inventory: int | None = None
+    rating: float | None = None
+
+
 class MarketplaceLocation(SQLModel, table=True):
     """Shared serviceability reference — where each marketplace operates. The DB
     form of `scraper/utils/cities.py`. Objective (not tenant-specific); tenants

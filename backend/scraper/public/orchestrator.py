@@ -57,6 +57,18 @@ async def _own_keyword_map(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, 
     return kw_map
 
 
+async def _keyword_cap(db: AsyncSession, tenant_id: uuid.UUID) -> int | None:
+    """The tenant's configured keyword_cap (first own row that sets one), or None."""
+    rows = (await db.execute(
+        select(TenantWatchlist.keyword_cap).where(
+            TenantWatchlist.tenant_id == tenant_id,
+            TenantWatchlist.relationship == "own",
+            TenantWatchlist.keyword_cap.is_not(None),
+        )
+    )).scalars().all()
+    return rows[0] if rows else None
+
+
 async def _competitor_list(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple[str, list[str]]]:
     """(slug, aliases) of the tenant's declared competitors — the whitelist of
     which competitor products to store (own is always stored). Empty → own only."""
@@ -198,7 +210,8 @@ async def run_tenant(
     the concurrent pool size — N isolated browser contexts on one browser, each with
     its own DB session, pulling stores off a shared queue."""
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
-    cap = cap or ep.RESULT_CAP
+    # Precedence: CLI --cap > tenant's configured keyword_cap > global default.
+    cap = cap or await _keyword_cap(db, tid) or ep.RESULT_CAP
 
     kw_map = await _own_keyword_map(db, tid)
     if keyword:

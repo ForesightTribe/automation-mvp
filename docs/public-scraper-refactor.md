@@ -366,3 +366,61 @@ New `scraper/public/orchestrator.py`:
 1. **Census or sampled darkstores?** Sets orchestrator sampling defaults and how
    hard we lean on partitioning/retention. (Sampling hook built either way.)
 2. **`search_results` data — preserve or clean break?** Decides migration shape.
+
+---
+
+## Addendum — Targeted own-SKU scrape (`public-skus`) — BUILT
+
+The keyword scrape is a *discovery* lens: an own SKU only shows if it ranks in the
+top `cap` for a category keyword. That leaves gaps in own price/inventory (client
+flagged this). Fix = a second, complementary scrape.
+
+**Same engine, four differences** (vs `public-run`):
+
+| | keyword scrape | targeted scrape |
+|---|---|---|
+| query | category keywords (`soda`) | **brand name** (`dobra`) |
+| pagination | `keyword_cap` (e.g. 12) | **`brand_cap`** (e.g. 60 — whole catalog) |
+| classify | own + competitor whitelist | **own only** (`competitors=[]`) |
+| storage | `search_snapshots` + `search_listings` | **`sku_snapshots`** (flat, keyed on `platform_product_id`) |
+
+A brand-name query reliably returns the brand's whole catalog, so it *guarantees*
+own coverage where a category keyword can't. Own price/inventory truth → targeted
+scrape; SoV/rank + competitors → keyword scrape. Resolve the "overlap" at the read
+layer, not by dropping capture (competitors are *only* available via the keyword
+scrape).
+
+**Storage — single flat table** (`sku_snapshots`, append-only). One row per
+(product × store × scrape): `platform_product_id` (the identity — names drift, ids
+don't), `product_name` (display only), store (`merchant_id`/`city`/`lat`/`lon`),
+`scraped_at`, and the volatile metrics `price` / `mrp` / `discount_pct` / `in_stock`
+/ `inventory` / `rating`. Query/group by `platform_product_id`. No dimension split
+(MVP) — the name repeats per row but that's cheap and harmless since joins are on id.
+
+**Config — two caps on the watchlist.** `keyword_cap` + `brand_cap` are columns on
+`tenant_watchlist` (own rows), set via the `brands` sheet of `config.xlsx`. No new
+settings table — brand-scoped knobs live with the brand. Precedence for both:
+`CLI flag > tenant cap (config) > default` (12 / 60). A dedicated `tenant_settings`
+table is only warranted once settings become tenant-wide + non-brand (cadence,
+workers, per-MP toggles).
+
+**New metric.** `rating` (and `product_state`) are already in the search payload's
+`common_attributes` — `_extract_product` now pulls both; `sku_snapshots` stores
+`rating`.
+
+**Orchestrator** — `scraper/public/targeted.py` (`run_targeted` / `run_all_targeted`):
+same worker-pool as the keyword orchestrator (one browser, N context-workers on a
+shared store queue, per-worker DB session), one `scrape_job` (dashboard
+`public_skus`), `--resume` skips stores already in `sku_snapshots` for the job.
+
+**CLI**: `scrape public-skus --tenant <id> [--all] [--resume] [--city <slug>]
+[--brand-cap N] [--workers N]`.
+
+**Files**: `app/models/search.py` (`SkuSnapshot`), `app/models/tenant.py`
+(watchlist caps), migration `c9e1a4b7d206`, `blinkit/public_data/sku_storage.py`,
+`scraper/public/targeted.py`, `cli/commands/scrape.py` (`public-skus`),
+`cli/commands/sync.py` (caps), `endpoints.py` (`BRAND_RESULT_CAP=60`).
+
+**Not yet live-tested** — validate with `public-skus --tenant <id> --city <one>
+--workers 3` before a full run. Apply the migration first: `alembic upgrade head`
+(→ `c9e1a4b7d206`; stop uvicorn first — pooler 15-cap).

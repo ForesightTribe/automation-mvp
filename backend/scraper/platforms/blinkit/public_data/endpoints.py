@@ -34,6 +34,11 @@ BASIC_SEARCH_METHOD = "basic"
 # Bump this to capture deeper result sets.
 RESULT_CAP = 12
 
+# Cap for the brand-query targeted scrape — searches a tenant's brand name to
+# pull its whole catalog at a store. Set well above a realistic brand SKU count
+# so the full catalog is captured, but bounded so a huge brand can't run away.
+BRAND_RESULT_CAP = 60
+
 
 def first_search_url(keyword: str) -> str:
     """The offset-0 search request for a keyword."""
