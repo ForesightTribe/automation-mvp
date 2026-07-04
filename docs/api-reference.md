@@ -159,13 +159,20 @@ the marketplace filter is a no-op until more platforms connect.
 | GET | `/collections` | Curated brand collections. |
 
 ### `inventory` — `/api/clients/{id}/inventory`
-Stock health: private SOH + fill-rate, plus public availability.
+Stock health: private SOH + fill-rate, plus the **public own-SKU** surface from
+`sku_snapshots` (populated by `scrape public-skus`). Public endpoints need an `own`
+watchlist brand and carry an `as_of` timestamp (weekly cadence → show freshness).
+They also take **`?kind=main|combo|all`** (default `main`) — combos/multipacks are
+stocked selectively, so they're analysed apart from singular main SKUs.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. |
-| GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. |
-| GET | `/availability` | **Public** stock-out monitoring for the client's own brand (out-of-stock first). Filters `?city=`, `?marketplace=`, `?days=`. Needs an `own` watchlist brand. Authoritative source is now `sku_snapshots` (populated by `scrape public-skus` — complete own-SKU price/stock/inventory); rewire from the keyword-scrape tables is pending. |
+| GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. *(private)* |
+| GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. *(private)* |
+| GET | `/availability` | **Public** stock-out monitoring — latest `sku_snapshots` row per (marketplace, city, product), out-of-stock first. Filters `?city=`, `?marketplace=`, `?days=` (default 30). |
+| GET | `/distribution` | **Public** distribution % per own SKU = in-stock stores ÷ stores it appears in (latest snapshot per store); widest gaps first. `?city=`, `?marketplace=`, `?days=`. |
+| GET | `/availability-history` | **Public** weekly on-shelf availability % trend for own SKUs. `?days=` (default 84 = 12 weeks), `?city=`, `?marketplace=`. |
+| GET | `/pricing` | **Public** per-SKU price dispersion across stores (min/median/max) + avg discount, latest snapshot per store. `?city=`, `?marketplace=`, `?days=`. |
 
 ### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
 Blinkit brand-health scorecard. **Weekly snapshots** keyed on `from_date_ist`
@@ -188,9 +195,15 @@ Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlis
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/share-of-voice` | Own-brand SOV summary + daily trend. Filters `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
+| GET | `/rank-matrix` | Own-brand avg rank + SoV per (keyword × city) — the "where am I weak" **heatmap**. Returns `keywords` (rows), `cities` (cols), flat `cells`, `as_of`. `?marketplace=`, `?days=` (default 30). |
+| GET | `/top-competitors` | Competitor leaderboard: appearances, distinct keywords, avg position/price, share % of all competitor appearances. `?keyword=`, `?city=`, `?marketplace=`, `?days=`, `?limit=` (default 15). |
+| GET | `/price-position` | Per keyword: own price band (avg/min/max) vs competitor band (avg/min/median/max) — priced in or out of the set. `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
 | GET | `/rankings` | Paginated competitor positions/prices for the own brand. Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
 
-Empty results until the client has an `own` watchlist entry.
+Empty results until the client has an `own` watchlist entry. `rank-matrix` /
+`top-competitors` / `price-position` read the keyword-scrape tables
+(`search_snapshots` / `search_listings`); the `inventory/*` public endpoints read
+`sku_snapshots`. Each carries an `as_of` for the freshness badge.
 
 ### `purchase-orders` — `/api/clients/{id}/purchase-orders` *(private)*
 Blinkit POs (`raw` carries vendor + line items).

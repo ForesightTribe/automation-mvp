@@ -73,6 +73,9 @@ class SearchListing(SQLModel, table=True):
     in_stock: bool = True
     inventory: int | None = None
     platform_product_id: str | None = None
+    # Combo/multipack vs singular SKU (own or competitor). Combos are stocked
+    # selectively and priced higher, so price comparisons filter to singles.
+    is_combo: bool = False
     extra: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
 
@@ -110,6 +113,9 @@ class SkuSnapshot(SQLModel, table=True):
     in_stock: bool = True
     inventory: int | None = None
     rating: float | None = None
+    # Combo/multipack vs singular main SKU — combos are stocked selectively, so the
+    # availability views separate them (default view = main SKUs only).
+    is_combo: bool = False
 
 
 class MarketplaceLocation(SQLModel, table=True):

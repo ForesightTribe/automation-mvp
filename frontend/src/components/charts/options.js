@@ -379,6 +379,99 @@ export const heatmapOption = (cities, categories, cells, max) => ({
 	],
 });
 
+/**
+ * Share-of-voice trend — one gradient area (single series, so no legend; the card
+ * title names it). `rows` are `competition/share-of-voice` points; `avg_sov` is a
+ * 0–100 percent number (not a fraction).
+ */
+export const sovTrendOption = (rows) => {
+	const pct = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
+	return {
+		tooltip: { trigger: "axis", valueFormatter: pct },
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.date)),
+		},
+		yAxis: {
+			type: "value",
+			axisLabel: { formatter: (v) => `${v}%` },
+		},
+		series: [areaSeries("Share of Voice", rows.map((r) => r.avg_sov), PRIMARY)],
+	};
+};
+
+/**
+ * Weekly on-shelf availability % trend — one gradient area on a 0–100 axis. `rows`
+ * are `inventory/availability-history` points (`week`, `availability_pct`).
+ */
+export const availabilityTrendOption = (rows) => {
+	const pct = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
+	return {
+		tooltip: { trigger: "axis", valueFormatter: pct },
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.week)),
+		},
+		yAxis: {
+			type: "value",
+			max: 100,
+			axisLabel: { formatter: (v) => `${v}%` },
+		},
+		series: [areaSeries("Availability", rows.map((r) => r.availability_pct), SUCCESS)],
+	};
+};
+
+/**
+ * Rank heatmap — keywords (x) × cities (y), colour = own-brand rank (sequential;
+ * lower rank is better, so darker = weaker, drawing the eye to weak spots). No
+ * per-cell numbers (the Table view carries exact ranks); tooltip shows rank + SoV.
+ * `data` = [{ value: [xIdx, yIdx, rank], sov }]; `maxRank` caps the scale.
+ */
+export const rankHeatmapOption = (keywords, cities, data, maxRank) => ({
+	tooltip: {
+		position: "top",
+		formatter: (p) =>
+			`${cities[p.value[1]]} · ${keywords[p.value[0]]}<br/>Rank #${p.value[2]}` +
+			(p.data?.sov != null ? ` · SoV ${Number(p.data.sov).toFixed(1)}%` : ""),
+	},
+	grid: { left: 8, right: 16, top: 8, bottom: 48, containLabel: true },
+	xAxis: {
+		type: "category",
+		data: keywords,
+		axisLabel: { interval: 0, rotate: 30 },
+		splitArea: { show: true },
+	},
+	yAxis: {
+		type: "category",
+		data: cities,
+		axisLabel: { width: 110, overflow: "truncate" },
+		splitArea: { show: true },
+	},
+	visualMap: {
+		min: 1,
+		max: maxRank || 12,
+		calculable: true,
+		orient: "horizontal",
+		left: "center",
+		bottom: 8,
+		text: ["weaker", "stronger"],
+		inRange: { color: ["#eef2ff", "#4f46e5"] },
+		formatter: (v) => `#${Math.round(v)}`,
+	},
+	series: [
+		{
+			type: "heatmap",
+			data,
+			label: { show: false },
+			emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" } },
+		},
+	],
+});
+
 /** "2026-06" -> "Jun 26". */
 const monthLabel = (ym) =>
 	new Date(`${ym}-01T00:00:00`).toLocaleString("en-IN", {

@@ -14,7 +14,7 @@ from app.models.blinkit_seller import (
     BlinkitScorecardWeekly,
 )
 from app.models.job import ScrapeJob
-from app.models.search import InventoryDepth
+from app.models.search import SkuSnapshot
 from app.utils.time import now_ist
 from app.services import reference_service, watchlist_service
 from app.services.analytics_service import (
@@ -326,18 +326,20 @@ async def get_alerts(session: AsyncSession, *, tenant_id: uuid.UUID) -> list[dic
                 }
             )
 
-    # 4. Own-brand listings out of stock on the public shelf (last 2 days).
+    # 4. Own-brand SKUs out of stock on the public shelf (from sku_snapshots).
+    # Window is ~8 days to reliably catch the latest weekly/on-demand scrape.
     own = await watchlist_service.get_brands_by_relationship(
         session, tenant_id, "own"
     )
     if own:
-        since = now_ist() - timedelta(days=2)
+        since = now_ist() - timedelta(days=8)
         shelf_oos = (
             await session.execute(
-                select(func.count(distinct(InventoryDepth.sku))).where(
-                    InventoryDepth.brand_slug.in_(own),
-                    InventoryDepth.scraped_at >= since,
-                    InventoryDepth.in_stock.is_(False),
+                select(func.count(distinct(SkuSnapshot.platform_product_id))).where(
+                    SkuSnapshot.tenant_id == tenant_id,
+                    SkuSnapshot.brand_slug.in_(own),
+                    SkuSnapshot.scraped_at >= since,
+                    SkuSnapshot.in_stock.is_(False),
                 )
             )
         ).scalar_one()
@@ -346,8 +348,8 @@ async def get_alerts(session: AsyncSession, *, tenant_id: uuid.UUID) -> list[dic
                 {
                     "severity": "warning",
                     "category": "visibility",
-                    "title": f"{shelf_oos} listing(s) out of stock on shelf",
-                    "detail": "Own-brand SKUs marked unavailable in the last 2 days.",
+                    "title": f"{shelf_oos} SKU(s) out of stock on shelf",
+                    "detail": "Own-brand SKUs marked unavailable in the latest public scrape.",
                 }
             )
 

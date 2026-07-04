@@ -115,6 +115,17 @@ def slugify(name: str) -> str:
     return s or "unknown"
 
 
+# Combos / multipacks are stocked selectively, so they must be analysed apart from
+# singular main SKUs (their low distribution is by design, not a gap). Blinkit names
+# them explicitly: "- Pack of N", "… + … Combo", "Buy N Get 1 Free".
+_COMBO_RE = re.compile(r"(pack of|combo|buy\s*\d+\s*get|\s\+\s)", re.IGNORECASE)
+
+
+def is_combo_name(name: str) -> bool:
+    """True if a product name marks it as a combo/multipack (vs a single main SKU)."""
+    return bool(_COMBO_RE.search(name or ""))
+
+
 def _first_words(name: str, n: int = 2) -> str:
     words = (name or "").split()
     return " ".join(words[:n]) if words else "Unknown"

@@ -17,6 +17,27 @@
 
 ---
 
+## Ways of Working — Explain & Confirm Crucial Decisions
+
+Before anything hard to reverse or that changes shared/persistent state, **stop,
+explain, and ask — do not just do it:**
+
+- **DB migrations** (`alembic upgrade` / `downgrade` / `stamp` / `revision`):
+  explain what the migration changes and **show the exact command**, then wait for
+  the go-ahead before running it.
+- **Data writes/deletes on the shared DB** (`TRUNCATE`, `DELETE`, `UPDATE`, bulk
+  inserts, backfills, or a scrape run that persists rows): explain the effect and
+  **show the exact command / SQL**, then confirm before running.
+- **Any other crucial or irreversible call** — schema changes, dropping data,
+  destructive git operations, anything touching production/shared state.
+
+State the reasoning and the command up front, then wait. Read-only inspection
+(`SELECT`, `information_schema`, `alembic current/history`) may be run directly. If
+a decision is genuinely the user's (which approach, which data to clear), ask
+rather than assume.
+
+---
+
 ## Stack (quick ref)
 
 - **Runtime**: Python 3.12+, fully async/await

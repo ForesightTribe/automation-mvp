@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import SkuSnapshot
 from app.utils.logger import logger
 from app.utils.time import now_ist
+from scraper.utils.search_result import is_combo_name
 from scraper.utils.storage import ensure_refs
 
 MP = "blinkit"
@@ -48,6 +49,7 @@ async def save_skus(
 
     scraped_at = now_ist()
     for l in listings:
+        name = l.get("name", "")
         session.add(
             SkuSnapshot(
                 tenant_id=tid,
@@ -55,7 +57,8 @@ async def save_skus(
                 mp_slug=MP,
                 brand_slug=brand_slug,
                 platform_product_id=(l.get("product_id") or ""),
-                product_name=l.get("name", ""),
+                product_name=name,
+                is_combo=is_combo_name(name),
                 merchant_id=(l.get("merchant_id") or merchant_id),
                 city=city,
                 lat=lat,

@@ -5,6 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import SearchSnapshot, SearchListing
 from app.utils.logger import logger
 from app.utils.time import now_ist
+from scraper.utils.search_result import is_combo_name
 from scraper.utils.storage import ensure_refs
 
 
@@ -71,6 +72,7 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensu
                 position=l.get("position"),
                 product_name=l.get("name", ""),
                 is_brand=l.get("is_brand", False),
+                is_combo=is_combo_name(l.get("name", "")),
                 price=l.get("price"),
                 mrp=l.get("mrp"),
                 discount_pct=l.get("discount_pct"),

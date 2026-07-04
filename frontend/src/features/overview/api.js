@@ -58,3 +58,8 @@ export const getFreshness = (clientId) =>
 
 export const getAlerts = (clientId) =>
 	api.get(`/clients/${clientId}/overview/alerts`);
+
+/** Public on-shelf distribution (own SKUs, from sku_snapshots) for the Overview
+ * summary card. Weekly scrape, so it takes ?days= not the start/end window. */
+export const getPublicShelf = (clientId, { days } = {}) =>
+	api.get(`/clients/${clientId}/inventory/distribution`, { params: { days } });

@@ -4,8 +4,8 @@ import { MarketplaceBreakdown } from "./components/MarketplaceBreakdown";
 import { AdTrendChart } from "./components/AdTrendChart";
 import { SalesTrendChart } from "./components/SalesTrendChart";
 import { MonthlyTrendChart } from "./components/MonthlyTrendChart";
-import { AttentionFeed } from "./components/AttentionFeed";
 import { FreshnessChips } from "./components/FreshnessChips";
+import { PublicShelfCard } from "./components/PublicShelfCard";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 
@@ -74,10 +74,10 @@ export const OverviewPage = () => {
 				/>
 			</div>
 
-			{/* Attention feed + freshness. */}
+			{/* Public shelf distribution + freshness across all scrapes. */}
 			<div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
 				<div className="lg:col-span-2">
-					<AttentionFeed />
+					<PublicShelfCard />
 				</div>
 				<FreshnessChips />
 			</div>
