@@ -122,7 +122,13 @@ async def _worker(
                     query = _brand_query(brand_slug, aliases)
                     _t = time.monotonic()
                     try:
-                        res = await bl_scraper.search(session, query, brand_cap, lat=loc.lat, lon=loc.lon)
+                        # Brand scrape follows the similarity tail — Blinkit returns
+                        # only ~18 own products as `basic`, the rest as similarity;
+                        # own-only classification discards non-own padding.
+                        res = await bl_scraper.search(
+                            session, query, brand_cap,
+                            lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                        )
                     except Exception as e:
                         res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
                     store_fetch += time.monotonic() - _t

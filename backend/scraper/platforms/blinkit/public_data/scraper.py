@@ -239,13 +239,21 @@ async def close_session(session: dict) -> None:
 async def search(
     session: dict, keyword: str, cap: int = ep.RESULT_CAP,
     lat: float | None = None, lon: float | None = None,
+    follow_similarity: bool = False,
 ) -> dict:
-    """Run one keyword search in an open session, paginating Blinkit's basic
-    results up to `cap`. Pass `lat`/`lon` to target a specific store without
-    reopening the session — Blinkit selects the dark store from the lat/lon
-    headers. Returns {products, total_results, merchant_id, ok, error}; `ok` is
-    False when the first fetch didn't return 200 (failed/unserviceable, not just
-    empty), and `error` carries a short reason (HTTP status / exception text).
+    """Run one keyword search in an open session, paginating up to `cap`. Pass
+    `lat`/`lon` to target a specific store without reopening the session — Blinkit
+    selects the dark store from the lat/lon headers.
+
+    By default paging stops when results switch from `basic` to `similarity`
+    (loosely-related padding) — right for a category-keyword scrape. Set
+    `follow_similarity=True` for the BRAND scrape: Blinkit returns only ~18 of a
+    brand's products as `basic` and pushes the rest into `similarity`, so following
+    the tail (bounded by `cap`) recovers the full catalog. Safe there because the
+    caller classifies own-brand-only, discarding any non-own similarity padding.
+
+    Returns {products, total_results, merchant_id, ok, error}; `ok` is False when
+    the first fetch didn't return 200, `error` carries a short reason.
     """
     page = session["page"]
     headers = session["headers"]
@@ -273,7 +281,9 @@ async def search(
         next_url, method, count = _pagination(page_body)
         if total_results is None:
             total_results = count
-        if not next_url or method != ep.BASIC_SEARCH_METHOD:
+        if not next_url:
+            break
+        if method != ep.BASIC_SEARCH_METHOD and not follow_similarity:
             break
         url = ep.BASE_URL + next_url
         body = None  # paged requests carry no body

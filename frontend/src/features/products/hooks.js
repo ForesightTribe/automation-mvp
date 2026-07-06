@@ -2,7 +2,12 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import { useMarketplaces } from "../../context/MarketplaceContext";
-import { getProductDetail, getProductPos, getProducts } from "./api";
+import {
+	getProductDetail,
+	getProductPos,
+	getProducts,
+	getProductPublic,
+} from "./api";
 
 /**
  * Data hooks for Products. Like the rest of the dashboard, every key includes the
@@ -55,6 +60,18 @@ export const useProductDetail = (itemId) => {
 				end: range.to,
 				marketplaces: selected,
 			}),
+		enabled: Boolean(activeClientId && itemId),
+	});
+};
+
+/** Public (scraped) view for one SKU — weekly data, so keyed on client + item +
+ * the window's `days` (not the private start/end range). */
+export const useProductPublic = (itemId) => {
+	const { activeClientId } = useClient();
+	const { days } = useDateRange();
+	return useQuery({
+		queryKey: ["product-public", activeClientId, itemId, days],
+		queryFn: () => getProductPublic(activeClientId, itemId, { days }),
 		enabled: Boolean(activeClientId && itemId),
 	});
 };

@@ -6,7 +6,12 @@ from fastapi import APIRouter, HTTPException, Query, status
 
 from app.dependencies import ClientDep, PaginationDep, PeriodDep, SessionDep
 from app.schemas.common import Page
-from app.schemas.product import ProductDetail, ProductListResponse, ProductPoRow
+from app.schemas.product import (
+    ProductDetail,
+    ProductListResponse,
+    ProductPoRow,
+    ProductPublicResponse,
+)
 from app.services import product_service
 
 router = APIRouter()
@@ -64,6 +69,21 @@ async def product_detail(
             status_code=status.HTTP_404_NOT_FOUND, detail="Product not found"
         )
     return data
+
+
+@router.get("/{item_id}/public", response_model=ProductPublicResponse)
+async def product_public(
+    session: SessionDep,
+    client: ClientDep,
+    item_id: str,
+    days: int = Query(30, ge=1, le=365),
+):
+    """Public (scraped) view of one SKU — on-shelf distribution, price/discount/
+    rating, and per-keyword rank — bridged from private `item_id` via `sku_map`.
+    Returns `mapped: false` when the SKU has no public mapping yet."""
+    return await product_service.get_product_public(
+        session, tenant_id=client.id, item_id=item_id, days=days
+    )
 
 
 @router.get("/{item_id}/pos", response_model=Page[ProductPoRow])

@@ -145,6 +145,33 @@ class MarketplaceLocation(SQLModel, table=True):
     is_active: bool = True
 
 
+class SkuMap(SQLModel, table=True):
+    """Bridges private seller data (`item_id`) to public scrape data
+    (`platform_product_id`) — the two Blinkit id systems share no key, so this is
+    built by normalized name matching (auto) with manual confirmation for the rest.
+    `platform_product_id` is NULL until matched. One row per (tenant, item_id).
+    """
+
+    __tablename__ = "sku_map"
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "item_id", name="uq_skumap_tenant_item"),
+        Index("idx_skumap_tenant_pid", "tenant_id", "platform_product_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    item_id: str                                   # private seller id
+    platform_product_id: str | None = None         # public id (NULL until matched)
+    item_name: str = ""                            # private name (reference)
+    product_name: str = ""                         # public name (reference)
+    unit: str = ""
+    match_method: str = ""                         # 'auto' | 'manual' | '' (unmatched)
+    confidence: float | None = None
+    created_at: datetime = Field(default_factory=now_ist)
+    updated_at: datetime = Field(default_factory=now_ist)
+
+
 class TenantLocation(SQLModel, table=True):
     """Per-tenant location selection: which `marketplace_locations` a client
     tracks, per marketplace. Drives the orchestrator's scrape set together with

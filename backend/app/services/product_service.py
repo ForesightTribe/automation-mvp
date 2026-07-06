@@ -4,9 +4,9 @@ PO history (blinkit_po_items), and the Blinkit scorecard signal
 (blinkit_scorecard_key_skus). Private plane only — keyed on `item_id`.
 """
 import uuid
-from datetime import date
+from datetime import date, timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import Integer, cast, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination, Period
@@ -17,6 +17,8 @@ from app.models.blinkit_seller import (
     BlinkitSOH,
     BlinkitSellerSale,
 )
+from app.models.search import SearchListing, SkuMap, SkuSnapshot
+from app.utils.time import now_ist
 from app.schemas.common import Page
 from app.schemas.product import (
     STATUS_HEALTHY,
@@ -451,3 +453,103 @@ async def get_product_pos(
         ) in rows
     ]
     return Page.build(items, total, pagination)
+
+
+def _p(value, digits: int = 2):
+    return round(float(value), digits) if value is not None else None
+
+
+async def get_product_public(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    days: int = 30,
+) -> dict:
+    """The public (scraped) picture for one private SKU, bridged via `sku_map`:
+    on-shelf distribution + price/discount/rating from `sku_snapshots`, and where it
+    ranks per keyword from `search_listings`. Returns {"mapped": False} when the SKU
+    has no public mapping yet (so the UI can prompt to run `sku-map`)."""
+    row = (await session.execute(
+        select(SkuMap.platform_product_id, SkuMap.product_name).where(
+            SkuMap.tenant_id == tenant_id, SkuMap.item_id == item_id
+        )
+    )).first()
+    pid = row[0] if row else None
+    if not pid:
+        return {"mapped": False}
+
+    since = now_ist() - timedelta(days=days)
+    base = [
+        SkuSnapshot.tenant_id == tenant_id,
+        SkuSnapshot.platform_product_id == pid,
+        SkuSnapshot.scraped_at >= since,
+    ]
+    # Latest snapshot per store, then aggregate coverage + price band.
+    latest = (
+        select(
+            SkuSnapshot.merchant_id.label("store"),
+            SkuSnapshot.in_stock.label("in_stock"),
+            SkuSnapshot.price.label("price"),
+            SkuSnapshot.mrp.label("mrp"),
+            SkuSnapshot.discount_pct.label("discount_pct"),
+            SkuSnapshot.rating.label("rating"),
+            SkuSnapshot.scraped_at.label("scraped_at"),
+        )
+        .where(*base)
+        .distinct(SkuSnapshot.merchant_id)
+        .order_by(SkuSnapshot.merchant_id, SkuSnapshot.scraped_at.desc())
+        .subquery()
+    )
+    agg = (await session.execute(
+        select(
+            func.count(),
+            func.sum(cast(latest.c.in_stock, Integer)),
+            func.min(latest.c.price),
+            func.percentile_cont(0.5).within_group(latest.c.price.asc()),
+            func.max(latest.c.price),
+            func.max(latest.c.mrp),
+            func.avg(latest.c.discount_pct),
+            func.avg(latest.c.rating),
+            func.max(latest.c.scraped_at),
+        )
+    )).one()
+    total_stores = int(agg[0] or 0)
+    in_stock_stores = int(agg[1] or 0)
+
+    # Where it ranks: own-brand listing positions per keyword (keyword scrape).
+    kw_rows = (await session.execute(
+        select(
+            SearchListing.keyword,
+            func.avg(SearchListing.position),
+            func.count(),
+        )
+        .where(
+            SearchListing.tenant_id == tenant_id,
+            SearchListing.platform_product_id == pid,
+            SearchListing.scraped_at >= since,
+        )
+        .group_by(SearchListing.keyword)
+        .order_by(func.avg(SearchListing.position))
+    )).all()
+    keywords = [
+        {"keyword": kw, "avg_position": _p(pos, 1), "appearances": n}
+        for kw, pos, n in kw_rows
+    ]
+
+    return {
+        "mapped": True,
+        "platform_product_id": pid,
+        "product_name": row[1],
+        "as_of": agg[8],
+        "total_stores": total_stores,
+        "in_stock_stores": in_stock_stores,
+        "distribution_pct": _p(in_stock_stores / total_stores * 100, 1) if total_stores else None,
+        "price_min": _p(agg[2]),
+        "price_median": _p(agg[3]),
+        "price_max": _p(agg[4]),
+        "mrp": _p(agg[5]),
+        "avg_discount": _p(agg[6], 1),
+        "rating": _p(agg[7], 2),
+        "keywords": keywords,
+    }

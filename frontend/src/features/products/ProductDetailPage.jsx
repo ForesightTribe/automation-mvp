@@ -5,6 +5,7 @@ import { SalesStockChart } from "./components/SalesStockChart";
 import { FacilityStock } from "./components/FacilityStock";
 import { CityBreakdown } from "./components/CityBreakdown";
 import { PoHistory } from "./components/PoHistory";
+import { ProductPublicPanel } from "./components/ProductPublicPanel";
 import { MetricTile } from "../../components/ui/MetricTile";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
@@ -84,6 +85,8 @@ export const ProductDetailPage = () => {
 					</div>
 
 					<SalesStockChart detail={data} />
+
+					<ProductPublicPanel itemId={data.item_id} />
 
 					<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
 						<FacilityStock facilities={data.facilities} />
