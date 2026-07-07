@@ -12,6 +12,12 @@ engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
+    pool_recycle=300,        # recycle connections every 5 min (prevents stale conn errors)
+    pool_size=5,
+    max_overflow=10,
+    connect_args={
+        "server_settings": {"application_name": "foresight-backend"},
+    },
 )
 
 AsyncSessionLocal = sessionmaker(
@@ -22,8 +28,14 @@ AsyncSessionLocal = sessionmaker(
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
+    session: AsyncSession = AsyncSessionLocal()
+    try:
         yield session
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            pass  # ignore stale-connection errors on cleanup
 
 
 async def create_tables() -> None:

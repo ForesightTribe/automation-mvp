@@ -98,14 +98,17 @@ async def _market_agg(
     ]
     if marketplaces is not None:
         conds.append(SearchResult.mp_slug.in_(marketplaces))
-    return (
-        await session.execute(
-            select(
-                func.avg(SearchResult.brand_sov),
-                func.avg(SearchResult.brand_rank),
-            ).where(*conds)
-        )
-    ).one()
+    try:
+        return (
+            await session.execute(
+                select(
+                    func.avg(SearchResult.brand_sov),
+                    func.avg(SearchResult.brand_rank),
+                ).where(*conds)
+            )
+        ).one()
+    except Exception:
+        return None, None
 
 
 def _roas(revenue: float, spend: float) -> float | None:

@@ -21,3 +21,9 @@ async def marketplaces(session: SessionDep, _user: CurrentUserDep):
 @router.get("/cities", response_model=list[CityOut])
 async def cities(_user: CurrentUserDep):
     return reference_service.list_cities()
+
+
+@router.get("/blinkit-zones")
+async def blinkit_zones(_user: CurrentUserDep):
+    """All blinkit dark store zones with lat/lon — for bid optimizer location picker."""
+    return reference_service.list_blinkit_zones()

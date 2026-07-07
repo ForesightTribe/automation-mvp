@@ -1,3 +1,6 @@
+from contextlib import asynccontextmanager
+
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
@@ -5,7 +8,25 @@ from app.core.config import settings
 from app.utils.exceptions import register_exception_handlers
 from app.router import api_router
 
-app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG)
+_scheduler = AsyncIOScheduler(timezone="Asia/Kolkata")
+
+
+@asynccontextmanager
+async def _lifespan(app: FastAPI):
+    from app.services.ads_service import run_bid_optimizer_all_tenants
+    _scheduler.add_job(
+        run_bid_optimizer_all_tenants,
+        trigger="interval",
+        minutes=30,
+        id="bid_optimizer_auto",
+        replace_existing=True,
+    )
+    _scheduler.start()
+    yield
+    _scheduler.shutdown(wait=False)
+
+
+app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=_lifespan)
 
 app.add_middleware(
     CORSMiddleware,

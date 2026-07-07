@@ -49,3 +49,20 @@ def list_cities() -> list[dict]:
             }
         )
     return cities
+
+
+def list_blinkit_zones() -> list[dict]:
+    """Return all blinkit dark store zones with lat/lon for the bid optimizer."""
+    zones = []
+    for slug, city in CITIES.items():
+        blinkit = city.get("platforms", {}).get("blinkit", {})
+        for z in blinkit.get("zones", []):
+            zones.append({
+                "label": f"{city['name']} — {z['zone']}",
+                "city": city["name"],
+                "city_slug": slug,
+                "zone": z["zone"],
+                "lat": z["lat"],
+                "lon": z["lon"],
+            })
+    return zones
