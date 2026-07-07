@@ -10,7 +10,8 @@ export const NAV_ITEMS = [
 	{ label: "Sales & Analytics", path: "/analytics", icon: "▤" },
 	{ label: "Products", path: "/products", icon: "▦" },
 	{ label: "Inventory", path: "/inventory", icon: "▥" },
-	{ label: "Campaign Manager", path: "/ads", icon: "◈" },
+	{ label: "Ads", path: "/ads", icon: "◈" },
+	{ label: "Campaign Manager", path: "/campaign-manager", icon: "◉" },
 	{ label: "Competition", path: "/competition", icon: "◎" },
 	{ label: "Scorecard", path: "/scorecard", icon: "◍" },
 	// adminOnly: hidden from members in the Sidebar; the /settings route is also

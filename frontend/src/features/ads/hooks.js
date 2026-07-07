@@ -1,189 +1,153 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
+import { useDateRange } from "../../context/DateRangeContext";
+import { useMarketplaces } from "../../context/MarketplaceContext";
 import {
-    addBidOptimizerRule,
-    addBudgetSchedule,
-    deleteBidOptimizerRule,
-    deleteBudgetSchedule,
-    toggleBudgetSchedule,
-    getBidOptimizerHistory,
-    getBidOptimizerRules,
-    getBudgetSchedules,
-    getCampaignKeywords,
-    getCampaignProducts,
-    getCampaigns,
-    getSchedulerHistory,
-    reconnectBlinkit,
-    runBidOptimizer,
-    runScheduler,
-    setCampaignBudget,
-    toggleBidOptimizerRule,
+	getSummary,
+	getPerformance,
+	getBudgetSplit,
+	getCampaigns,
+	getKeywords,
+	getSov,
+	getMarketplaceBreakdown,
+	getVisibilityPlans,
+	getCollections,
 } from "./api";
 
-export const useCampaigns = () => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["ads-campaigns", activeClientId],
-        queryFn: () => getCampaigns(activeClientId),
-        enabled: Boolean(activeClientId),
-    });
+export const useAdsSummary = () => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["ads-summary", activeClientId, range, selected],
+		queryFn: () =>
+			getSummary(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+			}),
+		enabled: Boolean(activeClientId),
+	});
 };
 
-export const useBudgetSchedules = () => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["budget-schedules", activeClientId],
-        queryFn: () => getBudgetSchedules(activeClientId),
-        enabled: Boolean(activeClientId),
-    });
+export const useAdsPerformance = () => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["ads-performance", activeClientId, range, selected],
+		queryFn: () =>
+			getPerformance(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+			}),
+		enabled: Boolean(activeClientId),
+	});
 };
 
-export const useSchedulerHistory = () => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["scheduler-history", activeClientId],
-        queryFn: () => getSchedulerHistory(activeClientId),
-        enabled: Boolean(activeClientId),
-    });
+export const useBudgetSplit = () => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["ads-budget-split", activeClientId, range, selected],
+		queryFn: () =>
+			getBudgetSplit(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+			}),
+		enabled: Boolean(activeClientId),
+	});
 };
 
-export const useAddBudgetSchedule = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (data) => addBudgetSchedule(activeClientId, data),
-        onSuccess: () =>
-            qc.invalidateQueries({ queryKey: ["budget-schedules", activeClientId] }),
-    });
+export const useCampaigns = ({ page, limit = 20, status, sort, order }) => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["ads-campaigns", activeClientId, range, selected, page, limit, status, sort, order],
+		queryFn: () =>
+			getCampaigns(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+				page,
+				limit,
+				status,
+				sort,
+				order,
+			}),
+		enabled: Boolean(activeClientId),
+		placeholderData: keepPreviousData,
+	});
 };
 
-export const useDeleteBudgetSchedule = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (campaignId) => deleteBudgetSchedule(activeClientId, campaignId),
-        onSuccess: () =>
-            qc.invalidateQueries({ queryKey: ["budget-schedules", activeClientId] }),
-    });
+export const useKeywords = ({ page, limit = 20, campaignId, targetType, sort, order }) => {
+	const { activeClientId } = useClient();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["ads-keywords", activeClientId, selected, page, limit, campaignId, targetType, sort, order],
+		queryFn: () =>
+			getKeywords(activeClientId, {
+				marketplaces: selected,
+				page,
+				limit,
+				campaignId,
+				targetType,
+				sort,
+				order,
+			}),
+		enabled: Boolean(activeClientId),
+		placeholderData: keepPreviousData,
+	});
 };
 
-export const useToggleBudgetSchedule = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (campaignId) => toggleBudgetSchedule(activeClientId, campaignId),
-        onSuccess: () =>
-            qc.invalidateQueries({ queryKey: ["budget-schedules", activeClientId] }),
-    });
+export const useSov = () => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["ads-sov", activeClientId, range, selected],
+		queryFn: () =>
+			getSov(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+			}),
+		enabled: Boolean(activeClientId),
+	});
 };
 
-export const useSetCampaignBudget = () => {
-    const { activeClientId } = useClient();
-    return useMutation({
-        mutationFn: ({ campaignId, budget }) => setCampaignBudget(activeClientId, campaignId, budget),
-    });
+export const useAdMarketplaces = () => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	return useQuery({
+		queryKey: ["ads-marketplaces", activeClientId, range],
+		queryFn: () =>
+			getMarketplaceBreakdown(activeClientId, {
+				start: range.from,
+				end: range.to,
+			}),
+		enabled: Boolean(activeClientId),
+	});
 };
 
-export const useReconnectBlinkit = () => {
-    const { activeClientId } = useClient();
-    return useMutation({
-        mutationFn: (magicLink) => reconnectBlinkit(activeClientId, magicLink),
-    });
+export const useVisibilityPlans = () => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: ["ads-visibility-plans", activeClientId],
+		queryFn: () => getVisibilityPlans(activeClientId),
+		enabled: Boolean(activeClientId),
+	});
 };
 
-export const useCampaignProducts = (campaignId) => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["campaign-products", activeClientId, campaignId],
-        queryFn: () => getCampaignProducts(activeClientId, campaignId),
-        enabled: Boolean(activeClientId && campaignId),
-        staleTime: 10 * 60 * 1000,
-    });
-};
-
-export const useCampaignKeywords = (campaignId) => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["campaign-keywords", activeClientId, campaignId],
-        queryFn: () => getCampaignKeywords(activeClientId, campaignId),
-        enabled: Boolean(activeClientId && campaignId),
-        staleTime: 5 * 60 * 1000,
-    });
-};
-
-export const useBidOptimizerRules = () => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["bid-optimizer-rules", activeClientId],
-        queryFn: () => getBidOptimizerRules(activeClientId),
-        enabled: Boolean(activeClientId),
-    });
-};
-
-export const useBidOptimizerHistory = () => {
-    const { activeClientId } = useClient();
-    return useQuery({
-        queryKey: ["bid-optimizer-history", activeClientId],
-        queryFn: () => getBidOptimizerHistory(activeClientId),
-        enabled: Boolean(activeClientId),
-        refetchInterval: 30000,
-    });
-};
-
-export const useAddBidOptimizerRule = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (data) => addBidOptimizerRule(activeClientId, data),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ["bid-optimizer-rules", activeClientId] }),
-    });
-};
-
-export const useDeleteBidOptimizerRule = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (ruleId) => deleteBidOptimizerRule(activeClientId, ruleId),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ["bid-optimizer-rules", activeClientId] }),
-    });
-};
-
-export const useToggleBidOptimizerRule = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: (ruleId) => toggleBidOptimizerRule(activeClientId, ruleId),
-        onSuccess: () => qc.invalidateQueries({ queryKey: ["bid-optimizer-rules", activeClientId] }),
-    });
-};
-
-export const useRunBidOptimizer = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: () => runBidOptimizer(activeClientId),
-        onSuccess: () => {
-            setTimeout(
-                () => qc.invalidateQueries({ queryKey: ["bid-optimizer-history", activeClientId] }),
-                35000,
-            );
-        },
-    });
-};
-
-export const useRunScheduler = () => {
-    const { activeClientId } = useClient();
-    const qc = useQueryClient();
-    return useMutation({
-        mutationFn: () => runScheduler(activeClientId),
-        onSuccess: () => {
-            setTimeout(
-                () =>
-                    qc.invalidateQueries({
-                        queryKey: ["scheduler-history", activeClientId],
-                    }),
-                35000,
-            );
-        },
-    });
+export const useCollections = () => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: ["ads-collections", activeClientId],
+		queryFn: () => getCollections(activeClientId),
+		enabled: Boolean(activeClientId),
+	});
 };

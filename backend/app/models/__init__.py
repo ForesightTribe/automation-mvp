@@ -3,10 +3,10 @@ from app.models.brand import Brand, Marketplace
 from app.models.tenant import Tenant, User, TenantWatchlist
 from app.models.job import ScrapeJob, JobStatus, PlatformSession
 from app.models.search import (
-    SearchResult,
-    CompetitorRanking,
-    BrandSnapshot,
-    ScrapedProduct,
+    SearchSnapshot,
+    SearchListing,
+    MarketplaceLocation,
+    TenantLocation,
     InventoryDepth,
 )
 from app.models.blinkit_seller import (
@@ -33,7 +33,7 @@ __all__ = [
     "Brand", "Marketplace",
     "Tenant", "User", "TenantWatchlist",
     "ScrapeJob", "JobStatus", "PlatformSession",
-    "SearchResult", "CompetitorRanking", "BrandSnapshot", "ScrapedProduct", "InventoryDepth",
+    "SearchSnapshot", "SearchListing", "MarketplaceLocation", "TenantLocation", "InventoryDepth",
     "BlinkitSellerSale", "BlinkitSellerSalesSummary", "BlinkitPO", "BlinkitPOSnapshot",
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",
     "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",

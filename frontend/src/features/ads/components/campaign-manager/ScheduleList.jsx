@@ -169,3 +169,4 @@ export const ScheduleList = () => {
         </Card>
     );
 };
+

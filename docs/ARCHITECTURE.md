@@ -14,7 +14,7 @@ automation-mvp/
 │   │   │   ├── brand.py               # Brand, Marketplace
 │   │   │   ├── tenant.py              # Tenant, User, TenantWatchlist
 │   │   │   ├── job.py                 # ScrapeJob, PlatformSession
-│   │   │   ├── search.py              # SearchResult, CompetitorRanking, BrandSnapshot, ScrapedProduct, InventoryDepth
+│   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, SkuMap, MarketplaceLocation, TenantLocation, InventoryDepth
 │   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
 │   │   │   └── blinkit_marketing.py   # AdPerformanceSummary, AdCampaign, SponsoredSOV, BrandCollection, VisibilityPlan
 │   │   ├── api/
@@ -37,15 +37,14 @@ automation-mvp/
 │   │   │   │   ├── dashboard_data/
 │   │   │   │   │   ├── marketing/     # scraper.py, parser.py, storage.py
 │   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
-│   │   │   │   └── public_data/       # scraper.py, parser.py, storage.py
-│   │   │   ├── instamart/
-│   │   │   │   └── public_data/       # scraper.py, parser.py, storage.py (pending Playwright fix)
-│   │   │   └── zepto/
-│   │   │       └── public_data/       # scraper.py, parser.py, storage.py (pending)
+│   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py (search_*), sku_storage.py (sku_snapshots)
+│   │   │   ├── instamart/             # public_data/ — OUT OF SCOPE (Blinkit-only)
+│   │   │   └── zepto/                 # public_data/ — OUT OF SCOPE (Blinkit-only)
+│   │   ├── public/                    # orchestrator.py (keyword scrape) + targeted.py (own-SKU scrape) — watchlist + tenant_locations → per-tenant, worker pool
 │   │   └── utils/
 │   │       ├── browser.py             # create_browser_context(), write_blocker(), PLAYWRIGHT_ARGS
-│   │       ├── cities.py              # CITIES dict — 20+ Indian cities with zones (lat/lon/pincode)
-│   │       ├── search_result.py       # build_result(), norm_price(), brand_in(), dig()
+│   │       ├── cities.py              # LEGACY hardcoded cities — being retired (public scraper reads DB)
+│   │       ├── search_result.py       # classify_products(), slugify(), discount_pct(), brand_in()
 │   │       ├── session.py             # save_session(), load_session() → platform_sessions table
 │   │       ├── storage.py             # ensure_refs() — auto-upserts brands + marketplaces
 │   │       ├── jobs.py                # create_scrape_job(), complete_scrape_job(), fail_scrape_job()
@@ -55,7 +54,10 @@ automation-mvp/
 │       └── commands/
 │           ├── tenant.py              # cli tenant create / list
 │           ├── auth.py                # cli auth blinkit / blinkit-seller / status
-│           └── scrape.py              # cli scrape blinkit / blinkit-seller / blinkit-scorecard / public
+│           ├── sync.py                # cli sync — config.xlsx → DB (locations/brands/coverage)
+│           ├── locations.py           # cli locations list
+│           ├── watchlist.py           # cli watchlist list
+│           └── scrape.py              # cli scrape blinkit / ... / public / public-run
 ├── frontend/                          # React + Vite (skeleton)
 └── docs/                              # This documentation
 ```
@@ -67,11 +69,14 @@ automation-mvp/
 ```
 [CLI command]
      │
-     ├── public scrape ──► platforms/{platform}/public_data/scraper.py
-     │                          │  Playwright in-page fetch (Blinkit)
-     │                          │  or direct API (Zepto/Instamart — pending)
-     │                     parser.py  normalises raw → typed dicts
-     │                     storage.py  calls ensure_refs() → appends to search_results
+     ├── public keyword scrape ─► scraper/public/orchestrator.py (watchlist + tenant_locations)
+     │                          │  one Blinkit browser, N context-workers, lat/lon header-swap per store
+     │                          │  blinkit/public_data: scraper.py → parser.py (classify own+competitors)
+     │                     storage.py  ensure_refs() → append search_snapshots + search_listings
+     │
+     ├── public own-SKU scrape ─► scraper/public/targeted.py (brand query, own-only)
+     │                          │  same worker pool; paginates the brand's whole catalog
+     │                     sku_storage.py → append sku_snapshots (keyed on product_id)
      │
      └── private scrape ─► platforms/blinkit/{dashboard}/scraper.py
                                 │  Playwright session restored from platform_sessions
@@ -108,19 +113,34 @@ automation-mvp/
 |---|---|---|
 | `tenants` | `id` (UUID PK), `name`, `is_active` | Create with `cli tenant create` |
 | `users` | `id`, `tenant_id`, `email`, `hashed_password` | FK to tenants |
-| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `cities`, `keywords` | Brands to monitor per tenant |
+| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `keywords`, `aliases`, `keyword_cap`, `brand_cap` | Brands + keywords per tenant; the two caps (own rows) tune the keyword vs brand scrape. `cities`/`marketplaces` are legacy — use `tenant_locations` |
 | `platform_sessions` | `tenant_id`, `platform`, `encrypted_session` | Fernet-encrypted Playwright sessions |
 | `scrape_jobs` | `id`, `tenant_id`, `platform`, `dashboard`, `status` | Audit log for every scrape run |
 
-### Public search tables (scoped to brand + marketplace, not tenant)
+### Public search tables (per-tenant)
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `search_results` | `brand_slug`, `mp_slug`, `city`, `zone`, `keyword` | One row per keyword × location × scrape run |
-| `competitor_rankings` | `brand_slug`, `mp_slug`, `competitor`, `position` | Per-product competitor rows |
-| `brand_snapshots` | `brand_slug`, `mp_slug`, `date`, `metrics` | Daily aggregate metrics per brand |
-| `scraped_products` | `brand_slug`, `mp_slug`, `name`, `position`, `keyword` | Individual product appearances |
-| `inventory_depth` | `brand_slug`, `mp_slug`, `sku`, `city`, `zone` | Stock depth per SKU per zone |
+| `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **keyword scrape header** — one row per (tenant, keyword, location, scrape) |
+| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `is_combo`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product in the result page (lat/lon via `snapshot_id → search_snapshots`) |
+| `sku_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `platform_product_id` (key), `product_name`, `is_combo`, `merchant_id`, `city`, `lat`/`lon`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `rating` | **targeted own-SKU scrape** — one flat row per (own product × location × scrape) |
+| `sku_map` | `tenant_id`, `item_id`, `platform_product_id`, `product_name`, `match_method` | bridges private `item_id` ↔ public `platform_product_id` (name-matched; `cli sku-map`) |
+| `marketplace_locations` | `mp_slug`, `merchant_id` (key), `city`, `state`, `region`, `lat`/`lon` | shared darkstore catalog (from `config.xlsx`) |
+| `tenant_locations` | `tenant_id`, `mp_slug`, `location_id` | which catalog locations a tenant scrapes |
+| `inventory_depth` | `tenant_id`, `brand_slug`, `mp_slug`, `sku`, `city` | old deep per-SKU stock probe — superseded by `sku_snapshots`, no write path |
+
+Append-only (no upsert). `search_*` written by `cli scrape public-run`;
+`sku_snapshots` by `cli scrape public-skus` — both via orchestrators under
+`scraper/public/`.
+
+**The unit is the serviceable location `(lat, lon)`, not the store.** The catalog
+lat/long is a delivery point (several dark stores can share one; the search API
+resolves a coordinate to one serving store), so **all public read metrics count
+distinct `(lat,lon)`, never `merchant_id`/rows** — see
+[docs/public-glossary.md](public-glossary.md) (Reach vs Distribution). `is_combo`
+separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The old
+`search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products` tables
+were dropped in migration `f3a9c1d7b2e5`.
 
 ### Blinkit marketing tables (tenant-scoped)
 
@@ -165,45 +185,59 @@ Re-running the same scrape updates existing rows rather than creating duplicates
 
 ## Public Scraper — How It Works
 
-### Location data
+### Config & locations (DB-driven)
 
-`scraper/utils/cities.py` is a hardcoded dict of 20+ Indian cities. Each city has a default `lat`/`lon`/`pincode` plus named zones (dark-store service areas), each with their own coordinates. No external geocoding API is used.
-
-```
-bengaluru → default + zones: koramangala, indiranagar, whitefield, ...
-mumbai    → default + zones: andheri, bandra, powai, ...
-```
-
-`--all-zones` scrapes every zone sequentially to capture location-specific ranking differences.
+The darkstore catalog, per-tenant keywords, and coverage live in `config.xlsx` and
+are synced to the DB by `cli sync` (`marketplace_locations`, `tenant_watchlist`,
+`tenant_locations`). `scraper/utils/cities.py` is **legacy and being retired** — the
+scraper reads locations from the DB, not from it. Blinkit selects the dark store
+from the **lat/lon** in the request headers; `pincode`/`zone` are metadata only.
+`marketplace_locations` is keyed on `merchant_id`.
 
 ### Why direct HTTP doesn't work (Cloudflare)
 
-Blinkit's search API (`/v1/layout/search`) is behind Cloudflare bot protection. Direct `httpx` requests always return 403 regardless of headers or cookies — Python's SSL library has a different TLS fingerprint from real browsers.
+Blinkit's search API (`/v1/layout/search`) is behind Cloudflare. Direct `httpx`
+returns 403 even with the browser's cookies — Python's TLS fingerprint differs from
+a real browser (verified 403 on both http/1.1 and http/2). So every fetch goes
+through an in-page `page.evaluate(fetch(...))` in a real Playwright session.
 
-### The in-page fetch technique (Blinkit reference implementation)
+### One session, reused across all stores (the speed win)
 
-Make the API call from *inside* the Playwright browser using `page.evaluate()`. Because the request originates from a real browser process with a Cloudflare-verified TLS fingerprint, session cookies, and bot-detection tokens, it passes through cleanly.
+`open_session()` pays the browser warmup **once** — homepage + a warmup search whose
+request is intercepted (`page.on("request")`) to capture the session-bound headers
+(`auth_key`, `session_uuid`, `device_id`, `lat`, `lon`, `access_token`, …). Then
+every store is just a **lat/lon header swap** on the in-page POST — Blinkit returns
+that store's catalog in ~0.4s, no per-store relaunch. The API pages **12 products at
+a time** (server-capped, ignores higher `limit`), so `search()` follows Blinkit's
+`next_url` up to `RESULT_CAP`, stopping when results switch from `basic` to
+`similarity`. Extraction reads the typed `atc_action.cart_item` (brand, price, mrp,
+inventory, product_id) + `tracking.common_attributes` (position, category, rating,
+state).
 
-```
-Step 1 — Set location context
-   page.goto("https://blinkit.com/?lat={lat}&lon={lon}")
-   Blinkit reads lat/lon from URL query params to determine the dark store.
+### Two scrapes, orchestration & resilience
 
-Step 2 — Warmup search (header capture)
-   page.goto("https://blinkit.com/s/?q=water")
-   Triggers a real /v1/layout/search request from the browser.
-   Intercepted via page.on("request") to capture session-bound headers:
-   app_client, auth_key, session_uuid, device_id, web_app_version, etc.
+Both scrapes share the same engine (session, in-page fetch, pagination) and a
+concurrent **worker pool**: one browser, N isolated contexts each with its own DB
+session, pulling stores off a shared queue (`--workers`, default 5). They differ in
+query, cap, classification, and storage target:
 
-Step 3 — In-page POST for actual keyword
-   page.evaluate(fetch("/v1/layout/search", {headers: captured, body: {q: keyword}}))
-   Runs inside the browser — Cloudflare treats it as a legitimate user action.
-   Response format: response.snippets[] — snippets with atc_action are products.
-```
+- **Keyword scrape** — `scraper/public/orchestrator.py`. Category keywords ×
+  stores → SoV/rank + declared competitors (`keyword_cap`, default 12), classifying
+  each result against the own brand via the API's explicit `brand` field. Writes
+  `search_snapshots` + `search_listings`.
+- **Targeted own-SKU scrape** — `scraper/public/targeted.py`. Searches the tenant's
+  **brand name**, paginates the whole catalog (`brand_cap`, default 60), own-brand
+  only. Writes the flat `sku_snapshots` (keyed on `platform_product_id`) —
+  guaranteeing coverage of every own SKU regardless of keyword ranking.
 
-Reference implementation: `backend/scraper/platforms/blinkit/public_data/scraper.py`
+One `scrape_job` per run (dashboards `public_search` / `public_skus`). Resilience:
+retry with backoff on transient failures, a hard per-fetch timeout (a stalled fetch
+can't hang a worker), non-JSON/Cloudflare detection surfaced with the real HTTP
+status, session refresh on staleness, incremental commits, and `--resume` to
+continue an interrupted job (skips already-scraped stores).
 
-This is the established pattern for Cloudflare-protected endpoints. Check whether Instamart/Zepto also block direct requests before deciding httpx vs Playwright.
+Reference: `backend/scraper/platforms/blinkit/public_data/{scraper,storage,sku_storage}.py`
++ `backend/scraper/public/{orchestrator,targeted}.py`. httpx is not usable here (Cloudflare).
 
 ---
 
@@ -247,34 +281,23 @@ Step 2 must run before any page JavaScript executes. Firebase JS SDK v9+ stores 
 
 ## Adding a New Platform
 
-### Public scraper (Zepto, Instamart)
+### Public scraper (a new marketplace)
 
-Create three files:
+Instamart/Zepto are currently **out of scope** (Blinkit-only). If a marketplace is
+added later, mirror the Blinkit public path:
 
 ```
 scraper/platforms/{platform}/public_data/
-├── scraper.py   — async scrape(keyword, brand_slug, city_slug, ...) → dict
-├── parser.py    — normalise raw API response → list of product dicts
-└── storage.py   — save(session, result): call ensure_refs(), append SearchResult rows
+├── endpoints.py  — URLs, header keys, request body, RESULT_CAP
+├── scraper.py    — open_session()/search() — reuse one session across stores (lat/lon swap)
+├── parser.py     — classify_products() → snapshot header + listing rows
+└── storage.py    — save(session, result, tenant_id, job_id) → search_snapshots + search_listings
 ```
 
-Contract for `scraper.py`:
-
-```python
-async def scrape(
-    keyword: str,
-    brand_slug: str,
-    city_slug: str = "bengaluru",
-    zone: str = "",
-    pincode: str = "",
-    lat: float | None = None,
-    lon: float | None = None,
-    aliases: list[str] | None = None,
-) -> dict:
-    # returns: {platform, keyword, brand_slug, city, zone, pincode, lat, lon, aliases, products}
-```
-
-Use the Blinkit implementation as reference. Test whether the platform's API blocks direct requests — if yes, use the in-page fetch technique.
+Then dispatch to it from `scraper/public/orchestrator.py` (platform-agnostic above
+the platform layer). Locations come from `marketplace_locations`/`tenant_locations`
+(via `cli sync`), not `cities.py`. Check whether the platform's API blocks direct
+httpx — if so, use the in-page fetch technique (as Blinkit does).
 
 ### Private scraper (Instamart, Zepto seller dashboards)
 

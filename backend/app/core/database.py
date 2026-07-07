@@ -12,12 +12,12 @@ engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    pool_recycle=300,        # recycle connections every 5 min (prevents stale conn errors)
-    pool_size=5,
-    max_overflow=10,
-    connect_args={
-        "server_settings": {"application_name": "foresight-backend"},
-    },
+    # Supabase's session-mode pooler caps at 15 clients. The concurrent public
+    # scraper uses one DB connection per worker (default 5) + the main session, so
+    # 10 fits a ~5–8 worker pool with headroom. Keep well under 15 so a second
+    # process (server/migration) still has room.
+    pool_size=10,
+    max_overflow=0,
 )
 
 AsyncSessionLocal = sessionmaker(

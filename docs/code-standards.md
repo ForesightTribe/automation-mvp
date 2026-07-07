@@ -90,13 +90,16 @@ await session.commit()
 ### Public data (append-only — no upsert)
 
 ```python
-session.add(SearchResult(...))
+# public data = header + detail, both tagged with tenant_id / job_id
+session.add(snapshot)          # SearchSnapshot
+await session.flush()          # assign snapshot.id
+session.add_all(listings)      # SearchListing rows (FK snapshot_id)
 await session.commit()
 ```
 
 ### ensure_refs()
 
-Always call before saving public search data. Satisfies the FK constraints from `search_results` to `brands` and `marketplaces`:
+Always call before saving public search data. Satisfies the FK constraints from `search_snapshots`/`search_listings`/`sku_snapshots` to `brands` and `marketplaces`:
 
 ```python
 from scraper.utils.storage import ensure_refs

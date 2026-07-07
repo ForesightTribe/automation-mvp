@@ -1,16 +1,20 @@
 """Client-scoped advertising data. Mounted under /clients/{client_id}/ads."""
 from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
 
-from app.dependencies import ClientDep, Pagination, SessionDep
+from app.dependencies import ClientDep, Pagination, PaginationDep, PeriodDep, SessionDep
 from app.schemas.ads import (
+    AdMarketplaceRow,
     AdPerformancePoint,
+    AdsSummary,
     BidOptimizerLogEntry,
     BidOptimizerRule,
     BudgetSchedule,
+    BudgetSplitRow,
     CampaignKeyword,
     CampaignProduct,
     CampaignRow,
     CollectionRow,
+    KeywordRow,
     ReconnectBlinkitRequest,
     ReconnectBlinkitResponse,
     SchedulerLogEntry,
@@ -26,18 +30,28 @@ from app.services import ads_service
 router = APIRouter()
 
 
-@router.get("/campaigns", response_model=Page[CampaignRow])
-async def campaigns(
+def _mps(marketplaces: str | None) -> list[str] | None:
+    """Parse the comma-separated ?marketplaces= filter (None/empty = all)."""
+    return [m for m in marketplaces.split(",") if m] if marketplaces else None
+
+
+@router.get("/summary", response_model=AdsSummary)
+async def summary(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
-    status: str | None = None,
-    page: int = Query(1, ge=1),
-    limit: int = Query(20, ge=1, le=500),
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
 ):
-    pagination = Pagination(page=page, limit=limit)
-    return await ads_service.get_campaigns(
-        session, tenant_id=client.id, pagination=pagination, days=days, status=status
+    return await ads_service.get_summary(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        prev_start=period.prev_start,
+        prev_end=period.prev_end,
+        marketplaces=_mps(marketplaces),
     )
 
 
@@ -45,18 +59,123 @@ async def campaigns(
 async def performance(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
 ):
-    return await ads_service.get_performance(session, tenant_id=client.id, days=days)
+    return await ads_service.get_performance(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=_mps(marketplaces),
+    )
+
+
+@router.get("/budget-split", response_model=list[BudgetSplitRow])
+async def budget_split(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
+):
+    return await ads_service.get_budget_split(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=_mps(marketplaces),
+    )
+
+
+@router.get("/campaigns", response_model=Page[CampaignRow])
+async def campaigns(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    pagination: PaginationDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
+    status: str | None = None,
+    sort: str = Query("spend", pattern="^(spend|roas|sales|impressions)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+):
+    return await ads_service.get_campaigns(
+        session,
+        tenant_id=client.id,
+        pagination=pagination,
+        start=period.start,
+        end=period.end,
+        marketplaces=_mps(marketplaces),
+        status=status,
+        sort=sort,
+        order=order,
+    )
+
+
+@router.get("/keywords", response_model=Page[KeywordRow])
+async def keywords(
+    session: SessionDep,
+    client: ClientDep,
+    pagination: PaginationDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
+    campaign_id: int | None = None,
+    target_type: str | None = Query(
+        None, description="Filter to 'keyword' or 'recommendation' rows."
+    ),
+    sort: str = Query("spend", pattern="^(spend|roas|sales|impressions)$"),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
+):
+    return await ads_service.get_keywords(
+        session,
+        tenant_id=client.id,
+        pagination=pagination,
+        campaign_id=campaign_id,
+        marketplaces=_mps(marketplaces),
+        target_type=target_type,
+        sort=sort,
+        order=order,
+    )
 
 
 @router.get("/sov", response_model=list[SponsoredSovRow])
 async def sponsored_sov(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
 ):
-    return await ads_service.get_sponsored_sov(session, tenant_id=client.id, days=days)
+    return await ads_service.get_sponsored_sov(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=_mps(marketplaces),
+    )
+
+
+@router.get("/marketplaces", response_model=list[AdMarketplaceRow])
+async def marketplaces_breakdown(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+):
+    return await ads_service.get_marketplace_breakdown(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        prev_start=period.prev_start,
+        prev_end=period.prev_end,
+    )
 
 
 @router.get("/visibility-plans", response_model=list[VisibilityPlanRow])

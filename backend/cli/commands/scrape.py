@@ -270,10 +270,14 @@ def scrape_blinkit_seller(
     po: bool = typer.Option(False, "--po", help="Scrape PO data"),
     soh: bool = typer.Option(False, "--soh", help="Scrape stock on hand"),
     po_days_back: int = typer.Option(90, "--po-days-back", help="Rolling window for PO fetch"),
+    refetch_po_items: bool = typer.Option(
+        False, "--refetch-po-items",
+        help="Re-fetch line items for every PO in the window (one-time backfill of stale received qty)",
+    ),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to MongoDB"),
 ):
     """Scrape Blinkit seller data. Pass --sales, --po, --soh, or none to run all three."""
-    asyncio.run(_scrape_blinkit_seller(tenant_id, date_from, date_to, sales, po, soh, po_days_back, save))
+    asyncio.run(_scrape_blinkit_seller(tenant_id, date_from, date_to, sales, po, soh, po_days_back, refetch_po_items, save))
 
 
 def _date_range(date_from: str | None, date_to: str | None) -> list[str]:
@@ -292,6 +296,7 @@ async def _scrape_blinkit_seller(
     po_flag: bool,
     soh_flag: bool,
     po_days_back: int,
+    refetch_po_items: bool,
     save: bool,
 ) -> None:
     run_all = not sales_flag and not po_flag and not soh_flag
@@ -337,20 +342,29 @@ async def _scrape_blinkit_seller(
         if run_po:
             po_job_id = None
             try:
-                known_po_numbers: set[str] = set()
+                # po_number -> (po_state, total_grn_quantity) for the targeted
+                # item refetch: a changed GRN or non-terminal state means the
+                # line items may have moved and must be re-pulled.
+                known_pos: dict[str, tuple[str | None, int | None]] = {}
                 if save:
                     import uuid as _uuid
                     from sqlmodel import select as _select
                     from app.models.blinkit_seller import BlinkitPO as _BlinkitPO
-                    from sqlalchemy import distinct as _distinct
                     rows = await db.execute(
-                        _select(_distinct(_BlinkitPO.po_number)).where(
-                            _BlinkitPO.tenant_id == _uuid.UUID(tenant_id)
-                        )
+                        _select(
+                            _BlinkitPO.po_number,
+                            _BlinkitPO.po_state,
+                            _BlinkitPO.total_grn_quantity,
+                        ).where(_BlinkitPO.tenant_id == _uuid.UUID(tenant_id))
                     )
-                    known_po_numbers = set(rows.scalars().all())
+                    known_pos = {pn: (state, grn) for pn, state, grn in rows.all()}
+                    detail = (
+                        "re-fetching ALL their line items"
+                        if refetch_po_items
+                        else "re-fetching only changed/in-flight ones"
+                    )
                     console.print(
-                        f"\n[dim]{len(known_po_numbers)} existing POs in DB — skipping their SKU fetch[/dim]"
+                        f"\n[dim]{len(known_pos)} existing POs in DB — {detail}[/dim]"
                     )
 
                 po_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_po")
@@ -359,7 +373,8 @@ async def _scrape_blinkit_seller(
                     raw_po = await seller_scraper.scrape_po(
                         storage_state,
                         po_days_back=po_days_back,
-                        known_po_numbers=known_po_numbers,
+                        known_pos=known_pos,
+                        refetch_all_items=refetch_po_items,
                     )
 
                 pos = [parse_po_row(r, tenant_id, po_job_id) for r in raw_po["pos"]]
@@ -633,11 +648,17 @@ def scrape_public(
     platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | zepto | instamart | all"),
     all_zones: bool = typer.Option(False, "--all-zones", help="Scrape all zones defined for the city"),
     aliases: Optional[str] = typer.Option(None, "--aliases", help="Comma-separated brand name aliases (e.g. 'dobra,dobra cola')"),
-    save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL"),
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — required to --save (per-tenant storage)"),
+    save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL (requires --tenant)"),
 ):
-    """Scrape public product search results — no login required."""
+    """Scrape public product search results — no login required.
+
+    Without --save it just scrapes and prints (no tenant needed). With --save it
+    writes per-tenant header+detail rows (search_snapshots + search_listings) and
+    opens a scrape_job, so --tenant is required.
+    """
     alias_list = [a.strip() for a in aliases.split(",")] if aliases else None
-    asyncio.run(_scrape_public(keyword, brand, city, platform, all_zones, alias_list, save))
+    asyncio.run(_scrape_public(keyword, brand, city, platform, all_zones, alias_list, tenant_id, save))
 
 
 async def _scrape_public(
@@ -647,6 +668,7 @@ async def _scrape_public(
     platform: str,
     all_zones: bool,
     aliases: list[str] | None,
+    tenant_id: str | None,
     save: bool,
 ) -> None:
     from scraper.utils.cities import CITIES, PLATFORM_CITIES
@@ -675,39 +697,168 @@ async def _scrape_public(
         "zepto":     (ze_scraper, ze_parser, ze_storage),
     }
 
+    if save and not tenant_id:
+        console.print("[red]--tenant is required with --save (storage is per-tenant).[/red]")
+        raise typer.Exit(1)
+
     async with AsyncSessionLocal() as db:
-        for plat in platforms_to_run:
-            if plat not in city["platforms"]:
-                console.print(f"  [dim]{plat} not available in {city['name']}[/dim]")
-                continue
+        job_id = None
+        rows_written = 0
+        if save:
+            job_id = await create_scrape_job(db, tenant_id, "public_search", "blinkit")
 
-            plat_zones = city["platforms"][plat]["zones"] if all_zones else [
-                {"zone": "", "pincode": city["pincode"], "lat": city["lat"], "lon": city["lon"]}
-            ]
+        try:
+            for plat in platforms_to_run:
+                if plat not in city["platforms"]:
+                    console.print(f"  [dim]{plat} not available in {city['name']}[/dim]")
+                    continue
 
-            scraper_mod, parser_mod, storage_mod = scrapers[plat]
+                plat_zones = city["platforms"][plat]["zones"] if all_zones else [
+                    {"zone": "", "pincode": city["pincode"], "lat": city["lat"], "lon": city["lon"]}
+                ]
 
-            for zone_def in plat_zones:
-                zone_label = zone_def.get("zone", "")
-                zone_display = f" [{zone_label}]" if zone_label else ""
-                console.print(f"\n[bold cyan]{city['name']}{zone_display}[/bold cyan]  [dim]{plat}[/dim]")
+                scraper_mod, parser_mod, storage_mod = scrapers[plat]
 
-                with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
-                    raw = await scraper_mod.scrape(
-                        keyword=keyword,
-                        brand_slug=brand_slug,
-                        city_slug=city_slug,
-                        zone=zone_label,
-                        pincode=zone_def.get("pincode", city["pincode"]),
-                        lat=zone_def.get("lat"),
-                        lon=zone_def.get("lon"),
-                        aliases=aliases,
-                    )
-                result = parser_mod.parse(raw)
-                _print_public_result(plat, result)
+                for zone_def in plat_zones:
+                    zone_label = zone_def.get("zone", "")
+                    zone_display = f" [{zone_label}]" if zone_label else ""
+                    console.print(f"\n[bold cyan]{city['name']}{zone_display}[/bold cyan]  [dim]{plat}[/dim]")
 
-                if save:
-                    await storage_mod.save(db, result)
+                    with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
+                        raw = await scraper_mod.scrape(
+                            keyword=keyword,
+                            brand_slug=brand_slug,
+                            city_slug=city_slug,
+                            zone=zone_label,
+                            pincode=zone_def.get("pincode", city["pincode"]),
+                            lat=zone_def.get("lat"),
+                            lon=zone_def.get("lon"),
+                            aliases=aliases,
+                        )
+                    result = parser_mod.parse(raw)
+                    _print_public_result(plat, result)
+
+                    if save:
+                        rows_written += await storage_mod.save(db, result, tenant_id, job_id)
+
+            if save:
+                await complete_scrape_job(db, job_id, rows_written)
+                console.print(f"\n[green]Saved {rows_written} rows[/green] (job {job_id})")
+        except Exception as e:
+            if save and job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            raise
+
+
+@app.command("public-run")
+def public_run(
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
+    all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
+    cap: int = typer.Option(None, "--cap", help="Max products per search (default: RESULT_CAP=12)"),
+    keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
+    city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
+    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),
+    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). ~5–6 is a good balance."),
+):
+    """Orchestrate a tenant's full Blinkit watchlist (keywords × locations), all
+    sourced from the DB (watchlist + tenant_locations). Writes per-tenant
+    snapshot+listing rows under one scrape_job per tenant. --keyword/--city narrow
+    a run to a single keyword or city. --resume picks up an interrupted run.
+    --workers sets the concurrent browser pool size.
+    """
+    if not tenant_id and not all_tenants:
+        console.print("[red]Provide --tenant <id> or --all.[/red]")
+        raise typer.Exit(1)
+    if resume and all_tenants:
+        console.print("[red]--resume works with a single --tenant, not --all.[/red]")
+        raise typer.Exit(1)
+    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers))
+
+
+async def _public_run(
+    tenant_id: str | None, all_tenants: bool, cap: int | None,
+    keyword: str | None, city: str | None, resume: bool, workers: int,
+) -> None:
+    from scraper.public import orchestrator
+
+    async with AsyncSessionLocal() as db:
+        if all_tenants:
+            summaries = await orchestrator.run_all(db, cap, keyword, city, workers)
+        else:
+            summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume, workers)]
+
+    if not summaries:
+        console.print("[yellow]No active tenants to run.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Tenant")
+    table.add_column("Keywords", justify="right")
+    table.add_column("Locations", justify="right")
+    table.add_column("Snapshots", justify="right")
+    table.add_column("Rows", justify="right")
+    table.add_column("Skipped", justify="right")
+    table.add_column("Errors", justify="right")
+    for s in summaries:
+        table.add_row(
+            s["tenant_id"][:8], str(s["keywords"]), str(s["locations"]),
+            str(s["snapshots"]), str(s["rows"]), str(s.get("skipped", 0)),
+            f"[red]{s['errors']}[/red]" if s["errors"] else "0",
+        )
+    console.print(table)
+
+
+@app.command("public-skus")
+def public_skus(
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
+    all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
+    cap: int = typer.Option(None, "--brand-cap", help="Override brand_cap for this run (default: per-tenant / 60)"),
+    city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
+    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip scraped stores)"),
+    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size)."),
+):
+    """Targeted own-SKU scrape: search each tenant's brand name, paginate its whole
+    catalog, and write per-product rows to sku_snapshots (price/mrp/discount/stock/
+    inventory/rating), keyed on product_id. Complements `public-run` (which covers
+    SoV/rank + competitors). --resume picks up an interrupted run.
+    """
+    if not tenant_id and not all_tenants:
+        console.print("[red]Provide --tenant <id> or --all.[/red]")
+        raise typer.Exit(1)
+    if resume and all_tenants:
+        console.print("[red]--resume works with a single --tenant, not --all.[/red]")
+        raise typer.Exit(1)
+    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers))
+
+
+async def _public_skus(
+    tenant_id: str | None, all_tenants: bool, cap: int | None,
+    city: str | None, resume: bool, workers: int,
+) -> None:
+    from scraper.public import targeted
+
+    async with AsyncSessionLocal() as db:
+        if all_tenants:
+            summaries = await targeted.run_all_targeted(db, cap, city, workers)
+        else:
+            summaries = [await targeted.run_targeted(db, tenant_id, cap, city, resume, workers)]
+
+    if not summaries:
+        console.print("[yellow]No active tenants to run.[/yellow]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Tenant")
+    table.add_column("Brands", justify="right")
+    table.add_column("Locations", justify="right")
+    table.add_column("SKU Rows", justify="right")
+    table.add_column("Skipped", justify="right")
+    table.add_column("Errors", justify="right")
+    for s in summaries:
+        table.add_row(
+            s["tenant_id"][:8], str(s["brands"]), str(s["locations"]),
+            str(s["rows"]), str(s.get("skipped", 0)),
+            f"[red]{s['errors']}[/red]" if s["errors"] else "0",
+        )
+    console.print(table)
 
 
 def _print_public_result(platform: str, result: dict) -> None:

@@ -1,0 +1,50 @@
+import { useMemo } from "react";
+import { EChart } from "../../../components/charts/EChart";
+import { ChartTableCard } from "../../../components/ui/ChartTableCard";
+import { rankedBarOption } from "../../../components/charts/options";
+import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+
+const COLUMNS = [
+	{ key: "city", label: "City" },
+	{
+		key: "units_sold",
+		label: "Units",
+		align: "right",
+		render: (r) => formatNumber(r.units_sold),
+	},
+	{
+		key: "revenue",
+		label: "Revenue",
+		align: "right",
+		render: (r) => formatCompactCurrency(r.revenue),
+	},
+];
+
+/** Where this SKU sells — top cities by revenue (bars) or the full table. */
+export const CityBreakdown = ({ cities = [] }) => {
+	const option = useMemo(
+		() =>
+			rankedBarOption(
+				cities.slice(0, 10).map((c) => ({
+					label: c.city,
+					value: c.revenue,
+				})),
+				{ color: "#0284c7", money: true },
+			),
+		[cities],
+	);
+
+	return (
+		<ChartTableCard
+			title="Sales by city"
+			isLoading={false}
+			error={null}
+			isEmpty={cities.length === 0}
+			emptyMessage="No city sales in this window."
+			renderChart={() => <EChart option={option} height={320} />}
+			columns={COLUMNS}
+			rows={cities}
+			rowKey={(r) => r.city}
+		/>
+	);
+};

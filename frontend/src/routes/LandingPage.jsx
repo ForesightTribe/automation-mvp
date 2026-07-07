@@ -9,14 +9,16 @@ import { LoginModal } from "../components/auth/LoginModal";
  * /login route). Sits outside RequireAuth; logged-in users are bounced to
  * /overview by RedirectIfAuth before they ever see it.
  *
- * When RequireAuth bounces a logged-out user here, it passes the attempted route
- * as `location.state.from`; we auto-open the modal and hand `from` to it so the
- * user lands back where they were headed after signing in.
+ * The modal only opens on an explicit "Log in" click — never automatically. (We
+ * deliberately don't auto-open from `location.state.from`: that state survives a
+ * refresh and would re-pop the modal after logout.) We still read `from` and
+ * hand it to the modal so a logged-out deep-link returns the user there after
+ * signing in.
  */
 export const LandingPage = () => {
 	const location = useLocation();
 	const from = location.state?.from;
-	const [showLogin, setShowLogin] = useState(Boolean(from));
+	const [showLogin, setShowLogin] = useState(false);
 
 	return (
 		<div className="flex min-h-screen flex-col">

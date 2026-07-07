@@ -10,6 +10,7 @@ import {
 	getMonthlyTrends,
 	getFreshness,
 	getAlerts,
+	getPublicShelf,
 } from "./api";
 
 /** Default month lookback for the Overview Operations charts. */
@@ -124,6 +125,17 @@ export const useAlerts = () => {
 	return useQuery({
 		queryKey: ["overview-alerts", activeClientId],
 		queryFn: () => getAlerts(activeClientId),
+		enabled: Boolean(activeClientId),
+	});
+};
+
+/** Public on-shelf distribution summary — weekly, so keyed on client + `days`. */
+export const usePublicShelf = () => {
+	const { activeClientId } = useClient();
+	const { days } = useDateRange();
+	return useQuery({
+		queryKey: ["overview-public-shelf", activeClientId, days],
+		queryFn: () => getPublicShelf(activeClientId, { days }),
 		enabled: Boolean(activeClientId),
 	});
 };

@@ -136,20 +136,43 @@ Accounts and users are provisioned via the CLI — there is no public signup.
 ```bash
 python -m cli account create --name "Foresight" --admin-email you@example.com
 #    Prompts for a password; creates the Account + its first admin User.
-#    Log in with this email/password at POST /api/auth/login.
+#    Log in with this email/password at the dashboard (the landing-page modal),
+#    or directly at POST /api/auth/login.
 ```
+
+### Add more users to an account
+
+Teammates are added to an existing account so they can see all of its clients'
+data. Default role is `member`; pass `--admin` for an admin.
+
+```bash
+python -m cli account list                       # find the account UUID
+python -m cli account add-user --account <account-id> --email teammate@example.com --name "Teammate"
+#    Prompts for a password. Add --admin to grant Settings/admin access.
+```
+
+**Roles & data scope:** data is **account-scoped** — every user under an account
+sees all of its clients. `member` vs `admin` only gates the Settings/admin UI,
+not the data. Identity + role are baked into the JWT at login, so a newly added
+user just logs in fresh, and a role change takes effect on that user's next login.
 
 ### Public scraper — no login needed
 
-```bash
-# Dry run — print results, no DB write
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit
+Config-driven (Blinkit only). Fill `config.xlsx`, sync it, then run per tenant:
 
-# Save to DB
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --save
+```bash
+python -m cli sync --file config.xlsx                 # locations + watchlist (+ keyword_cap/brand_cap) + coverage → DB
+python -m cli scrape public-run   --tenant <id>       # keyword scrape: SoV/rank + competitors → search_snapshots/listings
+python -m cli scrape public-skus  --tenant <id>       # targeted own-SKU scrape: price/stock/inventory → sku_snapshots
+
+# ad-hoc single scrape (quick check); --save needs --tenant
+python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --city delhi
 ```
 
-Brand and marketplace rows are created automatically on first `--save`. No manual seeding.
+`public-run` and `public-skus` are independent (separate `scrape_job`s, separate
+tables) — run them on their own cadences. Both take `--resume` and `--workers N`.
+
+Brand and marketplace rows are created automatically (`ensure_refs`). No manual seeding.
 
 ### Private scrapers — requires a client + seller login
 
@@ -210,5 +233,6 @@ npm run dev   # → http://localhost:5173
 | `alembic revision --autogenerate -m "msg"` | Generate migration after model change |
 | `uvicorn app.main:app --reload --port 8000` | Start the API server (Swagger at `/docs`) |
 | `python -m cli account create --name N --admin-email E` | Create an account + admin login |
+| `python -m cli account add-user --account ID --email E` | Add a user to an existing account (`--admin` for admin) |
 | `python -m cli --help` | Show CLI commands |
 | `playwright install chromium` | Download Playwright browser |

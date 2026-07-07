@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 
 import typer
 from rich.console import Console
@@ -52,6 +53,52 @@ async def _create_account(name, type_, email, full_name, password) -> None:
     console.print(f"  [dim]id[/dim]       [bold]{account.id}[/bold]")
     console.print(f"  [dim]admin[/dim]    {user.email}")
     console.print(f"\n[dim]Log in at POST /api/auth/login with this email + password.[/dim]\n")
+
+
+@app.command("add-user")
+def add_user(
+    account_id: uuid.UUID = typer.Option(..., "--account", help="Existing account UUID"),
+    email: str = typer.Option(..., "--email", help="New user's login email"),
+    full_name: str = typer.Option("Member", "--name", help="User's full name"),
+    admin: bool = typer.Option(
+        False, "--admin", help="Grant admin role (default: member)"
+    ),
+):
+    """Add a user (login) to an existing account.
+
+    The user belongs to the account and can see all of its clients' data. Members
+    see the dashboards; admins also get Settings/admin access.
+    """
+    password = typer.prompt("User password", hide_input=True, confirmation_prompt=True)
+    asyncio.run(_add_user(account_id, email, full_name, "admin" if admin else "member", password))
+
+
+async def _add_user(account_id, email, full_name, role, password) -> None:
+    async with AsyncSessionLocal() as db:
+        account = await db.get(Account, account_id)
+        if not account:
+            console.print(f"[red]No account with id {account_id}.[/red]")
+            raise typer.Exit(1)
+        try:
+            user = await auth_service.create_user(
+                db,
+                account_id=account_id,
+                email=email,
+                password=password,
+                full_name=full_name,
+                role=role,
+            )
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            console.print(f"[red]A user with email {email} already exists.[/red]")
+            raise typer.Exit(1)
+
+    console.print("\n[green]User added.[/green]")
+    console.print(f"  [dim]account[/dim]  {account.name}")
+    console.print(f"  [dim]email[/dim]    {user.email}")
+    console.print(f"  [dim]role[/dim]     [cyan]{user.role}[/cyan]")
+    console.print(f"\n[dim]They can log in at POST /api/auth/login with this email + password.[/dim]\n")
 
 
 @app.command("list")

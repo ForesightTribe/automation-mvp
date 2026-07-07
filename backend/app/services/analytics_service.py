@@ -10,7 +10,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
-from app.models.search import SearchResult
+from app.models.search import SearchSnapshot
 from app.services import watchlist_service
 
 Sale = BlinkitSellerSale
@@ -90,25 +90,22 @@ async def _market_agg(
     window. Returns (None, None) when there are no samples."""
     if not own_brands:
         return None, None
-    sr_day = func.date(SearchResult.scraped_at)
+    sr_day = func.date(SearchSnapshot.scraped_at)
     conds = [
-        SearchResult.brand_slug.in_(own_brands),
+        SearchSnapshot.brand_slug.in_(own_brands),
         sr_day >= start,
         sr_day <= end,
     ]
     if marketplaces is not None:
-        conds.append(SearchResult.mp_slug.in_(marketplaces))
-    try:
-        return (
-            await session.execute(
-                select(
-                    func.avg(SearchResult.brand_sov),
-                    func.avg(SearchResult.brand_rank),
-                ).where(*conds)
-            )
-        ).one()
-    except Exception:
-        return None, None
+        conds.append(SearchSnapshot.mp_slug.in_(marketplaces))
+    return (
+        await session.execute(
+            select(
+                func.avg(SearchSnapshot.brand_sov),
+                func.avg(SearchSnapshot.brand_rank),
+            ).where(*conds)
+        )
+    ).one()
 
 
 def _roas(revenue: float, spend: float) -> float | None:

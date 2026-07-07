@@ -1,52 +1,68 @@
 import { api } from "../../lib/axios";
 
-export const getCampaigns = (clientId) =>
-    api.get(`/clients/${clientId}/ads/campaigns`, { params: { limit: 200 } });
+const mp = (marketplaces) =>
+	marketplaces?.length ? marketplaces.join(",") : undefined;
 
-export const getBudgetSchedules = (clientId) =>
-    api.get(`/clients/${clientId}/ads/budget-schedules`);
+export const getSummary = (clientId, { start, end, marketplaces } = {}) =>
+	api.get(`/clients/${clientId}/ads/summary`, {
+		params: { start, end, marketplaces: mp(marketplaces) },
+	});
 
-export const addBudgetSchedule = (clientId, data) =>
-    api.post(`/clients/${clientId}/ads/budget-schedules`, data);
+export const getPerformance = (clientId, { start, end, marketplaces } = {}) =>
+	api.get(`/clients/${clientId}/ads/performance`, {
+		params: { start, end, marketplaces: mp(marketplaces) },
+	});
 
-export const deleteBudgetSchedule = (clientId, campaignId) =>
-    api.delete(`/clients/${clientId}/ads/budget-schedules/${campaignId}`);
+export const getBudgetSplit = (clientId, { start, end, marketplaces } = {}) =>
+	api.get(`/clients/${clientId}/ads/budget-split`, {
+		params: { start, end, marketplaces: mp(marketplaces) },
+	});
 
-export const toggleBudgetSchedule = (clientId, campaignId) =>
-    api.patch(`/clients/${clientId}/ads/budget-schedules/${campaignId}/toggle`);
+export const getCampaigns = (
+	clientId,
+	{ start, end, marketplaces, page, limit, status, sort, order } = {},
+) =>
+	api.get(`/clients/${clientId}/ads/campaigns`, {
+		params: {
+			start,
+			end,
+			marketplaces: mp(marketplaces),
+			page,
+			limit,
+			status: status || undefined,
+			sort,
+			order,
+		},
+	});
 
-export const getSchedulerHistory = (clientId) =>
-    api.get(`/clients/${clientId}/ads/budget-schedules/history`);
+export const getKeywords = (
+	clientId,
+	{ marketplaces, page, limit, campaignId, targetType, sort, order } = {},
+) =>
+	api.get(`/clients/${clientId}/ads/keywords`, {
+		params: {
+			marketplaces: mp(marketplaces),
+			page,
+			limit,
+			campaign_id: campaignId || undefined,
+			target_type: targetType || undefined,
+			sort,
+			order,
+		},
+	});
 
-export const runScheduler = (clientId) =>
-    api.post(`/clients/${clientId}/ads/budget-schedules/run`);
+export const getSov = (clientId, { start, end, marketplaces } = {}) =>
+	api.get(`/clients/${clientId}/ads/sov`, {
+		params: { start, end, marketplaces: mp(marketplaces) },
+	});
 
-export const reconnectBlinkit = (clientId, magicLink) =>
-    api.post(`/clients/${clientId}/ads/reconnect-blinkit`, { magic_link: magicLink });
+export const getMarketplaceBreakdown = (clientId, { start, end } = {}) =>
+	api.get(`/clients/${clientId}/ads/marketplaces`, {
+		params: { start, end },
+	});
 
-export const setCampaignBudget = (clientId, campaignId, budget) =>
-    api.post(`/clients/${clientId}/ads/campaigns/${campaignId}/set-budget`, { budget });
+export const getVisibilityPlans = (clientId) =>
+	api.get(`/clients/${clientId}/ads/visibility-plans`);
 
-export const getCampaignProducts = (clientId, campaignId) =>
-    api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/products`);
-
-export const getCampaignKeywords = (clientId, campaignId) =>
-    api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/keywords`);
-
-export const getBidOptimizerRules = (clientId) =>
-    api.get(`/clients/${clientId}/ads/bid-optimizer/rules`);
-
-export const addBidOptimizerRule = (clientId, data) =>
-    api.post(`/clients/${clientId}/ads/bid-optimizer/rules`, data);
-
-export const deleteBidOptimizerRule = (clientId, ruleId) =>
-    api.delete(`/clients/${clientId}/ads/bid-optimizer/rules/${ruleId}`);
-
-export const toggleBidOptimizerRule = (clientId, ruleId) =>
-    api.patch(`/clients/${clientId}/ads/bid-optimizer/rules/${ruleId}/toggle`);
-
-export const getBidOptimizerHistory = (clientId) =>
-    api.get(`/clients/${clientId}/ads/bid-optimizer/history`);
-
-export const runBidOptimizer = (clientId) =>
-    api.post(`/clients/${clientId}/ads/bid-optimizer/run`);
+export const getCollections = (clientId) =>
+	api.get(`/clients/${clientId}/ads/collections`);

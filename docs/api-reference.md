@@ -77,6 +77,14 @@ Authentication. The only place a password is used.
 | POST | `/logout` | No-op (stateless JWT); a hook for the frontend to drop the token. |
 | GET | `/me` | The current user (id, email, full_name, account_id, role, is_active). |
 
+**User creation is CLI-only — there is no signup/user endpoint.** `cli account
+create` makes an account + its first `admin`; `cli account add-user --account
+<id> --email <e> [--name <n>] [--admin]` adds more users (`member` by default) to
+an existing account. Both prompt for the password (bcrypt-hashed). Data is
+account-scoped, so every user of an account sees all its clients; `role` only
+gates the admin UI + `require_admin` routes. See
+[setup.md](setup.md) and [cli.md](cli.md).
+
 ### `clients` — `/api/clients`
 The account's clients + the client picker.
 
@@ -101,7 +109,7 @@ an optional comma-separated `?marketplaces=`.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/overview` | Headline KPIs, each as `{value, prev, delta_pct}`: revenue, **organic_revenue** (= revenue − ad_sales, clamped ≥0), units, SKUs, ad spend, **ad_sales**, impressions, **RoAS** (= ad_sales÷spend), **visibility** (avg brand_sov), **avg_rank**. Performance plane from `blinkit_ad_campaign_daily`; market plane from `search_results` via the own-brand watchlist. |
+| GET | `/overview` | Headline KPIs, each as `{value, prev, delta_pct}`: revenue, **organic_revenue** (= revenue − ad_sales, clamped ≥0), units, SKUs, ad spend, **ad_sales**, impressions, **RoAS** (= ad_sales÷spend), **visibility** (avg brand_sov), **avg_rank**. Performance plane from `blinkit_ad_campaign_daily`; market plane from `search_snapshots` via the own-brand watchlist. |
 | GET | `/trends` | Unified daily series for the Overview charts + KPI sparklines: `{date, ad_spend, ad_sales, impressions, revenue, units}`, built on a full date spine (None on gap days). |
 | GET | `/revenue` | Revenue + units **time-series** (per day). |
 | GET | `/top-skus` | Best-selling SKUs by revenue (`?limit=`). |
@@ -123,39 +131,67 @@ Composite endpoints for the Overview page that span multiple domains.
 ### `products` — `/api/clients/{id}/products` *(private)*
 Per-SKU performance, derived from sales + stock.
 
+Window via `PeriodDep` (`?start=&end=`, legacy `?days=`); `?marketplaces=` (comma-sep slugs, omit for all).
+
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/products` | Paginated SKU list. Filters: `?search=` (name), `?category=`, `?days=`. |
-| GET | `/products/{item_id}` | One SKU: totals, per-day trend, latest stock (summed across facilities). 404 if no sales in window. |
+| GET | `/products` | SKU list joined with latest stock + days-of-cover + health `status`. Returns `{summary, products: Page}` — `summary` = KPI strip (active SKUs, revenue, units, avg price, #out-of-stock, #low-cover) for the search/category/window scope. Params: `?search=` (name), `?category=`, `?sort=revenue\|units\|price\|cover`, `?sku_status=out_of_stock\|low_cover\|no_sales\|healthy`, pagination. |
+| GET | `/products/{item_id}` | Product 360: totals + avg price, current stock, days-of-cover + status, scorecard potential loss, daily sales `trend`, daily `stock_trend`, per-`facilities` stock, per-`cities` split. 404 if no sales in window. |
+| GET | `/products/{item_id}/pos` | Paginated PO line history for the SKU (`blinkit_po_items` ⨝ `blinkit_pos`): po_number, state, issue_date, facility, units ordered/received/remaining, cost, amount. |
+| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: on-shelf distribution % + `total_locations`/`in_stock_locations`, **reach %** (`total_locations ÷ covered_locations`), price band (min/median/max), avg discount, rating, and per-keyword rank with distinct `locations` (from `search_listings ⨝ search_snapshots`). Counts are distinct `(lat,lon)` locations. `?days=`. Returns `mapped: false` when unmapped. |
 
 ### `ads` — `/api/clients/{id}/ads` *(private)*
 Paid marketing on the platform (sponsored placements, bidding, plans).
 
+Window endpoints take `PeriodDep` (`?start=&end=`, legacy `?days=`) + optional
+comma-separated `?marketplaces=` (omit = all). Only Blinkit has ad data today, so
+the marketplace filter is a no-op until more platforms connect.
+
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window metric rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`. |
-| GET | `/performance` | Daily spend / impressions / ad_sales **time-series** (summed from `blinkit_ad_campaign_daily`). |
-| GET | `/sov` | Sponsored share-of-voice, latest per keyword. |
+| GET | `/summary` | KPI strip: ad_spend, ad_sales, RoAS, ACoS, impressions, atc, units_sold, active_campaigns — each a `Metric` (value + prev window + delta). RoAS = ad_sales÷spend; ACoS = spend÷ad_sales. |
+| GET | `/performance` | Daily spend / impressions / ad_sales / RoAS **time-series** (summed from `blinkit_ad_campaign_daily`). |
+| GET | `/budget-split` | Spend + recomputed RoAS per `campaign_type` (donut + by-type table). |
+| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`; `?sort=spend\|roas\|sales\|impressions` + `?order=asc\|desc` (sort `roas` = RoAS leaderboard / worst spenders). |
+| GET | `/keywords` | Paginated keyword/asset performance from the latest `blinkit_ad_campaign_detail` snapshot per campaign (target, match_type, cpm, direct/indirect sales, direct/total RoAS, position, new users). Filter `?campaign_id=`, `?target_type=keyword\|recommendation`; same `?sort`/`?order`. |
+| GET | `/sov` | Sponsored share-of-voice, latest per keyword in the window. |
+| GET | `/marketplaces` | Per-marketplace ad slice (spend, ad_sales, RoAS, impressions as `Metric`); unconnected MPs returned bare (`connected=false`) for "Not connected" cards. |
 | GET | `/visibility-plans` | Visibility/placement plans + budgets. |
 | GET | `/collections` | Curated brand collections. |
 
 ### `inventory` — `/api/clients/{id}/inventory`
-Stock health: private SOH + fill-rate, plus public availability.
+Stock health: private SOH + fill-rate, plus the **public own-SKU** surface from
+`sku_snapshots` (populated by `scrape public-skus`). Public endpoints need an `own`
+watchlist brand and carry an `as_of` timestamp (weekly cadence → show freshness).
+They also take **`?kind=main|combo|all`** (default `main`) — combos/multipacks are
+stocked selectively, so they're analysed apart from singular main SKUs. **All public
+counts are distinct serviceable *locations* (`lat,lon`), not stores/rows** — the
+catalog lat/long is a delivery point that several stores can share, so counting
+locations is the honest unit (`total_locations`, `in_stock_locations`, `locations`).
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. |
-| GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. |
-| GET | `/availability` | **Public** stock-out monitoring for the client's own brand (out-of-stock first). Filters `?city=`, `?marketplace=`, `?days=`. Needs an `own` watchlist brand. |
+| GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. *(private)* |
+| GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. *(private)* |
+| GET | `/availability` | **Public** stock-out monitoring — latest `sku_snapshots` row per (marketplace, city, product), out-of-stock first. Filters `?city=`, `?marketplace=`, `?days=` (default 30). |
+| GET | `/distribution` | **Public** distribution % per own SKU = in-stock stores ÷ stores it appears in (latest snapshot per store); widest gaps first. `?city=`, `?marketplace=`, `?days=`. |
+| GET | `/availability-history` | **Public** weekly on-shelf availability % trend for own SKUs. `?days=` (default 84 = 12 weeks), `?city=`, `?marketplace=`. |
+| GET | `/pricing` | **Public** per-SKU price dispersion across stores (min/median/max) + avg discount, latest snapshot per store. `?city=`, `?marketplace=`, `?days=`. |
 
 ### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
-Blinkit brand-health scorecard.
+Blinkit brand-health scorecard. **Weekly snapshots** keyed on `from_date_ist`
+(not daily) and Blinkit-only, so these navigate by week (`?from=`, default latest)
+rather than the global date range / marketplace selectors. Fill-rate fields are
+0–100 numbers, not 0–1 fractions.
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/weekly` | Latest weekly scorecard (overall, best category, per-category JSON). `?from=`. 404 if none. |
+| GET | `/weeks` | Available weeks (`from_date_ist`), newest first — powers the page's week picker. |
+| GET | `/weekly` | Selected (or latest) week: raw `overall`, `best_category`, per-category JSON, plus `metrics{value,prev,delta_pct}` vs the prior week and `prev_from_date`. `?from=`. 404 if none. |
+| GET | `/trend` | Per-week overall metrics across the last `?weeks=` snapshots (default 12, oldest first) — fill rate, weighted fill, potential loss, GMV, PO/GRN qty, rank. |
 | GET | `/key-skus` | Paginated key SKUs ranked by potential loss. `?from=`. |
 | GET | `/facilities` | Paginated facilities ranked by potential loss. `?from=`. |
+| GET | `/facility/{facility_id}/pos` | Paginated POs behind a facility's fill loss (`blinkit_pos` joined on `facility_id`), newest issue date first — the "fill loss → which POs" drill-down. |
 
 ### `competition` — `/api/clients/{id}/competition` *(public, watchlist-scoped)*
 Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlist.
@@ -163,9 +199,15 @@ Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlis
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/share-of-voice` | Own-brand SOV summary + daily trend. Filters `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
+| GET | `/rank-matrix` | Own-brand avg rank + SoV per (keyword × city) — the "where am I weak" **heatmap**. Returns `keywords` (rows), `cities` (cols), flat `cells`, `as_of`. `?marketplace=`, `?days=` (default 30). |
+| GET | `/top-competitors` | Competitor leaderboard: distinct **locations** seen in, distinct keywords, avg position/price, share % of all competitor location-presences. `?keyword=`, `?city=`, `?marketplace=`, `?days=`, `?limit=` (default 15). |
+| GET | `/price-position` | Per keyword: own price band (avg/min/max) vs competitor band (avg/min/median/max) — priced in or out of the set. `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
 | GET | `/rankings` | Paginated competitor positions/prices for the own brand. Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
 
-Empty results until the client has an `own` watchlist entry.
+Empty results until the client has an `own` watchlist entry. `rank-matrix` /
+`top-competitors` / `price-position` read the keyword-scrape tables
+(`search_snapshots` / `search_listings`); the `inventory/*` public endpoints read
+`sku_snapshots`. Each carries an `as_of` for the freshness badge.
 
 ### `purchase-orders` — `/api/clients/{id}/purchase-orders` *(private)*
 Blinkit POs (`raw` carries vendor + line items).

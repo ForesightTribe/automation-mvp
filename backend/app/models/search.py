@@ -1,97 +1,212 @@
 import uuid
-from datetime import datetime, date
+from datetime import datetime
 from typing import Any
 
-from sqlalchemy import Column, Index, JSON, Numeric
+from sqlalchemy import Column, Index, JSON, UniqueConstraint
 
 from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
 
 
-class SearchResult(SQLModel, table=True):
-    __tablename__ = "search_results"
+class SearchSnapshot(SQLModel, table=True):
+    """Per-search header: one row per (tenant, marketplace, brand, keyword,
+    location, scrape). Pre-aggregated rank/SoV for cheap trend queries; the
+    per-product detail lives in `search_listings`."""
+
+    __tablename__ = "search_snapshots"
 
     __table_args__ = (
-        Index("idx_sr_brand_mp", "brand_slug", "mp_slug"),
-        Index("idx_sr_city", "brand_slug", "city"),
-        Index("idx_sr_zone", "brand_slug", "city", "zone"),
-        Index("idx_sr_scraped", "scraped_at"),
-        Index("idx_sr_keyword", "brand_slug", "keyword", "city"),
+        Index("idx_snap_tenant_kw", "tenant_id", "mp_slug", "keyword", "scraped_at"),
+        Index("idx_snap_tenant_brand", "tenant_id", "brand_slug", "scraped_at"),
+        Index("idx_snap_scraped", "scraped_at"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
     brand_slug: str = Field(foreign_key="brands.slug")
     mp_slug: str = Field(foreign_key="marketplaces.slug")
-    city: str = "bengaluru"
+    keyword: str
+    city: str = ""
     zone: str = ""
     pincode: str = ""
-    keyword: str
-    merchant_id: str = ""
-    store_type: str = ""
+    lat: float | None = None
+    lon: float | None = None
     scraped_at: datetime = Field(default_factory=now_ist)
     brand_rank: int | None = None
     brand_sov: float | None = None
     total_results: int | None = None
-    products: list[dict] | None = Field(default=None, sa_column=Column(JSON))
-    competitors: list[dict] | None = Field(default=None, sa_column=Column(JSON))
-    raw: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
 
-class CompetitorRanking(SQLModel, table=True):
-    __tablename__ = "competitor_rankings"
+class SearchListing(SQLModel, table=True):
+    """Per-product detail for a search: one row per stored product in the result
+    page (own brand + named competitors; the unnamed tail is only counted in the
+    snapshot's `total_results`). Carries competitor identity, discounts and stock.
+    `mrp`/`discount_pct` are provisioned but stay NULL until the scraper captures
+    MRP."""
+
+    __tablename__ = "search_listings"
 
     __table_args__ = (
-        Index("idx_cr_brand", "brand_slug", "city", "keyword"),
-        Index("idx_cr_competitor", "competitor", "city", "mp_slug"),
+        Index("idx_listing_tenant_kw", "tenant_id", "mp_slug", "keyword", "scraped_at"),
+        Index("idx_listing_snapshot", "snapshot_id"),
+        Index("idx_listing_tenant_brand", "tenant_id", "brand_slug", "scraped_at"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
-    brand_slug: str = Field(foreign_key="brands.slug")
+    snapshot_id: int = Field(foreign_key="search_snapshots.id")
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
     mp_slug: str = Field(foreign_key="marketplaces.slug")
-    city: str
+    brand_slug: str | None = Field(default=None, foreign_key="brands.slug")
+    keyword: str
+    city: str = ""
     zone: str = ""
     pincode: str = ""
-    keyword: str
     scraped_at: datetime = Field(default_factory=now_ist)
-    competitor: str
     position: int | None = None
+    product_name: str
+    is_brand: bool = False
     price: float | None = None
-
-
-class BrandSnapshot(SQLModel, table=True):
-    __tablename__ = "brand_snapshots"
-
-    id: int | None = Field(default=None, primary_key=True)
-    brand_slug: str = Field(foreign_key="brands.slug")
-    mp_slug: str = Field(foreign_key="marketplaces.slug")
-    date: date
-    metrics: dict[str, Any] = Field(default_factory=dict, sa_column=Column(JSON, nullable=False))
-
-
-class ScrapedProduct(SQLModel, table=True):
-    __tablename__ = "scraped_products"
-
-    id: int | None = Field(default=None, primary_key=True)
-    brand_slug: str = Field(foreign_key="brands.slug")
-    mp_slug: str = Field(foreign_key="marketplaces.slug")
-    scraped_at: datetime = Field(default_factory=now_ist)
-    name: str | None = None
-    sku: str | None = None
-    price: float | None = None
-    position: int | None = None
-    keyword: str | None = None
+    mrp: float | None = None
+    discount_pct: float | None = None
     in_stock: bool = True
+    inventory: int | None = None
+    platform_product_id: str | None = None
+    # Combo/multipack vs singular SKU (own or competitor). Combos are stocked
+    # selectively and priced higher, so price comparisons filter to singles.
+    is_combo: bool = False
+    extra: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+
+
+class SkuSnapshot(SQLModel, table=True):
+    """Targeted own-SKU probe: one row per (product × store × scrape), keyed on
+    `platform_product_id` (the stable identity — names drift, ids don't). Fed by
+    the brand-query scrape, which searches a tenant's brand name and paginates the
+    whole catalog, so every own SKU is captured regardless of whether it surfaces
+    in a category-keyword search. Append-only; group/query by `platform_product_id`.
+    """
+
+    __tablename__ = "sku_snapshots"
+
+    __table_args__ = (
+        Index("idx_sku_tenant_product", "tenant_id", "platform_product_id", "scraped_at"),
+        Index("idx_sku_tenant_store", "tenant_id", "merchant_id", "scraped_at"),
+        Index("idx_sku_scraped", "scraped_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    mp_slug: str = Field(foreign_key="marketplaces.slug")
+    brand_slug: str = Field(foreign_key="brands.slug")
+    platform_product_id: str = ""
+    product_name: str = ""          # denormalized display label; not the identity
+    merchant_id: str = ""
+    city: str = ""
+    lat: float | None = None
+    lon: float | None = None
+    scraped_at: datetime = Field(default_factory=now_ist)
+    price: float | None = None
+    mrp: float | None = None
+    discount_pct: float | None = None
+    in_stock: bool = True
+    inventory: int | None = None
+    rating: float | None = None
+    # Combo/multipack vs singular main SKU — combos are stocked selectively, so the
+    # availability views separate them (default view = main SKUs only).
+    is_combo: bool = False
+
+
+class MarketplaceLocation(SQLModel, table=True):
+    """Shared serviceability reference — where each marketplace operates. The DB
+    form of `scraper/utils/cities.py`. Objective (not tenant-specific); tenants
+    pick which of these to track via `tenant_locations`."""
+
+    __tablename__ = "marketplace_locations"
+
+    __table_args__ = (
+        UniqueConstraint("mp_slug", "merchant_id", name="uq_mploc_mp_merchant"),
+        Index("idx_mploc_mp_city", "mp_slug", "city"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    mp_slug: str = Field(foreign_key="marketplaces.slug")
+    # The dark store's platform id — the natural key (lat/lon is what the scraper
+    # actually targets; pincode/zone are best-effort metadata).
+    merchant_id: str = ""
+    city: str = ""
+    state: str = ""
+    region: str = ""
+    zone: str = ""
+    pincode: str = ""
+    lat: float | None = None
+    lon: float | None = None
+    is_active: bool = True
+
+
+class SkuMap(SQLModel, table=True):
+    """Bridges private seller data (`item_id`) to public scrape data
+    (`platform_product_id`) — the two Blinkit id systems share no key, so this is
+    built by normalized name matching (auto) with manual confirmation for the rest.
+    `platform_product_id` is NULL until matched. One row per (tenant, item_id).
+    """
+
+    __tablename__ = "sku_map"
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "item_id", name="uq_skumap_tenant_item"),
+        Index("idx_skumap_tenant_pid", "tenant_id", "platform_product_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    item_id: str                                   # private seller id
+    platform_product_id: str | None = None         # public id (NULL until matched)
+    item_name: str = ""                            # private name (reference)
+    product_name: str = ""                         # public name (reference)
+    unit: str = ""
+    match_method: str = ""                         # 'auto' | 'manual' | '' (unmatched)
+    confidence: float | None = None
+    created_at: datetime = Field(default_factory=now_ist)
+    updated_at: datetime = Field(default_factory=now_ist)
+
+
+class TenantLocation(SQLModel, table=True):
+    """Per-tenant location selection: which `marketplace_locations` a client
+    tracks, per marketplace. Drives the orchestrator's scrape set together with
+    the watchlist's keywords."""
+
+    __tablename__ = "tenant_locations"
+
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "location_id", name="uq_tenant_location"),
+        Index("idx_tenloc_tenant_mp", "tenant_id", "mp_slug"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    mp_slug: str = Field(foreign_key="marketplaces.slug")
+    location_id: int = Field(foreign_key="marketplace_locations.id")
+    created_at: datetime = Field(default_factory=now_ist)
 
 
 class InventoryDepth(SQLModel, table=True):
+    """Deep per-SKU stock probe (max-quantity-in-cart trick). Distinct from the
+    coarse in/out-of-stock on `search_listings`; its write path lands in a later
+    phase. `tenant_id`/`job_id` provisioned for the per-tenant rewrite."""
+
     __tablename__ = "inventory_depth"
 
     __table_args__ = (
         Index("idx_inv_brand_sku", "brand_slug", "sku", "mp_slug", "city"),
         Index("idx_inv_time", "brand_slug", "scraped_at"),
+        Index("idx_inv_tenant", "tenant_id", "scraped_at"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID | None = Field(default=None, foreign_key="tenants.id")
+    job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
     brand_slug: str = Field(foreign_key="brands.slug")
     mp_slug: str = Field(foreign_key="marketplaces.slug")
     city: str

@@ -85,6 +85,66 @@ export const spendRevenueOption = (rows) => ({
 	],
 });
 
+/**
+ * Ads page spend-vs-revenue trend: ad spend + ad revenue as gradient areas on a ₹
+ * axis, with an optional RoAS line on a secondary axis (toggled in the card).
+ * `rows` are `ads/performance` points (budget_consumed, ad_sales, roas).
+ */
+export const adTrendOption = (rows, { showRoas = false } = {}) => {
+	const series = [
+		areaSeries(
+			"Ad Spend",
+			rows.map((r) => r.budget_consumed),
+			PRIMARY,
+		),
+		areaSeries(
+			"Ad Revenue",
+			rows.map((r) => r.ad_sales),
+			SUCCESS,
+		),
+	];
+	if (showRoas) {
+		series.push({
+			name: "RoAS",
+			type: "line",
+			yAxisIndex: 1,
+			data: rows.map((r) => r.roas),
+			smooth: true,
+			showSymbol: false,
+			lineStyle: { width: 2, color: WARNING },
+			itemStyle: { color: WARNING },
+		});
+	}
+	return {
+		tooltip: { trigger: "axis" },
+		legend: {
+			data: showRoas
+				? ["Ad Spend", "Ad Revenue", "RoAS"]
+				: ["Ad Spend", "Ad Revenue"],
+			bottom: 0,
+		},
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.date)),
+		},
+		yAxis: [
+			{
+				type: "value",
+				axisLabel: { formatter: (v) => formatCompactCurrency(v) },
+			},
+			{
+				type: "value",
+				show: showRoas,
+				axisLabel: { formatter: (v) => `${v.toFixed(1)}x` },
+				splitLine: { show: false },
+			},
+		],
+		series,
+	};
+};
+
 /** Total store revenue per day (bars). */
 export const revenueOption = (rows) => ({
 	tooltip: {
@@ -141,11 +201,59 @@ export const dailyMetricOption = (rows, { metric = "revenue" } = {}) => {
 };
 
 /**
+ * Per-day units sold (bars, left axis) against frontend stock-on-hand (line,
+ * right axis) for a single SKU — surfaces the sell-through vs. stock story, so a
+ * stockout that flattened sales is visible at a glance. `rows` = [{ date,
+ * units_sold, frontend_qty }]; nulls stay gaps.
+ */
+export const salesStockOption = (rows) => ({
+	tooltip: { trigger: "axis" },
+	legend: { data: ["Units sold", "Frontend stock"], bottom: 0 },
+	grid: { ...baseGrid, bottom: 28 },
+	xAxis: {
+		type: "category",
+		data: rows.map((r) => formatDate(r.date)),
+	},
+	yAxis: [
+		{
+			type: "value",
+			axisLabel: { formatter: (v) => formatNumber(v) },
+		},
+		{
+			type: "value",
+			axisLabel: { formatter: (v) => formatNumber(v) },
+			splitLine: { show: false },
+		},
+	],
+	series: [
+		{
+			name: "Units sold",
+			type: "bar",
+			data: rows.map((r) => r.units_sold),
+			itemStyle: { color: WARNING, borderRadius: [3, 3, 0, 0] },
+		},
+		{
+			name: "Frontend stock",
+			type: "line",
+			yAxisIndex: 1,
+			data: rows.map((r) => r.frontend_qty),
+			smooth: true,
+			showSymbol: false,
+			lineStyle: { width: 2, color: INFO },
+			itemStyle: { color: INFO },
+		},
+	],
+});
+
+/**
  * Horizontal ranked bars (top SKUs, top cities). `items` = [{ label, value }],
  * ordered best-first; rendered top-to-bottom. `money` picks the ₹ vs plain number
  * formatter.
  */
-export const rankedBarOption = (items, { color = PRIMARY, money = true } = {}) => {
+export const rankedBarOption = (
+	items,
+	{ color = PRIMARY, money = true } = {},
+) => {
 	const fmt = money ? formatCompactCurrency : formatNumber;
 	// ECharts category axis draws bottom-up, so reverse to put the largest on top.
 	const rows = [...items].reverse();
@@ -264,6 +372,101 @@ export const heatmapOption = (cities, categories, cells, max) => ({
 			type: "heatmap",
 			data: cells,
 			label: { show: false },
+			emphasis: {
+				itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" },
+			},
+		},
+	],
+});
+
+/**
+ * Share-of-voice trend — one gradient area (single series, so no legend; the card
+ * title names it). `rows` are `competition/share-of-voice` points; `avg_sov` is a
+ * 0–100 percent number (not a fraction).
+ */
+export const sovTrendOption = (rows) => {
+	const pct = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
+	return {
+		tooltip: { trigger: "axis", valueFormatter: pct },
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.date)),
+		},
+		yAxis: {
+			type: "value",
+			axisLabel: { formatter: (v) => `${v}%` },
+		},
+		series: [areaSeries("Share of Voice", rows.map((r) => r.avg_sov), PRIMARY)],
+	};
+};
+
+/**
+ * Weekly on-shelf availability % trend — one gradient area on a 0–100 axis. `rows`
+ * are `inventory/availability-history` points (`week`, `availability_pct`).
+ */
+export const availabilityTrendOption = (rows) => {
+	const pct = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
+	return {
+		tooltip: { trigger: "axis", valueFormatter: pct },
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.week)),
+		},
+		yAxis: {
+			type: "value",
+			max: 100,
+			axisLabel: { formatter: (v) => `${v}%` },
+		},
+		series: [areaSeries("Availability", rows.map((r) => r.availability_pct), SUCCESS)],
+	};
+};
+
+/**
+ * Rank heatmap — keywords (x) × cities (y), colour = own-brand rank (sequential;
+ * lower rank is better, so darker = weaker, drawing the eye to weak spots). No
+ * per-cell numbers (the Table view carries exact ranks); tooltip shows rank + SoV.
+ * `data` = [{ value: [xIdx, yIdx, rank], sov }]; `maxRank` caps the scale.
+ */
+export const rankHeatmapOption = (keywords, cities, data, maxRank) => ({
+	tooltip: {
+		position: "top",
+		formatter: (p) =>
+			`${cities[p.value[1]]} · ${keywords[p.value[0]]}<br/>Rank #${p.value[2]}` +
+			(p.data?.sov != null ? ` · SoV ${Number(p.data.sov).toFixed(1)}%` : ""),
+	},
+	grid: { left: 8, right: 16, top: 8, bottom: 48, containLabel: true },
+	xAxis: {
+		type: "category",
+		data: keywords,
+		axisLabel: { interval: 0, rotate: 30 },
+		splitArea: { show: true },
+	},
+	yAxis: {
+		type: "category",
+		data: cities,
+		axisLabel: { width: 110, overflow: "truncate" },
+		splitArea: { show: true },
+	},
+	visualMap: {
+		min: 1,
+		max: maxRank || 12,
+		calculable: true,
+		orient: "horizontal",
+		left: "center",
+		bottom: 8,
+		text: ["weaker", "stronger"],
+		inRange: { color: ["#eef2ff", "#4f46e5"] },
+		formatter: (v) => `#${Math.round(v)}`,
+	},
+	series: [
+		{
+			type: "heatmap",
+			data,
+			label: { show: false },
 			emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" } },
 		},
 	],
@@ -312,6 +515,76 @@ export const monthlySeriesOption = (
 						itemStyle: { color, borderRadius: [3, 3, 0, 0] },
 					}
 				: areaSeries(label, data, color),
+		],
+	};
+};
+
+const DANGER = "#dc2626";
+
+/** Percent value (0–100) formatter for scorecard axes/tooltips. */
+const pctFmt = (v) => (v == null ? "—" : `${Number(v).toFixed(1)}%`);
+
+const SCORECARD_TREND_META = {
+	fill_rate: { label: "Fill rate", percent: true, color: SUCCESS },
+	weighted_fill_rate_percent: {
+		label: "Weighted fill rate",
+		percent: true,
+		color: INFO,
+	},
+	potential_loss: { label: "Potential loss", percent: false, color: DANGER },
+	total_gmv: { label: "Total GMV", percent: false, color: PRIMARY },
+};
+
+/**
+ * Scorecard week-over-week trend (single gradient area). `rows` are
+ * `scorecard/trend` points (from_date + overall metrics); `metric` picks the
+ * series — percent metrics (fill rate) use a 0–100 axis, the rest a ₹ axis.
+ */
+export const scorecardTrendOption = (rows, { metric = "fill_rate" } = {}) => {
+	const meta = SCORECARD_TREND_META[metric] ?? SCORECARD_TREND_META.fill_rate;
+	const fmt = meta.percent ? pctFmt : (v) => formatCompactCurrency(v);
+	return {
+		tooltip: { trigger: "axis", valueFormatter: fmt },
+		grid: baseGrid,
+		xAxis: {
+			type: "category",
+			boundaryGap: false,
+			data: rows.map((r) => formatDate(r.from_date)),
+		},
+		yAxis: {
+			type: "value",
+			axisLabel: { formatter: fmt },
+			...(meta.percent ? { max: 100 } : {}),
+		},
+		series: [areaSeries(meta.label, rows.map((r) => r[metric]), meta.color)],
+	};
+};
+
+/**
+ * Per-category fill rate as horizontal bars (best-first). `items` =
+ * [{ label, value }] where value is a 0–100 fill-rate percent.
+ */
+export const categoryFillOption = (items) => {
+	const rows = [...items].reverse(); // ECharts draws category axis bottom-up
+	return {
+		tooltip: { trigger: "axis", valueFormatter: pctFmt },
+		grid: { left: 8, right: 24, top: 8, bottom: 8, containLabel: true },
+		xAxis: {
+			type: "value",
+			max: 100,
+			axisLabel: { formatter: (v) => `${v}%` },
+		},
+		yAxis: {
+			type: "category",
+			data: rows.map((r) => r.label),
+			axisLabel: { width: 140, overflow: "truncate" },
+		},
+		series: [
+			{
+				type: "bar",
+				data: rows.map((r) => r.value),
+				itemStyle: { color: SUCCESS, borderRadius: [0, 3, 3, 0] },
+			},
 		],
 	};
 };

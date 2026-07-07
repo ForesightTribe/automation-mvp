@@ -13,6 +13,29 @@
 | [docs/dashboard-views.md](docs/dashboard-views.md) | Dashboard insight catalog — questions → page/section → tables+columns → API. Build reference for the frontend |
 | [docs/frontend-architecture.md](docs/frontend-architecture.md) | Frontend stack, feature-first folder structure, state split (Context vs React Query), data flow, how to add a page |
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend coding/styling conventions — arrow components, Tailwind v4 theme tokens, error layers, logging |
+| [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
+| [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
+
+---
+
+## Ways of Working — Explain & Confirm Crucial Decisions
+
+Before anything hard to reverse or that changes shared/persistent state, **stop,
+explain, and ask — do not just do it:**
+
+- **DB migrations** (`alembic upgrade` / `downgrade` / `stamp` / `revision`):
+  explain what the migration changes and **show the exact command**, then wait for
+  the go-ahead before running it.
+- **Data writes/deletes on the shared DB** (`TRUNCATE`, `DELETE`, `UPDATE`, bulk
+  inserts, backfills, or a scrape run that persists rows): explain the effect and
+  **show the exact command / SQL**, then confirm before running.
+- **Any other crucial or irreversible call** — schema changes, dropping data,
+  destructive git operations, anything touching production/shared state.
+
+State the reasoning and the command up front, then wait. Read-only inspection
+(`SELECT`, `information_schema`, `alembic current/history`) may be run directly. If
+a decision is genuinely the user's (which approach, which data to clear), ask
+rather than assume.
 
 ---
 
@@ -79,19 +102,26 @@ alembic upgrade head
 The API is multi-tenant: **Account** (subscriber org, logs in & pays) → **Client**
 (the `tenants` table / `tenant_id`, the data unit) → **User** (login). A Client
 belongs to an Account; a User belongs to an Account and can act on any of its
-Clients. The JWT carries `account_id`; the active client is chosen per-request
-(`/api/clients/{client_id}/...`) and access-checked against the account.
+Clients. The JWT carries `account_id` + `role`; the active client is chosen
+per-request (`/api/clients/{client_id}/...`) and access-checked against the account.
 
-See [docs/api-reference.md](docs/api-reference.md) for the full surface.
+**Users** are provisioned via the CLI only — no public signup. `account create`
+makes the account + its first `admin` user; `account add-user` adds more users to
+an existing account (`member` by default, `--admin` for admin). Data is
+**account-scoped** — every user of an account sees all its clients; `role`
+(`admin`/`member`) gates only the Settings/admin UI and `require_admin` routes,
+not data. See [docs/api-reference.md](docs/api-reference.md) and the user-creation
+flow in [docs/setup.md](docs/setup.md).
 
 ## Seeding
 
 - `brands` and `marketplaces` are auto-upserted by `ensure_refs()` — no manual seeding for public scrapers.
 - A `tenants` row (Client) now belongs to an **Account**. Create the account + its
-  first admin login, then the client under it:
+  first admin login, then the client under it, and optionally more users:
   ```bash
   python -m cli account create --name "Foresight" --admin-email you@foresight.com
   python -m cli tenant create --name "Dobra" --account <account-id>
+  python -m cli account add-user --account <account-id> --email teammate@foresight.com
   ```
 
 ## Coding Rules (abbreviated — see docs/code-standards.md)
@@ -115,14 +145,51 @@ Step 2 must execute before any page JavaScript. Firebase JS SDK v9+ stores the r
 
 ## Public Scraper — Key Facts
 
-- Location data comes entirely from `scraper/utils/cities.py` — hardcoded dict, no external geocoding.
-- Blinkit's API is Cloudflare-protected — direct `httpx` always returns 403. Use in-page `page.evaluate(fetch(...))` instead. See `scraper/platforms/blinkit/public_data/scraper.py` for the reference implementation.
-- Instamart and Zepto public scrapers are pending — they need the same Playwright treatment.
+Blinkit-only (Instamart/Zepto are out of scope). Fully per-tenant and DB-driven.
+Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md).
+
+- **Config is a workbook, applied via `cli sync`.** `config.xlsx` (sheets
+  `locations` / `brands` / `coverage`) is the source of truth: the darkstore
+  catalog, each tenant's keywords/aliases, and which stores it covers. The `brands`
+  sheet also carries per-tenant `keyword_cap` / `brand_cap` (own rows). `cli sync`
+  reconciles the DB (upsert; `--dry-run`, `--prune`). `scraper/utils/cities.py` is
+  legacy/unreliable and being retired — NOT used by this path.
+- **Two complementary scrapes.** `public-run` = the **keyword scrape** (category
+  keywords → SoV/rank + competitors, `cap=keyword_cap`, → `search_snapshots` /
+  `search_listings`). `public-skus` = the **targeted scrape** (searches the
+  tenant's *brand name*, paginates the whole catalog to `brand_cap`, own-only →
+  `sku_snapshots`, keyed on `platform_product_id`). Own price/inventory truth comes
+  from the targeted scrape; SoV + competitors come from the keyword scrape.
+- **The unit is the serviceable location `(lat, lon)`, NOT the store.** The catalog
+  lat/long is a delivery point, not a store address — several dark stores can share
+  one, and the search API picks the serving store from the coordinate. So **all
+  public metrics count distinct `(lat,lon)` locations, never stores/rows** (`merchant_id`
+  duplicates across co-located catalog rows). `marketplace_locations` is keyed on
+  `merchant_id` (all distinct); pincode/zone are best-effort metadata.
+- **Reach vs Distribution**: *Reach* = found_locations ÷ covered_locations (breadth);
+  *Distribution %* = in_stock_locations ÷ found_locations (in-stock rate). See
+  [docs/public-glossary.md](docs/public-glossary.md).
+- **Combos separated from main SKUs.** `is_combo` (on `sku_snapshots` + `search_listings`,
+  classified by name) — combos are stocked selectively, so views filter `?kind=main|combo|all`
+  (default main). `keyword_cap`/`brand_cap` live on the `brands` config sheet.
+- **`sku_map` bridges private↔public** (`item_id` ↔ `platform_product_id`) — different
+  Blinkit id systems, no shared UPC, built by name-match (`cli sku-map build`/`apply`).
+  Powers the Products page public panel (`/products/{item_id}/public`).
+- **Cloudflare** blocks direct httpx (403, TLS fingerprint) even with cookies — must
+  fetch via in-page `page.evaluate(fetch(...))` in a real browser session. **One
+  session is reused across all locations** by swapping the lat/lon headers (no
+  per-location relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.
+- **Storage is per-tenant**: `search_snapshots`/`search_listings` (keyword scrape) +
+  `sku_snapshots` (brand scrape). Append-only.
+- **Orchestrators**: `scraper/public/orchestrator.py` (keyword, `run_tenant`/`run_all`)
+  + `scraper/public/targeted.py` (brand, `run_targeted`/`run_all_targeted`) — worker
+  pool (`--workers`), one `scrape_job` per run, `--resume` continues an interrupted job.
 
 ## CLI (quick ref)
 
 ```bash
 python -m cli account create --name "Foresight" --admin-email you@foresight.com
+python -m cli account add-user --account <account-id> --email teammate@foresight.com [--name "Name"] [--admin]
 python -m cli account list
 
 python -m cli tenant create --name "Brand" --account <account-id>
@@ -136,6 +203,14 @@ python -m cli scrape blinkit --tenant <uuid>
 python -m cli scrape blinkit-seller --tenant <uuid> [--sales] [--po] [--soh]
 python -m cli scrape blinkit-scorecard --tenant <uuid>
 
-python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit [--save]
-python -m cli scrape public --keyword "cola" --brand "dobra" --city mumbai --all-zones
+python -m cli sync --file config.xlsx [--dry-run] [--prune]   # apply config workbook → DB
+python -m cli locations list [--city <slug>] [--tenant <uuid>]
+python -m cli watchlist list --tenant <uuid>
+python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors
+python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → sku_snapshots
+python -m cli sku-map build --tenant <uuid> [--file sku_map.xlsx]    # auto-match private item_id ↔ public product_id + export review workbook
+python -m cli sku-map apply --tenant <uuid> --file sku_map.xlsx      # apply manual mapping corrections
+
+# ad-hoc single scrape (no config needed; --save requires --tenant)
+python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --tenant <uuid> --save
 ```

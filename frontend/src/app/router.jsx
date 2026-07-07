@@ -9,8 +9,10 @@ import { NotFoundPage } from "../routes/NotFoundPage";
 import { OverviewPage } from "../features/overview/OverviewPage";
 import { AnalyticsPage } from "../features/analytics/AnalyticsPage";
 import { ProductsPage } from "../features/products/ProductsPage";
+import { ProductDetailPage } from "../features/products/ProductDetailPage";
 import { InventoryPage } from "../features/inventory/InventoryPage";
 import { AdsPage } from "../features/ads/AdsPage";
+import { CampaignManagerPage } from "../features/campaign-manager/CampaignManagerPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
@@ -38,8 +40,13 @@ export const router = createBrowserRouter([
 					{ path: "/overview", element: <OverviewPage /> },
 					{ path: "/analytics", element: <AnalyticsPage /> },
 					{ path: "/products", element: <ProductsPage /> },
+					{
+						path: "/products/:itemId",
+						element: <ProductDetailPage />,
+					},
 					{ path: "/inventory", element: <InventoryPage /> },
 					{ path: "/ads", element: <AdsPage /> },
+					{ path: "/campaign-manager", element: <CampaignManagerPage /> },
 					{ path: "/competition", element: <CompetitionPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{
