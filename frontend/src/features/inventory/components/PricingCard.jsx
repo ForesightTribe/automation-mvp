@@ -19,7 +19,7 @@ export const PricingCard = ({ kind = "main" }) => {
 
 	const columns = [
 		{ key: "product_name", label: "Product", render: (r) => r.product_name || r.platform_product_id },
-		{ key: "stores", label: "Stores", align: "right", render: (r) => formatNumber(r.stores) },
+		{ key: "locations", label: "Locations", align: "right", render: (r) => formatNumber(r.locations) },
 		{ key: "min_price", label: "Min", align: "right", render: (r) => formatCurrency(r.min_price) },
 		{
 			key: "median_price",

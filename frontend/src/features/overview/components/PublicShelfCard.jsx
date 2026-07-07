@@ -70,8 +70,8 @@ export const PublicShelfCard = () => {
 										<span className="shrink-0 tabular-nums text-content-muted">
 											{pct(s.distribution_pct)}
 											<span className="ml-1 text-content-subtle">
-												({formatNumber(s.in_stock_stores)}/
-												{formatNumber(s.total_stores)})
+												({formatNumber(s.in_stock_locations)}/
+												{formatNumber(s.total_locations)})
 											</span>
 										</span>
 									</li>

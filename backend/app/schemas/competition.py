@@ -64,17 +64,17 @@ class RankMatrixResponse(BaseModel):
 
 class TopCompetitorRow(BaseModel):
     competitor: str
-    appearances: int
+    locations: int         # distinct serviceable locations the competitor showed up in
     keywords: int          # distinct keywords the competitor showed up in
     avg_position: float | None
     avg_price: float | None
-    share_pct: float | None  # share of all competitor appearances
+    share_pct: float | None  # share of all competitor location-presences
 
 
 class TopCompetitorsResponse(BaseModel):
     period_days: int
     as_of: datetime | None
-    total_competitor_appearances: int
+    total_competitor_locations: int
     competitors: list[TopCompetitorRow]
 
 

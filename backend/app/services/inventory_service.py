@@ -3,7 +3,7 @@
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import Integer, cast, distinct, func, select
+from sqlalchemy import Integer, cast, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
@@ -131,8 +131,11 @@ async def get_fill_rate(
     }
 
 
-def _latest_per_store(tenant_id, own, since, city, marketplace, kind="main"):
-    """Subquery: the latest sku_snapshots row per (product, store) in the window."""
+def _latest_per_location(tenant_id, own, since, city, marketplace, kind="main"):
+    """Subquery: the latest sku_snapshots row per (product, serviceable LOCATION) in
+    the window. A location is the `(lat, lon)` delivery point we scrape — multiple
+    catalog stores can share one, and the search API resolves a coordinate to a
+    single serving store, so `(lat, lon)` is the honest unit (not `merchant_id`)."""
     cond = [
         SkuSnapshot.tenant_id == tenant_id,
         SkuSnapshot.brand_slug.in_(own),
@@ -147,17 +150,17 @@ def _latest_per_store(tenant_id, own, since, city, marketplace, kind="main"):
         select(
             SkuSnapshot.platform_product_id.label("pid"),
             SkuSnapshot.product_name.label("name"),
-            SkuSnapshot.merchant_id.label("store"),
             SkuSnapshot.in_stock.label("in_stock"),
             SkuSnapshot.price.label("price"),
             SkuSnapshot.discount_pct.label("discount_pct"),
             SkuSnapshot.scraped_at.label("scraped_at"),
         )
         .where(*cond)
-        .distinct(SkuSnapshot.platform_product_id, SkuSnapshot.merchant_id)
+        .distinct(SkuSnapshot.platform_product_id, SkuSnapshot.lat, SkuSnapshot.lon)
         .order_by(
             SkuSnapshot.platform_product_id,
-            SkuSnapshot.merchant_id,
+            SkuSnapshot.lat,
+            SkuSnapshot.lon,
             SkuSnapshot.scraped_at.desc(),
         )
         .subquery()
@@ -174,7 +177,7 @@ async def get_availability(
     marketplace: str | None = None,
     kind: str = "main",
 ) -> Page[AvailabilityRow]:
-    """Public stock-out monitoring — latest row per (marketplace, city, product),
+    """Public stock-out monitoring — latest row per (product × serviceable location),
     out-of-stock first. Sourced from sku_snapshots (the targeted own-SKU scrape)."""
     own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
     if not own:
@@ -192,19 +195,19 @@ async def get_availability(
     if marketplace:
         cond.append(SkuSnapshot.mp_slug == marketplace)
 
-    # Latest row per (marketplace, city, product).
+    # Latest row per (product × location = lat/lon).
     rows = (
         await session.execute(
             select(SkuSnapshot)
             .where(*cond)
             .order_by(
-                SkuSnapshot.mp_slug,
-                SkuSnapshot.city,
                 SkuSnapshot.platform_product_id,
+                SkuSnapshot.lat,
+                SkuSnapshot.lon,
                 SkuSnapshot.scraped_at.desc(),
             )
             .distinct(
-                SkuSnapshot.mp_slug, SkuSnapshot.city, SkuSnapshot.platform_product_id
+                SkuSnapshot.platform_product_id, SkuSnapshot.lat, SkuSnapshot.lon
             )
         )
     ).scalars().all()
@@ -233,7 +236,7 @@ async def get_distribution(
         return {"period_days": days, "as_of": None, "skus": []}
 
     since = now_ist() - timedelta(days=days)
-    latest = _latest_per_store(tenant_id, own, since, city, marketplace, kind)
+    latest = _latest_per_location(tenant_id, own, since, city, marketplace, kind)
     rows = (
         await session.execute(
             select(
@@ -254,8 +257,8 @@ async def get_distribution(
         {
             "platform_product_id": pid,
             "product_name": name,
-            "total_stores": int(total),
-            "in_stock_stores": int(in_stock or 0),
+            "total_locations": int(total),
+            "in_stock_locations": int(in_stock or 0),
             "distribution_pct": _round(int(in_stock or 0) / total * 100, 1) if total else 0.0,
             "avg_price": _round(price),
             "avg_discount": _round(disc, 1),
@@ -293,10 +296,16 @@ async def get_availability_history(
     if marketplace:
         cond.append(SkuSnapshot.mp_slug == marketplace)
 
+    # `samples` counts distinct serviceable locations per week; the availability
+    # ratio is duplication-safe (colliding coords return identical in_stock).
     week = func.date_trunc("week", SkuSnapshot.scraped_at).label("week")
     rows = (
         await session.execute(
-            select(week, func.avg(cast(SkuSnapshot.in_stock, Integer)), func.count())
+            select(
+                week,
+                func.avg(cast(SkuSnapshot.in_stock, Integer)),
+                func.count(distinct(tuple_(SkuSnapshot.lat, SkuSnapshot.lon))),
+            )
             .where(*cond)
             .group_by(week)
             .order_by(week)
@@ -330,7 +339,7 @@ async def get_pricing(
         return {"period_days": days, "as_of": None, "skus": []}
 
     since = now_ist() - timedelta(days=days)
-    latest = _latest_per_store(tenant_id, own, since, city, marketplace, kind)
+    latest = _latest_per_location(tenant_id, own, since, city, marketplace, kind)
     rows = (
         await session.execute(
             select(
@@ -354,13 +363,13 @@ async def get_pricing(
         {
             "platform_product_id": pid,
             "product_name": name,
-            "stores": int(stores),
+            "locations": int(locs),
             "min_price": _round(mn),
             "median_price": _round(med),
             "max_price": _round(mx),
             "avg_discount": _round(disc, 1),
         }
-        for pid, name, stores, mn, med, mx, disc, _ in rows
+        for pid, name, locs, mn, med, mx, disc, _ in rows
     ]
     as_of = max(r[7] for r in rows)
     return {"period_days": days, "as_of": as_of, "skus": skus}

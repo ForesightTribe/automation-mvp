@@ -42,13 +42,20 @@ export const ProductPublicPanel = ({ itemId }) => {
 			)}
 			{!isLoading && !error && data?.mapped && (
 				<div className="flex flex-col gap-5">
-					<div className="grid grid-cols-2 gap-4 md:grid-cols-4">
+					<div className="grid grid-cols-2 gap-4 md:grid-cols-5">
 						<Stat
 							label="Distribution"
 							value={pct(data.distribution_pct)}
-							sub={`${formatNumber(data.in_stock_stores)} / ${formatNumber(
-								data.total_stores,
-							)} stores in stock`}
+							sub={`${formatNumber(data.in_stock_locations)} / ${formatNumber(
+								data.total_locations,
+							)} locations in stock`}
+						/>
+						<Stat
+							label="Reach"
+							value={pct(data.reach_pct)}
+							sub={`${formatNumber(data.total_locations)} / ${formatNumber(
+								data.covered_locations,
+							)} covered areas`}
 						/>
 						<Stat
 							label="Price"
@@ -57,7 +64,7 @@ export const ProductPublicPanel = ({ itemId }) => {
 								data.price_min != null
 									? `${formatCurrency(data.price_min)} – ${formatCurrency(
 											data.price_max,
-										)} across stores`
+										)} across locations`
 									: undefined
 							}
 						/>
@@ -87,7 +94,7 @@ export const ProductPublicPanel = ({ itemId }) => {
 										<span className="tabular-nums text-content-muted">
 											rank {rank(k.avg_position)}
 											<span className="ml-2 text-content-subtle">
-												({formatNumber(k.appearances)} stores)
+												(in {formatNumber(k.locations)} locations)
 											</span>
 										</span>
 									</li>

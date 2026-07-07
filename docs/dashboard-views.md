@@ -34,13 +34,13 @@ See [api-reference.md](api-reference.md) for the existing endpoint surface and
    RoAS, sales, etc.). So keyword-level ad ROI is unlocked. **SKU-level** RoAS is
    still not available — the report breaks down by keyword/asset, not by `item_id`
    — so that remains dependent on an `sku_map` (gap #2).
-2. **Private sales ↔ public availability can't be joined.** Private = `item_id` +
-   `item_name`; public own-SKU availability now lands in `sku_snapshots`
-   (`platform_product_id` + `product_name`, populated by `public-skus`). No shared
-   key across the two (public has no UPC either). A unified "this SKU: selling +
-   on-shelf + ranked" view needs an **`sku_map` table** (`item_id` ↔ `brand_slug` +
-   `platform_product_id`), populated manually or by fuzzy name match. Until then,
-   keep private and public views **separate** rather than faking a join.
+2. **Private sales ↔ public availability — now bridged (`sku_map`, BUILT).** Private
+   = `item_id`; public = `platform_product_id` (different Blinkit id systems, no
+   shared UPC). The **`sku_map`** table links them (name-matched via `cli sku-map`),
+   so the Product 360 now shows *sold* (private) next to *on-shelf + ranked* (public)
+   at `/products/{item_id}/public`. **All public counts are distinct serviceable
+   `(lat,lon)` locations, not stores** — see [public-glossary.md](public-glossary.md)
+   (Reach = found÷covered, Distribution = in-stock÷found).
 
 Legend: **[E]** existing endpoint · **[N]** new endpoint to build · **[E→N]** extend existing · **[B]** built for this catalog.
 
@@ -120,7 +120,8 @@ only (no public shelf/rank join yet — gap #2).
 | Fill rate / PO vs GRN / potential loss                | Summary + facility table | `blinkit_scorecard_facilities`(total_po_quantity, total_grn_quantity, fill_rate, potential_loss) | `inventory/fill-rate` **[E]**             |
 | Public shelf availability (own brand OOS)             | Table, city/mp filter    | `sku_snapshots`(platform_product_id, product_name, in_stock, inventory, city, mp_slug)           | `inventory/availability` **[E]**          |
 | **Stock-out timeline** (when/how long OOS)            | Trend                    | `sku_snapshots`(scraped_at, in_stock) per platform_product_id                                    | `/inventory/availability-history` **[N]** |
-| **Own-SKU price/discount by store** (price dispersion)| Table/heatmap, city/mp   | `sku_snapshots`(platform_product_id, price, mrp, discount_pct, rating, city)                     | `/inventory/pricing` **[N]**              |
+| **Own-SKU price/discount by location** (price dispersion)| Table/heatmap, city/mp | `sku_snapshots`(platform_product_id, price, mrp, discount_pct, rating) per `(lat,lon)`           | `/inventory/pricing` **[B]**              |
+| **SKU 360 public panel** (reach, distribution, rank)  | Stat row + rank list     | `sku_map` ⨝ `sku_snapshots` (distribution/reach/price/rating) + `search_listings` (per-keyword rank), distinct `(lat,lon)` | `/products/{item_id}/public` **[B]** |
 | **Facility stock heatmap** (SKU × facility low spots) | Matrix                   | `blinkit_soh`(item_id, backend_facility_name, frontend_inv_qty)                                  | `/inventory/by-facility` **[N]**          |
 
 ## Ads — "is my spend working"

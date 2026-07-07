@@ -5,7 +5,7 @@ further with optional keyword/city/marketplace filters.
 import uuid
 from datetime import timedelta
 
-from sqlalchemy import func, select
+from sqlalchemy import distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
@@ -197,7 +197,7 @@ async def get_rank_matrix(
                 SearchSnapshot.city,
                 func.avg(SearchSnapshot.brand_rank),
                 func.avg(SearchSnapshot.brand_sov),
-                func.count(),
+                func.count(distinct(tuple_(SearchSnapshot.lat, SearchSnapshot.lon))),
                 func.max(SearchSnapshot.scraped_at),
             )
             .where(*cond)
@@ -242,8 +242,10 @@ async def get_top_competitors(
     days: int = 30,
     limit: int = 15,
 ) -> dict:
-    """Which competitors show up most across the client's searches — appearances,
-    keyword spread, avg position/price, and share of all competitor appearances."""
+    """Which competitors show up most across the client's searches — the count is
+    distinct serviceable LOCATIONS (lat/lon on the joined snapshot), not rows, so
+    co-located catalog duplicates don't inflate it. Plus keyword spread, avg
+    position/price, and share of all competitor location-presences."""
     since = now_ist() - timedelta(days=days)
     cond = [
         SearchListing.tenant_id == tenant_id,
@@ -257,50 +259,58 @@ async def get_top_competitors(
     if marketplace:
         cond.append(SearchListing.mp_slug == marketplace)
 
+    loc = tuple_(SearchSnapshot.lat, SearchSnapshot.lon)
+    join = (SearchSnapshot, SearchSnapshot.id == SearchListing.snapshot_id)
     rows = (
         await session.execute(
             select(
                 SearchListing.brand_slug,
-                func.count(),
-                func.count(func.distinct(SearchListing.keyword)),
+                func.count(distinct(loc)),
+                func.count(distinct(SearchListing.keyword)),
                 func.avg(SearchListing.position),
                 func.avg(SearchListing.price),
                 func.max(SearchListing.scraped_at),
             )
+            .select_from(SearchListing)
+            .join(*join)
             .where(*cond)
             .group_by(SearchListing.brand_slug)
-            .order_by(func.count().desc())
+            .order_by(func.count(distinct(loc)).desc())
             .limit(limit)
         )
     ).all()
     if not rows:
         return {
             "period_days": days, "as_of": None,
-            "total_competitor_appearances": 0, "competitors": [],
+            "total_competitor_locations": 0, "competitors": [],
         }
 
+    # Total competitor location-presences = distinct (competitor, location).
     total = (
         await session.execute(
-            select(func.count()).select_from(SearchListing).where(*cond)
+            select(func.count(distinct(tuple_(SearchListing.brand_slug, SearchSnapshot.lat, SearchSnapshot.lon))))
+            .select_from(SearchListing)
+            .join(*join)
+            .where(*cond)
         )
     ).scalar_one()
 
     competitors = [
         {
             "competitor": slug or "unknown",
-            "appearances": appears,
+            "locations": locs,
             "keywords": kw_count,
             "avg_position": _round(pos, 1),
             "avg_price": _price(price),
-            "share_pct": _round(appears / total * 100, 1) if total else None,
+            "share_pct": _round(locs / total * 100, 1) if total else None,
         }
-        for slug, appears, kw_count, pos, price, _ in rows
+        for slug, locs, kw_count, pos, price, _ in rows
     ]
     as_of = max(r[5] for r in rows)
     return {
         "period_days": days,
         "as_of": as_of,
-        "total_competitor_appearances": total,
+        "total_competitor_locations": total,
         "competitors": competitors,
     }
 

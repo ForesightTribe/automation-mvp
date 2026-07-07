@@ -275,7 +275,25 @@ python -m cli scrape public --keyword "soda" --brand "dobra" --tenant <id> --cit
 |---|---|---|
 | `search_snapshots` | `public-run` | Per (tenant, keyword, store, scrape): brand rank, share-of-voice %, total results |
 | `search_listings`  | `public-run` | Per product in the result page: brand, price, MRP, discount %, in-stock, inventory, position, `extra` (group_id, merchant_id, unit, category…) |
-| `sku_snapshots`    | `public-skus` | Per (own product × store × scrape), keyed on `platform_product_id`: name, price, MRP, discount %, in-stock, inventory, rating |
+| `sku_snapshots`    | `public-skus` | Per (own product × location × scrape), keyed on `platform_product_id`: name, price, MRP, discount %, in-stock, inventory, rating, `is_combo` |
+
+> **Metrics count serviceable locations, not stores.** The catalog lat/long is a
+> delivery point several stores can share, so all public read endpoints count
+> distinct `(lat,lon)`. See [public-glossary.md](public-glossary.md) (Reach vs
+> Distribution, Main vs Combo).
+
+**3. Map private ↔ public — `cli sku-map`.** Bridges the private seller `item_id`
+to the public `platform_product_id` (different Blinkit id systems, no shared UPC),
+built by normalized name-matching. Powers the Products page public panel.
+
+```bash
+python -m cli sku-map build --tenant <id>                 # auto-match + write a review workbook (sku_map.xlsx)
+#   → open the workbook, fill platform_product_id for any unmatched rows
+python -m cli sku-map apply --tenant <id> --file sku_map.xlsx   # apply manual corrections (method='manual', preserved on rebuild)
+```
+
+Run `build` **after** `public-skus` (it matches against `sku_snapshots`). Re-runnable;
+preserves manual mappings.
 
 ---
 

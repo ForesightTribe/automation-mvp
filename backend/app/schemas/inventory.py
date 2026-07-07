@@ -30,6 +30,8 @@ class AvailabilityRow(BaseModel):
     platform_product_id: str
     product_name: str | None
     city: str
+    lat: float | None
+    lon: float | None
     mp_slug: str = Field(serialization_alias="marketplace")
     in_stock: bool
     inventory: int | None
@@ -38,12 +40,12 @@ class AvailabilityRow(BaseModel):
 
 
 class DistributionRow(BaseModel):
-    """Per own SKU: how widely it's actually on-shelf across covered stores."""
+    """Per own SKU: how widely it's actually on-shelf across serviceable locations."""
 
     platform_product_id: str
     product_name: str | None
-    total_stores: int
-    in_stock_stores: int
+    total_locations: int
+    in_stock_locations: int
     distribution_pct: float
     avg_price: float | None
     avg_discount: float | None
@@ -70,7 +72,7 @@ class AvailabilityHistoryResponse(BaseModel):
 class SkuPricingRow(BaseModel):
     platform_product_id: str
     product_name: str | None
-    stores: int
+    locations: int
     min_price: float | None
     median_price: float | None
     max_price: float | None

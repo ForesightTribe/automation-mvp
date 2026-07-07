@@ -14,7 +14,7 @@ automation-mvp/
 │   │   │   ├── brand.py               # Brand, Marketplace
 │   │   │   ├── tenant.py              # Tenant, User, TenantWatchlist
 │   │   │   ├── job.py                 # ScrapeJob, PlatformSession
-│   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, MarketplaceLocation, TenantLocation, InventoryDepth
+│   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, SkuMap, MarketplaceLocation, TenantLocation, InventoryDepth
 │   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
 │   │   │   └── blinkit_marketing.py   # AdPerformanceSummary, AdCampaign, SponsoredSOV, BrandCollection, VisibilityPlan
 │   │   ├── api/
@@ -121,16 +121,24 @@ automation-mvp/
 
 | Table | Key columns | Notes |
 |---|---|---|
-| `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **keyword scrape header** — one row per (tenant, keyword, store, scrape) |
-| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product in the result page |
-| `sku_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `platform_product_id` (key), `product_name`, `merchant_id`, `city`, `lat`/`lon`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `rating` | **targeted own-SKU scrape** — one flat row per (own product × store × scrape), keyed on `platform_product_id` |
+| `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **keyword scrape header** — one row per (tenant, keyword, location, scrape) |
+| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `is_combo`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product in the result page (lat/lon via `snapshot_id → search_snapshots`) |
+| `sku_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `platform_product_id` (key), `product_name`, `is_combo`, `merchant_id`, `city`, `lat`/`lon`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `rating` | **targeted own-SKU scrape** — one flat row per (own product × location × scrape) |
+| `sku_map` | `tenant_id`, `item_id`, `platform_product_id`, `product_name`, `match_method` | bridges private `item_id` ↔ public `platform_product_id` (name-matched; `cli sku-map`) |
 | `marketplace_locations` | `mp_slug`, `merchant_id` (key), `city`, `state`, `region`, `lat`/`lon` | shared darkstore catalog (from `config.xlsx`) |
-| `tenant_locations` | `tenant_id`, `mp_slug`, `location_id` | which catalog stores a tenant scrapes |
+| `tenant_locations` | `tenant_id`, `mp_slug`, `location_id` | which catalog locations a tenant scrapes |
 | `inventory_depth` | `tenant_id`, `brand_slug`, `mp_slug`, `sku`, `city` | old deep per-SKU stock probe — superseded by `sku_snapshots`, no write path |
 
 Append-only (no upsert). `search_*` written by `cli scrape public-run`;
 `sku_snapshots` by `cli scrape public-skus` — both via orchestrators under
-`scraper/public/`. The old
+`scraper/public/`.
+
+**The unit is the serviceable location `(lat, lon)`, not the store.** The catalog
+lat/long is a delivery point (several dark stores can share one; the search API
+resolves a coordinate to one serving store), so **all public read metrics count
+distinct `(lat,lon)`, never `merchant_id`/rows** — see
+[docs/public-glossary.md](public-glossary.md) (Reach vs Distribution). `is_combo`
+separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The old
 `search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products` tables
 were dropped in migration `f3a9c1d7b2e5`.
 

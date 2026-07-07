@@ -52,7 +52,7 @@ export const AvailabilityListCard = ({ kind = "main" }) => {
 	];
 
 	return (
-		<Card title="Store-level availability (out-of-stock first)">
+		<Card title="Location-level availability (out-of-stock first)">
 			{isLoading && <Loading label="Loading availability…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&

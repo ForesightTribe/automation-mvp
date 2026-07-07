@@ -6,7 +6,7 @@ PO history (blinkit_po_items), and the Blinkit scorecard signal
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import Integer, cast, func, select
+from sqlalchemy import Integer, cast, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination, Period
@@ -17,7 +17,14 @@ from app.models.blinkit_seller import (
     BlinkitSOH,
     BlinkitSellerSale,
 )
-from app.models.search import SearchListing, SkuMap, SkuSnapshot
+from app.models.search import (
+    MarketplaceLocation,
+    SearchListing,
+    SearchSnapshot,
+    SkuMap,
+    SkuSnapshot,
+    TenantLocation,
+)
 from app.utils.time import now_ist
 from app.schemas.common import Page
 from app.schemas.product import (
@@ -485,10 +492,9 @@ async def get_product_public(
         SkuSnapshot.platform_product_id == pid,
         SkuSnapshot.scraped_at >= since,
     ]
-    # Latest snapshot per store, then aggregate coverage + price band.
+    # Latest snapshot per LOCATION (lat/lon), then aggregate coverage + price band.
     latest = (
         select(
-            SkuSnapshot.merchant_id.label("store"),
             SkuSnapshot.in_stock.label("in_stock"),
             SkuSnapshot.price.label("price"),
             SkuSnapshot.mrp.label("mrp"),
@@ -497,8 +503,8 @@ async def get_product_public(
             SkuSnapshot.scraped_at.label("scraped_at"),
         )
         .where(*base)
-        .distinct(SkuSnapshot.merchant_id)
-        .order_by(SkuSnapshot.merchant_id, SkuSnapshot.scraped_at.desc())
+        .distinct(SkuSnapshot.lat, SkuSnapshot.lon)
+        .order_by(SkuSnapshot.lat, SkuSnapshot.lon, SkuSnapshot.scraped_at.desc())
         .subquery()
     )
     agg = (await session.execute(
@@ -514,16 +520,27 @@ async def get_product_public(
             func.max(latest.c.scraped_at),
         )
     )).one()
-    total_stores = int(agg[0] or 0)
-    in_stock_stores = int(agg[1] or 0)
+    total_locations = int(agg[0] or 0)
+    in_stock_locations = int(agg[1] or 0)
 
-    # Where it ranks: own-brand listing positions per keyword (keyword scrape).
+    # Reach: covered serviceable locations for this tenant (the denominator).
+    covered = (await session.execute(
+        select(func.count(distinct(tuple_(MarketplaceLocation.lat, MarketplaceLocation.lon))))
+        .select_from(MarketplaceLocation)
+        .join(TenantLocation, TenantLocation.location_id == MarketplaceLocation.id)
+        .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == "blinkit")
+    )).scalar() or 0
+
+    # Where it ranks: own-brand positions per keyword, counted over distinct
+    # locations (lat/lon on the joined snapshot), not rows.
     kw_rows = (await session.execute(
         select(
             SearchListing.keyword,
             func.avg(SearchListing.position),
-            func.count(),
+            func.count(distinct(tuple_(SearchSnapshot.lat, SearchSnapshot.lon))),
         )
+        .select_from(SearchListing)
+        .join(SearchSnapshot, SearchSnapshot.id == SearchListing.snapshot_id)
         .where(
             SearchListing.tenant_id == tenant_id,
             SearchListing.platform_product_id == pid,
@@ -533,7 +550,7 @@ async def get_product_public(
         .order_by(func.avg(SearchListing.position))
     )).all()
     keywords = [
-        {"keyword": kw, "avg_position": _p(pos, 1), "appearances": n}
+        {"keyword": kw, "avg_position": _p(pos, 1), "locations": n}
         for kw, pos, n in kw_rows
     ]
 
@@ -542,9 +559,11 @@ async def get_product_public(
         "platform_product_id": pid,
         "product_name": row[1],
         "as_of": agg[8],
-        "total_stores": total_stores,
-        "in_stock_stores": in_stock_stores,
-        "distribution_pct": _p(in_stock_stores / total_stores * 100, 1) if total_stores else None,
+        "total_locations": total_locations,
+        "in_stock_locations": in_stock_locations,
+        "distribution_pct": _p(in_stock_locations / total_locations * 100, 1) if total_locations else None,
+        "covered_locations": int(covered),
+        "reach_pct": _p(total_locations / covered * 100, 1) if covered else None,
         "price_min": _p(agg[2]),
         "price_median": _p(agg[3]),
         "price_max": _p(agg[4]),

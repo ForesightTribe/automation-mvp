@@ -13,7 +13,8 @@
 | [docs/dashboard-views.md](docs/dashboard-views.md) | Dashboard insight catalog — questions → page/section → tables+columns → API. Build reference for the frontend |
 | [docs/frontend-architecture.md](docs/frontend-architecture.md) | Frontend stack, feature-first folder structure, state split (Context vs React Query), data flow, how to add a page |
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend coding/styling conventions — arrow components, Tailwind v4 theme tokens, error layers, logging |
-| [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Working plan — per-tenant public scraper refactor (header+detail storage, orchestrator, phases, open questions) |
+| [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
+| [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
 
 ---
 
@@ -159,18 +160,30 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   tenant's *brand name*, paginates the whole catalog to `brand_cap`, own-only →
   `sku_snapshots`, keyed on `platform_product_id`). Own price/inventory truth comes
   from the targeted scrape; SoV + competitors come from the keyword scrape.
-- **Location = lat/lon, not pincode.** Blinkit picks the dark store from the
-  lat/lon request headers. `marketplace_locations` is keyed on `merchant_id`;
-  pincode/zone are best-effort metadata.
+- **The unit is the serviceable location `(lat, lon)`, NOT the store.** The catalog
+  lat/long is a delivery point, not a store address — several dark stores can share
+  one, and the search API picks the serving store from the coordinate. So **all
+  public metrics count distinct `(lat,lon)` locations, never stores/rows** (`merchant_id`
+  duplicates across co-located catalog rows). `marketplace_locations` is keyed on
+  `merchant_id` (all distinct); pincode/zone are best-effort metadata.
+- **Reach vs Distribution**: *Reach* = found_locations ÷ covered_locations (breadth);
+  *Distribution %* = in_stock_locations ÷ found_locations (in-stock rate). See
+  [docs/public-glossary.md](docs/public-glossary.md).
+- **Combos separated from main SKUs.** `is_combo` (on `sku_snapshots` + `search_listings`,
+  classified by name) — combos are stocked selectively, so views filter `?kind=main|combo|all`
+  (default main). `keyword_cap`/`brand_cap` live on the `brands` config sheet.
+- **`sku_map` bridges private↔public** (`item_id` ↔ `platform_product_id`) — different
+  Blinkit id systems, no shared UPC, built by name-match (`cli sku-map build`/`apply`).
+  Powers the Products page public panel (`/products/{item_id}/public`).
 - **Cloudflare** blocks direct httpx (403, TLS fingerprint) even with cookies — must
   fetch via in-page `page.evaluate(fetch(...))` in a real browser session. **One
-  session is reused across all stores** by swapping the lat/lon headers (no
-  per-store relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.
-- **Storage is per-tenant header+detail**: `search_snapshots` (rank/SoV per search)
-  + `search_listings` (per product: brand, price, mrp, discount, stock). Append-only.
-- **Orchestrator**: `scraper/public/orchestrator.py` (`run_tenant`/`run_all`) —
-  driven by watchlist + `tenant_locations`, one `scrape_job` per run, `--resume`
-  continues an interrupted job (skips already-scraped stores).
+  session is reused across all locations** by swapping the lat/lon headers (no
+  per-location relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.
+- **Storage is per-tenant**: `search_snapshots`/`search_listings` (keyword scrape) +
+  `sku_snapshots` (brand scrape). Append-only.
+- **Orchestrators**: `scraper/public/orchestrator.py` (keyword, `run_tenant`/`run_all`)
+  + `scraper/public/targeted.py` (brand, `run_targeted`/`run_all_targeted`) — worker
+  pool (`--workers`), one `scrape_job` per run, `--resume` continues an interrupted job.
 
 ## CLI (quick ref)
 
@@ -195,6 +208,8 @@ python -m cli locations list [--city <slug>] [--tenant <uuid>]
 python -m cli watchlist list --tenant <uuid>
 python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors
 python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → sku_snapshots
+python -m cli sku-map build --tenant <uuid> [--file sku_map.xlsx]    # auto-match private item_id ↔ public product_id + export review workbook
+python -m cli sku-map apply --tenant <uuid> --file sku_map.xlsx      # apply manual mapping corrections
 
 # ad-hoc single scrape (no config needed; --save requires --tenant)
 python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --tenant <uuid> --save

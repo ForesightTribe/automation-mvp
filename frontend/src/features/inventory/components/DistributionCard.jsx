@@ -39,10 +39,10 @@ export const DistributionCard = ({ kind = "main" }) => {
 			render: (r) => pct(r.distribution_pct),
 		},
 		{
-			key: "stores",
-			label: "In-stock / stores",
+			key: "locations",
+			label: "In-stock / locations",
 			align: "right",
-			render: (r) => `${formatNumber(r.in_stock_stores)} / ${formatNumber(r.total_stores)}`,
+			render: (r) => `${formatNumber(r.in_stock_locations)} / ${formatNumber(r.total_locations)}`,
 		},
 		{
 			key: "avg_price",

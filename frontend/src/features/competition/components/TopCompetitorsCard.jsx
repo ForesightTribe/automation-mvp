@@ -33,10 +33,10 @@ export const TopCompetitorsCard = () => {
 		{ key: "competitor", label: "Competitor" },
 		{ key: "share_pct", label: "Share", align: "right", render: (r) => pct(r.share_pct) },
 		{
-			key: "appearances",
-			label: "Appearances",
+			key: "locations",
+			label: "Areas seen in",
 			align: "right",
-			render: (r) => formatNumber(r.appearances),
+			render: (r) => formatNumber(r.locations),
 		},
 		{ key: "keywords", label: "Keywords", align: "right", render: (r) => formatNumber(r.keywords) },
 		{ key: "avg_position", label: "Avg pos", align: "right", render: (r) => pos(r.avg_position) },

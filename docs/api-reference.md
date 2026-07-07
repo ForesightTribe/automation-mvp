@@ -138,7 +138,7 @@ Window via `PeriodDep` (`?start=&end=`, legacy `?days=`); `?marketplaces=` (comm
 | GET | `/products` | SKU list joined with latest stock + days-of-cover + health `status`. Returns `{summary, products: Page}` — `summary` = KPI strip (active SKUs, revenue, units, avg price, #out-of-stock, #low-cover) for the search/category/window scope. Params: `?search=` (name), `?category=`, `?sort=revenue\|units\|price\|cover`, `?sku_status=out_of_stock\|low_cover\|no_sales\|healthy`, pagination. |
 | GET | `/products/{item_id}` | Product 360: totals + avg price, current stock, days-of-cover + status, scorecard potential loss, daily sales `trend`, daily `stock_trend`, per-`facilities` stock, per-`cities` split. 404 if no sales in window. |
 | GET | `/products/{item_id}/pos` | Paginated PO line history for the SKU (`blinkit_po_items` ⨝ `blinkit_pos`): po_number, state, issue_date, facility, units ordered/received/remaining, cost, amount. |
-| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: on-shelf distribution %, price band (min/median/max), avg discount, rating, and per-keyword rank (from `search_listings`). `?days=`. Returns `mapped: false` when the SKU has no map entry yet. |
+| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: on-shelf distribution % + `total_locations`/`in_stock_locations`, **reach %** (`total_locations ÷ covered_locations`), price band (min/median/max), avg discount, rating, and per-keyword rank with distinct `locations` (from `search_listings ⨝ search_snapshots`). Counts are distinct `(lat,lon)` locations. `?days=`. Returns `mapped: false` when unmapped. |
 
 ### `ads` — `/api/clients/{id}/ads` *(private)*
 Paid marketing on the platform (sponsored placements, bidding, plans).
@@ -164,7 +164,10 @@ Stock health: private SOH + fill-rate, plus the **public own-SKU** surface from
 `sku_snapshots` (populated by `scrape public-skus`). Public endpoints need an `own`
 watchlist brand and carry an `as_of` timestamp (weekly cadence → show freshness).
 They also take **`?kind=main|combo|all`** (default `main`) — combos/multipacks are
-stocked selectively, so they're analysed apart from singular main SKUs.
+stocked selectively, so they're analysed apart from singular main SKUs. **All public
+counts are distinct serviceable *locations* (`lat,lon`), not stores/rows** — the
+catalog lat/long is a delivery point that several stores can share, so counting
+locations is the honest unit (`total_locations`, `in_stock_locations`, `locations`).
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -197,7 +200,7 @@ Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlis
 |---|---|---|
 | GET | `/share-of-voice` | Own-brand SOV summary + daily trend. Filters `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
 | GET | `/rank-matrix` | Own-brand avg rank + SoV per (keyword × city) — the "where am I weak" **heatmap**. Returns `keywords` (rows), `cities` (cols), flat `cells`, `as_of`. `?marketplace=`, `?days=` (default 30). |
-| GET | `/top-competitors` | Competitor leaderboard: appearances, distinct keywords, avg position/price, share % of all competitor appearances. `?keyword=`, `?city=`, `?marketplace=`, `?days=`, `?limit=` (default 15). |
+| GET | `/top-competitors` | Competitor leaderboard: distinct **locations** seen in, distinct keywords, avg position/price, share % of all competitor location-presences. `?keyword=`, `?city=`, `?marketplace=`, `?days=`, `?limit=` (default 15). |
 | GET | `/price-position` | Per keyword: own price band (avg/min/max) vs competitor band (avg/min/median/max) — priced in or out of the set. `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
 | GET | `/rankings` | Paginated competitor positions/prices for the own brand. Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
 
