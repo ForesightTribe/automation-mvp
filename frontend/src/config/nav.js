@@ -11,6 +11,7 @@ export const NAV_ITEMS = [
 	{ label: "Products", path: "/products", icon: "▦" },
 	{ label: "Inventory", path: "/inventory", icon: "▥" },
 	{ label: "Ads", path: "/ads", icon: "◈" },
+	{ label: "Ad Automation", path: "/ad-automation", icon: "⚡" },
 	{ label: "Competition", path: "/competition", icon: "◎" },
 	{ label: "Scorecard", path: "/scorecard", icon: "◍" },
 	// adminOnly: hidden from members in the Sidebar; the /settings route is also

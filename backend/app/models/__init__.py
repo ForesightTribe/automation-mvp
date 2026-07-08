@@ -27,6 +27,7 @@ from app.models.blinkit_marketing import (
     BlinkitBrandCollection,
     BlinkitVisibilityPlan,
 )
+from app.models.ad_automation import AdAutomationRule, AdAutomationAction
 
 __all__ = [
     "Account",
@@ -38,4 +39,5 @@ __all__ = [
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",
     "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
+    "AdAutomationRule", "AdAutomationAction",
 ]

@@ -12,6 +12,7 @@ import { ProductsPage } from "../features/products/ProductsPage";
 import { ProductDetailPage } from "../features/products/ProductDetailPage";
 import { InventoryPage } from "../features/inventory/InventoryPage";
 import { AdsPage } from "../features/ads/AdsPage";
+import { AdAutomationPage } from "../features/ad-automation/AdAutomationPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
@@ -45,6 +46,7 @@ export const router = createBrowserRouter([
 					},
 					{ path: "/inventory", element: <InventoryPage /> },
 					{ path: "/ads", element: <AdsPage /> },
+						{ path: "/ad-automation", element: <AdAutomationPage /> },
 					{ path: "/competition", element: <CompetitionPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{
