@@ -186,9 +186,6 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   pool (`--workers`), one `scrape_job` per run, `--resume` continues an interrupted job.
   After the main pass, **one automatic retry pass** re-scrapes locations that errored
   and returned nothing (transient Cloudflare/session blips) with fresh sessions.
-  The CLI shows a **single live progress bar** (per-store INFO muted on-screen but
-  still in `logs/app.log`; warnings/errors print above the bar) via an optional
-  `progress_cb` — programmatic callers (scheduler) pass none and keep the log lines.
 
 ## CLI (quick ref)
 

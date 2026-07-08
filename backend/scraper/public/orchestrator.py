@@ -115,7 +115,7 @@ async def _done_pairs(db: AsyncSession, job_id: str) -> set[tuple]:
 
 async def _worker(
     wid, browser, seed, queue, kw_map, competitor_list, done,
-    ensured, stats, total, tid, job_id, cap, failed, progress_cb,
+    ensured, stats, total, tid, job_id, cap, failed,
 ) -> None:
     """One concurrent worker: its own browser context + session + DB session,
     pulling stores off the shared queue until it's empty. A location that errored
@@ -192,15 +192,12 @@ async def _worker(
                     failed.append(loc)
 
                 stats["processed"] += 1
-                if progress_cb:
-                    progress_cb("advance", stats=stats)
-                else:
-                    logger.info(
-                        f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
-                        f"{store_snaps} kw · {store_rows} rows  "
-                        f"[fetch {store_fetch:5.1f}s db {store_db:4.1f}s]  "
-                        f"| {stats['snapshots']} snap, {stats['rows']} rows, {stats['errors']} err"
-                    )
+                logger.info(
+                    f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
+                    f"{store_snaps} kw · {store_rows} rows  "
+                    f"[fetch {store_fetch:5.1f}s db {store_db:4.1f}s]  "
+                    f"| {stats['snapshots']} snap, {stats['rows']} rows, {stats['errors']} err"
+                )
                 await asyncio.sleep(_PACING)
         finally:
             if session:
@@ -210,7 +207,7 @@ async def _worker(
 async def run_tenant(
     db: AsyncSession, tenant_id, cap: int | None = None,
     keyword: str | None = None, city: str | None = None,
-    resume: bool = False, workers: int = 5, progress_cb=None,
+    resume: bool = False, workers: int = 5,
 ) -> dict:
     """Scrape a tenant's whole Blinkit watchlist across its selected locations.
     `keyword`/`city` narrow the run to a single keyword or city. `resume` continues
@@ -270,7 +267,7 @@ async def run_tenant(
         await asyncio.gather(*[
             asyncio.create_task(_worker(
                 w, browser, seed, q, kw_map, competitor_list, done,
-                ensured, stats, total, tid, job_id, cap, failed, progress_cb,
+                ensured, stats, total, tid, job_id, cap, failed,
             ))
             for w in range(1, n + 1)
         ])
@@ -282,8 +279,6 @@ async def run_tenant(
                 logger.info(
                     f"orchestrator: tenant {tid} — {n_workers} workers × {total} stores, cap={cap}"
                 )
-                if progress_cb:
-                    progress_cb("start", total=total, label=f"keyword · {str(tid)[:8]}")
                 await _pool(browser, locations)
                 # One retry pass over locations that errored and returned nothing
                 # (transient session/Cloudflare blips that self-resolve).
@@ -291,8 +286,6 @@ async def run_tenant(
                     retry = list(failed)
                     failed.clear()
                     logger.info(f"orchestrator: retrying {len(retry)} errored locations once")
-                    if progress_cb:
-                        progress_cb("retry", n=len(retry))
                     await _pool(browser, retry)
                     logger.info(
                         f"orchestrator: retry recovered {len(retry) - len(failed)}/{len(retry)} locations"
@@ -317,7 +310,6 @@ async def run_tenant(
 async def run_all(
     db: AsyncSession, cap: int | None = None,
     keyword: str | None = None, city: str | None = None, workers: int = 5,
-    progress_cb=None,
 ) -> list[dict]:
     """Run every active tenant. Each gets its own scrape_job."""
     tenants = (await db.execute(
@@ -325,5 +317,5 @@ async def run_all(
     )).scalars().all()
     out = []
     for t in tenants:
-        out.append(await run_tenant(db, t.id, cap, keyword, city, workers=workers, progress_cb=progress_cb))
+        out.append(await run_tenant(db, t.id, cap, keyword, city, workers=workers))
     return out
