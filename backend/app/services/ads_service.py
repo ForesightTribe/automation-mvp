@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date, timedelta
 from pathlib import Path
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
@@ -390,7 +390,6 @@ async def get_collections(
     ).scalars().all()
 
 
-<<<<<<< HEAD
 # ── Budget scheduling (file-based, no DB) ────────────────────────────────────
 
 def get_budget_schedules() -> list[dict]:
@@ -452,6 +451,26 @@ async def run_scheduler_inprocess(tenant_id: uuid.UUID) -> None:
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(_playwright_executor, _run)
+
+
+async def run_scheduler_all_tenants() -> None:
+    schedules = get_budget_schedules()
+    if not any(s.get("enabled", True) and s.get("rules") for s in schedules):
+        return
+
+    from app.models.job import PlatformSession
+    from sqlmodel import select as sql_select
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            sql_select(PlatformSession).where(PlatformSession.platform == "blinkit")
+        )
+        sessions = result.scalars().all()
+
+    for ps in sessions:
+        try:
+            await run_scheduler_inprocess(ps.tenant_id)
+        except Exception as e:
+            log.error("[budget_scheduler] auto-run failed tenant=%s: %s", ps.tenant_id, e)
 
 
 # ── Bid Optimizer ────────────────────────────────────────────────────────────
@@ -620,6 +639,52 @@ async def get_live_positions(keyword: str, lat: float = 12.9767, lon: float = 77
     return result.get("positions", [])
 
 
+# ── Live budget fetch ─────────────────────────────────────────────────────────
+
+async def get_live_campaign_budget(tenant_id: uuid.UUID, campaign_id: int) -> int | None:
+    """Fetch campaign_budget live from Blinkit API and cache it in daily_budget column."""
+    from scraper.utils.session import load_session
+
+    async with AsyncSessionLocal() as db:
+        storage_state = await load_session(db, str(tenant_id), "blinkit")
+    if not storage_state:
+        raise RuntimeError("No Blinkit session found. Please reconnect via the Blinkit Connection card.")
+
+    result: dict = {}
+
+    def _run():
+        from ad_campaigns.client import setup_with_state
+
+        async def _inner():
+            pw, browser, client = await setup_with_state(storage_state)
+            try:
+                detail, _ = await client.get_campaign_detail(campaign_id)
+                result["budget"] = detail.get("campaign_budget")
+            finally:
+                await browser.close()
+                await pw.stop()
+
+        _run_in_new_loop(_inner)
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_playwright_executor, _run)
+
+    budget = result.get("budget")
+    if budget is not None:
+        async with AsyncSessionLocal() as db:
+            await db.execute(
+                update(BlinkitAdCampaign)
+                .where(
+                    BlinkitAdCampaign.campaign_id == campaign_id,
+                    BlinkitAdCampaign.tenant_id == str(tenant_id),
+                )
+                .values(daily_budget=int(budget))
+            )
+            await db.commit()
+
+    return int(budget) if budget is not None else None
+
+
 # ── Direct budget update ──────────────────────────────────────────────────────
 
 async def set_campaign_budget(tenant_id: uuid.UUID, campaign_id: int, budget: float) -> None:
@@ -654,13 +719,6 @@ async def set_campaign_budget(tenant_id: uuid.UUID, campaign_id: int, budget: fl
                 api_msg = resp.get("message", str(resp))
                 log.warning("[set_campaign_budget] attempt 1 failed (%s) — retrying with empty pids", api_msg)
                 resp = await client.update_campaign(campaign_id, changes, empty_pids=True)
-                if resp.get("status") or resp.get("success"):
-                    return
-
-                # Attempt 3: UI intercept (only works for ACTIVE / ON_HOLD campaigns)
-                api_msg2 = resp.get("message", str(resp))
-                log.warning("[set_campaign_budget] attempt 2 failed (%s) — falling back to UI intercept", api_msg2)
-                resp = await client.update_campaign_budget_via_ui(campaign_id, budget)
                 if not (resp.get("status") or resp.get("success")):
                     raise RuntimeError(f"Blinkit rejected: {resp.get('message', resp)}")
             finally:
@@ -707,7 +765,8 @@ async def reconnect_blinkit(db_session: AsyncSession, tenant_id: uuid.UUID, magi
 
     from scraper.utils.session import save_session
     await save_session(db_session, str(tenant_id), "blinkit", result["storage_state"])
-=======
+
+
 async def _mp_ad_metrics(
     session: AsyncSession,
     *,
@@ -770,4 +829,3 @@ async def get_marketplace_breakdown(
             )
         rows.append(row)
     return rows
->>>>>>> main

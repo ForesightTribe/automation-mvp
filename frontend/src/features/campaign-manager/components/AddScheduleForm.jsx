@@ -1,7 +1,7 @@
 ﻿import { useState } from "react";
-import { Button } from "../../../../components/ui/Button";
-import { Card } from "../../../../components/ui/Card";
-import { useAddBudgetSchedule, useCampaigns } from "../../hooks";
+import { Button } from "../../../components/ui/Button";
+import { Card } from "../../../components/ui/Card";
+import { useAddBudgetSchedule, useCampaigns } from "../hooks";
 import { CampaignSelector } from "./CampaignSelector";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
@@ -70,10 +70,13 @@ export const AddScheduleForm = () => {
         }));
 
     const confirmRule = () => {
-        const hasTime = rule.time_slots.length > 0 || rule.start_time || rule.end_time;
-        if (!hasTime || !rule.budget) return;
-        if (rule.type === "recurring" && !rule.days.length && !rule.start_date && !rule.end_date) return;
+        if (!rule.budget) return;
         if (rule.type === "once" && !rule.date) return;
+        // Need at least one constraint — time slot, time range, specific days, or date range
+        const hasAnyConstraint =
+            rule.time_slots.length > 0 || rule.start_time || rule.end_time ||
+            rule.days.length > 0 || rule.start_date || rule.end_date;
+        if (rule.type === "recurring" && !hasAnyConstraint) return;
         setRules((rs) => [
             ...rs,
             {
@@ -174,9 +177,16 @@ export const AddScheduleForm = () => {
                                     className="flex items-center justify-between rounded bg-muted px-3 py-1.5 text-xs"
                                 >
                                     <span className="text-content-muted">
-                                        {r.type === "once" ? `📅 ${r.date}` : `🔁 ${r.days.join(", ")}`}
+                                        {r.type === "once"
+                                            ? `📅 ${r.date}`
+                                            : `🔁 ${r.days.length ? r.days.join(", ") : "every day"}`}
+                                        {(r.start_date || r.end_date) && (
+                                            <span> ({r.start_date || "…"}–{r.end_date || "…"})</span>
+                                        )}
                                         {" · "}
-                                        {r.time_slots.join(", ")}
+                                        {(r.start_time || r.end_time)
+                                            ? `${r.start_time || "00:00"}–${r.end_time || "23:59"}`
+                                            : r.time_slots.join(", ")}
                                         {" → "}
                                         <span className="font-semibold text-content">
                                             ₹{r.budget.toLocaleString()}
@@ -349,4 +359,6 @@ export const AddScheduleForm = () => {
         </Card>
     );
 };
+
+
 

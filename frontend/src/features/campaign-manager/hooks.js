@@ -1,4 +1,4 @@
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+﻿import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import {
     addBidOptimizerRule,
@@ -12,13 +12,15 @@ import {
     getCampaignKeywords,
     getCampaignProducts,
     getCampaigns,
+    getLiveBudget,
+    getLivePositions,
     getSchedulerHistory,
     reconnectBlinkit,
     runBidOptimizer,
     runScheduler,
     setCampaignBudget,
     toggleBidOptimizerRule,
-} from "./campaign-manager-api";
+} from "./api";
 
 export const useCampaigns = () => {
     const { activeClientId } = useClient();
@@ -81,6 +83,22 @@ export const useSetCampaignBudget = () => {
     const { activeClientId } = useClient();
     return useMutation({
         mutationFn: ({ campaignId, budget }) => setCampaignBudget(activeClientId, campaignId, budget),
+    });
+};
+
+export const useLivePositions = () => {
+    const { activeClientId } = useClient();
+    return useMutation({
+        mutationFn: ({ keyword, lat, lon }) => getLivePositions(activeClientId, keyword, lat, lon),
+    });
+};
+
+export const useLiveBudget = () => {
+    const { activeClientId } = useClient();
+    const queryClient = useQueryClient();
+    return useMutation({
+        mutationFn: (campaignId) => getLiveBudget(activeClientId, campaignId),
+        onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cm-campaigns", activeClientId] }),
     });
 };
 
@@ -184,3 +202,4 @@ export const useRunScheduler = () => {
         },
     });
 };
+

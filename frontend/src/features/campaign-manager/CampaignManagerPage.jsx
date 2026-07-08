@@ -1,20 +1,22 @@
 import { useState } from "react";
 import { Button } from "../../components/ui/Button";
-import { AddBidOptimizerForm } from "../ads/components/campaign-manager/AddBidOptimizerForm";
-import { AddScheduleForm } from "../ads/components/campaign-manager/AddScheduleForm";
-import { BidOptimizerHistory } from "../ads/components/campaign-manager/BidOptimizerHistory";
-import { BidOptimizerRuleList } from "../ads/components/campaign-manager/BidOptimizerRuleList";
-import { ReconnectBlinkit } from "../ads/components/campaign-manager/ReconnectBlinkit";
-import { ScheduleList } from "../ads/components/campaign-manager/ScheduleList";
-import { SchedulerHistory } from "../ads/components/campaign-manager/SchedulerHistory";
-import { SetBudget } from "../ads/components/campaign-manager/SetBudget";
-import { useRunBidOptimizer, useRunScheduler } from "../ads/campaign-manager-hooks";
+import { AddBidOptimizerForm } from "./components/AddBidOptimizerForm";
+import { AddScheduleForm } from "./components/AddScheduleForm";
+import { BidOptimizerHistory } from "./components/BidOptimizerHistory";
+import { BidOptimizerRuleList } from "./components/BidOptimizerRuleList";
+import { LivePositionCheck } from "./components/LivePositionCheck";
+import { ReconnectBlinkit } from "./components/ReconnectBlinkit";
+import { ScheduleList } from "./components/ScheduleList";
+import { SchedulerHistory } from "./components/SchedulerHistory";
+import { SetBudget } from "./components/SetBudget";
+import { useRunBidOptimizer, useRunScheduler } from "./hooks";
 
 export const CampaignManagerPage = () => {
     const { mutate: runBudget, isPending: budgetPending, isSuccess: budgetSuccess, data: budgetResult } = useRunScheduler();
     const { mutate: runBid, isPending: bidPending, isSuccess: bidSuccess, data: bidResult } = useRunBidOptimizer();
     const [ranBudget, setRanBudget] = useState(false);
     const [ranBid, setRanBid] = useState(false);
+    const [openBidForm, setOpenBidForm] = useState(false);
 
     return (
         <div className="flex flex-col gap-6">
@@ -64,13 +66,22 @@ export const CampaignManagerPage = () => {
                             Automatically adjusts keyword CPM bids every 30 min to hit your target position.
                         </p>
                     </div>
-                    <Button
-                        onClick={() => { runBid(); setRanBid(true); }}
-                        disabled={bidPending}
-                        size="sm"
-                    >
-                        {bidPending ? "Starting…" : "Run Now"}
-                    </Button>
+                    <div className="flex items-center gap-2">
+                        <Button
+                            variant="secondary"
+                            size="sm"
+                            onClick={() => setOpenBidForm(true)}
+                        >
+                            + Add Rule
+                        </Button>
+                        <Button
+                            onClick={() => { runBid(); setRanBid(true); }}
+                            disabled={bidPending}
+                            size="sm"
+                        >
+                            {bidPending ? "Starting…" : "Run Now"}
+                        </Button>
+                    </div>
                 </div>
 
                 {bidSuccess && ranBid && (
@@ -79,8 +90,9 @@ export const CampaignManagerPage = () => {
                     </div>
                 )}
 
+                <LivePositionCheck brandName="dobra" />
                 <BidOptimizerRuleList />
-                <AddBidOptimizerForm />
+                <AddBidOptimizerForm triggerOpen={openBidForm} onTriggerConsumed={() => setOpenBidForm(false)} />
                 <BidOptimizerHistory />
             </div>
 

@@ -1,7 +1,10 @@
-import { api } from "../../lib/axios";
+﻿import { api } from "../../lib/axios";
 
-export const getCampaigns = (clientId) =>
-    api.get(`/clients/${clientId}/ads/campaigns`, { params: { limit: 200 } });
+export const getCampaigns = (clientId) => {
+    const end = new Date().toISOString().split("T")[0];
+    const start = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
+    return api.get(`/clients/${clientId}/ads/campaigns`, { params: { limit: 100, start, end } });
+};
 
 export const getBudgetSchedules = (clientId) =>
     api.get(`/clients/${clientId}/ads/budget-schedules`);
@@ -27,6 +30,12 @@ export const reconnectBlinkit = (clientId, magicLink) =>
 export const setCampaignBudget = (clientId, campaignId, budget) =>
     api.post(`/clients/${clientId}/ads/campaigns/${campaignId}/set-budget`, { budget });
 
+export const getLivePositions = (clientId, keyword, lat, lon) =>
+    api.get(`/clients/${clientId}/ads/live-position`, { params: { keyword, lat, lon } });
+
+export const getLiveBudget = (clientId, campaignId) =>
+    api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/live-budget`);
+
 export const getCampaignProducts = (clientId, campaignId) =>
     api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/products`);
 
@@ -50,3 +59,4 @@ export const getBidOptimizerHistory = (clientId) =>
 
 export const runBidOptimizer = (clientId) =>
     api.post(`/clients/${clientId}/ads/bid-optimizer/run`);
+

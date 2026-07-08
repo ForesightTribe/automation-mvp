@@ -1,5 +1,5 @@
 ﻿import { useState, useEffect } from "react";
-import { useCampaigns } from "../../hooks";
+import { useCampaigns } from "../hooks";
 
 const TYPE_LABELS = {
     PRODUCT_LISTING: "Product Listing",
@@ -92,4 +92,6 @@ export const CampaignSelector = ({ value, onChange, onReset }) => {
         </div>
     );
 };
+
+
 

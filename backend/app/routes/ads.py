@@ -264,6 +264,34 @@ async def run_bid_optimizer(background_tasks: BackgroundTasks, session: SessionD
 
 # ── Direct budget update ──────────────────────────────────────────────────────
 
+@router.get("/live-position")
+async def live_position(
+    keyword: str,
+    lat: float,
+    lon: float,
+    session: SessionDep,
+    client: ClientDep,
+):
+    import traceback
+    try:
+        results = await ads_service.get_live_positions(keyword, lat=lat, lon=lon)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+    return results
+
+
+@router.get("/campaigns/{campaign_id}/live-budget")
+async def live_campaign_budget(campaign_id: int, session: SessionDep, client: ClientDep):
+    import traceback
+    try:
+        budget = await ads_service.get_live_campaign_budget(client.id, campaign_id)
+    except Exception as e:
+        traceback.print_exc()
+        raise HTTPException(status_code=400, detail=str(e))
+    return {"campaign_budget": budget}
+
+
 @router.get("/campaigns/{campaign_id}/products", response_model=list[CampaignProduct])
 async def campaign_products(campaign_id: int, session: SessionDep, client: ClientDep):
     import traceback

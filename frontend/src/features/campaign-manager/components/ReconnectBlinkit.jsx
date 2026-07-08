@@ -1,7 +1,7 @@
 ﻿import { useState } from "react";
-import { Button } from "../../../../components/ui/Button";
-import { Card } from "../../../../components/ui/Card";
-import { useReconnectBlinkit } from "../../hooks";
+import { Button } from "../../../components/ui/Button";
+import { Card } from "../../../components/ui/Card";
+import { useReconnectBlinkit } from "../hooks";
 
 export const ReconnectBlinkit = () => {
     const [open, setOpen] = useState(false);
@@ -71,4 +71,6 @@ export const ReconnectBlinkit = () => {
         </Card>
     );
 };
+
+
 

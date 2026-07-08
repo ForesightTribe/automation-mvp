@@ -90,7 +90,16 @@ class BlinkitClient:
             url = f"{url}?{urlencode(body)}"
             body = None
         return await self._page.evaluate(
-            """async ([method, url, token, body]) => {
+            """async ([method, url, fallback_token, body]) => {
+                // Use Firebase SDK's live token if available — avoids stale stored token
+                let token = fallback_token;
+                try {
+                    const auth = window.firebase && window.firebase.auth && window.firebase.auth();
+                    if (auth && auth.currentUser) {
+                        const t = await auth.currentUser.getIdToken(false);
+                        if (t) token = t;
+                    }
+                } catch(e) {}
                 const resp = await fetch(url, {
                     method,
                     headers: {
@@ -479,12 +488,27 @@ class BlinkitClient:
             city_ids_str = "-1"
 
         campaign_type = detail.get("campaign_type", "")
-        # Blinkit rejects any payload containing image_url for listing spotlight campaigns
-        # while they are ACTIVE, SCHEDULED, or ON_HOLD — even if the value is unchanged.
-        is_listing_spotlight = any(
-            s in campaign_type.upper()
-            for s in ("LISTING", "SPOTLIGHT", "BANNER_LISTING")
-        )
+
+        # campaign_data structure matches what the Blinkit frontend actually sends.
+        # For BANNER_LISTING: no image URL fields — any image field in campaign_data
+        # triggers the "Cannot change listing spotlight image" validator even when
+        # the value is unchanged. The working frontend sends exactly these 3 fields.
+        # highlighted_pids must be "" (string), not [] (list).
+        # For all other types: original structure that was working before.
+        if campaign_type == "BANNER_LISTING":
+            campaign_data_payload = {
+                "creative_type": "",
+                "collection_id": detail.get("collection_id", ""),
+                "highlighted_pids": "",
+            }
+        else:
+            # Blinkit validates campaign_data.pids for product campaigns (confirmed
+            # from DevTools capture of working frontend PUT request).
+            campaign_data_payload = {
+                "creative_type": detail.get("creative_type", ""),
+                "collection_id": detail.get("collection_id", ""),
+                "pids": "" if empty_pids else pids_str,
+            }
 
         payload = {
             "source_platform": "diy_dashboard_web",
@@ -498,32 +522,12 @@ class BlinkitClient:
             "campaign_start": _fmt_date(detail.get("start_ts", "")),
             "campaign_end": _fmt_date(detail.get("end_ts", "")),
             "objective_type": detail.get("objective_type", "PERFORMANCE"),
-            "products": [] if empty_pids else products_for_put,
             "pids": "" if empty_pids else pids_str,
             "brand_ids": detail.get("brand_ids", ""),
-            "brands_ids": detail.get("brands_ids", ""),
-            "brand_name": "",
-            "brand_id": detail.get("brand_id"),
-            "brand_page_id": detail.get("brand_page_id"),
-            "collection_id": detail.get("collection_id", ""),
-            "collection_filters": detail.get("collection_filters"),
+            "brand_name": detail.get("brand_name", ""),
             "cpm": detail.get("cpm", 0),
-            "creative_type": detail.get("creative_type", ""),
             "header_title": detail.get("header_title", ""),
-            "highlighted_pids": detail.get("highlighted_pids", ""),
-            **({"image_url": detail.get("mobile_image_url", "")} if not is_listing_spotlight else {}),
             "is_extendable": None,
-            "store_name": detail.get("store_name", ""),
-            "ad_title": detail.get("ad_title", ""),
-            "ad_subtitle": detail.get("ad_subtitle", ""),
-            "display_name": detail.get("display_name", ""),
-            "region_type": detail.get("region_type"),
-            "region_ids": detail.get("region_ids"),
-            "sort": detail.get("sort"),
-            "equally_divide_budget": detail.get("equally_divide_budget", False),
-            "run_till_budget_ends": detail.get("run_till_budget_ends", False),
-            "category_ids": detail.get("category_ids", []),
-            "categories": detail.get("categories", []),
             "bidding_strategy": {
                 "total_budget": detail.get("campaign_budget", 0),
                 "pacing_type": detail.get("pacing_type", "DAILY"),
@@ -532,19 +536,20 @@ class BlinkitClient:
                 "city_ids": city_ids_str,
                 "is_extendable": False,
                 "negative_keywords": detail.get("negative_keywords") or [],
-                "repeat_order_suggestion": repeat_order,
                 **({"keyword_targeting": {"keywords": [
                     {"keyword": k.get("keyword", ""), "bids": _norm_bids(k.get("bids", []))}
                     for k in existing_kws
                 ]}} if existing_kws else {}),
             },
-            "campaign_data": {"pids": "" if empty_pids else pids_str},
+            "campaign_data": campaign_data_payload,
         }
 
         payload.update(changes)
         log.warning("[update_campaign] campaign=%d pids=%r empty_pids=%s budget=%s",
                     campaign_id, "" if empty_pids else pids_str, empty_pids,
                     payload.get("bidding_strategy", {}).get("total_budget"))
+        if campaign_type == "BANNER_LISTING":
+            log.warning("[update_campaign] FULL PAYLOAD=%s", json.dumps(payload, default=str))
         resp = await self._fetch("PUT", "/adservice/v3/campaigns", payload)
         log.warning("[update_campaign] RESP=%r", resp)
         return resp
@@ -582,129 +587,68 @@ class BlinkitClient:
 
         await self._page.route("**/adservice/v3/campaigns", _handle)
         try:
-            # Navigate directly to the campaign detail/edit page
-            campaign_url = f"{BASE_URL}/diy/campaign/{campaign_id}"
-            log.warning("[blinkit_ui] navigating to campaign page: %s", campaign_url)
-            # Use "load" not "networkidle" — Blinkit SPA keeps polling, never goes idle
+            # Use the /edit/ URL — it shows the full campaign wizard with a clear "Save campaign" button
+            campaign_url = f"{BASE_URL}/diy/edit/campaign/{campaign_id}"
+            log.warning("[blinkit_ui] navigating to campaign edit page: %s", campaign_url)
             await self._page.goto(campaign_url, wait_until="load", timeout=60_000)
             log.warning("[blinkit_ui] landed on: %s", self._page.url)
-            await self._page.wait_for_timeout(2000)
+            await self._page.wait_for_timeout(3000)
 
             # Dismiss any popup/modal (e.g. "What's new?") that overlaps the page
+            for _ in range(3):
+                try:
+                    await self._page.keyboard.press("Escape")
+                    await self._page.wait_for_timeout(400)
+                except Exception:
+                    pass
+            # Find "What's new?" popup and click the button nearest to it (its X/close button)
             try:
-                await self._page.keyboard.press("Escape")
-                await self._page.wait_for_timeout(500)
+                await self._page.evaluate("""
+                    () => {
+                        // Find element containing "What's new?" text
+                        const allEls = Array.from(document.querySelectorAll('*'));
+                        const whatsNew = allEls.find(el =>
+                            el.children.length === 0 &&
+                            (el.textContent || '').trim() === "What's new?"
+                        );
+                        if (whatsNew) {
+                            // Walk up to find a container, then find last button (usually X)
+                            let container = whatsNew.parentElement;
+                            for (let i = 0; i < 6 && container; i++) {
+                                const btns = Array.from(container.querySelectorAll('button, [role="button"]'))
+                                    .filter(b => b.offsetParent !== null && (b.textContent || '').trim() !== "What's new?");
+                                if (btns.length) {
+                                    btns[btns.length - 1].click();
+                                    return 'closed-whats-new';
+                                }
+                                container = container.parentElement;
+                            }
+                        }
+                        // Generic: close button by aria-label or class
+                        const closeSelectors = [
+                            '[aria-label="close"]', '[aria-label="Close"]',
+                            'button.close', '[data-dismiss]',
+                            'button[class*="close"]', 'button[class*="Close"]',
+                        ];
+                        for (const sel of closeSelectors) {
+                            const el = document.querySelector(sel);
+                            if (el && el.offsetParent !== null) { el.click(); return 'closed-generic'; }
+                        }
+                    }
+                """)
+                await self._page.wait_for_timeout(800)
             except Exception:
                 pass
 
-            # Step 1: Click "Campaign Details" tab (page lands on "Campaign Performance" by default)
+            # On the /edit/ page the budget input is directly visible — no tabs to click
+            # Just wait for the page to render the form
             try:
-                tab = self._page.get_by_text("Campaign Details", exact=True).first
-                await tab.wait_for(state="visible", timeout=8_000)
-                await tab.click()
-                log.warning("[blinkit_ui] clicked Campaign Details tab")
-                # Wait for tab content to render — use element presence, not networkidle
-                await self._page.wait_for_selector("text=Budget Details", timeout=15_000)
-                await self._page.wait_for_timeout(1000)
+                await self._page.wait_for_selector("input[placeholder*='Budget' i]", timeout=15_000)
+                log.warning("[blinkit_ui] budget input found on edit page")
             except Exception as e:
-                log.warning("[blinkit_ui] could not click Campaign Details tab: %s", e)
+                log.warning("[blinkit_ui] budget input not found: %s", e)
 
-            # Step 2: Click the Budget Details edit button (pencil icon).
-            # The pencil icons on Blinkit are bare SVGs (no <button> wrapper).
-            # We must look for SVGs at close levels (0-3) from the "Budget Details" title.
-            # Only fall back to <button> elements at higher levels (4+).
-            clicked_edit = await self._page.evaluate("""
-                () => {
-                    function clickEditNear(titleEl) {
-                        let container = titleEl.parentElement;
-                        for (let i = 0; i < 5 && container; i++) {
-                            // SVG edit icons (bare, no <button> wrapper)
-                            const svgs = container.querySelectorAll('svg');
-                            if (svgs.length) {
-                                const editSvg = svgs[svgs.length - 1];
-                                editSvg.dispatchEvent(new MouseEvent('click', {bubbles: true, cancelable: true}));
-                                return 'svg-lvl' + i + '-n' + svgs.length;
-                            }
-                            // Explicit <button> / role=button — only within 5 levels to avoid
-                            // hitting unrelated containers (popups, nav bars) higher up
-                            const btns = container.querySelectorAll('button, [role="button"]');
-                            if (btns.length && btns.length < 4) {
-                                btns[btns.length - 1].click();
-                                return 'btn-lvl' + i + '-n' + btns.length;
-                            }
-                            container = container.parentElement;
-                        }
-                        return null;
-                    }
-
-                    // Strategy 1: own text nodes match (handles React spans)
-                    for (const el of document.querySelectorAll('*')) {
-                        const ownText = Array.from(el.childNodes)
-                            .filter(n => n.nodeType === Node.TEXT_NODE)
-                            .map(n => n.textContent.trim())
-                            .join('');
-                        if (ownText === 'Budget Details' || ownText === 'Budget details') {
-                            const r = clickEditNear(el);
-                            if (r) return 's1-' + r;
-                        }
-                    }
-
-                    // Strategy 2: XPath with whitespace normalization
-                    const xr = document.evaluate(
-                        "//*[normalize-space(.)='Budget Details' or normalize-space(.)='Budget details']",
-                        document, null, XPathResult.ORDERED_NODE_SNAPSHOT_TYPE, null
-                    );
-                    for (let xi = 0; xi < xr.snapshotLength; xi++) {
-                        const node = xr.snapshotItem(xi);
-                        if (node.children && node.children.length <= 3) {
-                            const r = clickEditNear(node);
-                            if (r) return 's2-' + r;
-                        }
-                    }
-
-                    // Strategy 3: case-insensitive textContent on heading tags
-                    for (const el of document.querySelectorAll('h1,h2,h3,h4,h5,h6,span,p,div,label,strong')) {
-                        const t = (el.textContent || '').trim().toLowerCase();
-                        if (t === 'budget details' && el.children.length <= 2) {
-                            const r = clickEditNear(el);
-                            if (r) return 's3-' + r;
-                        }
-                    }
-
-                    // Debug: what budget text exists on page?
-                    const debugTexts = [];
-                    const tw = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT);
-                    let tn;
-                    while ((tn = tw.nextNode())) {
-                        const t = (tn.textContent || '').trim();
-                        if (t.toLowerCase().includes('budget') && t.length < 60)
-                            debugTexts.push(t);
-                    }
-                    return 'not-found|' + debugTexts.slice(0, 8).join('|');
-                }
-            """)
-            log.warning("[blinkit_ui] budget edit click result: %s", clicked_edit)
-
-            # If no edit button was found, the campaign is likely stopped (read-only UI)
-            if clicked_edit is None or (isinstance(clicked_edit, str) and clicked_edit.startswith("not-found")):
-                raise RuntimeError(
-                    f"No Budget Details edit button found for campaign {campaign_id}. "
-                    f"Campaign may be STOPPED (Blinkit disables editing on stopped campaigns). "
-                    f"Debug text on page: {clicked_edit}"
-                )
-
-            # Wait for the wizard to render — wait for the budget input to appear
-            await self._page.wait_for_timeout(1500)
-
-            # Wait for any input to appear (wizard may open)
-            try:
-                await self._page.wait_for_selector(
-                    "input[type='number'], input[placeholder]",
-                    state="visible", timeout=15_000,
-                )
-                log.warning("[blinkit_ui] input visible after edit click")
-            except Exception as e:
-                log.warning("[blinkit_ui] no input appeared after edit click: %s", e)
+            # On the /edit/ page the budget input is already visible — no pencil icon needed
 
             # Debug: dump all visible inputs to diagnose selector issues
             visible_inputs = await self._page.evaluate("""
@@ -734,28 +678,58 @@ class BlinkitClient:
 
             if not filled:
                 log.warning("[blinkit_ui] could not find budget input")
+
             # Step 4: Click Done / Update / Save
-            # Debug: dump all visible buttons to diagnose selector issues
-            visible_buttons = await self._page.evaluate("""
-                () => Array.from(document.querySelectorAll('button, [role="button"]')).filter(
-                    b => b.offsetParent !== null
-                ).map(b => b.textContent.trim().slice(0, 40))
-            """)
-            log.warning("[blinkit_ui] visible buttons: %s", visible_buttons)
-
-            clicked = False
-            # Try Playwright selector for each label
-            for text in ["Done", "Update Campaign", "Update", "Save", "Apply"]:
+            # First attempt: press Enter on the budget input — Blinkit wizard often submits on Enter
+            if filled:
                 try:
-                    await self._page.click(f"button:has-text('{text}')", timeout=3_000)
-                    clicked = True
-                    log.warning("[blinkit_ui] clicked button: %s", text)
-                    break
-                except Exception:
-                    pass
+                    last_sel = None
+                    for sel in [
+                        "input[placeholder*='Budget' i]",
+                        "input[placeholder*='budget' i]",
+                        "input[placeholder*='amount' i]",
+                        "input[type='number']",
+                    ]:
+                        try:
+                            await self._page.wait_for_selector(sel, state="visible", timeout=1_000)
+                            last_sel = sel
+                            break
+                        except Exception:
+                            pass
+                    if last_sel:
+                        await self._page.press(last_sel, "Enter")
+                        await self._page.wait_for_timeout(3000)
+                        log.warning("[blinkit_ui] pressed Enter on budget input")
+                except Exception as e:
+                    log.warning("[blinkit_ui] Enter key failed: %s", e)
 
-            # Fallback: JS click — finds any visible button whose text contains one of our labels
+            # If Enter captured the PUT, skip button search
+            if result.get("resp"):
+                log.warning("[blinkit_ui] PUT captured via Enter key")
+            else:
+                # Debug: dump all visible buttons to diagnose selector issues
+                visible_buttons = await self._page.evaluate("""
+                    () => Array.from(document.querySelectorAll('button, [role="button"]')).filter(
+                        b => b.offsetParent !== null
+                    ).map(b => b.textContent.trim().slice(0, 40))
+                """)
+                log.warning("[blinkit_ui] visible buttons: %s", visible_buttons)
+
+            clicked = result.get("resp") is not None
+
             if not clicked:
+                # Try Playwright selector for each label
+                for text in ["Done", "Update Campaign", "Update", "Save", "Apply"]:
+                    try:
+                        await self._page.click(f"button:has-text('{text}')", timeout=3_000)
+                        clicked = True
+                        log.warning("[blinkit_ui] clicked button: %s", text)
+                        break
+                    except Exception:
+                        pass
+
+            if not clicked:
+                # Fallback: JS click by text label
                 clicked = await self._page.evaluate("""
                     () => {
                         const labels = ['Done', 'Update Campaign', 'Update', 'Save', 'Apply'];
@@ -763,10 +737,7 @@ class BlinkitClient:
                             .filter(b => b.offsetParent !== null);
                         for (const label of labels) {
                             const btn = all.find(b => b.textContent.trim().includes(label));
-                            if (btn) {
-                                btn.click();
-                                return label;
-                            }
+                            if (btn) { btn.click(); return label; }
                         }
                         return false;
                     }
@@ -775,14 +746,65 @@ class BlinkitClient:
                     log.warning("[blinkit_ui] JS-clicked button: %s", clicked)
                     clicked = True
 
-            # Last resort: submit button
             if not clicked:
+                # Fallback: find button physically closest to the budget input on screen
+                clicked = await self._page.evaluate("""
+                    () => {
+                        const input = document.querySelector(
+                            "input[placeholder*='Budget' i], input[placeholder*='budget' i], input[placeholder*='amount' i]"
+                        );
+                        if (!input) return false;
+                        const iRect = input.getBoundingClientRect();
+                        const buttons = Array.from(document.querySelectorAll('button, [role="button"]'))
+                            .filter(b => b.offsetParent !== null && b.textContent.trim() !== "What's new?");
+                        let closest = null, minDist = Infinity;
+                        for (const btn of buttons) {
+                            const r = btn.getBoundingClientRect();
+                            const dx = r.left - iRect.right;
+                            const dy = (r.top + r.height / 2) - (iRect.top + iRect.height / 2);
+                            const dist = Math.sqrt(dx * dx + dy * dy);
+                            if (dist < minDist) { minDist = dist; closest = btn; }
+                        }
+                        if (closest && minDist < 300) { closest.click(); return 'closest-px-' + Math.round(minDist); }
+                        return false;
+                    }
+                """)
+                if clicked:
+                    log.warning("[blinkit_ui] JS-clicked nearest button: %s", clicked)
+                    clicked = True
+
+            if not clicked:
+                # Last resort: submit button
                 try:
                     await self._page.click("button[type='submit']", timeout=3_000)
                     clicked = True
                     log.warning("[blinkit_ui] clicked submit button")
                 except Exception:
                     pass
+
+            if not clicked:
+                # Absolute position fallback: click just to the right of the budget input
+                # (save/checkmark button is usually adjacent)
+                try:
+                    input_el = await self._page.query_selector(
+                        "input[placeholder*='Budget' i], input[placeholder*='budget' i]"
+                    )
+                    if input_el:
+                        box = await input_el.bounding_box()
+                        if box:
+                            # Try clicking at several positions to the right of the input
+                            for x_offset in [box["width"] + 20, box["width"] + 50, box["width"] + 80]:
+                                await self._page.mouse.click(
+                                    box["x"] + x_offset,
+                                    box["y"] + box["height"] / 2,
+                                )
+                                await self._page.wait_for_timeout(1500)
+                                if result.get("resp"):
+                                    clicked = True
+                                    log.warning("[blinkit_ui] clicked via absolute position offset +%d", x_offset)
+                                    break
+                except Exception as e:
+                    log.warning("[blinkit_ui] absolute position click failed: %s", e)
 
             if not clicked:
                 log.warning("[blinkit_ui] could not find save button — see screenshots in ad_campaigns/")
@@ -827,13 +849,37 @@ async def setup_with_state(storage_state: dict):
         await browser.close()
         await pw.stop()
         raise RuntimeError(
-            f"Session expired — redirected to {page.url}. Please reconnect Blinkit."
+            f"Session expired — redirected to {page.url}. Please reconnect Blinkit from the Campaign Manager page."
         )
 
     page.remove_listener("request", _capture)
 
+    # Fallback: ask Firebase SDK directly for the current token
     if not token_holder["token"]:
-        raise RuntimeError("Could not capture firebase token. Session may be expired.")
+        try:
+            t = await page.evaluate("""
+                async () => {
+                    try {
+                        const auth = window.firebase && window.firebase.auth && window.firebase.auth();
+                        if (auth && auth.currentUser) {
+                            return await auth.currentUser.getIdToken(false);
+                        }
+                    } catch(e) {}
+                    return null;
+                }
+            """)
+            if t:
+                token_holder["token"] = t
+        except Exception:
+            pass
+
+    if not token_holder["token"]:
+        await browser.close()
+        await pw.stop()
+        raise RuntimeError(
+            "Blinkit session expired — could not obtain auth token. "
+            "Please reconnect Blinkit from the Campaign Manager page."
+        )
 
     return pw, browser, BlinkitClient(page, token_holder["token"])
 

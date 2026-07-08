@@ -1,8 +1,8 @@
-﻿import { Button } from "../../../../components/ui/Button";
-import { Card } from "../../../../components/ui/Card";
-import { EmptyState } from "../../../../components/feedback/EmptyState";
-import { Loading } from "../../../../components/feedback/Loading";
-import { useBidOptimizerRules, useDeleteBidOptimizerRule, useToggleBidOptimizerRule } from "../../hooks";
+﻿import { Button } from "../../../components/ui/Button";
+import { Card } from "../../../components/ui/Card";
+import { EmptyState } from "../../../components/feedback/EmptyState";
+import { Loading } from "../../../components/feedback/Loading";
+import { useBidOptimizerRules, useDeleteBidOptimizerRule, useToggleBidOptimizerRule } from "../hooks";
 
 const positionStatus = (rule) => {
     const pos = rule.last_position;
@@ -134,4 +134,6 @@ export const BidOptimizerRuleList = () => {
         </Card>
     );
 };
+
+
 

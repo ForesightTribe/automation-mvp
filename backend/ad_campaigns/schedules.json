@@ -1,1 +1,22 @@
-[]
+[
+  {
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "name": null,
+    "default_budget": 500.0,
+    "rules": [
+      {
+        "type": "once",
+        "days": [],
+        "time_slots": [],
+        "budget": 721.0,
+        "date": "2026-07-08",
+        "start_date": null,
+        "end_date": null,
+        "start_time": "16:42",
+        "end_time": "17:10"
+      }
+    ],
+    "enabled": true
+  }
+]

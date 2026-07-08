@@ -1,11 +1,11 @@
-﻿import { useState } from "react";
+﻿import { useEffect, useState } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Button } from "../../../../components/ui/Button";
-import { Card } from "../../../../components/ui/Card";
-import { Loading } from "../../../../components/feedback/Loading";
-import { useAddBidOptimizerRule, useCampaignKeywords, useCampaignProducts } from "../../hooks";
+import { Button } from "../../../components/ui/Button";
+import { Card } from "../../../components/ui/Card";
+import { Loading } from "../../../components/feedback/Loading";
+import { useAddBidOptimizerRule, useCampaignKeywords, useCampaignProducts } from "../hooks";
 import { CampaignSelector } from "./CampaignSelector";
-import { api } from "../../../../lib/axios";
+import { api } from "../../../lib/axios";
 
 const empty = () => ({
     campaign_id: "",
@@ -37,10 +37,17 @@ const useBlinkitZones = () =>
         staleTime: Infinity,
     });
 
-export const AddBidOptimizerForm = () => {
+export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } = {}) => {
     const [open, setOpen] = useState(false);
     const [form, setForm] = useState(empty());
     const { mutate: addRule, isPending } = useAddBidOptimizerRule();
+
+    useEffect(() => {
+        if (triggerOpen) {
+            setOpen(true);
+            onTriggerConsumed?.();
+        }
+    }, [triggerOpen]);
     const { data: zones = [], isLoading: zonesLoading } = useBlinkitZones();
 
     const campaignId = form.campaign_id ? parseInt(form.campaign_id) : null;
@@ -365,4 +372,6 @@ export const AddBidOptimizerForm = () => {
         </Card>
     );
 };
+
+
 

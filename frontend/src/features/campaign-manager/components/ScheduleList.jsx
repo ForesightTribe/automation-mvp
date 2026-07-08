@@ -1,9 +1,9 @@
 ﻿import { useState } from "react";
-import { Button } from "../../../../components/ui/Button";
-import { Card } from "../../../../components/ui/Card";
-import { EmptyState } from "../../../../components/feedback/EmptyState";
-import { Loading } from "../../../../components/feedback/Loading";
-import { useAddBudgetSchedule, useBudgetSchedules, useDeleteBudgetSchedule, useToggleBudgetSchedule } from "../../hooks";
+import { Button } from "../../../components/ui/Button";
+import { Card } from "../../../components/ui/Card";
+import { EmptyState } from "../../../components/feedback/EmptyState";
+import { Loading } from "../../../components/feedback/Loading";
+import { useAddBudgetSchedule, useBudgetSchedules, useDeleteBudgetSchedule, useToggleBudgetSchedule } from "../hooks";
 
 const SLOT_LABELS = {
     morning: "Morning 6–12",
@@ -141,7 +141,7 @@ export const ScheduleList = () => {
                                                 </span>
                                                 {rule.type === "once"
                                                     ? rule.date
-                                                    : rule.days.join(", ")}
+                                                    : (rule.days.length ? rule.days.join(", ") : "every day")}
                                                 {rule.time_slots?.length > 0 && (
                                                     <> · {rule.time_slots.map((s) => SLOT_LABELS[s] || s).join(", ")}</>
                                                 )}
@@ -169,4 +169,6 @@ export const ScheduleList = () => {
         </Card>
     );
 };
+
+
 

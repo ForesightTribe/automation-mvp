@@ -102,10 +102,19 @@ async def _run_core(client, now: datetime) -> None:
 
         if matched_rule:
             target_budget = matched_rule["budget"]
-            if matched_rule.get("type") == "once":
-                reason = f"one-time {matched_rule['date']} / {', '.join(matched_rule['time_slots'])}"
+            # Build time description: prefer explicit time range over slot names
+            if matched_rule.get("start_time") or matched_rule.get("end_time"):
+                time_desc = f"{matched_rule.get('start_time', '00:00')}–{matched_rule.get('end_time', '23:59')}"
             else:
-                reason = f"{', '.join(matched_rule.get('days', []))} / {', '.join(matched_rule['time_slots'])}"
+                time_desc = ", ".join(matched_rule.get("time_slots", []))
+            if matched_rule.get("type") == "once":
+                reason = f"one-time {matched_rule.get('date', '')} / {time_desc}"
+            else:
+                days_str = ", ".join(matched_rule.get("days", [])) or "every day"
+                date_range = ""
+                if matched_rule.get("start_date") or matched_rule.get("end_date"):
+                    date_range = f" ({matched_rule.get('start_date', '')}–{matched_rule.get('end_date', '')})"
+                reason = f"{days_str}{date_range} / {time_desc}"
         else:
             target_budget = default_budget
             reason = "default"
@@ -114,14 +123,30 @@ async def _run_core(client, now: datetime) -> None:
             table.add_row(campaign_name, str(campaign_id), "—", reason, "[yellow]skipped[/yellow]")
             continue
 
-        resp = await client.update_campaign(
-            campaign_id,
-            {"bidding_strategy": {"total_budget": float(target_budget), "pacing_type": "DAILY"}},
-        )
+        changes = {"bidding_strategy": {"total_budget": float(target_budget), "pacing_type": "DAILY"}}
 
-        success = bool(resp.get("status") or resp.get("success"))
-        result = "[green]✓ done[/green]" if success else "[red]✗ failed[/red]"
+        # Attempt 1: full payload
+        resp = await client.update_campaign(campaign_id, changes)
         console.print(f"[dim]  API response for {campaign_name}: {resp}[/dim]")
+        success = bool(resp.get("status") or resp.get("success"))
+
+        # Attempt 2: empty pids (handles delisted products)
+        if not success:
+            resp = await client.update_campaign(campaign_id, changes, empty_pids=True)
+            console.print(f"[dim]  API retry (empty pids) for {campaign_name}: {resp}[/dim]")
+            success = bool(resp.get("status") or resp.get("success"))
+
+        if not success:
+            msgs = resp.get("message", [])
+            msg_str = " | ".join(str(m) for m in msgs) if isinstance(msgs, list) else str(msgs)
+            if "pid" in msg_str.lower():
+                console.print(f"[yellow]  ⚠ {campaign_name}: PIDs rejected — products may be delisted in Blinkit catalog.[/yellow]")
+            elif "spotlight image" in msg_str.lower():
+                console.print(f"[yellow]  ⚠ {campaign_name}: Listing spotlight campaign — if session token is stale, use Reconnect Blinkit.[/yellow]")
+            else:
+                console.print(f"[yellow]  ⚠ {campaign_name}: {msg_str}[/yellow]")
+
+        result = "[green]✓ done[/green]" if success else "[red]✗ failed[/red]"
 
         append_log({
             "timestamp": now.strftime("%Y-%m-%d %H:%M IST"),
