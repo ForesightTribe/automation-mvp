@@ -1,9 +1,18 @@
 import asyncio
+from contextlib import contextmanager
 from datetime import date as _date, timedelta
 from typing import Optional
 import typer
 from rich.console import Console
 from rich.markup import escape
+from rich.progress import (
+    BarColumn,
+    MofNCompleteColumn,
+    Progress,
+    SpinnerColumn,
+    TextColumn,
+    TimeElapsedColumn,
+)
 from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from scraper.utils.session import load_session
@@ -750,6 +759,55 @@ async def _scrape_public(
             raise
 
 
+@contextmanager
+def _scrape_progress():
+    """A single live progress bar for public scrapes. Yields a `cb(event, **data)`
+    callback for the orchestrator to drive: `start` (total, label), `advance`
+    (stats), `retry` (n). While it's active the per-store INFO spam is muted on the
+    console (still written to logs/app.log); WARNING/errors print above the bar."""
+    from app.utils import logger as logmod
+
+    progress = Progress(
+        SpinnerColumn(),
+        TextColumn("[bold]{task.description}"),
+        BarColumn(),
+        MofNCompleteColumn(),
+        TextColumn("[dim]{task.fields[extra]}"),
+        TimeElapsedColumn(),
+        console=console,
+    )
+    state: dict = {"task": None, "total": 0}
+
+    def cb(event: str, **d) -> None:
+        if event == "start":
+            state["total"] = d["total"]
+            state["task"] = progress.add_task(d["label"], total=d["total"], extra="")
+        elif event == "advance" and state["task"] is not None:
+            s = d["stats"]
+            extra = f"{s.get('rows', 0)} rows · {s.get('errors', 0)} err"
+            progress.update(state["task"], advance=1, extra=extra)
+        elif event == "retry" and state["task"] is not None:
+            state["total"] += d["n"]
+            progress.update(
+                state["task"], total=state["total"],
+                description=progress.tasks[state["task"]].description + " [yellow]+retry[/yellow]",
+            )
+
+    logmod.mute_console()
+    rich_sink = logmod.logger.add(
+        lambda m: progress.console.print(m.rstrip(), markup=False, highlight=False, style="yellow"),
+        level="WARNING",
+        format="{time:HH:mm:ss} | {level:<5} | {message}",
+        colorize=False,
+    )
+    try:
+        with progress:
+            yield cb
+    finally:
+        logmod.logger.remove(rich_sink)
+        logmod.unmute_console()
+
+
 @app.command("public-run")
 def public_run(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
@@ -782,10 +840,13 @@ async def _public_run(
     from scraper.public import orchestrator
 
     async with AsyncSessionLocal() as db:
-        if all_tenants:
-            summaries = await orchestrator.run_all(db, cap, keyword, city, workers)
-        else:
-            summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume, workers)]
+        with _scrape_progress() as cb:
+            if all_tenants:
+                summaries = await orchestrator.run_all(db, cap, keyword, city, workers, progress_cb=cb)
+            else:
+                summaries = [await orchestrator.run_tenant(
+                    db, tenant_id, cap, keyword, city, resume, workers, progress_cb=cb
+                )]
 
     if not summaries:
         console.print("[yellow]No active tenants to run.[/yellow]")
@@ -837,10 +898,13 @@ async def _public_skus(
     from scraper.public import targeted
 
     async with AsyncSessionLocal() as db:
-        if all_tenants:
-            summaries = await targeted.run_all_targeted(db, cap, city, workers)
-        else:
-            summaries = [await targeted.run_targeted(db, tenant_id, cap, city, resume, workers)]
+        with _scrape_progress() as cb:
+            if all_tenants:
+                summaries = await targeted.run_all_targeted(db, cap, city, workers, progress_cb=cb)
+            else:
+                summaries = [await targeted.run_targeted(
+                    db, tenant_id, cap, city, resume, workers, progress_cb=cb
+                )]
 
     if not summaries:
         console.print("[yellow]No active tenants to run.[/yellow]")

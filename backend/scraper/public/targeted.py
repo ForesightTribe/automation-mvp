@@ -91,7 +91,7 @@ async def _done_stores(db: AsyncSession, job_id: str) -> set[tuple]:
 
 
 async def _worker(
-    wid, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id, failed,
+    wid, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id, failed, progress_cb,
 ) -> None:
     """One concurrent worker: own browser context + session + DB session, pulling
     stores off the shared queue until empty. Per store, runs each own brand's
@@ -174,11 +174,14 @@ async def _worker(
                     failed.append(loc)
 
                 stats["processed"] += 1
-                logger.info(
-                    f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
-                    f"{store_rows} skus  [fetch {store_fetch:5.1f}s db {store_db:4.1f}s]  "
-                    f"| {stats['rows']} rows, {stats['errors']} err"
-                )
+                if progress_cb:
+                    progress_cb("advance", stats=stats)
+                else:
+                    logger.info(
+                        f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
+                        f"{store_rows} skus  [fetch {store_fetch:5.1f}s db {store_db:4.1f}s]  "
+                        f"| {stats['rows']} rows, {stats['errors']} err"
+                    )
                 await asyncio.sleep(_PACING)
         finally:
             if session:
@@ -187,7 +190,7 @@ async def _worker(
 
 async def run_targeted(
     db: AsyncSession, tenant_id, cap: int | None = None,
-    city: str | None = None, resume: bool = False, workers: int = 5,
+    city: str | None = None, resume: bool = False, workers: int = 5, progress_cb=None,
 ) -> dict:
     """Scrape a tenant's own catalog (brand query) across its locations, writing
     `sku_snapshots`. `cap` overrides every brand's brand_cap for this run. `city`
@@ -242,7 +245,7 @@ async def run_targeted(
         n = max(1, min(workers, len(locs)))
         await asyncio.gather(*[
             asyncio.create_task(_worker(
-                w, browser, seed, q, brands, done, ensured, stats, total, tid, job_id, failed,
+                w, browser, seed, q, brands, done, ensured, stats, total, tid, job_id, failed, progress_cb,
             ))
             for w in range(1, n + 1)
         ])
@@ -255,6 +258,8 @@ async def run_targeted(
                     f"targeted: tenant {tid} — {n_workers} workers × {total} stores, "
                     f"{len(brands)} brand(s)"
                 )
+                if progress_cb:
+                    progress_cb("start", total=total, label=f"sku · {str(tid)[:8]}")
                 await _pool(browser, locations)
                 # One retry pass over locations that errored and returned nothing
                 # (transient session/Cloudflare blips that self-resolve).
@@ -262,6 +267,8 @@ async def run_targeted(
                     retry = list(failed)
                     failed.clear()
                     logger.info(f"targeted: retrying {len(retry)} errored locations once")
+                    if progress_cb:
+                        progress_cb("retry", n=len(retry))
                     await _pool(browser, retry)
                     logger.info(
                         f"targeted: retry recovered {len(retry) - len(failed)}/{len(retry)} locations"
@@ -284,6 +291,7 @@ async def run_targeted(
 
 async def run_all_targeted(
     db: AsyncSession, cap: int | None = None, city: str | None = None, workers: int = 5,
+    progress_cb=None,
 ) -> list[dict]:
     """Run the targeted own-SKU scrape for every active tenant."""
     tenants = (await db.execute(
@@ -291,5 +299,5 @@ async def run_all_targeted(
     )).scalars().all()
     out = []
     for t in tenants:
-        out.append(await run_targeted(db, t.id, cap, city, workers=workers))
+        out.append(await run_targeted(db, t.id, cap, city, workers=workers, progress_cb=progress_cb))
     return out
