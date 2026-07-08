@@ -91,11 +91,12 @@ async def _done_stores(db: AsyncSession, job_id: str) -> set[tuple]:
 
 
 async def _worker(
-    wid, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id,
+    wid, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id, failed,
 ) -> None:
     """One concurrent worker: own browser context + session + DB session, pulling
     stores off the shared queue until empty. Per store, runs each own brand's
-    query and saves its own-brand listings to sku_snapshots."""
+    query and saves its own-brand listings to sku_snapshots. A location that errored
+    and produced nothing is appended to `failed` for the one retry pass."""
     session = await bl_scraper.open_context_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
@@ -168,6 +169,10 @@ async def _worker(
                     stats["rows"] += n
                     store_rows += n
 
+                # Errored and got nothing → transient, queue it for the retry pass.
+                if store_rows == 0 and store_fail > 0:
+                    failed.append(loc)
+
                 stats["processed"] += 1
                 logger.info(
                     f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
@@ -225,11 +230,22 @@ async def run_targeted(
     ensured: set[str] = set()
     stats = {"rows": 0, "errors": 0, "skipped": 0, "processed": 0}
     total = len(locations)
-    queue: asyncio.Queue = asyncio.Queue()
-    for loc in locations:
-        queue.put_nowait(loc)
+    failed: list = []
     seed = (locations[0].lat, locations[0].lon)
     n_workers = max(1, min(workers, total))
+
+    async def _pool(browser, locs) -> None:
+        """Run the worker pool over `locs` (a fresh queue + workers each call)."""
+        q: asyncio.Queue = asyncio.Queue()
+        for loc in locs:
+            q.put_nowait(loc)
+        n = max(1, min(workers, len(locs)))
+        await asyncio.gather(*[
+            asyncio.create_task(_worker(
+                w, browser, seed, q, brands, done, ensured, stats, total, tid, job_id, failed,
+            ))
+            for w in range(1, n + 1)
+        ])
 
     try:
         async with async_playwright() as pw:
@@ -239,13 +255,17 @@ async def run_targeted(
                     f"targeted: tenant {tid} — {n_workers} workers × {total} stores, "
                     f"{len(brands)} brand(s)"
                 )
-                tasks = [
-                    asyncio.create_task(_worker(
-                        w, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id,
-                    ))
-                    for w in range(1, n_workers + 1)
-                ]
-                await asyncio.gather(*tasks)
+                await _pool(browser, locations)
+                # One retry pass over locations that errored and returned nothing
+                # (transient session/Cloudflare blips that self-resolve).
+                if failed:
+                    retry = list(failed)
+                    failed.clear()
+                    logger.info(f"targeted: retrying {len(retry)} errored locations once")
+                    await _pool(browser, retry)
+                    logger.info(
+                        f"targeted: retry recovered {len(retry) - len(failed)}/{len(retry)} locations"
+                    )
             finally:
                 await browser.close()
         await complete_scrape_job(db, job_id, stats["rows"])

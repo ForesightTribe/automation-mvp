@@ -231,10 +231,12 @@ query, cap, classification, and storage target:
   guaranteeing coverage of every own SKU regardless of keyword ranking.
 
 One `scrape_job` per run (dashboards `public_search` / `public_skus`). Resilience:
-retry with backoff on transient failures, a hard per-fetch timeout (a stalled fetch
-can't hang a worker), non-JSON/Cloudflare detection surfaced with the real HTTP
-status, session refresh on staleness, incremental commits, and `--resume` to
-continue an interrupted job (skips already-scraped stores).
+per-fetch retry with backoff, a hard per-fetch timeout (a stalled fetch can't hang a
+worker), non-JSON/Cloudflare detection surfaced with the real HTTP status, session
+refresh on staleness, incremental commits, `--resume` to continue an interrupted job,
+and — after the main pass — **one automatic retry pass** over locations that errored
+and returned nothing (fresh sessions recover transient blips; no duplicate rows since
+those locations wrote nothing the first time).
 
 Reference: `backend/scraper/platforms/blinkit/public_data/{scraper,storage,sku_storage}.py`
 + `backend/scraper/public/{orchestrator,targeted}.py`. httpx is not usable here (Cloudflare).

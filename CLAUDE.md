@@ -184,6 +184,8 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
 - **Orchestrators**: `scraper/public/orchestrator.py` (keyword, `run_tenant`/`run_all`)
   + `scraper/public/targeted.py` (brand, `run_targeted`/`run_all_targeted`) — worker
   pool (`--workers`), one `scrape_job` per run, `--resume` continues an interrupted job.
+  After the main pass, **one automatic retry pass** re-scrapes locations that errored
+  and returned nothing (transient Cloudflare/session blips) with fresh sessions.
 
 ## CLI (quick ref)
 
