@@ -31,15 +31,27 @@ export const SchedulerHistory = () => {
     const [open, setOpen] = useState(false);
     const { data: log = [], isLoading } = useSchedulerHistory();
 
+    const passed = log.filter((r) => r.success).length;
+    const failed = log.filter((r) => !r.success).length;
+
     const chevron = (
         <button
             type="button"
             onClick={() => setOpen((v) => !v)}
-            className="flex items-center gap-1 text-xs text-content-muted hover:text-content transition-colors"
+            className="flex items-center gap-2 text-xs text-content-muted hover:text-content transition-colors"
         >
             {log.length > 0 && (
-                <span className="rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium">
-                    {log.length}
+                <span className="flex items-center gap-1.5">
+                    {passed > 0 && (
+                        <span className="rounded-full bg-success/15 px-1.5 py-0.5 text-[10px] font-medium text-success">
+                            ✓ {passed}
+                        </span>
+                    )}
+                    {failed > 0 && (
+                        <span className="rounded-full bg-danger/15 px-1.5 py-0.5 text-[10px] font-medium text-danger">
+                            ✗ {failed}
+                        </span>
+                    )}
                 </span>
             )}
             <span

@@ -334,5 +334,61 @@
     "budget_applied": 500.0,
     "rule": "default",
     "success": true
+  },
+  {
+    "timestamp": "2026-07-08 17:26 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 500.0,
+    "rule": "default",
+    "success": true
+  },
+  {
+    "timestamp": "2026-07-08 18:21 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 500.0,
+    "rule": "default",
+    "success": true
+  },
+  {
+    "timestamp": "2026-07-08 18:26 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 500.0,
+    "rule": "default",
+    "success": true
+  },
+  {
+    "timestamp": "2026-07-08 23:19 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 500.0,
+    "rule": "default",
+    "success": true
+  },
+  {
+    "timestamp": "2026-07-08 23:21 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 500.0,
+    "rule": "default",
+    "success": true
+  },
+  {
+    "timestamp": "2026-07-09 10:18 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 700.0,
+    "rule": "one-time 2026-07-09 / ",
+    "success": true
+  },
+  {
+    "timestamp": "2026-07-09 10:18 IST",
+    "campaign_id": 379083,
+    "campaign_name": "Foresight | Reco 04 - Blueberry & Mango",
+    "budget_applied": 700.0,
+    "rule": "one-time 2026-07-09 / ",
+    "success": true
   }
 ]

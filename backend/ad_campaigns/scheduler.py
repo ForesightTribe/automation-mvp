@@ -20,7 +20,7 @@ from rich.table import Table
 from rich import box
 
 from ad_campaigns.client import setup
-from ad_campaigns.schedules import load_schedules, append_log
+from ad_campaigns.schedules import load_schedules
 
 console = Console()
 
@@ -68,12 +68,15 @@ def _matches_rule(rule: dict, now: datetime) -> bool:
     return now.strftime("%A").lower() in days
 
 
-async def _run_core(client, now: datetime) -> None:
-    """Apply budget rules using an already-connected BlinkitClient."""
-    schedules = load_schedules()
+async def _run_core(client, now: datetime, schedules: list[dict] | None = None) -> list[dict]:
+    """Apply budget rules using an already-connected BlinkitClient. Returns log entries."""
+    if schedules is None:
+        schedules = load_schedules()
     if not schedules:
         console.print("[yellow]No schedules found. Add via: python -m ad_campaigns.main → option 4[/yellow]")
-        return
+        return []
+
+    log_entries: list[dict] = []
 
     current_slot = _current_slot(now)
     console.print(
@@ -117,7 +120,7 @@ async def _run_core(client, now: datetime) -> None:
                 reason = f"{days_str}{date_range} / {time_desc}"
         else:
             target_budget = default_budget
-            reason = "default"
+            reason = "No active rule — default budget applied"
 
         if target_budget <= 0:
             table.add_row(campaign_name, str(campaign_id), "—", reason, "[yellow]skipped[/yellow]")
@@ -148,7 +151,7 @@ async def _run_core(client, now: datetime) -> None:
 
         result = "[green]✓ done[/green]" if success else "[red]✗ failed[/red]"
 
-        append_log({
+        log_entries.append({
             "timestamp": now.strftime("%Y-%m-%d %H:%M IST"),
             "campaign_id": campaign_id,
             "campaign_name": campaign_name,
@@ -167,15 +170,16 @@ async def _run_core(client, now: datetime) -> None:
 
     console.print(table)
     console.print("\n[dim]Browser closed.[/dim]")
+    return log_entries
 
 
-async def run_with_state(storage_state: dict) -> None:
-    """Run scheduler with a pre-loaded storage state — no DB call (for in-process use)."""
+async def run_with_state(storage_state: dict, schedules: list[dict] | None = None) -> list[dict]:
+    """Run scheduler with a pre-loaded storage state. Returns log entries."""
     from ad_campaigns.client import setup_with_state
     now = datetime.now(_IST)
     pw, browser, client = await setup_with_state(storage_state)
     try:
-        await _run_core(client, now)
+        return await _run_core(client, now, schedules=schedules)
     finally:
         await browser.close()
         await pw.stop()

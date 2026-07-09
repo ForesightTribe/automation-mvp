@@ -390,46 +390,155 @@ async def get_collections(
     ).scalars().all()
 
 
-# ── Budget scheduling (file-based, no DB) ────────────────────────────────────
+# ── Budget scheduling (DB-backed) ─────────────────────────────────────────────
 
-def get_budget_schedules() -> list[dict]:
-    if not _SCHEDULES_FILE.exists():
-        return []
-    return json.loads(_SCHEDULES_FILE.read_text(encoding="utf-8"))
+async def get_budget_schedules(session: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
+    from app.models.campaign_manager import BudgetScheduleDB, BudgetScheduleRuleDB
+    rows = (await session.execute(
+        select(BudgetScheduleDB).where(BudgetScheduleDB.tenant_id == tenant_id)
+    )).scalars().all()
+    result = []
+    for s in rows:
+        rules = (await session.execute(
+            select(BudgetScheduleRuleDB).where(BudgetScheduleRuleDB.schedule_id == s.id)
+        )).scalars().all()
+        result.append({
+            "campaign_id": s.campaign_id,
+            "campaign_name": s.campaign_name,
+            "name": s.name,
+            "default_budget": s.default_budget,
+            "enabled": s.enabled,
+            "rules": [
+                {
+                    "type": r.type, "days": r.days or [], "time_slots": r.time_slots or [],
+                    "budget": r.budget, "date": r.date,
+                    "start_date": r.start_date, "end_date": r.end_date,
+                    "start_time": r.start_time, "end_time": r.end_time,
+                }
+                for r in rules
+            ],
+        })
+    return result
 
 
-def add_budget_schedule(schedule: dict) -> dict:
-    schedules = get_budget_schedules()
-    schedules = [s for s in schedules if s["campaign_id"] != schedule["campaign_id"]]
-    schedules.append(schedule)
-    _SCHEDULES_FILE.write_text(json.dumps(schedules, indent=2, ensure_ascii=False), encoding="utf-8")
+async def add_budget_schedule(session: AsyncSession, tenant_id: uuid.UUID, schedule: dict) -> dict:
+    from app.models.campaign_manager import BudgetScheduleDB, BudgetScheduleRuleDB
+    # Upsert: remove existing schedule + rules for this campaign
+    existing = (await session.execute(
+        select(BudgetScheduleDB).where(
+            BudgetScheduleDB.tenant_id == tenant_id,
+            BudgetScheduleDB.campaign_id == schedule["campaign_id"],
+        )
+    )).scalar_one_or_none()
+    if existing:
+        await session.execute(
+            select(BudgetScheduleRuleDB).where(BudgetScheduleRuleDB.schedule_id == existing.id)
+        )
+        rules_to_del = (await session.execute(
+            select(BudgetScheduleRuleDB).where(BudgetScheduleRuleDB.schedule_id == existing.id)
+        )).scalars().all()
+        for r in rules_to_del:
+            await session.delete(r)
+        await session.delete(existing)
+        await session.flush()
+
+    db_sched = BudgetScheduleDB(
+        tenant_id=tenant_id,
+        campaign_id=schedule["campaign_id"],
+        campaign_name=schedule["campaign_name"],
+        name=schedule.get("name"),
+        default_budget=schedule["default_budget"],
+        enabled=schedule.get("enabled", True),
+    )
+    session.add(db_sched)
+    await session.flush()
+
+    for rule in schedule.get("rules", []):
+        session.add(BudgetScheduleRuleDB(
+            schedule_id=db_sched.id,
+            type=rule.get("type", "recurring"),
+            days=rule.get("days", []),
+            time_slots=rule.get("time_slots", []),
+            budget=rule["budget"],
+            date=rule.get("date"),
+            start_date=rule.get("start_date"),
+            end_date=rule.get("end_date"),
+            start_time=rule.get("start_time"),
+            end_time=rule.get("end_time"),
+        ))
+
+    await session.commit()
+    schedule["enabled"] = db_sched.enabled
     return schedule
 
 
-def toggle_budget_schedule(campaign_id: int) -> dict | None:
-    schedules = get_budget_schedules()
-    for s in schedules:
-        if s["campaign_id"] == campaign_id:
-            s["enabled"] = not s.get("enabled", True)
-            _SCHEDULES_FILE.write_text(json.dumps(schedules, indent=2, ensure_ascii=False), encoding="utf-8")
-            return s
-    return None
+async def toggle_budget_schedule(session: AsyncSession, tenant_id: uuid.UUID, campaign_id: int) -> dict | None:
+    from app.models.campaign_manager import BudgetScheduleDB
+    s = (await session.execute(
+        select(BudgetScheduleDB).where(
+            BudgetScheduleDB.tenant_id == tenant_id,
+            BudgetScheduleDB.campaign_id == campaign_id,
+        )
+    )).scalar_one_or_none()
+    if not s:
+        return None
+    s.enabled = not s.enabled
+    await session.commit()
+    schedules = await get_budget_schedules(session, tenant_id)
+    return next((x for x in schedules if x["campaign_id"] == campaign_id), None)
 
 
-def remove_budget_schedule(campaign_id: int) -> bool:
-    schedules = get_budget_schedules()
-    filtered = [s for s in schedules if s["campaign_id"] != campaign_id]
-    if len(filtered) == len(schedules):
+async def remove_budget_schedule(session: AsyncSession, tenant_id: uuid.UUID, campaign_id: int) -> bool:
+    from app.models.campaign_manager import BudgetScheduleDB
+    s = (await session.execute(
+        select(BudgetScheduleDB).where(
+            BudgetScheduleDB.tenant_id == tenant_id,
+            BudgetScheduleDB.campaign_id == campaign_id,
+        )
+    )).scalar_one_or_none()
+    if not s:
         return False
-    _SCHEDULES_FILE.write_text(json.dumps(filtered, indent=2, ensure_ascii=False), encoding="utf-8")
+    await session.delete(s)
+    await session.commit()
     return True
 
 
-def get_scheduler_log() -> list[dict]:
-    if not _LOG_FILE.exists():
-        return []
-    log = json.loads(_LOG_FILE.read_text(encoding="utf-8"))
-    return list(reversed(log[-50:]))
+async def get_scheduler_log(session: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
+    from app.models.campaign_manager import BudgetSchedulerLogDB
+    rows = (await session.execute(
+        select(BudgetSchedulerLogDB)
+        .where(BudgetSchedulerLogDB.tenant_id == tenant_id)
+        .order_by(BudgetSchedulerLogDB.timestamp.desc())
+        .limit(50)
+    )).scalars().all()
+    return [
+        {
+            "timestamp": r.timestamp.strftime("%Y-%m-%d %H:%M IST"),
+            "campaign_id": r.campaign_id,
+            "campaign_name": r.campaign_name,
+            "budget_applied": r.budget_applied,
+            "rule": r.rule,
+            "success": r.success,
+        }
+        for r in rows
+    ]
+
+
+async def _write_scheduler_log(tenant_id: uuid.UUID, entries: list[dict]) -> None:
+    if not entries:
+        return
+    from app.models.campaign_manager import BudgetSchedulerLogDB
+    async with AsyncSessionLocal() as db:
+        for e in entries:
+            db.add(BudgetSchedulerLogDB(
+                tenant_id=tenant_id,
+                campaign_id=e.get("campaign_id"),
+                campaign_name=e["campaign_name"],
+                budget_applied=e["budget_applied"],
+                rule=e["rule"],
+                success=e["success"],
+            ))
+        await db.commit()
 
 
 async def run_scheduler_inprocess(tenant_id: uuid.UUID) -> None:
@@ -438,26 +547,27 @@ async def run_scheduler_inprocess(tenant_id: uuid.UUID) -> None:
 
     async with AsyncSessionLocal() as db:
         storage_state = await load_session(db, str(tenant_id), "blinkit")
+        schedules = await get_budget_schedules(db, tenant_id)
+
     if not storage_state:
-        return  # No session — skip silently, don't crash the background task
+        return
+
+    log_entries: list[dict] = []
 
     def _run():
         from ad_campaigns.scheduler import run_with_state
 
         async def _inner():
-            await run_with_state(storage_state)
+            return await run_with_state(storage_state, schedules=schedules)
 
-        _run_in_new_loop(_inner)
+        return _run_in_new_loop(_inner)
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_playwright_executor, _run)
+    log_entries = await loop.run_in_executor(_playwright_executor, _run) or []
+    await _write_scheduler_log(tenant_id, log_entries)
 
 
 async def run_scheduler_all_tenants() -> None:
-    schedules = get_budget_schedules()
-    if not any(s.get("enabled", True) and s.get("rules") for s in schedules):
-        return
-
     from app.models.job import PlatformSession
     from sqlmodel import select as sql_select
     async with AsyncSessionLocal() as db:
@@ -475,74 +585,152 @@ async def run_scheduler_all_tenants() -> None:
 
 # ── Bid Optimizer ────────────────────────────────────────────────────────────
 
-def get_bid_optimizer_rules() -> list[dict]:
-    if not _BID_RULES_FILE.exists():
-        return []
-    return json.loads(_BID_RULES_FILE.read_text(encoding="utf-8"))
+async def get_bid_optimizer_rules(session: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
+    from app.models.campaign_manager import BidOptimizerRuleDB
+    rows = (await session.execute(
+        select(BidOptimizerRuleDB).where(BidOptimizerRuleDB.tenant_id == tenant_id)
+    )).scalars().all()
+    return [r.model_dump(mode="json") for r in rows]
 
 
-def add_bid_optimizer_rule(rule: dict) -> dict:
-    import uuid as _uuid
+async def add_bid_optimizer_rule(session: AsyncSession, tenant_id: uuid.UUID, rule: dict) -> dict:
+    from app.models.campaign_manager import BidOptimizerRuleDB
     if not rule.get("id"):
-        rule["id"] = str(_uuid.uuid4())
-    rules = get_bid_optimizer_rules()
-    # Replace if same campaign + keyword already exists
-    rules = [r for r in rules if not (
-        r["campaign_id"] == rule["campaign_id"] and r["keyword"] == rule["keyword"]
-    )]
-    rules.append(rule)
-    _BID_RULES_FILE.write_text(json.dumps(rules, indent=2, ensure_ascii=False), encoding="utf-8")
+        rule["id"] = str(uuid.uuid4())
+    # Remove existing rule for same campaign + keyword
+    existing = (await session.execute(
+        select(BidOptimizerRuleDB).where(
+            BidOptimizerRuleDB.tenant_id == tenant_id,
+            BidOptimizerRuleDB.campaign_id == rule["campaign_id"],
+            BidOptimizerRuleDB.keyword == rule["keyword"],
+        )
+    )).scalar_one_or_none()
+    if existing:
+        await session.delete(existing)
+        await session.flush()
+    db_rule = BidOptimizerRuleDB(tenant_id=tenant_id, **{
+        k: v for k, v in rule.items()
+        if k in BidOptimizerRuleDB.model_fields and k != "tenant_id"
+    })
+    session.add(db_rule)
+    await session.commit()
+    # Sync JSON cache for bid_optimizer.py runtime use
+    await _sync_bid_rules_to_json(session, tenant_id)
     return rule
 
 
-def remove_bid_optimizer_rule(rule_id: str) -> bool:
-    rules = get_bid_optimizer_rules()
-    filtered = [r for r in rules if r.get("id") != rule_id]
-    if len(filtered) == len(rules):
+async def remove_bid_optimizer_rule(session: AsyncSession, tenant_id: uuid.UUID, rule_id: str) -> bool:
+    from app.models.campaign_manager import BidOptimizerRuleDB
+    r = (await session.execute(
+        select(BidOptimizerRuleDB).where(
+            BidOptimizerRuleDB.tenant_id == tenant_id,
+            BidOptimizerRuleDB.id == rule_id,
+        )
+    )).scalar_one_or_none()
+    if not r:
         return False
-    _BID_RULES_FILE.write_text(json.dumps(filtered, indent=2, ensure_ascii=False), encoding="utf-8")
+    await session.delete(r)
+    await session.commit()
+    await _sync_bid_rules_to_json(session, tenant_id)
     return True
 
 
-def toggle_bid_optimizer_rule(rule_id: str) -> dict | None:
-    rules = get_bid_optimizer_rules()
-    for r in rules:
-        if r.get("id") == rule_id:
-            r["active"] = not r.get("active", True)
-            _BID_RULES_FILE.write_text(json.dumps(rules, indent=2, ensure_ascii=False), encoding="utf-8")
-            return r
-    return None
+async def toggle_bid_optimizer_rule(session: AsyncSession, tenant_id: uuid.UUID, rule_id: str) -> dict | None:
+    from app.models.campaign_manager import BidOptimizerRuleDB
+    r = (await session.execute(
+        select(BidOptimizerRuleDB).where(
+            BidOptimizerRuleDB.tenant_id == tenant_id,
+            BidOptimizerRuleDB.id == rule_id,
+        )
+    )).scalar_one_or_none()
+    if not r:
+        return None
+    r.active = not r.active
+    await session.commit()
+    await _sync_bid_rules_to_json(session, tenant_id)
+    return r.model_dump(mode="json")
 
 
-def get_bid_optimizer_log() -> list[dict]:
-    if not _BID_LOG_FILE.exists():
-        return []
-    entries = json.loads(_BID_LOG_FILE.read_text(encoding="utf-8"))
-    return list(reversed(entries[-100:]))
+async def get_bid_optimizer_log(session: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
+    from app.models.campaign_manager import BidOptimizerLogDB
+    rows = (await session.execute(
+        select(BidOptimizerLogDB)
+        .where(BidOptimizerLogDB.tenant_id == tenant_id)
+        .order_by(BidOptimizerLogDB.timestamp.desc())
+        .limit(100)
+    )).scalars().all()
+    return [
+        {
+            "timestamp": r.timestamp.strftime("%Y-%m-%d %H:%M:%S IST"),
+            "campaign_id": r.campaign_id,
+            "campaign_name": r.campaign_name,
+            "keyword": r.keyword,
+            "action": r.action,
+            "old_cpm": r.old_cpm,
+            "new_cpm": r.new_cpm,
+            "position": r.position,
+            "target_position": r.target_position,
+            "impressions": r.impressions,
+            "detail": r.detail,
+            "success": r.success,
+        }
+        for r in rows
+    ]
+
+
+async def _sync_bid_rules_to_json(session: AsyncSession, tenant_id: uuid.UUID) -> None:
+    """Keep JSON cache in sync for bid_optimizer.py runtime use."""
+    rules = await get_bid_optimizer_rules(session, tenant_id)
+    _BID_RULES_FILE.write_text(json.dumps(rules, indent=2, ensure_ascii=False), encoding="utf-8")
+
+
+async def _write_bid_optimizer_log(tenant_id: uuid.UUID, entries: list[dict]) -> None:
+    if not entries:
+        return
+    from app.models.campaign_manager import BidOptimizerLogDB
+    async with AsyncSessionLocal() as db:
+        for e in entries:
+            db.add(BidOptimizerLogDB(
+                tenant_id=tenant_id,
+                campaign_id=e.get("campaign_id"),
+                campaign_name=e.get("campaign_name", ""),
+                keyword=e.get("keyword"),
+                action=e.get("action", ""),
+                old_cpm=e.get("old_cpm"),
+                new_cpm=e.get("new_cpm"),
+                position=e.get("position"),
+                target_position=e.get("target_position"),
+                impressions=e.get("impressions"),
+                detail=e.get("detail"),
+                success=e.get("success", False),
+            ))
+        await db.commit()
 
 
 async def run_bid_optimizer_inprocess(tenant_id: uuid.UUID) -> None:
     from scraper.utils.session import load_session
     async with AsyncSessionLocal() as db:
         storage_state = await load_session(db, str(tenant_id), "blinkit")
+        # Sync rules from DB to JSON so bid_optimizer.py can read them
+        await _sync_bid_rules_to_json(db, tenant_id)
+
     if not storage_state:
         return
+
+    log_entries: list[dict] = []
 
     def _run():
         from ad_campaigns.bid_optimizer import run_with_state
         async def _inner():
-            await run_with_state(storage_state)
-        _run_in_new_loop(_inner)
+            return await run_with_state(storage_state)
+        return _run_in_new_loop(_inner)
 
     loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_playwright_executor, _run)
+    log_entries = await loop.run_in_executor(_playwright_executor, _run) or []
+    await _write_bid_optimizer_log(tenant_id, log_entries)
 
 
 async def run_bid_optimizer_all_tenants() -> None:
-    rules = get_bid_optimizer_rules()
-    if not any(r.get("active", True) for r in rules):
-        return
-
     from app.models.job import PlatformSession
     from sqlmodel import select as sql_select
     async with AsyncSessionLocal() as db:

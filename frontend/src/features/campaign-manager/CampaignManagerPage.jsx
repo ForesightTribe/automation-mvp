@@ -30,13 +30,21 @@ export const CampaignManagerPage = () => {
             {/* ── Budget Scheduler ── */}
             <div className="flex flex-col gap-4">
                 <div className="flex items-center justify-between">
-                    <h2 className="text-base font-semibold text-content">Budget Scheduler</h2>
+                    <div>
+                        <h2 className="text-base font-semibold text-content">Budget Scheduler</h2>
+                        <p className="text-xs text-content-muted mt-0.5">
+                            Set rules to automatically change a campaign's daily budget at specific times or days.
+                            <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-medium text-success">
+                                ● Auto-runs every 5 min
+                            </span>
+                        </p>
+                    </div>
                     <Button
                         onClick={() => { runBudget(); setRanBudget(true); }}
                         disabled={budgetPending}
                         size="sm"
                     >
-                        {budgetPending ? "Starting…" : "Run Scheduler Now"}
+                        {budgetPending ? "Starting…" : "Run Now"}
                     </Button>
                 </div>
 

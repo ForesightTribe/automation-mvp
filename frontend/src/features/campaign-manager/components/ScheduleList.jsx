@@ -50,7 +50,7 @@ export const ScheduleList = () => {
                         <div
                             key={sched.campaign_id}
                             className={`rounded-lg border p-4 transition-opacity ${
-                            sched.enabled !== false ? "border-border" : "border-border opacity-50"
+                            sched.enabled !== false ? "border-border" : "border-border/50 opacity-60"
                         }`}
                         >
                             {editingId === sched.campaign_id ? (
@@ -90,15 +90,24 @@ export const ScheduleList = () => {
                             ) : (
                             <div className="flex items-start justify-between gap-3">
                                 <div>
-                                    {sched.name && (
-                                        <p className="text-xs font-semibold text-primary mb-0.5">{sched.name}</p>
-                                    )}
+                                    <div className="flex items-center gap-2 flex-wrap mb-0.5">
+                                        {sched.name && (
+                                            <p className="text-xs font-semibold text-primary">{sched.name}</p>
+                                        )}
+                                        {sched.enabled === false && (
+                                            <span className="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">
+                                                PAUSED
+                                            </span>
+                                        )}
+                                    </div>
                                     <p className="font-medium text-content">
                                         {sched.campaign_name}
                                     </p>
                                     <p className="mt-0.5 text-xs text-content-muted">
-                                        ID: {sched.campaign_id} · Default: ₹
-                                        {sched.default_budget.toLocaleString()}
+                                        ID: {sched.campaign_id} · Default: ₹{sched.default_budget.toLocaleString()}
+                                        {sched.enabled === false && (
+                                            <span className="ml-2 italic">· scheduler skipping this campaign</span>
+                                        )}
                                     </p>
                                 </div>
                                 <div className="flex gap-2">

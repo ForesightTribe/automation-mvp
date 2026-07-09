@@ -192,22 +192,22 @@ async def collections(session: SessionDep, client: ClientDep):
 
 @router.get("/budget-schedules/history", response_model=list[SchedulerLogEntry])
 async def scheduler_history(session: SessionDep, client: ClientDep):
-    return ads_service.get_scheduler_log()
+    return await ads_service.get_scheduler_log(session, client.id)
 
 
 @router.get("/budget-schedules", response_model=list[BudgetSchedule])
 async def get_budget_schedules(session: SessionDep, client: ClientDep):
-    return ads_service.get_budget_schedules()
+    return await ads_service.get_budget_schedules(session, client.id)
 
 
 @router.post("/budget-schedules", response_model=BudgetSchedule, status_code=201)
 async def add_budget_schedule(body: BudgetSchedule, session: SessionDep, client: ClientDep):
-    return ads_service.add_budget_schedule(body.model_dump())
+    return await ads_service.add_budget_schedule(session, client.id, body.model_dump())
 
 
 @router.patch("/budget-schedules/{campaign_id}/toggle", response_model=BudgetSchedule)
 async def toggle_budget_schedule(campaign_id: int, session: SessionDep, client: ClientDep):
-    result = ads_service.toggle_budget_schedule(campaign_id)
+    result = await ads_service.toggle_budget_schedule(session, client.id, campaign_id)
     if not result:
         raise HTTPException(status_code=404, detail="Schedule not found")
     return result
@@ -215,7 +215,7 @@ async def toggle_budget_schedule(campaign_id: int, session: SessionDep, client: 
 
 @router.delete("/budget-schedules/{campaign_id}", status_code=204)
 async def delete_budget_schedule(campaign_id: int, session: SessionDep, client: ClientDep):
-    if not ads_service.remove_budget_schedule(campaign_id):
+    if not await ads_service.remove_budget_schedule(session, client.id, campaign_id):
         raise HTTPException(status_code=404, detail="Schedule not found")
 
 
@@ -229,23 +229,23 @@ async def trigger_scheduler(background_tasks: BackgroundTasks, session: SessionD
 
 @router.get("/bid-optimizer/rules", response_model=list[BidOptimizerRule])
 async def get_bid_optimizer_rules(session: SessionDep, client: ClientDep):
-    return ads_service.get_bid_optimizer_rules()
+    return await ads_service.get_bid_optimizer_rules(session, client.id)
 
 
 @router.post("/bid-optimizer/rules", response_model=BidOptimizerRule, status_code=201)
 async def add_bid_optimizer_rule(body: BidOptimizerRule, session: SessionDep, client: ClientDep):
-    return ads_service.add_bid_optimizer_rule(body.model_dump())
+    return await ads_service.add_bid_optimizer_rule(session, client.id, body.model_dump())
 
 
 @router.delete("/bid-optimizer/rules/{rule_id}", status_code=204)
 async def delete_bid_optimizer_rule(rule_id: str, session: SessionDep, client: ClientDep):
-    if not ads_service.remove_bid_optimizer_rule(rule_id):
+    if not await ads_service.remove_bid_optimizer_rule(session, client.id, rule_id):
         raise HTTPException(status_code=404, detail="Rule not found")
 
 
 @router.patch("/bid-optimizer/rules/{rule_id}/toggle", response_model=BidOptimizerRule)
 async def toggle_bid_optimizer_rule(rule_id: str, session: SessionDep, client: ClientDep):
-    result = ads_service.toggle_bid_optimizer_rule(rule_id)
+    result = await ads_service.toggle_bid_optimizer_rule(session, client.id, rule_id)
     if not result:
         raise HTTPException(status_code=404, detail="Rule not found")
     return result
@@ -253,7 +253,7 @@ async def toggle_bid_optimizer_rule(rule_id: str, session: SessionDep, client: C
 
 @router.get("/bid-optimizer/history", response_model=list[BidOptimizerLogEntry])
 async def bid_optimizer_history(session: SessionDep, client: ClientDep):
-    return ads_service.get_bid_optimizer_log()
+    return await ads_service.get_bid_optimizer_log(session, client.id)
 
 
 @router.post("/bid-optimizer/run", response_model=SchedulerTriggerResponse)
