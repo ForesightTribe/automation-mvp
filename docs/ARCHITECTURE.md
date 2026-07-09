@@ -78,6 +78,10 @@ automation-mvp/
      │                          │  same worker pool; paginates the brand's whole catalog
      │                     sku_storage.py → append sku_snapshots (keyed on product_id)
      │
+     ├── explorer custom scrape ─► scraper/public/explorer/ (ad-hoc ExplorerSpec, NO watchlist/tenant)
+     │                          │  same worker pool; keywords/brand × SAMPLED catalog locations
+     │                     in-memory → insights.py → export.py (.xlsx); only explorer_runs persisted
+     │
      └── private scrape ─► platforms/blinkit/{dashboard}/scraper.py
                                 │  Playwright session restored from platform_sessions
                                 │  intercepts auth headers → httpx / in-page API calls
@@ -229,6 +233,12 @@ query, cap, classification, and storage target:
   **brand name**, paginates the whole catalog (`brand_cap`, default 60), own-brand
   only. Writes the flat `sku_snapshots` (keyed on `platform_product_id`) —
   guaranteeing coverage of every own SKU regardless of keyword ranking.
+- **Explorer (ad-hoc, ephemeral)** — `scraper/public/explorer/`. The same worker
+  pool driven by an `ExplorerSpec` (any brand / keywords / cities, **no tenant or
+  watchlist**), over *sampled* catalog locations. Accumulates in memory →
+  `build_insights` → an Excel workbook; writes **nothing** to the fact tables (only
+  an `explorer_runs` record). Marketplace-abstracted via a provider registry. See
+  [explorer.md](explorer.md).
 
 One `scrape_job` per run (dashboards `public_search` / `public_skus`). Resilience:
 retry with backoff on transient failures, a hard per-fetch timeout (a stalled fetch
@@ -237,7 +247,8 @@ status, session refresh on staleness, incremental commits, and `--resume` to
 continue an interrupted job (skips already-scraped stores).
 
 Reference: `backend/scraper/platforms/blinkit/public_data/{scraper,storage,sku_storage}.py`
-+ `backend/scraper/public/{orchestrator,targeted}.py`. httpx is not usable here (Cloudflare).
++ `backend/scraper/public/{orchestrator,targeted}.py` + the ephemeral
+`backend/scraper/public/explorer/` package. httpx is not usable here (Cloudflare).
 
 ---
 

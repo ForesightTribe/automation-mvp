@@ -15,6 +15,7 @@
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend coding/styling conventions — arrow components, Tailwind v4 theme tokens, error layers, logging |
 | [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
 | [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
+| [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
 
 ---
 
@@ -213,4 +214,7 @@ python -m cli sku-map apply --tenant <uuid> --file sku_map.xlsx      # apply man
 
 # ad-hoc single scrape (no config needed; --save requires --tenant)
 python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --tenant <uuid> --save
+
+# Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral; any brand/keywords/cities, no tenant)
+python -m cli explore --brand "dobra" --keyword "goli soda,nimbu soda" --city bengaluru [--catalog] [--sample N]
 ```
