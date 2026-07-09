@@ -87,10 +87,14 @@ export const AddScheduleForm = () => {
             }));
             setRules((rs) => [...rs, ...newRules]);
         } else {
+            if (!rule.days.length) { setRuleError("Please select at least one day."); return; }
             if (!rule.start_date) { setRuleError("Start date is required."); return; }
             for (let i = 0; i < rule.time_ranges.length; i++) {
                 if (!rule.time_ranges[i].start_time) {
                     setRuleError(`Time slot ${i + 1}: Start time is required.`); return;
+                }
+                if (!rule.time_ranges[i].end_time) {
+                    setRuleError(`Time slot ${i + 1}: End time is required.`); return;
                 }
             }
             // Recurring: one rule per time range, all sharing the same date range
@@ -282,9 +286,20 @@ export const AddScheduleForm = () => {
                             {rule.type === "recurring" && (
                                 <div className="flex flex-col gap-1.5">
                                     <p className="text-xs font-medium text-content-muted">
-                                        Days <span className="font-normal italic">(leave all unchecked = every day)</span>
+                                        Days <span className="text-danger">*</span>
                                     </p>
                                     <div className="flex flex-wrap gap-2">
+                                        <Toggle
+                                            label="All"
+                                            checked={rule.days.length === DAYS.length}
+                                            onChange={() =>
+                                                setRule((r) => ({
+                                                    ...r,
+                                                    days: r.days.length === DAYS.length ? [] : [...DAYS],
+                                                }))
+                                            }
+                                        />
+                                        <span className="text-content-muted">|</span>
                                         {DAYS.map((d) => (
                                             <Toggle
                                                 key={d}
@@ -301,7 +316,7 @@ export const AddScheduleForm = () => {
                             <div className="flex flex-col gap-2">
                                 <p className="text-xs font-medium text-content-muted">
                                     Time Slots <span className="text-danger">*</span>
-                                    <span className="ml-1 font-normal">(start time required, end time optional)</span>
+                                    <span className="ml-1 font-normal">(both start and end time required)</span>
                                 </p>
                                 {rule.time_ranges.map((tr, idx) => (
                                     <div key={idx} className="flex items-end gap-2">
@@ -315,7 +330,7 @@ export const AddScheduleForm = () => {
                                             />
                                         </div>
                                         <div className="flex flex-1 flex-col gap-1">
-                                            <label className="text-[10px] text-content-muted">End Time <span className="text-content-muted">(optional)</span></label>
+                                            <label className="text-[10px] text-content-muted">End Time <span className="text-danger">*</span></label>
                                             <input
                                                 type="time"
                                                 value={tr.end_time}
