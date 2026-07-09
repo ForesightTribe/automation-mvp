@@ -23,6 +23,9 @@ logs/
 .coverage
 htmlcov/
 
+# Explorer — generated workbooks (ephemeral run artifacts)
+exports/
+
 # OS
 .DS_Store
 Thumbs.db
