@@ -55,11 +55,22 @@ async def login(email: str, base_url: str) -> dict:
 
             logger.info("Navigating to magic link...")
             await page.goto(magic_link.strip(), wait_until="networkidle", timeout=45_000)
-            await asyncio.sleep(2)
 
+            # The magic link lands on /auth/action while Firebase processes the JWT.
+            # Wait for the resulting redirect to /diy/ before capturing the session —
+            # otherwise IndexedDB is empty (Firebase hasn't written the auth token yet).
             if "/diy/" not in page.url:
-                logger.warning(f"Expected /diy/ after magic link, landed on: {page.url}")
+                logger.info(f"On auth page ({page.url}) — waiting for redirect to /diy/...")
+                try:
+                    await page.wait_for_url("**/diy/**", timeout=20_000)
+                except Exception:
+                    logger.warning(f"Redirect to /diy/ timed out, still on: {page.url}")
 
+            # Wait for Firebase to finish writing auth state to IndexedDB
+            await page.wait_for_load_state("networkidle", timeout=20_000)
+            await asyncio.sleep(3)
+
+            logger.info(f"Capturing session at: {page.url}")
             return await _capture_session(page, context, base_url)
         finally:
             await browser.close()

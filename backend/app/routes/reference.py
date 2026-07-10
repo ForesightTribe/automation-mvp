@@ -21,3 +21,9 @@ async def marketplaces(session: SessionDep, _user: CurrentUserDep):
 @router.get("/cities", response_model=list[CityOut])
 async def cities(_user: CurrentUserDep):
     return reference_service.list_cities()
+
+
+@router.get("/blinkit-zones")
+async def blinkit_zones(session: SessionDep, _user: CurrentUserDep):
+    """All active Blinkit dark store locations from marketplace_locations table."""
+    return await reference_service.list_blinkit_zones(session)

@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.models.brand import Brand, Marketplace
+from app.models.search import MarketplaceLocation
 from scraper.utils.cities import CITIES
 
 
@@ -49,3 +50,60 @@ def list_cities() -> list[dict]:
             }
         )
     return cities
+
+
+async def list_blinkit_zones(session: AsyncSession) -> list[dict]:
+    """Return active Blinkit dark store locations from marketplace_locations.
+    Falls back to hardcoded CITIES if the table is empty (not yet populated by scraper)."""
+    rows = (
+        await session.execute(
+            select(MarketplaceLocation)
+            .where(
+                MarketplaceLocation.mp_slug == "blinkit",
+                MarketplaceLocation.is_active == True,
+                MarketplaceLocation.lat.is_not(None),
+                MarketplaceLocation.lon.is_not(None),
+            )
+            .order_by(MarketplaceLocation.city, MarketplaceLocation.zone)
+        )
+    ).scalars().all()
+
+    if rows:
+        # Deduplicate: one representative dark store per (city, zone/pincode) pair
+        seen: set[str] = set()
+        zones = []
+        for r in rows:
+            area = r.zone.strip() if r.zone and r.zone.strip() else (r.pincode.strip() if r.pincode and r.pincode.strip() else "")
+            key = f"{r.city}|{area}"
+            if key in seen:
+                continue
+            seen.add(key)
+            label = f"{r.city} — {area}" if area else r.city
+            zones.append({
+                "label": label,
+                "city": r.city,
+                "zone": area,
+                "state": r.state or "",
+                "pincode": r.pincode or "",
+                "merchant_id": r.merchant_id or "",
+                "lat": r.lat,
+                "lon": r.lon,
+            })
+        return zones
+
+    # Fallback: hardcoded CITIES dict so the dropdown is never empty
+    zones = []
+    for slug, city in CITIES.items():
+        blinkit = city.get("platforms", {}).get("blinkit", {})
+        for z in blinkit.get("zones", []):
+            zones.append({
+                "label": f"{city['name']} — {z['zone']}",
+                "city": city["name"],
+                "zone": z["zone"],
+                "state": city.get("state", ""),
+                "pincode": z.get("pincode", ""),
+                "merchant_id": "",
+                "lat": z["lat"],
+                "lon": z["lon"],
+            })
+    return zones

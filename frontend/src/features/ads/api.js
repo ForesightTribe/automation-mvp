@@ -1,12 +1,5 @@
 import { api } from "../../lib/axios";
 
-/**
- * Ads endpoints. Thin wrappers over the shared `api` client (see overview/api.js
- * for the pattern). All routes are under /clients/{clientId}/ads. Window endpoints
- * send the date range as ?start=&end= (PeriodDep) and the marketplace selection as
- * a comma-separated ?marketplaces= (omitted = all). Keyword/plan/collection reads
- * are snapshot-based and take no date range.
- */
 const mp = (marketplaces) =>
 	marketplaces?.length ? marketplaces.join(",") : undefined;
 

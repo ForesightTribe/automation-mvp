@@ -14,12 +14,6 @@ import {
 	getCollections,
 } from "./api";
 
-/**
- * Data hooks for the Ads page. Every key includes the active client + global date
- * range + marketplace selection so the Navbar controls auto-refetch (Context holds
- * the selection, React Query the data). Snapshot reads (keywords, plans,
- * collections) drop the date range from their key since they aren't windowed.
- */
 export const useAdsSummary = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
@@ -36,8 +30,6 @@ export const useAdsSummary = () => {
 	});
 };
 
-/** Daily spend/impressions/ad_sales/roas — feeds the trend chart AND the KPI
- * sparklines (React Query dedupes the shared call). */
 export const useAdsPerformance = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
@@ -75,17 +67,7 @@ export const useCampaigns = ({ page, limit = 20, status, sort, order }) => {
 	const { range } = useDateRange();
 	const { selected } = useMarketplaces();
 	return useQuery({
-		queryKey: [
-			"ads-campaigns",
-			activeClientId,
-			range,
-			selected,
-			page,
-			limit,
-			status,
-			sort,
-			order,
-		],
+		queryKey: ["ads-campaigns", activeClientId, range, selected, page, limit, status, sort, order],
 		queryFn: () =>
 			getCampaigns(activeClientId, {
 				start: range.from,
@@ -102,30 +84,11 @@ export const useCampaigns = ({ page, limit = 20, status, sort, order }) => {
 	});
 };
 
-/** Keyword/asset performance from the latest detail snapshot — not date-windowed,
- * so the key omits the range. */
-export const useKeywords = ({
-	page,
-	limit = 20,
-	campaignId,
-	targetType,
-	sort,
-	order,
-}) => {
+export const useKeywords = ({ page, limit = 20, campaignId, targetType, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { selected } = useMarketplaces();
 	return useQuery({
-		queryKey: [
-			"ads-keywords",
-			activeClientId,
-			selected,
-			page,
-			limit,
-			campaignId,
-			targetType,
-			sort,
-			order,
-		],
+		queryKey: ["ads-keywords", activeClientId, selected, page, limit, campaignId, targetType, sort, order],
 		queryFn: () =>
 			getKeywords(activeClientId, {
 				marketplaces: selected,
@@ -157,9 +120,6 @@ export const useSov = () => {
 	});
 };
 
-/** Per-marketplace ad breakdown. Keyed on client + date range only (not the
- * selection) — it returns a row for every marketplace and the page filters to the
- * selected/unconnected ones, mirroring the Overview breakdown. */
 export const useAdMarketplaces = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();

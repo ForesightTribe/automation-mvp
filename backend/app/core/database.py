@@ -28,8 +28,14 @@ AsyncSessionLocal = sessionmaker(
 
 
 async def get_session() -> AsyncGenerator[AsyncSession, None]:
-    async with AsyncSessionLocal() as session:
+    session: AsyncSession = AsyncSessionLocal()
+    try:
         yield session
+    finally:
+        try:
+            await session.close()
+        except Exception:
+            pass  # ignore stale-connection errors on cleanup
 
 
 async def create_tables() -> None:

@@ -297,6 +297,60 @@ preserves manual mappings.
 
 ---
 
+## Explore — on-demand custom scrape → Excel (agency-facing)
+
+`cli explore` runs an **ad-hoc** public scrape for **any** brand / keywords /
+competitors / cities and writes a multi-sheet Excel report. Unlike `public-run`,
+it is **not** tied to a tenant's watchlist and **writes nothing** to the fact
+tables — it's for profiling a prospect or a one-off deep-dive. Each run logs one
+`explorer_runs` record (status + live progress) and saves an `.xlsx` to `exports/`
+(gitignored). Full design: [explorer.md](explorer.md).
+
+```bash
+# Keyword scrape: SoV / rank / competitors for a brand across sampled locations
+python -m cli explore --brand dobra --keyword "goli soda,nimbu soda" --city bengaluru
+
+# Add the own-brand catalog (per-SKU price/stock) with --catalog
+python -m cli explore --brand dobra --keyword "cola,soda" --city bengaluru,mumbai --catalog
+
+# Narrow the competitor set, widen the sample, label the run
+python -m cli explore --brand dobra --keyword "soda" --competitors "paper boat,7up" \
+  --sample 80 --label "Dobra Q3 pitch"
+
+# Full census of a city (not a sample); custom output path
+python -m cli explore --brand dobra --keyword "soda" --city bengaluru --full -o dobra.xlsx
+```
+
+| Option | Default | Notes |
+| --- | --- | --- |
+| `--brand` / `-b` | (required) | Focus brand (name or slug) |
+| `--keyword` / `-k` | — | Comma-separated keywords (required unless `--mode catalog`) |
+| `--city` / `-c` | all catalog cities | Comma-separated; must exist in the darkstore catalog |
+| `--competitors` | discover all | Comma-separated whitelist; empty = keep every competitor found |
+| `--aliases` | brand | Comma-separated brand-name variants for matching |
+| `--marketplace` / `-m` | `blinkit` | Only Blinkit is wired today |
+| `--mode` | `keyword` | `keyword` \| `catalog` \| `both` |
+| `--catalog` | off | Sugar — also scrape the own catalog (folds into `--mode`) |
+| `--sample` | 50 | Locations sampled per city (evenly spread) |
+| `--full` | off | Census — every catalog location (ignores `--sample`) |
+| `--workers` / `-w` | 5 | Concurrent browser workers |
+| `--cap` | 12 | Per-keyword result cap override |
+| `--brand-cap` | 60 | Catalog brand-query cap override |
+| `--label` | — | Human label stored on the run |
+| `--tenant` / `-t` | — | Optional attribution to a client (does **not** scope storage) |
+| `--output` / `-o` | `exports/<brand>_<ts>.xlsx` | Workbook path |
+
+**Workbook** (insight sheets first, raw last): Run Overview · Keyword Scorecard ·
+Geography · Competitor Landscape · Price & Discount · Availability · Own Catalog
+(catalog mode) · then Raw — Snapshots / Listings / Catalog SKUs / Locations.
+
+- Only cities already in `marketplace_locations` are reachable (add them via `cli sync`).
+- Ephemeral: nothing in `search_snapshots` / `search_listings` / `sku_snapshots` — only the
+  `explorer_runs` record + the `.xlsx`.
+- Instamart/Zepto are registered but not yet wired; selecting them fails fast.
+
+---
+
 ## Export to Excel
 
 Export all scraped data for a tenant to a multi-sheet Excel workbook.

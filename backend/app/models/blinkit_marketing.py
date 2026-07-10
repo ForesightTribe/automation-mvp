@@ -33,6 +33,7 @@ class BlinkitAdCampaign(SQLModel, table=True):
     start_ts: datetime | None = None
     end_ts: datetime | None = None
     infinite_campaign: bool = False
+    daily_budget: int | None = None
     scraped_at: datetime = Field(default_factory=now_ist)
 
 

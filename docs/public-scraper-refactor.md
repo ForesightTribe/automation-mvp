@@ -57,8 +57,10 @@ monthly partitioning when it matters). Private data is a rounding error next to 
 - **Scrape dedup (optional efficiency)** — iterate distinct `(lat,lon)` (~1,924) not
   all catalog rows (~2,216): ~13% less work, no duplicate rows at source. Needs a
   re-scrape. Metrics already count locations, so this is efficiency-only.
-- **Explorer system** — on-demand custom-scrape → Excel tool (any keyword/brand/SKU/
-  city, ephemeral, agency-facing). Net-new, reuses the scrape engine.
+- **Explorer system** — ✅ SHIPPED (CLI, Phases 0–3). On-demand custom-scrape → Excel
+  (any brand/keywords/cities, ephemeral, agency-facing), reusing the scrape engine via
+  `scraper/public/explorer/`; run with `cli explore`. Admin API + UI (Phase 4) still to
+  build. See [explorer.md](explorer.md).
 - **Production/scaling** — cloud scheduler for the scrapes, proxy pool (IP diversity
   is the real ceiling, not compute/DB), pre-aggregation/partitioning + retention.
 - **Private-data UI gaps** — Inventory's private SOH/fill-rate section (endpoints

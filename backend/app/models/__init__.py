@@ -27,6 +27,14 @@ from app.models.blinkit_marketing import (
     BlinkitBrandCollection,
     BlinkitVisibilityPlan,
 )
+from app.models.explorer import ExplorerRun
+from app.models.campaign_manager import (
+    BudgetScheduleDB,
+    BudgetScheduleRuleDB,
+    BudgetSchedulerLogDB,
+    BidOptimizerRuleDB,
+    BidOptimizerLogDB,
+)
 
 __all__ = [
     "Account",
@@ -38,4 +46,7 @@ __all__ = [
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",
     "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
+    "ExplorerRun",
+    "BudgetScheduleDB", "BudgetScheduleRuleDB", "BudgetSchedulerLogDB",
+    "BidOptimizerRuleDB", "BidOptimizerLogDB",
 ]

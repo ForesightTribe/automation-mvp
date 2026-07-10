@@ -1,11 +1,20 @@
 import sys
 import asyncio
 import typer
-from cli.commands import account, auth, scrape, tenant, watchlist, locations, sync, sku_map
+from cli.commands import account, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore
 
 # Windows requires ProactorEventLoop for Playwright subprocess spawning
 if sys.platform == "win32":
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
+
+# Harden console output: the legacy Windows console encodes as cp1252, which
+# can't represent characters that show up in scraped data (₹, →, accents) and
+# would otherwise crash a print. Fall back to replacement instead of raising.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 app = typer.Typer(
     name="cli",
@@ -21,6 +30,7 @@ app.add_typer(watchlist.app, name="watchlist")
 app.add_typer(locations.app, name="locations")
 app.add_typer(sku_map.app, name="sku-map")
 app.command("sync")(sync.run_sync)
+app.command("explore")(explore.explore)
 
 if __name__ == "__main__":
     app()

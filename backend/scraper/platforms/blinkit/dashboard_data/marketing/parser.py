@@ -21,6 +21,7 @@ def parse_campaign(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
         "start_ts": raw.get("start_ts"),
         "end_ts": raw.get("end_ts"),
         "infinite_campaign": raw.get("infinite_campaign", False),
+        "daily_budget": raw.get("campaign_budget"),
         "scraped_at": now_ist(),
     }
 
