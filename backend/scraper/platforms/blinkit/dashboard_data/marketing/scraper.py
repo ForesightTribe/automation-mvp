@@ -73,19 +73,26 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
         try:
             page = await context.new_page()
             token = await _authenticate(page)
+            await _log_advertiser(page, token)
 
             # ── Account-level pulls ────────────────────────────────────────────
             body = {
                 "from_date": from_str,
                 "to_date": to_str,
-                "campaign_types": ep.ALL_CAMPAIGN_TYPES,
+                "campaign_types": await _enabled_campaign_types(page, token),
             }
             campaigns_resp = await _post(page, ep.CAMPAIGNS_API, body, token)
-            campaigns = ((campaigns_resp or {}).get("data") or {}).get("campaigns") or []
+            if campaigns_resp is None:
+                raise RuntimeError(
+                    "Campaign list request failed — see the logged status + message "
+                    "from Blinkit above."
+                )
+            campaigns = (campaigns_resp.get("data") or {}).get("campaigns") or []
             if not campaigns:
                 raise RuntimeError(
-                    "Campaign list came back empty (see logged snippet) — session "
-                    "likely expired or blocked. Re-run `cli auth blinkit`."
+                    f"Campaign list is empty for {from_str}→{to_str}. The advertiser has "
+                    "no campaigns in this window, or the session belongs to a different "
+                    "advertiser than expected (see the advertiser logged above)."
                 )
             logger.info(f"Captured {len(campaigns)} campaigns")
 
@@ -193,12 +200,58 @@ async def _authenticate(page) -> str:
     return token
 
 
+async def _log_advertiser(page, token: str) -> None:
+    """Record which advertiser this session is acting as. A mis-login (right
+    tenant, wrong Blinkit account) is otherwise invisible until the data lands."""
+    resp = await _get(page, ep.ADVERTISERS_API, token)
+    items = (resp or {}).get("items") or []
+    if not items:
+        logger.warning("Could not identify advertiser for this session")
+        return
+    named = ", ".join(f"{a.get('name')} (id {a.get('id')})" for a in items)
+    logger.info(f"Advertiser: {named}")
+
+
+async def _enabled_campaign_types(page, token: str) -> list[str]:
+    """Campaign types enabled for this advertiser, read from the same config call
+    the dashboard makes. Blinkit rejects the whole request with 400 if it is sent
+    a disabled type, so never send the full hardcoded list when this succeeds."""
+    resp = await _get(page, ep.CAMPAIGN_CONFIG_API, token)
+    objectives = (resp or {}).get("data", {}).get("objective_types") or []
+    types = sorted({t for o in objectives for t in (o.get("asset_types") or [])})
+    if not types:
+        logger.warning(
+            f"Could not read enabled campaign types — falling back to all "
+            f"{len(ep.ALL_CAMPAIGN_TYPES)} types; expect a 400 if any is disabled."
+        )
+        return ep.ALL_CAMPAIGN_TYPES
+    disabled = sorted(set(ep.ALL_CAMPAIGN_TYPES) - set(types))
+    logger.info(f"Enabled campaign types: {len(types)} ({', '.join(types)})")
+    if disabled:
+        logger.debug(f"Not enabled for this advertiser: {', '.join(disabled)}")
+    return types
+
+
 async def _post(page, path: str, body: dict, token: str, referrer: str | None = None) -> dict | list | None:
     return await _fetch(page, path, token, method="POST", body=body, referrer=referrer)
 
 
 async def _get(page, path: str, token: str, referrer: str | None = None) -> dict | list | None:
     return await _fetch(page, path, token, method="GET", body=None, referrer=referrer)
+
+
+def _error_detail(result: dict) -> str:
+    """Blinkit returns error bodies as JSON — {"success": false, "message": ...} —
+    which the in-page fetch parses into `json`, not `snippet`. Read the message so
+    failures like "[...] are not enabled for given advertiser" reach the log instead
+    of being reported as an empty body. `snippet` is the non-JSON case (Cloudflare
+    challenge / redirect), `error` the network case."""
+    body = result.get("json")
+    if isinstance(body, dict) and body.get("message"):
+        return str(body["message"])
+    if body is not None:
+        return json.dumps(body)[:200]
+    return result.get("snippet") or result.get("error") or ""
 
 
 async def _fetch(
@@ -250,7 +303,7 @@ async def _fetch(
                     "Aborting — rerun later, or increase _THROTTLE_S/_RATE_LIMIT_BACKOFF_S."
                 )
 
-        detail = result.get("snippet") or result.get("error") or ""
+        detail = _error_detail(result)
         # Collapse repeats: one warning per (endpoint pattern, status); rest -> debug.
         endpoint = re.sub(r"/\d+$", "/{id}", path)
         signature = f"{endpoint}|{status}"
