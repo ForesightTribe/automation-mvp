@@ -1,22 +1,16 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import {
-	formatCompactCurrency,
-	formatNumber,
-	formatPercent,
-} from "../../../lib/format";
+import { formatCompactCurrency, formatNumber } from "../../../lib/format";
 
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
 	v === null || v === undefined ? "—" : `${v.toFixed(2)}x`;
 
-/** Avg rank like "3.4" (null -> em dash). */
-const formatRank = (v) => (v === null || v === undefined ? "—" : v.toFixed(1));
-
 /**
  * Headline KPI tiles for the Overview. Each metric is a { value, prev, delta_pct }
  * object from analytics/overview, aggregated across the selected marketplaces and
- * date range. Performance-plane metrics (revenue…RoAS) and market-plane metrics
- * (visibility, avg rank) sit side by side; avg rank is lower-is-better.
+ * date range. Two rows of three: the ad plane (spend, revenue, RoAS) above the
+ * sales plane (total, organic, units). Market-plane metrics (visibility, avg rank)
+ * live on the Competition page.
  */
 export const KpiStrip = ({ data, trends = [] }) => {
 	const m = (key) => data?.[key] ?? {};
@@ -74,41 +68,16 @@ export const KpiStrip = ({ data, trends = [] }) => {
 			series: series((t) => t.units),
 			sparkColor: "#d97706",
 		},
-		{
-			label: "Active SKUs",
-			value: formatNumber(m("distinct_skus").value),
-			delta: m("distinct_skus").delta_pct,
-		},
-		{
-			label: "Impressions",
-			value: formatNumber(m("impressions").value),
-			delta: m("impressions").delta_pct,
-			series: series((t) => t.impressions),
-			sparkColor: "#0284c7",
-		},
-		// Market plane (public) ───────────────────────────────────────
-		{
-			label: "Visibility",
-			value: formatPercent(m("visibility").value),
-			delta: m("visibility").delta_pct,
-		},
-		{
-			label: "Avg rank",
-			value: formatRank(m("avg_rank").value),
-			delta: m("avg_rank").delta_pct,
-			goodWhenDown: true,
-		},
 	];
 
 	return (
-		<div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+		<div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
 			{tiles.map((t) => (
 				<MetricTile
 					key={t.label}
 					label={t.label}
 					value={t.value}
 					delta={t.delta}
-					goodWhenDown={t.goodWhenDown}
 					series={t.series}
 					sparkColor={t.sparkColor}
 				/>

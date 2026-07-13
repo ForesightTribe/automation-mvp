@@ -3,17 +3,16 @@ import { KpiStrip } from "./components/KpiStrip";
 import { RevenueChart } from "./components/RevenueChart";
 import { TopSkus } from "./components/TopSkus";
 import { CityBars } from "./components/CityBars";
-import { CategoryDonut } from "./components/CategoryDonut";
+import { CategoryCityCard } from "./components/CategoryCityCard";
 import { CategoryTrendChart } from "./components/CategoryTrendChart";
-import { CityCategoryHeatmap } from "./components/CityCategoryHeatmap";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 
 /**
  * Sales & Analytics — "where is revenue coming from". Composition root: lays out
  * the sections and feeds each from the feature hooks. Sales-plane numbers with a
- * blended ad read up top, then the where/what cuts (over time, SKU, city,
- * category) and the deeper category-trend + city×category cross-tabs.
+ * blended ad read up top, then the where/what cuts (over time, SKU, city), the
+ * category × city cross-tab, and the category trend over time.
  */
 export const AnalyticsPage = () => {
 	const { data, isLoading, error, refetch } = useAnalyticsOverview();
@@ -46,13 +45,11 @@ export const AnalyticsPage = () => {
 				<TopSkus />
 				<CityBars />
 			</div>
-			<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-				<CategoryDonut />
-				<CategoryTrendChart />
-			</div>
+			{/* Category revenue with its city split — bar length + segments. */}
+			<CategoryCityCard />
 
-			{/* Deeper cut: city × category. */}
-			<CityCategoryHeatmap />
+			{/* How those categories move over time. */}
+			<CategoryTrendChart />
 		</div>
 	);
 };

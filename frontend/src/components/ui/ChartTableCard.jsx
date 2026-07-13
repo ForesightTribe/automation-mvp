@@ -16,7 +16,8 @@ const VIEW_OPTIONS = [
  * Chart/Table view state and the standard loading/error/empty handling, so each
  * section component stays thin: it passes a `renderChart` thunk plus the table
  * `columns`/`rows`. `extraActions` (e.g. a metric toggle) shows only in chart
- * view, since the table renders every column anyway.
+ * view, since the table renders every column anyway; `persistentActions` (e.g. a
+ * grouping toggle, which reshapes both views) shows in both.
  */
 export const ChartTableCard = ({
 	title,
@@ -31,11 +32,13 @@ export const ChartTableCard = ({
 	rowKey,
 	tableMaxHeight,
 	extraActions,
+	persistentActions,
 }) => {
 	const [view, setView] = useState("chart");
 
 	const actions = (
 		<div className="flex items-center gap-2">
+			{persistentActions}
 			{view === "chart" && extraActions}
 			<ViewToggle options={VIEW_OPTIONS} value={view} onChange={setView} />
 		</div>

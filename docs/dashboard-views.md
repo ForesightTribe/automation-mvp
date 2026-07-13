@@ -93,9 +93,8 @@ the chart truncates).
 | Revenue/units over time      | Main chart (metric toggle) | `blinkit_seller_sales`(date, mrp_value, qty_sold)               | `analytics/revenue` **[E]**                                            |
 | Top SKUs by revenue          | Ranked bars/table          | `blinkit_seller_sales`(item_id, item_name, mrp_value, qty_sold) | `analytics/top-skus` **[E]** (now PeriodDep + `marketplaces`)          |
 | Revenue by city              | Bar list / table           | `blinkit_seller_sales`(city_name, mrp_value)                    | `analytics/sales-by-city` **[E]** (now PeriodDep + `marketplaces`)     |
-| Revenue by category          | Donut / table              | `blinkit_seller_sales`(category, mrp_value)                     | `analytics/sales-by-category` **[E]** (now PeriodDep + `marketplaces`) |
+| Revenue by category & city   | Stacked bars / matrix table (group-by toggle) | `blinkit_seller_sales`(category, city_name, mrp_value)          | `analytics/sales-by-category` **[E]** (bar totals) + `/analytics/city-category` **[B]** (segments, top-`limit` cities; the uncovered remainder folds into "Other") |
 | **Category trend over time** | Stacked area / table       | `blinkit_seller_sales`(date, category, mrp_value)               | `/analytics/category-trend` **[B]**                                    |
-| **City × category matrix**   | Heatmap / table            | `blinkit_seller_sales`(city_name, category, mrp_value)          | `/analytics/city-category` **[B]** (top-`limit` cities)                |
 
 ## Products — "per-SKU deep dive" (richest composed view)
 

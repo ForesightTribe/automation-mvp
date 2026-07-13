@@ -332,52 +332,70 @@ export const categoryTrendOption = (dates, series) => ({
 	}),
 });
 
+/** The fold-in bucket for everything past the palette — always the neutral hue. */
+const OTHER_COLOR = "#94a3b8";
+
 /**
- * City × category heatmap. `cities` = y labels, `categories` = x labels,
- * `cells` = [[xIdx, yIdx, value]], `max` caps the colour scale.
+ * Horizontal stacked bars — bar length is a total, segments split it by a second
+ * dimension. `bars` = the category-axis labels (largest first); `series` =
+ * [{ name, data[] }] aligned to `bars`. The "Other" series (if present) always
+ * takes the neutral hue, so real entities keep a stable palette slot. Segments are
+ * separated by a 2px surface gap; the tooltip lists the split plus the bar total.
  */
-export const heatmapOption = (cities, categories, cells, max) => ({
-	tooltip: {
-		position: "top",
-		formatter: (p) =>
-			`${cities[p.value[1]]} · ${categories[p.value[0]]}<br/>${formatCompactCurrency(
-				p.value[2],
-			)}`,
-	},
-	grid: { left: 8, right: 16, top: 8, bottom: 60, containLabel: true },
-	xAxis: {
-		type: "category",
-		data: categories,
-		axisLabel: { interval: 0, rotate: 30 },
-		splitArea: { show: true },
-	},
-	yAxis: {
-		type: "category",
-		data: cities,
-		axisLabel: { width: 120, overflow: "truncate" },
-		splitArea: { show: true },
-	},
-	visualMap: {
-		min: 0,
-		max: max || 1,
-		calculable: true,
-		orient: "horizontal",
-		left: "center",
-		bottom: 8,
-		inRange: { color: ["#eef2ff", "#4f46e5"] },
-		formatter: (v) => formatCompactCurrency(v),
-	},
-	series: [
-		{
-			type: "heatmap",
-			data: cells,
-			label: { show: false },
-			emphasis: {
-				itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" },
+export const stackedBarOption = (bars, series, { otherName = "Other" } = {}) => {
+	// ECharts draws the category axis bottom-up, so reverse to put the largest on top.
+	const labels = [...bars].reverse();
+	let hue = 0;
+	return {
+		tooltip: {
+			trigger: "axis",
+			axisPointer: { type: "shadow" },
+			formatter: (points) => {
+				const total = points.reduce((s, p) => s + (p.value || 0), 0);
+				const lines = points
+					.filter((p) => p.value)
+					.sort((a, b) => b.value - a.value)
+					.map(
+						(p) =>
+							`${p.marker} ${p.seriesName}<span style="float:right;margin-left:16px">${formatCompactCurrency(p.value)}</span>`,
+					);
+				return [
+					`<strong>${points[0].axisValue}</strong>`,
+					...lines,
+					`Total<span style="float:right;margin-left:16px"><strong>${formatCompactCurrency(total)}</strong></span>`,
+				].join("<br/>");
 			},
 		},
-	],
-});
+		legend: { bottom: 0, type: "scroll" },
+		grid: { left: 8, right: 24, top: 8, bottom: 32, containLabel: true },
+		xAxis: {
+			type: "value",
+			axisLabel: { formatter: (v) => formatCompactCurrency(v) },
+		},
+		yAxis: {
+			type: "category",
+			data: labels,
+			axisLabel: { width: 140, overflow: "truncate" },
+		},
+		series: series.map((s) => {
+			const color =
+				s.name === otherName
+					? OTHER_COLOR
+					: SERIES_PALETTE[hue++ % SERIES_PALETTE.length];
+			return {
+				name: s.name,
+				type: "bar",
+				stack: "total",
+				data: [...s.data].reverse(),
+				itemStyle: {
+					color,
+					borderColor: "#ffffff",
+					borderWidth: 2,
+				},
+			};
+		}),
+	};
+};
 
 /**
  * Share-of-voice trend — one gradient area (single series, so no legend; the card
