@@ -116,7 +116,7 @@ an optional comma-separated `?marketplaces=`.
 | GET | `/sales-by-city` | Revenue/units grouped by city. |
 | GET | `/sales-by-category` | Revenue/units grouped by category. |
 | GET | `/category-trend` | Per-day revenue/units **per category** (`{date, category, revenue, units_sold}`) for the stacked-area trend; one row per (date, category) with sales. |
-| GET | `/city-category` | City × category revenue matrix (`{city, category, revenue, units_sold}`) for the heatmap, scoped to the top `?limit=` cities (default 15) by revenue. |
+| GET | `/city-category` | City × category revenue matrix (`{city, category, revenue, units_sold}`), scoped to the top `?limit=` cities (default 15) by revenue. Feeds the city segments of the "Revenue by category & city" stacked bars. |
 
 ### `overview` — `/api/clients/{id}/overview` *(private)*
 Composite endpoints for the Overview page that span multiple domains.
