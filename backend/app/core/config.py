@@ -47,6 +47,17 @@ class Settings(BaseSettings):
     # the per-type defaults in job_types.py; keyed by job_type.
     JOB_TIMEOUT_OVERRIDES: dict[str, int] = {}
 
+    # --- Scheduler (the producer half of the runner; see docs/jobs.md) ---
+    # Master switch: run consumer-only by setting this false (schedules stay in the
+    # DB but nothing fires). The runner claims/executes regardless.
+    SCHEDULER_ENABLED: bool = True
+    # How often the producer re-reads job_schedules and enqueues what's due. Also
+    # how quickly a schedule edit takes effect.
+    SCHEDULER_TICK_SECONDS: float = 60.0
+    # A fire more than this late (e.g. the runner was down) counts as MISSED — then
+    # the schedule's `catchup` flag decides run-once-on-recovery vs skip.
+    SCHEDULER_MISFIRE_GRACE_SECONDS: int = 300
+
     # Marketplaces with real, trusted data today. Everything else is shown but
     # gated as "not connected" in the UI (no real scrapers yet). Stopgap until
     # connectivity is derived from successful scrape_jobs per platform.

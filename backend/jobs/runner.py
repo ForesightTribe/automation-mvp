@@ -175,20 +175,8 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
           + (f" ({error})" if error else "") + f" · peak {peak} MB")
 
 
-async def run() -> None:
-    """The consumer loop. Runs until SIGTERM/SIGINT, then drains in-flight jobs."""
-    shutdown = asyncio.Event()
-    _install_signal_handlers(shutdown)
-
-    logger.info(f"runner {WORKER_ID} starting · lanes={settings.LANE_SLOTS}")
-
-    # Reaper: clean up jobs stranded by a previous crash before claiming anything.
-    async with AsyncSessionLocal() as db:
-        pid_alive = psutil.pid_exists if psutil else (lambda _p: False)
-        reaped = await job_queue.reap_stale(db, _HOSTNAME, pid_alive)
-    if reaped:
-        logger.warning(f"reaped {reaped} stale running job(s) from a previous run")
-
+async def _consume(shutdown: asyncio.Event) -> None:
+    """The consumer half: claim due jobs per lane and run them as subprocesses."""
     active: dict[Lane, set[asyncio.Task]] = {lane: set() for lane in Lane}
 
     while not shutdown.is_set():
@@ -211,6 +199,27 @@ async def run() -> None:
     if inflight:
         logger.info(f"shutdown: draining {len(inflight)} in-flight job(s)…")
         await asyncio.gather(*inflight, return_exceptions=True)
+
+
+async def run() -> None:
+    """Start the runner: producer (scheduler) + consumer, until SIGTERM/SIGINT."""
+    shutdown = asyncio.Event()
+    _install_signal_handlers(shutdown)
+
+    logger.info(f"runner {WORKER_ID} starting · lanes={settings.LANE_SLOTS}")
+
+    # Reaper: clean up jobs stranded by a previous crash before claiming anything.
+    async with AsyncSessionLocal() as db:
+        pid_alive = psutil.pid_exists if psutil else (lambda _p: False)
+        reaped = await job_queue.reap_stale(db, _HOSTNAME, pid_alive)
+    if reaped:
+        logger.warning(f"reaped {reaped} stale running job(s) from a previous run")
+
+    # Producer and consumer run concurrently. Imported here to keep the module's
+    # import graph flat (scheduler imports jobs.queue, not jobs.runner).
+    from jobs.scheduler import run_producer
+
+    await asyncio.gather(run_producer(shutdown), _consume(shutdown))
     logger.info("runner stopped")
 
 

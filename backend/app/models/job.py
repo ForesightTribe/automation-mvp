@@ -68,7 +68,7 @@ class Job(SQLModel, table=True):
     status: JobStatus = JobStatus.pending
     priority: int = 100                       # lower runs first, within a lane
     scheduled_for: datetime = Field(default_factory=now_ist)
-    schedule_id: int | None = None            # FK to job_schedules — added in Phase 2
+    schedule_id: int | None = Field(default=None, foreign_key="job_schedules.id")  # set when enqueued by the scheduler
 
     attempts: int = 0
     max_attempts: int = 1                     # scrapers already retry internally
@@ -105,6 +105,39 @@ class ScrapeJob(SQLModel, table=True):
     completed_at: datetime | None = None
     error: str | None = None
     records_written: int = 0
+    created_at: datetime = Field(default_factory=now_ist)
+
+
+class JobSchedule(SQLModel, table=True):
+    """A recurring job definition — "run this job_type on this cron".
+
+    The scheduler (the producer half of the runner) reads enabled rows, and when
+    `next_run_at` is due it ENQUEUES a Job (never runs anything itself). Editing a
+    row takes effect within one producer tick — schedules live here, not in a
+    crontab, so the future UI can manage them without SSH. See docs/jobs.md.
+    """
+
+    __tablename__ = "job_schedules"
+
+    __table_args__ = (
+        Index("idx_job_schedules_due", "enabled", "next_run_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    name: str
+    job_type: str
+    tenant_id: uuid.UUID | None = Field(default=None, foreign_key="tenants.id")
+    params: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
+
+    cron: str                                 # 5-field crontab, interpreted in Asia/Kolkata
+    priority: int = 100                       # passed through to the enqueued job
+    enabled: bool = True
+    # If the runner was down at a fire time: run the missed occurrence once on
+    # recovery (True), or skip it and wait for the next (False). See docs/jobs.md.
+    catchup: bool = False
+
+    last_enqueued_at: datetime | None = None
+    next_run_at: datetime | None = None       # precomputed from cron; drives the poller + the UI
     created_at: datetime = Field(default_factory=now_ist)
 
 

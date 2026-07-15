@@ -1,7 +1,7 @@
 from app.models.account import Account
 from app.models.brand import Brand, Marketplace
 from app.models.tenant import Tenant, User, TenantWatchlist
-from app.models.job import ScrapeJob, JobStatus, PlatformSession, Job, Lane
+from app.models.job import ScrapeJob, JobStatus, PlatformSession, Job, Lane, JobSchedule
 from app.models.search import (
     SearchSnapshot,
     SearchListing,
@@ -40,7 +40,7 @@ __all__ = [
     "Account",
     "Brand", "Marketplace",
     "Tenant", "User", "TenantWatchlist",
-    "ScrapeJob", "JobStatus", "PlatformSession", "Job", "Lane",
+    "ScrapeJob", "JobStatus", "PlatformSession", "Job", "Lane", "JobSchedule",
     "SearchSnapshot", "SearchListing", "MarketplaceLocation", "TenantLocation", "InventoryDepth",
     "BlinkitSellerSale", "BlinkitSellerSalesSummary", "BlinkitPO", "BlinkitPOSnapshot",
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",

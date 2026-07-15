@@ -6,7 +6,8 @@ optimizer, and (later) UI-triggered runs — goes through **one queue and one ru
 The problem this solves: the VM works, but every scrape is typed by hand over SSH,
 failures are invisible (no terminal, no log surface), and nothing records what ran.
 
-> Status: **design (Phase 0).** Nothing built yet.
+> Status: **Phases 1–2 shipped** (queue + runner + scheduler), tested end-to-end;
+> not yet deployed to the VM. Phase 3 (observability) and Phase 4 (API) remain.
 
 ---
 
@@ -575,10 +576,14 @@ that, once moved, the bid optimizer is never starved by a batch scrape.
 
 | Phase | Contents | Outcome |
 |---|---|---|
-| **1 — Queue + runner** | `jobs` table (with `lane`), migration, `cli runner`, per-lane claim + slots, subprocess dispatch, per-run log files, stale-lock reaper, systemd unit, `cli jobs run/list/logs` | No more typing scrapes over SSH; every run is recorded |
-| **2 — Scheduler** | `job_schedules` table, APScheduler producer, `cli schedules add/list/enable`, seed the daily + weekly scrapes | Scrapes run on time, unattended |
-| **3 — Observability** | absolute `LOG_DIR`, Ops Agent → Cloud Logging, `maint.log_cleanup`, `peak_rss_mb`, deadman + disk alerts | Failures are visible from a browser, and they page you |
+| **1 — Queue + runner** ✅ | `jobs` table (with `lane`), migration `a7f3c2e9d4b1`, `cli runner`, per-lane claim + slots, subprocess dispatch, per-run log files, stale-lock reaper, systemd unit, `cli jobs run/list/logs`. Lives in the top-level `jobs/` package. | No more typing scrapes over SSH; every run is recorded |
+| **2 — Scheduler** ✅ | `job_schedules` table, migration `b8e5d1a3f9c2`, cron producer (`jobs/scheduler.py`, runs alongside the consumer), catchup/misfire logic, `cli schedules add/list/enable/disable/remove`. Next-fire computed via APScheduler's CronTrigger against fixed-offset IST. | Scrapes run on time, unattended |
+| **3 — Observability** | absolute `LOG_DIR` (done in P1), Ops Agent → Cloud Logging, `maint.log_cleanup`, deadman + disk alerts | Failures are visible from a browser, and they page you |
 | **4 — API** | `GET /api/jobs`, `/jobs/{id}/log`, `POST /api/jobs`, `GET/POST/PATCH /api/job-schedules` | UI-ready |
+
+> Both migrations branch off the DB's line; head count stays 2 (the divergent
+> coworker branch `b7c3d8e2f1a9` is untouched). Apply on this line with an explicit
+> target, e.g. `alembic upgrade b8e5d1a3f9c2` — a bare `upgrade head` errors on 2 heads.
 
 Phase 4 is what makes Render safe: **the API only enqueues — it never executes.** All browser work
 stays on the VM, on an Indian IP.
