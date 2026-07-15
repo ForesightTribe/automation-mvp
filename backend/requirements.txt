@@ -17,3 +17,4 @@ sqlmodel>=0.0.21
 asyncpg>=0.29.0
 alembic>=1.13.0
 greenlet>=3.0.0
+psutil>=5.9.0

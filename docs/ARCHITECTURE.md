@@ -2,33 +2,53 @@
 
 ## Directory Layout
 
+There are **four top-level Python packages** under `backend/`, each a peer:
+`app/` (the API + shared application core), `cli/` (terminal entry point),
+`scraper/` (the browser work), `jobs/` (the job/runner/scheduler subsystem), plus
+`ad_campaigns/` (the coworker-owned campaign manager). `app/` is **not** API-only —
+it holds the shared core (`core/`, `models/`, `utils/`, `services/`) that every
+entry point imports, alongside the API layer (`routes/`, `router.py`, `schemas/`).
+
 ```
 automation-mvp/
 ├── backend/
-│   ├── app/
+│   ├── app/                           # API layer + SHARED application core (imported by cli/, scraper/, jobs/)
+│   │   ├── main.py                    # FastAPI app + lifespan (in-API APScheduler for the campaign manager)
+│   │   ├── router.py                  # aggregates all routers under /api
+│   │   ├── dependencies.py            # get_current_user, ClientDep, SessionDep, require_admin
 │   │   ├── core/
-│   │   │   ├── config.py              # Pydantic Settings — loads .env, all config lives here
-│   │   │   ├── database.py            # engine, AsyncSessionLocal, get_session()
+│   │   │   ├── config.py              # Pydantic Settings — loads .env; BASE_DIR, LOG_DIR, LANE_SLOTS, DB_POOL_SIZE
+│   │   │   ├── database.py            # engine (pool_size=DB_POOL_SIZE), AsyncSessionLocal, get_session()
 │   │   │   └── security.py            # JWT encode/decode, password hashing
-│   │   ├── models/                    # SQLModel table classes — source of truth for schema
-│   │   │   ├── brand.py               # Brand, Marketplace
+│   │   ├── models/                    # SQLModel table classes — source of truth for schema (Alembic autogens from here)
+│   │   │   ├── account.py             # Account
 │   │   │   ├── tenant.py              # Tenant, User, TenantWatchlist
-│   │   │   ├── job.py                 # ScrapeJob, PlatformSession
+│   │   │   ├── job.py                 # ScrapeJob, PlatformSession, Job (queue row), Lane
 │   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, SkuMap, MarketplaceLocation, TenantLocation, InventoryDepth
 │   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
-│   │   │   └── blinkit_marketing.py   # AdPerformanceSummary, AdCampaign, SponsoredSOV, BrandCollection, VisibilityPlan
-│   │   ├── api/
-│   │   │   ├── routes/                # FastAPI route handlers (thin — call scraper functions directly)
-│   │   │   └── deps.py                # get_current_user dependency
+│   │   │   ├── blinkit_marketing.py   # BlinkitAdCampaign(Daily/Detail), SponsoredSOV, BrandCollection, VisibilityPlan
+│   │   │   ├── campaign_manager.py    # BudgetSchedule*, BidOptimizer* (coworker)
+│   │   │   └── explorer.py            # ExplorerRun
+│   │   ├── routes/                    # FastAPI route handlers (thin — call services)
+│   │   ├── services/                  # SHARED business logic — called by BOTH routes and CLI commands
+│   │   │   ├── ads_service.py         # marketing + campaign-manager orchestration (coworker-adjacent)
+│   │   │   ├── job_service.py         # reads the scrape_jobs audit table (NOT the jobs queue — that's jobs/)
+│   │   │   ├── sku_map_service.py     # CLI-only service (imported by cli/commands/sku_map.py)
+│   │   │   └── … (analytics, auth, client, competition, inventory, overview, …)
+│   │   ├── schemas/                   # Pydantic request/response models for the API
 │   │   └── utils/
+│   │       ├── logger.py              # loguru setup (absolute LOG_DIR) — always import from here
+│   │       ├── time.py               # now_ist() — naive IST wall-clock, used everywhere
 │   │       ├── encryption.py          # encrypt() / decrypt() via Fernet
-│   │       ├── logger.py              # loguru setup — always import from here
-│   │       ├── exceptions.py          # AppException subclasses + FastAPI handlers
-│   │       └── response.py            # success_response() / error_response()
-│   ├── alembic/                       # DB migrations
-│   │   ├── env.py                     # async Alembic config (imports app.models for autogenerate)
-│   │   ├── script.py.mako             # migration template (includes `import sqlmodel`)
-│   │   └── versions/                  # generated migration files
+│   │       └── exceptions.py          # AppException subclasses + FastAPI handlers
+│   ├── jobs/                          # ← job/runner/scheduler subsystem (see docs/jobs.md)
+│   │   ├── queue.py                   # jobs-queue DB ops: enqueue, atomic claim (SKIP LOCKED), complete, reap_stale
+│   │   ├── types.py                   # job-type registry: type → lane, timeout, argv builder (the one extension point)
+│   │   ├── runner.py                  # the consumer daemon: per-lane claim, subprocess dispatch, per-run logs, RSS, reaper
+│   │   ├── scheduler.py               # cron producer that enqueues on a schedule (Phase 2 — not built yet)
+│   │   └── monitor.py                 # deadman/heartbeat checks (Phase 3 — not built yet)
+│   ├── ad_campaigns/                  # coworker-owned campaign manager (budget scheduler + bid optimizer) — OFF-LIMITS
+│   ├── alembic/                       # DB migrations (env.py imports app.models for autogenerate)
 │   ├── scraper/
 │   │   ├── platforms/
 │   │   │   ├── blinkit/
@@ -37,37 +57,44 @@ automation-mvp/
 │   │   │   │   ├── dashboard_data/
 │   │   │   │   │   ├── marketing/     # scraper.py, parser.py, storage.py
 │   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
-│   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py (search_*), sku_storage.py (sku_snapshots)
+│   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py, sku_storage.py
 │   │   │   ├── instamart/             # public_data/ — OUT OF SCOPE (Blinkit-only)
 │   │   │   └── zepto/                 # public_data/ — OUT OF SCOPE (Blinkit-only)
-│   │   ├── public/                    # orchestrator.py (keyword scrape) + targeted.py (own-SKU scrape) — watchlist + tenant_locations → per-tenant, worker pool
+│   │   ├── public/                    # orchestrator.py (keyword scrape) + targeted.py (own-SKU) + explorer/ — worker pool
 │   │   └── utils/
 │   │       ├── browser.py             # create_browser_context(), write_blocker(), PLAYWRIGHT_ARGS
-│   │       ├── cities.py              # LEGACY hardcoded cities — being retired (public scraper reads DB)
-│   │       ├── search_result.py       # classify_products(), slugify(), discount_pct(), brand_in()
 │   │       ├── session.py             # save_session(), load_session() → platform_sessions table
 │   │       ├── storage.py             # ensure_refs() — auto-upserts brands + marketplaces
-│   │       ├── jobs.py                # create_scrape_job(), complete_scrape_job(), fail_scrape_job()
+│   │       ├── jobs.py                # create_scrape_job()/complete/fail → the scrape_jobs AUDIT table (not the jobs/ queue)
 │   │       └── retry.py               # @retry decorator with exponential backoff
 │   └── cli/
 │       ├── main.py                    # typer app entry point: python -m cli
-│       └── commands/
-│           ├── tenant.py              # cli tenant create / list
-│           ├── auth.py                # cli auth blinkit / blinkit-seller / status
-│           ├── sync.py                # cli sync — config.xlsx → DB (locations/brands/coverage)
-│           ├── locations.py           # cli locations list
-│           ├── watchlist.py           # cli watchlist list
-│           └── scrape.py              # cli scrape blinkit / ... / public / public-run
-├── frontend/                          # React + Vite (skeleton)
+│       └── commands/                  # thin wrappers — account, auth, tenant, sync, locations, watchlist,
+│           │                          #   scrape, sku_map, explore, jobs, runner
+│           ├── scrape.py              # cli scrape blinkit / seller / scorecard / public-run / public-skus
+│           ├── jobs.py                # cli jobs types / run / list / logs   → imports jobs/
+│           └── runner.py             # cli runner start                     → imports jobs/
+├── frontend/                          # React + Vite
 └── docs/                              # This documentation
 ```
+
+> **Naming caution:** "job" and "scheduler" each name two unrelated things.
+> `scraper/utils/jobs.py` + `scrape_jobs` table = a scrape's *internal* progress
+> (drives `--resume`); `jobs/` + the `jobs` table = the *work-order queue*, which
+> links to the former via `ref_job_id`. And `ad_campaigns/scheduler.py` (coworker,
+> ad-budget timing) is unrelated to `jobs/scheduler.py` (infra cron). See docs/jobs.md.
 
 ---
 
 ## Data Flow
 
+Every scrape below is triggered one of two ways, both ending in the **same CLI
+command**: you run it by hand, **or** the `jobs/` runner claims a queued job and
+spawns that exact `python -m cli …` as a subprocess (scheduled or UI-triggered).
+The runner is a thin dispatch layer above this diagram — see docs/jobs.md.
+
 ```
-[CLI command]
+[CLI command  |  jobs/ runner → subprocess]
      │
      ├── public keyword scrape ─► scraper/public/orchestrator.py (watchlist + tenant_locations)
      │                          │  one Blinkit browser, N context-workers, lat/lon header-swap per store

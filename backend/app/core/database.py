@@ -12,11 +12,12 @@ engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    # Supabase's session-mode pooler caps at 15 clients. The concurrent public
-    # scraper uses one DB connection per worker (default 5) + the main session, so
-    # 10 fits a ~5–8 worker pool with headroom. Keep well under 15 so a second
-    # process (server/migration) still has room.
-    pool_size=10,
+    # Supabase's pooler caps total clients (currently 25). The concurrent public
+    # scraper uses ~one DB connection per worker (default 5) + the main session.
+    # Configurable because every PROCESS gets its own pool: the runner spawns each
+    # scrape as a subprocess, so API + runner + N subprocesses must sum under the
+    # cap. On the VM set DB_POOL_SIZE=3–5 in .env. See docs/jobs.md.
+    pool_size=settings.DB_POOL_SIZE,
     max_overflow=0,
 )
 
