@@ -16,6 +16,9 @@
 | [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
 | [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
+| [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
+| [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
+| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth over SSH, cost/capacity model, and the VM gotchas |
 
 ---
 
@@ -42,7 +45,7 @@ rather than assume.
 
 ## Stack (quick ref)
 
-- **Runtime**: Python 3.12+, fully async/await
+- **Runtime**: Python **3.11** (3.11.9), fully async/await — local venv, Render and the scraper VM are all pinned to 3.11; keep them aligned
 - **API**: FastAPI + Uvicorn
 - **Database**: PostgreSQL via Supabase — SQLModel, asyncpg, Alembic
 - **Browser**: Playwright (Chromium)
@@ -62,6 +65,28 @@ SECRET_KEY=...                  # JWT secret
 ```
 
 `database.py` normalises the URL to `postgresql+asyncpg://` — always write `postgresql://` in `.env`.
+
+## Deployment (quick ref — see [docs/vm.md](docs/vm.md))
+
+Frontend → **Vercel**. API → **Render**. **Scrapers → a GCP VM in Mumbai**, because
+Blinkit is India-geo and a US/EU datacenter IP is a block risk. Validated
+2026-07-13: headless Chromium + Cloudflare + DB write all work from that box.
+
+The things that bite:
+
+- **The VM runs `main`.** Nothing on `dev` exists on the box.
+- **Sessions are not files** — they live encrypted in Supabase, so there is nothing
+  to copy to the VM. Same `DATABASE_URL` + `ENCRYPTION_KEY` = it just works. A wrong
+  `ENCRYPTION_KEY` fails quietly.
+- **Re-auth over SSH** with `cli auth blinkit [--headless]`. The human only ever
+  types into the *terminal* (magic link / OTP), never the browser — so headless is
+  viable. But a headless login can "succeed" with **0 Firebase IndexedDB items** and
+  still save a session that dies in an hour: check the `IndexedDB: N` log line.
+- **Anything scheduled needs the full interpreter path** and an explicit output
+  redirect — cron/systemd never run `activate` and have no terminal, so a bare
+  `python` fails with `ModuleNotFoundError` and unredirected output vanishes.
+- **`playwright install-deps` needs sudo; `playwright install chromium` must not** —
+  as root the browser lands in root's cache and the scraper can't find it.
 
 ## Database Patterns
 

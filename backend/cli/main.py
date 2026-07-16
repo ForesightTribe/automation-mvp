@@ -1,7 +1,7 @@
 import sys
 import asyncio
 import typer
-from cli.commands import account, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore
+from cli.commands import account, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore, jobs, runner, schedules, maint, monitor
 
 # Windows requires ProactorEventLoop for Playwright subprocess spawning
 if sys.platform == "win32":
@@ -29,6 +29,11 @@ app.add_typer(tenant.app, name="tenant")
 app.add_typer(watchlist.app, name="watchlist")
 app.add_typer(locations.app, name="locations")
 app.add_typer(sku_map.app, name="sku-map")
+app.add_typer(jobs.app, name="jobs")
+app.add_typer(runner.app, name="runner")
+app.add_typer(schedules.app, name="schedules")
+app.add_typer(maint.app, name="maint")
+app.add_typer(monitor.app, name="monitor")
 app.command("sync")(sync.run_sync)
 app.command("explore")(explore.explore)
 

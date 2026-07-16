@@ -1,0 +1,38 @@
+# Foresight job runner — systemd unit for the GCP scraper VM.
+#
+# Install (on the VM):
+#   sudo cp deploy/foresight-runner.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now foresight-runner
+#
+# Inspect:
+#   systemctl status foresight-runner
+#   journalctl -u foresight-runner -f
+#
+# Every line below is load-bearing — see docs/jobs.md.
+
+[Unit]
+Description=Foresight job runner
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=tech
+# systemd would otherwise start in / — the app writes logs relative to this and
+# spawns subprocesses here.
+WorkingDirectory=/home/tech/automation-mvp/backend
+EnvironmentFile=/home/tech/automation-mvp/backend/.env
+# Without this, Python buffers the subprocess's stdout and log files stay empty
+# until a job ends. Keep pool small — every scrape subprocess opens its own pool.
+Environment=PYTHONUNBUFFERED=1
+Environment=DB_POOL_SIZE=4
+# Full venv interpreter path — systemd never runs `activate`, so a bare `python`
+# would be the system one and fail with ModuleNotFoundError.
+ExecStart=/home/tech/automation-mvp/backend/venv/bin/python -m cli runner start
+Restart=always
+RestartSec=10
+# On stop, give in-flight jobs time to wind down before SIGKILL.
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

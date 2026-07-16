@@ -1,0 +1,50 @@
+# Google Cloud Ops Agent — logging config for the Foresight runner.
+#
+# The Ops Agent is already installed on the VM (it also reports RAM/CPU/disk). This
+# adds LOG shipping: it tails the runner's log files and sends each line to Cloud
+# Logging, where you can search/filter/alert from a browser — no SSH. Free under the
+# 50 GiB/mo tier.
+#
+# INSTALL (on the VM) — merge these blocks into the agent's config, then restart:
+#   sudo nano /etc/google-cloud-ops-agent/config.yaml     # paste under `logging:`
+#   sudo systemctl restart google-cloud-ops-agent
+#   # verify in the console: Logging → Logs Explorer → log_id("foresight_runner")
+#
+# runner.log is JSON (loguru serialize=True), so parse_json promotes job_id /
+# job_type / tenant / level into real fields you can filter on. The per-run job logs
+# are plain text (human-readable scraper output) and are shipped as-is.
+
+logging:
+  receivers:
+    foresight_runner:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/runner.log
+    foresight_jobs:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/**/*.log
+      record_log_file_path: true
+  processors:
+    runner_json:
+      type: parse_json
+      # loguru serialize=True nests the message under "record"; lift the useful bits.
+      field: message
+  service:
+    pipelines:
+      foresight_runner_pipeline:
+        receivers: [foresight_runner]
+        processors: [runner_json]
+      foresight_jobs_pipeline:
+        receivers: [foresight_jobs]
+
+# --- Recommended alert policies (create in the GCP console → Monitoring → Alerting) ---
+#
+# 1. Deadman / failure: log-based alert on
+#      log_id("foresight_runner") AND severity>=ERROR
+#    → catches "HEARTBEAT: … didn't run" and any runner-level error. Email channel.
+#
+# 2. Disk > 80%: metric alert on agent.googleapis.com/disk/percent_used
+#    (the monitor.heartbeat job also self-reports this at ERROR as a backstop).
+#
+# 3. VM down: uptime/metric-absence alert on the instance.
