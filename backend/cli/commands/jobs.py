@@ -82,7 +82,9 @@ async def _run_job(job_type, tenant_id, params, priority) -> None:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1)
     console.print(f"[green]Queued[/green] {job.job_type} [{job.lane.value}]  id [bold]{job.id}[/bold]")
-    console.print(f"[dim]The runner will pick it up. Watch: cli jobs logs {str(job.id)[:8]}[/dim]")
+    console.print(
+        f"[dim]The runner will pick it up. Watch: python -m cli jobs logs {str(job.id)[:8]} -f[/dim]"
+    )
 
 
 @app.command("list")

@@ -83,8 +83,14 @@ def _kill_tree(pid: int) -> None:
 
 
 def _log_path_for(job: Job) -> Path:
+    """logs/jobs/<date>/<lane>/<job_type>__<job_id>.log
+
+    The lane is in the PATH so log shipping can split by it: the Ops Agent gets one
+    receiver per lane, which surfaces in Logs Explorer as a separate stream — a 5h
+    public scrape's thousands of lines never drown a 30s dashboard scrape.
+    """
     day = datetime.now().strftime("%Y-%m-%d")
-    d = Path(settings.LOG_DIR) / "jobs" / day
+    d = Path(settings.LOG_DIR) / "jobs" / day / job.lane.value
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{job.job_type}__{job.id}.log"
 
