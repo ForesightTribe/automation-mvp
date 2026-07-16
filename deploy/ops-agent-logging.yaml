@@ -1,18 +1,28 @@
 # Google Cloud Ops Agent — logging config for the Foresight runner.
 #
-# The Ops Agent is already installed on the VM (it also reports RAM/CPU/disk). This
-# adds LOG shipping: it tails the runner's log files and sends each line to Cloud
+# The Ops Agent is already installed on the VM (it reports CPU/RAM/disk). This adds
+# LOG shipping: it tails the runner's log files and sends each new line to Cloud
 # Logging, where you can search/filter/alert from a browser — no SSH. Free under the
 # 50 GiB/mo tier.
 #
-# INSTALL (on the VM) — merge these blocks into the agent's config, then restart:
-#   sudo nano /etc/google-cloud-ops-agent/config.yaml     # paste under `logging:`
-#   sudo systemctl restart google-cloud-ops-agent
-#   # verify in the console: Logging → Logs Explorer → log_id("foresight_runner")
+# INSTALL (on the VM) — MERGE these blocks into the agent's config (the file already
+# has a `metrics:` section — do not overwrite it), then restart:
+#   sudo nano /etc/google-cloud-ops-agent/config.yaml
+#   sudo service google-cloud-ops-agent restart
+#   # verify:  GCP Console → Logging → Logs Explorer → log_id("foresight_runner")
 #
-# runner.log is JSON (loguru serialize=True), so parse_json promotes job_id /
-# job_type / tenant / level into real fields you can filter on. The per-run job logs
-# are plain text (human-readable scraper output) and are shipped as-is.
+# STREAMS, deliberately separated:
+#   foresight_runner       — JSON (loguru serialize=True) → parsed into queryable
+#                            FIELDS. The runner's narration: claimed/spawned/reaped.
+#   foresight_<lane>       — plain text, the SCRAPERS' own console output, split one
+#                            stream per lane. Shipped as-is because it's meant to be
+#                            READ, not queried. Split by lane so a 5-hour public
+#                            scrape's thousands of lines never drown a 30-second
+#                            dashboard scrape — each appears as its own log_id in the
+#                            Logs Explorer dropdown.
+#
+# Path shape (set by jobs/runner.py::_log_path_for):
+#   logs/jobs/<date>/<lane>/<job_type>__<job_id>.log
 
 logging:
   receivers:
@@ -20,31 +30,96 @@ logging:
       type: files
       include_paths:
         - /home/tech/automation-mvp/backend/logs/runner.log
-    foresight_jobs:
+
+    # One receiver per lane. `record_log_file_path` stamps each line with its source
+    # file — the filename carries job_type + job_id, which is how you drill into a
+    # single run.
+    foresight_batch:
       type: files
       include_paths:
-        - /home/tech/automation-mvp/backend/logs/jobs/**/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/batch/*.log
       record_log_file_path: true
+
+    foresight_dashboard:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/dashboard/*.log
+      record_log_file_path: true
+
+    foresight_interactive:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/interactive/*.log
+      record_log_file_path: true
+
+    foresight_live:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/live/*.log
+      record_log_file_path: true
+
   processors:
-    runner_json:
+    # runner.log lines are JSON objects → promote them to structured fields.
+    parse_runner:
       type: parse_json
-      # loguru serialize=True nests the message under "record"; lift the useful bits.
-      field: message
+
+    # loguru writes the level at record.level.name ("INFO"/"WARNING"/"ERROR"), but
+    # Cloud Logging alerts key off the LogEntry `severity` field. Without this the
+    # runner's ERRORs are just text and `severity>=ERROR` matches nothing.
+    set_runner_severity:
+      type: modify_fields
+      fields:
+        severity:
+          copy_from: jsonPayload.record.level.name
+
   service:
     pipelines:
       foresight_runner_pipeline:
         receivers: [foresight_runner]
-        processors: [runner_json]
-      foresight_jobs_pipeline:
-        receivers: [foresight_jobs]
+        processors: [parse_runner, set_runner_severity]
 
-# --- Recommended alert policies (create in the GCP console → Monitoring → Alerting) ---
+      # No processors: these are raw scraper output, shipped verbatim.
+      foresight_jobs_pipeline:
+        receivers:
+          - foresight_batch
+          - foresight_dashboard
+          - foresight_interactive
+          - foresight_live
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QUERIES (Logs Explorer)
 #
-# 1. Deadman / failure: log-based alert on
+#   Everything the runner did:
+#     log_id("foresight_runner")
+#
+#   Only problems (failures + HEARTBEAT alerts):
+#     log_id("foresight_runner") AND severity>=ERROR
+#
+#   Fallback if severity mapping isn't working:
+#     log_id("foresight_runner") AND jsonPayload.record.level.name="ERROR"
+#
+#   Scraper output, ONE STREAM PER LANE (pick from the Log name dropdown):
+#     log_id("foresight_batch")        ← public scrapes + log cleanup (the noisy ones)
+#     log_id("foresight_dashboard")    ← marketing / seller / scorecard
+#     log_id("foresight_interactive")  ← heartbeat
+#     log_id("foresight_live")         ← bid optimizer (later)
+#
+#   One specific job's own output (paste any part of the job id or type):
+#     labels."agent.googleapis.com/log_file_path"=~"04de2709"
+#
+#   Every marketing scrape ever:
+#     labels."agent.googleapis.com/log_file_path"=~"blinkit_marketing"
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ALERTS (Monitoring → Alerting → Create policy → Log-based)
+#
+# 1. THE ONE THAT MATTERS — any runner error, incl. "HEARTBEAT: … didn't run":
 #      log_id("foresight_runner") AND severity>=ERROR
-#    → catches "HEARTBEAT: … didn't run" and any runner-level error. Email channel.
+#    → notification channel: your email.
 #
-# 2. Disk > 80%: metric alert on agent.googleapis.com/disk/percent_used
-#    (the monitor.heartbeat job also self-reports this at ERROR as a backstop).
+# 2. Who watches the watchman — the heartbeat cannot report its own death, so alert
+#    on ABSENCE: a metric-absence policy on the VM's uptime, or a log-absence policy
+#    on log_id("foresight_runner") over ~2h.
 #
-# 3. VM down: uptime/metric-absence alert on the instance.
+# 3. Disk > 80%: metric alert on agent.googleapis.com/disk/percent_used.
+#    (monitor.heartbeat also self-reports this at ERROR as a backstop.)

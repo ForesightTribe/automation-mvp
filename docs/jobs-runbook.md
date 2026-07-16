@@ -22,9 +22,16 @@ and all run identically.
 
 ## CLI reference
 
+> **`cli` below is shorthand for `python -m cli`** — there is no `cli` binary on PATH.
+> Either type it in full, or make the shorthand real (recommended on the VM):
+>
+> ```bash
+> echo "alias cli='python -m cli'" >> ~/.bashrc && source ~/.bashrc
+> ```
+>
 > All examples use the real client **Dobra** = `a870fd8d-7373-47ec-ad69-5dd08ce35542`.
 > Get yours with `cli tenant list`. Run everything from `automation-mvp/backend`
-> with the venv active.
+> with the venv active (`source venv/bin/activate`).
 
 ### The one idea that makes it click
 

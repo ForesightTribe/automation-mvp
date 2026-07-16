@@ -32,9 +32,13 @@ def prune_logs(days: int = 14, dry_run: bool = False) -> tuple[int, int]:
                 f.unlink(missing_ok=True)
 
     if not dry_run:
-        # Remove now-empty date directories.
-        for d in root.iterdir():
-            if d.is_dir() and not any(d.iterdir()):
+        # Remove emptied directories DEEPEST-FIRST (date/<lane>/ before date/), so a
+        # date folder whose only contents were lane folders is also cleared. rmdir
+        # only succeeds on an empty dir, so this can't delete anything still in use.
+        for d in sorted((p for p in root.rglob("*") if p.is_dir()), reverse=True):
+            try:
                 d.rmdir()
+            except OSError:
+                pass  # not empty — leave it
 
     return files, freed
