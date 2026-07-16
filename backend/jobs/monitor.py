@@ -62,14 +62,25 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
                         else Job.tenant_id == s.tenant_id)
             last = (await db.execute(q)).scalar()
 
+            # A schedule cannot be overdue before it existed. Measure from its last
+            # success, or from creation if it has never succeeded — otherwise a
+            # brand-new weekly schedule is flagged instantly, days before its first
+            # run is even due. (Observed on the VM, 2026-07-16.)
+            age = now - (last or s.created_at)
+            if age <= window:
+                continue
+
+            hrs = age.total_seconds() / 3600
+            win_hrs = window.total_seconds() / 3600
             if last is None:
-                issues.append(f"'{s.name}' ({s.job_type}): no successful run ever")
-            elif (now - last) > window:
-                age = now - last
+                issues.append(
+                    f"'{s.name}' ({s.job_type}): never succeeded since it was created "
+                    f"{hrs:.0f}h ago (expected every {win_hrs:.0f}h)"
+                )
+            else:
                 issues.append(
                     f"'{s.name}' ({s.job_type}): last success {last:%Y-%m-%d %H:%M} "
-                    f"({age.total_seconds() / 3600:.0f}h ago) exceeds window "
-                    f"{window.total_seconds() / 3600:.0f}h"
+                    f"({hrs:.0f}h ago) exceeds window {win_hrs:.0f}h"
                 )
     return issues
 
