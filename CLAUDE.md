@@ -16,7 +16,8 @@
 | [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
 | [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
-| [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + worker, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
+| [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
+| [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
 | [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth over SSH, cost/capacity model, and the VM gotchas |
 
 ---

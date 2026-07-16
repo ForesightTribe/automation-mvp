@@ -6,8 +6,9 @@ optimizer, and (later) UI-triggered runs — goes through **one queue and one ru
 The problem this solves: the VM works, but every scrape is typed by hand over SSH,
 failures are invisible (no terminal, no log surface), and nothing records what ran.
 
-> Status: **Phases 1–2 shipped** (queue + runner + scheduler), tested end-to-end;
-> not yet deployed to the VM. Phase 3 (observability) and Phase 4 (API) remain.
+> Status: **Phases 1–3 shipped** (queue + runner + scheduler + observability), tested
+> end-to-end; Cloud Logging config written but only verifiable on the VM. Not yet
+> deployed. Phase 4 (API) remains.
 
 ---
 
@@ -578,8 +579,14 @@ that, once moved, the bid optimizer is never starved by a batch scrape.
 |---|---|---|
 | **1 — Queue + runner** ✅ | `jobs` table (with `lane`), migration `a7f3c2e9d4b1`, `cli runner`, per-lane claim + slots, subprocess dispatch, per-run log files, stale-lock reaper, systemd unit, `cli jobs run/list/logs`. Lives in the top-level `jobs/` package. | No more typing scrapes over SSH; every run is recorded |
 | **2 — Scheduler** ✅ | `job_schedules` table, migration `b8e5d1a3f9c2`, cron producer (`jobs/scheduler.py`, runs alongside the consumer), catchup/misfire logic, `cli schedules add/list/enable/disable/remove`. Next-fire computed via APScheduler's CronTrigger against fixed-offset IST. | Scrapes run on time, unattended |
-| **3 — Observability** | absolute `LOG_DIR` (done in P1), Ops Agent → Cloud Logging, `maint.log_cleanup`, deadman + disk alerts | Failures are visible from a browser, and they page you |
+| **3 — Observability** ✅ | absolute `LOG_DIR` (P1), structured JSON `runner.log` (`cli runner start` sink), `maint.log_cleanup` + `cli maint log-cleanup`, `monitor.heartbeat` (deadman + disk) + `cli monitor heartbeat`, `cli jobs logs --follow`, Ops Agent config (`deploy/ops-agent-logging.yaml`) + alert-policy notes | Failures are visible from a browser, and they page you |
 | **4 — API** | `GET /api/jobs`, `/jobs/{id}/log`, `POST /api/jobs`, `GET/POST/PATCH /api/job-schedules` | UI-ready |
+
+The deadman window is derived from each schedule's own cron period (× 1.1), so a
+daily alerts at ~26h and a weekly at ~8d without any per-schedule config. Heartbeat
+runs in the **interactive** lane so it fires promptly, never queued behind a scrape.
+Cloud Logging integration (`runner.log` JSON → filterable fields; per-run logs as
+plain text) is real but only testable on the VM — see `deploy/ops-agent-logging.yaml`.
 
 > Both migrations branch off the DB's line; head count stays 2 (the divergent
 > coworker branch `b7c3d8e2f1a9` is untouched). Apply on this line with an explicit

@@ -44,9 +44,10 @@ automation-mvp/
 │   ├── jobs/                          # ← job/runner/scheduler subsystem (see docs/jobs.md)
 │   │   ├── queue.py                   # jobs-queue DB ops: enqueue, atomic claim (SKIP LOCKED), complete, reap_stale
 │   │   ├── types.py                   # job-type registry: type → lane, timeout, argv builder (the one extension point)
-│   │   ├── runner.py                  # the consumer daemon: per-lane claim, subprocess dispatch, per-run logs, RSS, reaper
-│   │   ├── scheduler.py               # cron producer that enqueues on a schedule (Phase 2 — not built yet)
-│   │   └── monitor.py                 # deadman/heartbeat checks (Phase 3 — not built yet)
+│   │   ├── runner.py                  # runner daemon: producer + consumer (per-lane claim, subprocess dispatch, per-run logs, RSS, reaper)
+│   │   ├── scheduler.py               # cron producer: reads job_schedules, enqueues when due (catchup/misfire logic)
+│   │   ├── monitor.py                 # deadman/heartbeat: last-success-per-schedule + disk check → ERROR logs
+│   │   └── maintenance.py             # prune_logs() — the maint.log_cleanup job
 │   ├── ad_campaigns/                  # coworker-owned campaign manager (budget scheduler + bid optimizer) — OFF-LIMITS
 │   ├── alembic/                       # DB migrations (env.py imports app.models for autogenerate)
 │   ├── scraper/

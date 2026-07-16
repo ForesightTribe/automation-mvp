@@ -8,7 +8,7 @@ from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from app.models.job import Job, JobStatus
 from jobs import queue as job_queue
-from jobs.types import JOB_TYPES
+from jobs.types import JOB_TYPES, parse_params, spec_for
 
 app = typer.Typer(help="Queue and inspect runner jobs (see docs/jobs.md).")
 console = Console()
@@ -23,34 +23,46 @@ _STATUS_COLOR = {
 
 @app.command("types")
 def list_types():
-    """List the known job types, their lane, and timeout."""
+    """List the known job types, their lane, timeout, and accepted params."""
     table = Table(show_header=True, header_style="bold")
     table.add_column("job_type")
     table.add_column("lane")
     table.add_column("timeout")
+    table.add_column("tenant")
+    table.add_column("params (key=value)")
     for name, spec in sorted(JOB_TYPES.items()):
-        table.add_row(name, spec.lane.value, f"{spec.timeout_s // 60} min")
+        table.add_row(
+            name,
+            spec.lane.value,
+            f"{spec.timeout_s // 60} min",
+            "required" if spec.needs_tenant else "—",
+            ", ".join(spec.param_keys) or "—",
+        )
     console.print(table)
 
 
 @app.command("run")
 def run_job(
     job_type: str = typer.Argument(..., help="e.g. scrape.public_keyword (see `jobs types`)"),
-    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID"),
-    param: list[str] = typer.Option(
-        None, "--param", "-p", help="Job param as key=value (repeatable), e.g. -p city=bengaluru"
+    params: list[str] = typer.Argument(
+        None,
+        help='key=value pairs, e.g. city=bengaluru workers=5. Quote values with spaces: "city=delhi ncr"',
     ),
+    tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID"),
     priority: int = typer.Option(100, "--priority", help="Lower runs first, within a lane"),
 ):
-    """Enqueue a job. The runner picks it up — it does not run inline here."""
-    params = {}
-    for kv in param or []:
-        if "=" not in kv:
-            console.print(f"[red]--param must be key=value, got {kv!r}[/red]")
-            raise typer.Exit(1)
-        k, v = kv.split("=", 1)
-        params[k] = v
-    asyncio.run(_run_job(job_type, tenant_id, params, priority))
+    """Enqueue a job. The runner picks it up — it does not run inline here.
+
+    Params are trailing key=value pairs and map 1:1 onto the underlying scrape flags:
+      cli jobs run scrape.public_keyword -t <uuid> city=bengaluru workers=5
+    """
+    try:
+        spec = spec_for(job_type)
+        parsed = parse_params(params, spec)
+    except ValueError as e:
+        console.print(f"[red]{e}[/red]")
+        raise typer.Exit(1)
+    asyncio.run(_run_job(job_type, tenant_id, parsed, priority))
 
 
 async def _run_job(job_type, tenant_id, params, priority) -> None:
@@ -110,12 +122,13 @@ async def _list_jobs(limit) -> None:
 def show_logs(
     job_id: str = typer.Argument(..., help="Full or 8-char job id prefix"),
     tail: int = typer.Option(0, "--tail", "-n", help="Only the last N lines (0 = all)"),
+    follow: bool = typer.Option(False, "--follow", "-f", help="Live-tail the file (Ctrl+C to stop)"),
 ):
-    """Print a job's log file."""
-    asyncio.run(_show_logs(job_id, tail))
+    """Print (or --follow) a job's log file."""
+    asyncio.run(_show_logs(job_id, tail, follow))
 
 
-async def _show_logs(job_id, tail) -> None:
+async def _show_logs(job_id, tail, follow) -> None:
     async with AsyncSessionLocal() as db:
         rows = await job_queue.recent(db, limit=200)
     match = next((j for j in rows if str(j.id) == job_id or str(j.id).startswith(job_id)), None)
@@ -128,9 +141,21 @@ async def _show_logs(job_id, tail) -> None:
     try:
         with open(match.log_path, encoding="utf-8") as f:
             lines = f.readlines()
+            if tail > 0:
+                lines = lines[-tail:]
+            print("".join(lines), end="", flush=True)
+            if not follow:
+                return
+            # Live tail: keep reading appended lines until Ctrl+C.
+            try:
+                while True:
+                    line = f.readline()
+                    if line:
+                        print(line, end="", flush=True)
+                    else:
+                        await asyncio.sleep(0.4)
+            except KeyboardInterrupt:
+                return
     except FileNotFoundError:
         console.print(f"[red]Log file missing: {match.log_path}[/red]")
         raise typer.Exit(1)
-    if tail > 0:
-        lines = lines[-tail:]
-    console.print("".join(lines), end="")

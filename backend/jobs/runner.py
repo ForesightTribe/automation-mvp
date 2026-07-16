@@ -15,6 +15,7 @@ is Phase 2.
 
 import asyncio
 import os
+import shlex
 import socket
 import sys
 import time
@@ -132,7 +133,10 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     spec = spec_for(job.job_type)
     timeout_s = settings.JOB_TIMEOUT_OVERRIDES.get(job.job_type, spec.timeout_s)
     args = spec.build_args(job.tenant_id, job.params or {})
-    argv = " ".join([sys.executable, "-m", "cli", *args])
+    # shlex.join so a value containing spaces (e.g. --city "delhi ncr") is recorded
+    # unambiguously and stays copy-pasteable. The subprocess itself gets an argv
+    # LIST, so spaces are safe there regardless — this is for the record/display.
+    argv = shlex.join([sys.executable, "-m", "cli", *args])
     log_path = _log_path_for(job)
 
     async with AsyncSessionLocal() as db:
