@@ -25,6 +25,15 @@ except ImportError:
     psutil = None
 
 
+# The heartbeat must NOT monitor itself. Its check gates on its own past success, so
+# a single failure could never recover: a failing heartbeat records no success, which
+# is precisely the condition it reports — a self-perpetuating failure loop. (Observed
+# for real on the VM, 2026-07-16.) "Who watches the watchman" is answered OUTSIDE this
+# system, by a Cloud Monitoring uptime / log-absence alert — see
+# deploy/ops-agent-logging.yaml.
+_SELF_MONITORING_TYPES = {"monitor.heartbeat"}
+
+
 def _cron_period(cron: str, now: datetime) -> timedelta:
     """The gap between two consecutive fires — the schedule's expected cadence."""
     n1 = next_fire_after(cron, now)
@@ -43,6 +52,8 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
         ).scalars().all()
 
         for s in scheds:
+            if s.job_type in _SELF_MONITORING_TYPES:
+                continue
             window = _cron_period(s.cron, now) * 1.1
             q = select(func.max(Job.completed_at)).where(
                 Job.job_type == s.job_type, Job.status == JobStatus.success
