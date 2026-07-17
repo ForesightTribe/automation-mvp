@@ -1,8 +1,9 @@
 # Scraper VM (GCP, Mumbai)
 
-The box the scrapers run on. Scheduling, the jobs queue, and the worker daemon are
-a separate concern — see [jobs.md](jobs.md). This document is the infrastructure:
-how the VM is built, how to operate it, what it costs, and the traps.
+The box the scrapers run on. Scheduling, the jobs queue, and the **runner** daemon are
+a separate concern — design in [jobs.md](jobs.md), operations in
+[jobs-runbook.md](jobs-runbook.md). This document is the infrastructure: how the VM is
+built, how to operate it, what it costs, and the traps.
 
 ---
 
@@ -27,11 +28,23 @@ should be stopped when idle), an API is not.
 headless Chromium launched on a machine with no display, **Cloudflare did not
 block the datacenter IP**, and the DB write landed.
 
+**Unattended since 2026-07-17.** The box now runs the **job runner** as a systemd
+service: scheduled scrapes fire on their own, crash recovery is proven, and logs ship
+to Cloud Logging. Operate it via [jobs-runbook.md](jobs-runbook.md); design in
+[jobs.md](jobs.md). Measured on this hardware: a dashboard scrape peaks at **~920–956
+MB**, the runner daemon idles at **76 MB**.
+
 Caveat: the IP geolocates to Mumbai/IN, but its ASN is visibly **Google LLC**
 (`*.bc.googleusercontent.com`). That validates the **authed** scrapers (marketing,
 seller, explorer — logged in, low suspicion). The **public** scrapers fight
-Cloudflare unauthenticated and may still be flagged on ASN alone; proxies remain a
+Cloudflare unauthenticated and **have still never run from this box** — they may be
+flagged on ASN alone. Test one by hand before scheduling them; proxies remain a
 public-scraper-only concern.
+
+⚠️ **The external IP is ephemeral** — stopping the VM releases it and you get a new
+one on start. Harmless (still Mumbai/Google ASN, nothing connects inbound, sessions
+are cookie-based), but don't be surprised. And a **stopped VM does no work**: a
+schedule whose time passes while it's off is skipped unless it has `--catchup`.
 
 ## The box
 
@@ -190,16 +203,21 @@ Everything below cost real time to discover.
   at scrape time.
 - **Ubuntu 24.04 ships Python 3.12, but we run 3.11** (deadsnakes PPA) to match the
   local venv and Render. Keep the three environments on one interpreter.
-- **Cron has no terminal and never runs `activate`.** Anything scheduled must use the
-  **full interpreter path** (`/home/tech/automation-mvp/backend/venv/bin/python`) and
-  **redirect its output** (`>> logs/x.log 2>&1`) or failures are completely
-  invisible. This is why scheduling is a worker daemon, not a crontab — see
-  [jobs.md](jobs.md).
-- **`app/utils/logger.py` writes to a *relative* `logs/app.log`.** Under systemd the
-  CWD isn't `backend/`, so logs vanish. Needs an absolute log dir.
-- **Supabase pooler has a ~15-connection cap.** Each scraper subprocess opens its own
-  engine (`pool_size=10`). Two concurrent jobs will exhaust it. See
-  [jobs.md](jobs.md) and the DB ops notes.
-- **A full disk causes bizarre, unrelated-looking failures.** Logs grow forever;
-  `df -h /` occasionally, and set up rotation.
+- **systemd/cron have no terminal and never run `activate`.** Anything scheduled must
+  use the **full interpreter path** (`/home/tech/automation-mvp/backend/venv/bin/python`)
+  or it dies with `ModuleNotFoundError`. This is why scheduling is a **runner daemon**,
+  not a crontab — see [jobs.md](jobs.md). ✅ Handled by
+  `deploy/foresight-runner.service` (full path + `WorkingDirectory` + `EnvironmentFile`
+  + `PYTHONUNBUFFERED=1`, without which subprocess logs stay empty until a job ends).
+- **~~`logger.py` writes to a relative path~~ — FIXED.** It now uses an absolute
+  `settings.LOG_DIR` (default `<backend>/logs`), created eagerly. Under systemd a
+  relative `logs/app.log` would have resolved to `/logs` and failed silently.
+- **Supabase pooler is set to 25 connections** (not 15 — an older note said 15; the
+  comment in `database.py` was stale too). Each process gets its own pool, and
+  `pool_size` is now configurable via **`DB_POOL_SIZE`** — the runner unit sets it to
+  `4`. Budget: API 5 + runner 3 + subprocesses ≈ under 25. See [jobs.md](jobs.md).
+- **A full disk causes bizarre, unrelated-looking failures.** ✅ Now handled:
+  `app.log`/`runner.log` self-rotate (loguru), and per-run job logs are pruned by the
+  **`maint.log_cleanup`** job — *but only if that schedule exists*. `df -h /` still
+  worth a glance; `monitor.heartbeat` also alerts at >80%.
 - **Dotfiles are hidden.** `ls` won't show `.env` — use `ls -a`.

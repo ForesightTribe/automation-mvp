@@ -88,6 +88,47 @@ The things that bite:
 - **`playwright install-deps` needs sudo; `playwright install chromium` must not** —
   as root the browser lands in root's cache and the scraper can't find it.
 
+## Jobs & Scheduler (quick ref — see [docs/jobs.md](docs/jobs.md) · [runbook](docs/jobs-runbook.md))
+
+**Live on the VM since 2026-07-17.** Scrapes no longer get typed by hand: the
+top-level **`jobs/`** package runs a `runner` daemon (systemd) that is both a
+**producer** (cron → enqueue) and a **consumer** (claim → run). Every run is a row in
+the `jobs` table; each job is executed as a **subprocess** — the exact
+`python -m cli scrape …` you would otherwise type — with its output going to a
+per-run log file.
+
+```bash
+python -m cli jobs types                     # job types, lanes, timeouts, valid params
+python -m cli jobs run <type> -t <uuid> city=bengaluru workers=5   # queue now
+python -m cli jobs list / logs <id> -f       # status+peak RAM / live-tail a run
+python -m cli schedules add|list|show|update|enable|disable|remove  # cron CRUD (IST)
+python -m cli runner start                   # the daemon (systemd does this on the VM)
+```
+
+- **Lanes, not one queue.** `batch` (public scrapes) · `dashboard` (marketing/seller/
+  scorecard) · `live` (bid optimizer, later) · `interactive` (explorer/heartbeat).
+  Lanes run in parallel, sequential within themselves — so a 5-hour scrape can never
+  starve a latency-critical loop. Lane comes from the **job type**, not the caller.
+- **Params are trailing `key=value` pairs** and map 1:1 onto the real CLI flags (but
+  the names differ sometimes: `date_from` → `--from`). Quote values with spaces:
+  `"city=delhi ncr"`.
+- **The registry is code** — [jobs/types.py](backend/jobs/types.py) is the single
+  extension point (type → lane, timeout, argv builder). Adding a job type = one entry.
+- **Config split:** job types/lanes/timeouts → code · `LANE_SLOTS`/`DB_POOL_SIZE`/
+  `LOG_DIR` → env (all have defaults; **no new `.env` keys required**) · cron/params/
+  catchup → the `job_schedules` **table**, editable live with no restart.
+- **`--catchup` ≠ "survives restarts"** (everything does — schedules are DB rows). It
+  only decides whether a fire **missed while the runner was down** runs once on
+  recovery. Marketing re-scrapes 7 days so a miss self-heals; **seller/scorecard only
+  scrape one day/week → a miss is a permanent gap → they need `--catchup`.**
+- **⚠️ Never leave a runner running locally** — laptop and VM share one database, so a
+  local runner will claim VM jobs and scrape from your home IP.
+- **Alembic has 2 heads** — `upgrade head` errors. Target explicitly:
+  `alembic upgrade b8e5d1a3f9c2`.
+- **The campaign manager (`ad_campaigns/`) is off-limits** — coworker-owned. It moves
+  onto the `live` lane later; its in-API APScheduler would break on Render (no
+  Chromium, US IP, and double budget writes if the VM ran it too).
+
 ## Database Patterns
 
 **Session**

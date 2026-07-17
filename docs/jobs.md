@@ -6,9 +6,15 @@ optimizer, and (later) UI-triggered runs — goes through **one queue and one ru
 The problem this solves: the VM works, but every scrape is typed by hand over SSH,
 failures are invisible (no terminal, no log surface), and nothing records what ran.
 
-> Status: **Phases 1–3 shipped** (queue + runner + scheduler + observability), tested
-> end-to-end; Cloud Logging config written but only verifiable on the VM. Not yet
-> deployed. Phase 4 (API) remains.
+> **Status: LIVE IN PRODUCTION on the VM since 2026-07-17.** Phases 1–3 (queue +
+> runner + scheduler + observability) are deployed and validated on real hardware:
+> scheduled scrapes fire unattended, crash recovery works, and logs ship to Cloud
+> Logging. See [jobs-runbook.md](jobs-runbook.md) to operate it.
+>
+> **Still open:** the alert policy isn't created yet (so the heartbeat's ERROR reaches
+> a log, not your inbox); the **public** scrapers have never run from the VM (the
+> Cloudflare/datacenter-ASN question); Phase 4 (API) is unbuilt; `jobs cancel` doesn't
+> exist; auto-login is parked.
 
 ---
 
@@ -485,6 +491,24 @@ requests, not 200,000.)
 2 vCPUs driving 7+ Chromiums is real contention. **e2-standard-4** (4 vCPU / 16 GB) ≈ $100–120/mo
 vs today's $50–60. Cheapest of the three; do not optimise here first.
 
+### Measured RAM (VM, 2026-07-17) — supersedes the estimates above
+
+| Workload | Peak RSS | Duration |
+|---|---|---|
+| `runner` daemon (idle) | **76 MB** | — |
+| `monitor.heartbeat` | **93 MB** | 5 s |
+| `scrape.blinkit_marketing` (full, 45 campaigns) | **~920 MB** (921/916/917 across runs) | ~30 s–5 min |
+| `scrape.blinkit_seller` | **~956 MB** | ~1 min |
+| `scrape.public_*` | **not yet measured** | ~5 h expected |
+
+**One dashboard scrape costs ~1 GB** — about 2× the old "300–700 MB per Chromium"
+guess. This **validates `LANE_SLOTS = 1` per lane** on the 8 GB box: dashboard (1 GB)
++ batch (est. 2–4 GB) + OS/runner (~1 GB) is already 4–6 GB. Raising any lane to 2
+risks OOM. The 76 MB runner vs ~920 MB subprocess also confirms why subprocess
+dispatch works: the OOM killer targets the fat scrape, never the daemon.
+
+Read `peak_rss_mb` from `cli jobs list` before changing `LANE_SLOTS`.
+
 **Connections are *not* a wall.** The Supabase pooler is set to **25**. Budget: API 5 + runner 3
 + two subprocesses ×6 = **20**, leaving 5 for `psql`/migrations/Studio. Two concurrent lanes fit
 today. Note [database.py](../backend/app/core/database.py)'s comment still says the cap is 15 —
@@ -579,8 +603,35 @@ that, once moved, the bid optimizer is never starved by a batch scrape.
 |---|---|---|
 | **1 — Queue + runner** ✅ | `jobs` table (with `lane`), migration `a7f3c2e9d4b1`, `cli runner`, per-lane claim + slots, subprocess dispatch, per-run log files, stale-lock reaper, systemd unit, `cli jobs run/list/logs`. Lives in the top-level `jobs/` package. | No more typing scrapes over SSH; every run is recorded |
 | **2 — Scheduler** ✅ | `job_schedules` table, migration `b8e5d1a3f9c2`, cron producer (`jobs/scheduler.py`, runs alongside the consumer), catchup/misfire logic, `cli schedules add/list/enable/disable/remove`. Next-fire computed via APScheduler's CronTrigger against fixed-offset IST. | Scrapes run on time, unattended |
-| **3 — Observability** ✅ | absolute `LOG_DIR` (P1), structured JSON `runner.log` (`cli runner start` sink), `maint.log_cleanup` + `cli maint log-cleanup`, `monitor.heartbeat` (deadman + disk) + `cli monitor heartbeat`, `cli jobs logs --follow`, Ops Agent config (`deploy/ops-agent-logging.yaml`) + alert-policy notes | Failures are visible from a browser, and they page you |
+| **3 — Observability** ✅ | absolute `LOG_DIR` (P1), structured JSON `runner.log` (`cli runner start` sink), per-lane log paths, `maint.log_cleanup` + `cli maint log-cleanup`, `monitor.heartbeat` (deadman + disk) + `cli monitor heartbeat`, `cli jobs logs --follow`, Ops Agent config (`deploy/ops-agent-logging.yaml`) shipping to Cloud Logging | Failures are visible from a browser — **alert policy still to create** |
 | **4 — API** | `GET /api/jobs`, `/jobs/{id}/log`, `POST /api/jobs`, `GET/POST/PATCH /api/job-schedules` | UI-ready |
+
+### Validated on the VM, 2026-07-17
+
+Everything below was proven on real hardware, not just locally:
+
+- **systemd daemon** — `enabled`, survives SSH death, laptop crash, and reboot.
+- **Crash recovery** — `systemctl kill -s KILL` mid-scrape killed the whole cgroup
+  (runner + subprocess + **six chrome-headless**, so *no orphaned browsers*); systemd
+  restarted after 10 s; the runner logged `reaped 1 stale running job(s)` and the
+  stranded row became `failed / runner_died`. A restart that was itself killed 1 s in
+  proved the reaper retries on **every** startup.
+- **Graceful shutdown** — SIGTERM → producer + consumer stop cleanly → nothing to reap.
+- **Scheduler** — real scrapes fired unattended on cron; the `dashboard` lane serialized
+  marketing and seller as designed.
+- **Cloud Logging** — the Ops Agent ships `runner.log` (JSON → queryable fields, severity
+  mapped) and per-lane scraper output; visible in Logs Explorer with no SSH.
+
+**Three bugs only real use could find**, all in the heartbeat (the one component that
+*reasons about* the system rather than doing work):
+1. **Self-monitoring loop** — it audited its own schedule, so one stale run made it fail
+   forever (a failed heartbeat records no success → guarantees the next is stale).
+   Fixed by skipping self-monitoring types; the monitor's own liveness must be answered
+   *outside* the system (a Cloud Monitoring absence alert).
+2. **New-schedule false positive** — "never succeeded" was treated as broken, so a
+   freshly-created weekly schedule was flagged days before its first run was due. Fixed
+   by measuring age from `last_success or created_at`.
+3. The `Queued …` hint printed `cli …`, which isn't a real command (`python -m cli` is).
 
 The deadman window is derived from each schedule's own cron period (× 1.1), so a
 daily alerts at ~26h and a weekly at ~8d without any per-schedule config. Heartbeat
