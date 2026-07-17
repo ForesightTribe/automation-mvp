@@ -19,6 +19,14 @@ engine = create_async_engine(
     # cap. On the VM set DB_POOL_SIZE=3–5 in .env. See docs/jobs.md.
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=0,
+    # Long scrape runs hold a pooled connection across slow browser work; the
+    # Supabase pooler / a home-network NAT can silently drop one that idles too
+    # long, surfacing as asyncpg ConnectionDoesNotExistError at the next commit.
+    # asyncpg (unlike libpq) exposes no TCP-keepalive knobs, so we can't stop the
+    # drop at the socket — instead recycle any pooled connection older than 30 min
+    # so a stale one is never reused. pool_pre_ping (above) validates at checkout;
+    # the write paths retry once on a mid-flight drop (see sku_storage.save_skus).
+    pool_recycle=1800,
 )
 
 AsyncSessionLocal = sessionmaker(

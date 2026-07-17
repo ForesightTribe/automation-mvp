@@ -7,6 +7,7 @@ the volatile metrics (price, mrp, discount, stock, inventory, rating).
 """
 import uuid
 
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.search import SkuSnapshot
@@ -42,16 +43,11 @@ async def save_skus(
     tid = _as_uuid(tenant_id)
     jid = _as_uuid(job_id)
 
-    if ensured is None or brand_slug not in ensured:
-        await ensure_refs(session, brand_slug, MP)
-        if ensured is not None:
-            ensured.add(brand_slug)
-
-    scraped_at = now_ist()
-    for l in listings:
-        name = l.get("name", "")
-        session.add(
-            SkuSnapshot(
+    def _build_rows(scraped_at) -> list[SkuSnapshot]:
+        rows = []
+        for l in listings:
+            name = l.get("name", "")
+            rows.append(SkuSnapshot(
                 tenant_id=tid,
                 job_id=jid,
                 mp_slug=MP,
@@ -73,10 +69,34 @@ async def save_skus(
                 in_stock=l.get("in_stock", True),
                 inventory=l.get("inventory"),
                 rating=l.get("rating"),
-            )
-        )
+            ))
+        return rows
 
-    await session.commit()
+    # A pooled connection held across slow browser work can be silently dropped by
+    # the Supabase pooler / a home-network NAT, surfacing here as a disconnect at
+    # commit. That would fail the whole run, so on a *connection-level* drop we
+    # roll the broken session back (which invalidates & discards the dead
+    # connection) and retry once — the pool then hands us a fresh connection.
+    # Append-only writes make the retry safe: the first attempt never committed.
+    for attempt in (1, 2):
+        try:
+            if ensured is None or brand_slug not in ensured:
+                await ensure_refs(session, brand_slug, MP)
+                if ensured is not None:
+                    ensured.add(brand_slug)
+            session.add_all(_build_rows(now_ist()))
+            await session.commit()
+            break
+        except DBAPIError as e:
+            # Only retry a genuine dropped connection — real SQL errors must raise.
+            if not e.connection_invalidated or attempt == 2:
+                raise
+            await session.rollback()
+            logger.warning(
+                f"blinkit skus | DB connection dropped mid-write "
+                f"(tenant={tid} brand={brand_slug} store={merchant_id or lat}) — retrying once"
+            )
+
     logger.debug(
         f"blinkit skus | saved {len(listings)} rows tenant={tid} "
         f"brand={brand_slug} store={merchant_id or lat}"
