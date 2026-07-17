@@ -86,7 +86,7 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID) -> list[Marketplace
         select(MarketplaceLocation)
         .join(TenantLocation, TenantLocation.location_id == MarketplaceLocation.id)
         .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == MP)
-        .order_by(MarketplaceLocation.city, MarketplaceLocation.zone)
+        .order_by(MarketplaceLocation.city, MarketplaceLocation.merchant_id)
     )).scalars().all()
 
 
@@ -168,10 +168,21 @@ async def _worker(
                     stale = 0
                     if not res["products"]:
                         continue
+                    # The catalog says this coordinate is served by loc.merchant_id;
+                    # the response says otherwise. Free store-moved/closed/opened
+                    # alarm — the mapping has held on every location probed so far,
+                    # so a mismatch is worth a look, not a silent overwrite. The
+                    # OBSERVED store is what gets stored; the catalog is the claim.
+                    if res["merchant_id"] and res["merchant_id"] != loc.merchant_id:
+                        logger.warning(
+                            f"w{wid} {loc.city}/{loc.location_name}: express store is "
+                            f"{res['merchant_id']}, catalog says {loc.merchant_id} — "
+                            f"store moved/closed, or the coordinate drifted?"
+                        )
                     for brand_slug, aliases in brands:
                         raw = {
                             "platform": MP, "keyword": keyword, "brand_slug": brand_slug,
-                            "city": loc.city, "zone": loc.zone, "pincode": loc.pincode,
+                            "city": loc.city, "zone": loc.location_name, "pincode": loc.pincode,
                             "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
                             "competitors": competitor_list or None,
                             "merchant_id": res["merchant_id"], "total_results": res["total_results"],

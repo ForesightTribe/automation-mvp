@@ -31,8 +31,12 @@ SEARCH_HEADER_KEYS = (
 BASIC_SEARCH_METHOD = "basic"
 
 # Max products to collect per (keyword, location). One Blinkit page is 12.
-# Bump this to capture deeper result sets.
-RESULT_CAP = 12
+# FLOOR ONLY — the real knob is the tenant's `keyword_cap` (config workbook), which
+# takes precedence; this applies to tenants that set none, and to the ad-hoc CLI.
+# Must stay well above 12: non-express tiers are interleaved by rank and surface
+# deep (longtail first appeared at rank 24-29 for a brand keyword), so a cap of 12
+# makes an unconfigured tenant structurally blind to every store but express.
+RESULT_CAP = 48
 
 # Cap for the brand-query targeted scrape — searches a tenant's brand name to
 # pull its whole catalog at a store. Set well above a realistic brand SKU count

@@ -195,12 +195,12 @@ darkstore catalog and each tenant's keywords/coverage live in a workbook
 
 | Sheet | Columns | What it is |
 |---|---|---|
-| `locations` | `merchant_id, city, state, region, zone, pincode, lat, lon, active` | the global darkstore catalog (keyed on `merchant_id`) |
+| `locations` | `merchant_id, city, state, region, pincode, lat, lon, active, location_name, address` | the global **express** darkstore catalog (keyed on `merchant_id`); `lat/lon` is the probe point. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
 | `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional) |
-| `coverage` | `tenant, city, zone` | which stores a tenant scrapes (blank zone = all zones in that city) |
+| `coverage` | `tenant, city` | which cities a tenant scrapes (all stores in each listed city) |
 
 The two caps (own rows only; blank → code default): **`keyword_cap`** bounds the
-keyword scrape (`public-run`, default 12), **`brand_cap`** bounds the targeted
+keyword scrape (`public-run`, default 48), **`brand_cap`** bounds the targeted
 brand scrape (`public-skus`, default 60). Precedence for both: CLI flag > config
 value > default.
 

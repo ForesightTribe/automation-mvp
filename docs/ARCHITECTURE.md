@@ -223,8 +223,14 @@ The darkstore catalog, per-tenant keywords, and coverage live in `config.xlsx` a
 are synced to the DB by `cli sync` (`marketplace_locations`, `tenant_watchlist`,
 `tenant_locations`). `scraper/utils/cities.py` is **legacy and being retired** — the
 scraper reads locations from the DB, not from it. Blinkit selects the dark store
-from the **lat/lon** in the request headers; `pincode`/`zone` are metadata only.
-`marketplace_locations` is keyed on `merchant_id`.
+from the **lat/lon** in the request headers; `pincode`/`location_name`/`address` are
+metadata only. `marketplace_locations` is keyed on `merchant_id` — one row per
+**express** store, holding the coordinate to probe it at.
+
+One coordinate resolves to **several** stores, not one: the express store plus any
+longtail/super_longtail hubs serving it. Every product in the response names its own
+store (`merchant_id`) and tier (`merchant_type`) — read them per product, never per
+response. See [darkstores.md](darkstores.md).
 
 ### Why direct HTTP doesn't work (Cloudflare)
 

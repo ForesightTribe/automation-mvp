@@ -754,7 +754,7 @@ async def _scrape_public(
 def public_run(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    cap: int = typer.Option(None, "--cap", help="Max products per search (default: RESULT_CAP=12)"),
+    cap: int = typer.Option(None, "--cap", help="Max products per search (default: tenant keyword_cap, else RESULT_CAP=48)"),
     keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),

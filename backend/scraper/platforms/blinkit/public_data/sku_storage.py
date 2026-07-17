@@ -59,7 +59,10 @@ async def save_skus(
                 platform_product_id=(l.get("product_id") or ""),
                 product_name=name,
                 is_combo=is_combo_name(name),
+                # The listing's OWN store/tier is the truth — `merchant_id` here is
+                # only a fallback for the rare row Blinkit returns without one.
                 merchant_id=(l.get("merchant_id") or merchant_id),
+                merchant_type=(l.get("merchant_type") or ""),
                 city=city,
                 lat=lat,
                 lon=lon,

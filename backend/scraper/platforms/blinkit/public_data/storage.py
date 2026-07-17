@@ -48,6 +48,7 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensu
         pincode=result.get("pincode", ""),
         lat=result.get("lat"),
         lon=result.get("lon"),
+        merchant_id=result.get("merchant_id", ""),
         scraped_at=scraped_at,
         brand_rank=result.get("brand_rank"),
         brand_sov=result.get("brand_sov_pct"),
@@ -79,10 +80,11 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensu
                 in_stock=l.get("in_stock", True),
                 inventory=l.get("inventory"),
                 platform_product_id=l.get("product_id") or None,
+                # Per-product, not per-snapshot: one response spans several stores.
+                merchant_id=l.get("merchant_id") or "",
+                merchant_type=l.get("merchant_type") or "",
                 extra={
                     "group_id": l.get("group_id"),
-                    "merchant_id": l.get("merchant_id"),
-                    "merchant_type": l.get("merchant_type"),
                     "unit": l.get("unit"),
                     "ptype": l.get("ptype"),
                     "category": l.get("category"),

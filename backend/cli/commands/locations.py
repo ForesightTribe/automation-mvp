@@ -37,7 +37,7 @@ async def _list(city: str | None, tenant_id: str | None) -> None:
             if city:
                 q = q.where(MarketplaceLocation.city == city)
         rows = (await db.execute(
-            q.order_by(MarketplaceLocation.city, MarketplaceLocation.zone)
+            q.order_by(MarketplaceLocation.city, MarketplaceLocation.location_name)
         )).scalars().all()
 
     if not rows:
@@ -47,11 +47,12 @@ async def _list(city: str | None, tenant_id: str | None) -> None:
     table = Table(show_header=True, header_style="bold",
                   title=f"{'Tenant coverage' if tenant_id else 'Catalog'} — {len(rows)} locations")
     table.add_column("ID")
+    table.add_column("Store")
     table.add_column("City")
-    table.add_column("Zone")
+    table.add_column("Location")
     table.add_column("Pincode")
     table.add_column("Active")
     for r in rows:
-        table.add_row(str(r.id), r.city, r.zone, r.pincode,
+        table.add_row(str(r.id), r.merchant_id, r.city, r.location_name, r.pincode,
                       "[green]yes[/green]" if r.is_active else "[red]no[/red]")
     console.print(table)

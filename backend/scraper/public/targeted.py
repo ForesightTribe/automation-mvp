@@ -63,7 +63,7 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID) -> list[Marketplace
         select(MarketplaceLocation)
         .join(TenantLocation, TenantLocation.location_id == MarketplaceLocation.id)
         .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == MP)
-        .order_by(MarketplaceLocation.city, MarketplaceLocation.zone)
+        .order_by(MarketplaceLocation.city, MarketplaceLocation.merchant_id)
     )).scalars().all()
 
 

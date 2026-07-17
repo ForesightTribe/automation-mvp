@@ -6,13 +6,14 @@ is the source of truth; scrapers never read it. Updates are infrequent, so this
 replaces the per-row add/remove CLI verbs.
 
 Sheets
-  locations : the global Blinkit darkstore catalog (keyed on merchant_id)
-              cols: merchant_id, city, state, region, zone, pincode, lat, lon, active
+  locations : the global Blinkit express-darkstore catalog (keyed on merchant_id)
+              cols: merchant_id, city, state, region, pincode, lat, lon, active,
+                    location_name, address
   brands    : per-tenant keywords/aliases (the watchlist)
               cols: tenant, brand, relationship, keywords, aliases,
                     keyword_cap, brand_cap   (caps optional; own rows only)
   coverage  : which catalog locations each tenant scrapes
-              cols: tenant, city, zone   (blank zone = all zones in the city)
+              cols: tenant, city   (one row per city the tenant covers)
 """
 import asyncio
 
@@ -100,7 +101,8 @@ def _read_config(path: str) -> dict:
 
 # ── reconciliation ───────────────────────────────────────────────────────────
 
-_LOC_FIELDS = ("city", "state", "region", "zone", "pincode", "lat", "lon", "is_active")
+_LOC_FIELDS = ("city", "state", "region", "pincode", "location_name", "address",
+               "lat", "lon", "is_active")
 
 
 async def _sync_locations(db, rows, prune) -> dict:
@@ -113,8 +115,9 @@ async def _sync_locations(db, rows, prune) -> dict:
             "city": _str(r.get("city")).lower(),
             "state": _str(r.get("state")),
             "region": _str(r.get("region")),
-            "zone": _str(r.get("zone")),
             "pincode": _pincode(r.get("pincode")),
+            "location_name": _str(r.get("location_name")),
+            "address": _str(r.get("address")),
             "lat": _float(r.get("lat")),
             "lon": _float(r.get("lon")),
             "is_active": _bool(r.get("active")),
@@ -196,13 +199,12 @@ async def _sync_brands(db, rows, tenants, prune) -> dict:
 
 
 async def _sync_coverage(db, rows, tenants, prune) -> dict:
-    # Resolve each (tenant, city, [zone]) to catalog location ids.
+    # Resolve each (tenant, city) to catalog location ids.
     desired = set()
     covered_tenants = set()
     for r in rows:
         tname = _str(r.get("tenant"))
         city = _str(r.get("city")).lower()
-        zone = _str(r.get("zone"))
         if not tname or not city:
             continue
         tid = tenants[tname]
@@ -210,8 +212,6 @@ async def _sync_coverage(db, rows, tenants, prune) -> dict:
         q = select(MarketplaceLocation.id).where(
             MarketplaceLocation.mp_slug == MP, MarketplaceLocation.city == city
         )
-        if zone:
-            q = q.where(MarketplaceLocation.zone == zone)
         for lid in (await db.execute(q)).scalars().all():
             desired.add((tid, lid))
 
@@ -262,8 +262,10 @@ def _write_template(path: str) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "locations"
-    ws.append(["merchant_id", "city", "state", "region", "zone", "pincode", "lat", "lon", "active"])
-    ws.append(["48967", "delhi", "Delhi", "North India", "", "110001", 28.6315, 77.2167, "yes"])
+    ws.append(["merchant_id", "city", "state", "region", "pincode", "lat", "lon", "active",
+               "location_name", "address"])
+    ws.append(["48967", "delhi", "Delhi", "North India", "110001", 28.6315, 77.2167, "yes",
+               "Connaught Place", "Block A, Connaught Place, New Delhi, Delhi 110001, India"])
 
     b = wb.create_sheet("brands")
     b.append(["tenant", "brand", "relationship", "keywords", "aliases", "keyword_cap", "brand_cap"])
@@ -271,8 +273,8 @@ def _write_template(path: str) -> None:
     b.append(["Dobra", "bisleri", "competitor", "", "bisleri", "", ""])
 
     c = wb.create_sheet("coverage")
-    c.append(["tenant", "city", "zone"])
-    c.append(["Dobra", "delhi", ""])
+    c.append(["tenant", "city"])
+    c.append(["Dobra", "delhi"])
 
     wb.save(path)
 

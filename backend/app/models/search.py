@@ -32,6 +32,12 @@ class SearchSnapshot(SQLModel, table=True):
     pincode: str = ""
     lat: float | None = None
     lon: float | None = None
+    # The EXPRESS store serving this coordinate — the location's identity, read back
+    # off the response (not the config). "" when no express product was returned.
+    # This row stays LOCATION-grain on purpose: rank/SoV are the blended list the
+    # shopper sees across every tier, so re-keying them to a store would invent a
+    # ranking nobody saw. Store grain lives on sku_snapshots. See docs/darkstores.md.
+    merchant_id: str = ""
     scraped_at: datetime = Field(default_factory=now_ist)
     brand_rank: int | None = None
     brand_sov: float | None = None
@@ -73,6 +79,16 @@ class SearchListing(SQLModel, table=True):
     in_stock: bool = True
     inventory: int | None = None
     platform_product_id: str | None = None
+    # The dark store that fulfils THIS product and the tier it is served under —
+    # both read per-product off the atc block. One response routinely spans several
+    # stores and tiers, so these are per-row, never per-snapshot. `merchant_type` is
+    # a property of the product's fulfilment tier, NOT of the store: the same store
+    # can serve express to its own catchment and longtail to a neighbour, and can
+    # serve two tiers at once. Never derive it from a store lookup.
+    # Values: express | longtail | super_longtail | dummy ("" = pre-backfill unknown).
+    # See docs/darkstores.md.
+    merchant_id: str = ""
+    merchant_type: str = ""
     # Combo/multipack vs singular SKU (own or competitor). Combos are stocked
     # selectively and priced higher, so price comparisons filter to singles.
     is_combo: bool = False
@@ -102,7 +118,13 @@ class SkuSnapshot(SQLModel, table=True):
     brand_slug: str = Field(foreign_key="brands.slug")
     platform_product_id: str = ""
     product_name: str = ""          # denormalized display label; not the identity
+    # The dark store fulfilling this product, and its tier — both per-product, off
+    # the atc block. This is the store-grain fact table: group by `merchant_id` for
+    # per-store inventory, and ALWAYS segment denominators by `merchant_type` (~2059
+    # express stores vs ~510 shared hubs — mixing them is meaningless).
+    # "" tier = pre-backfill or an ambiguous (product, store) pair.
     merchant_id: str = ""
+    merchant_type: str = ""
     city: str = ""
     lat: float | None = None
     lon: float | None = None
@@ -119,9 +141,21 @@ class SkuSnapshot(SQLModel, table=True):
 
 
 class MarketplaceLocation(SQLModel, table=True):
-    """Shared serviceability reference — where each marketplace operates. The DB
-    form of `scraper/utils/cities.py`. Objective (not tenant-specific); tenants
-    pick which of these to track via `tenant_locations`."""
+    """Shared serviceability reference — one row per **express** dark store, with the
+    coordinate to probe it at. Objective (not tenant-specific); tenants pick which of
+    these to track via `tenant_locations`.
+
+    `lat`/`lon` is the **probe point** — the coordinate the scraper actually targets.
+    `merchant_id` is the express store that coordinate resolves to; it is NOT a scrape
+    input (we send lat/lon and read the merchant back off each product). It serves
+    three jobs: the row's natural key, the label source for the UI, and a validation
+    assertion — a scrape returning a different express id means the store moved,
+    closed, or opened.
+
+    Non-express stores (longtail / super_longtail hubs) are deliberately absent: they
+    are shared across catchments, they are discovered from scrape responses, and no
+    catalog can enumerate them. See docs/darkstores.md.
+    """
 
     __tablename__ = "marketplace_locations"
 
@@ -132,14 +166,16 @@ class MarketplaceLocation(SQLModel, table=True):
 
     id: int | None = Field(default=None, primary_key=True)
     mp_slug: str = Field(foreign_key="marketplaces.slug")
-    # The dark store's platform id — the natural key (lat/lon is what the scraper
-    # actually targets; pincode/zone are best-effort metadata).
+    # The express dark store's platform id — the natural key. See class docstring.
     merchant_id: str = ""
     city: str = ""
     state: str = ""
     region: str = ""
-    zone: str = ""
     pincode: str = ""
+    # Human labels straight from the darkstore catalog — `location_name` is the
+    # sub-city area ("Shahganj"), `address` the full street address.
+    location_name: str = ""
+    address: str = ""
     lat: float | None = None
     lon: float | None = None
     is_active: bool = True
