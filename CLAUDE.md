@@ -16,6 +16,7 @@
 | [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
 | [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
 | [docs/darkstores.md](docs/darkstores.md) | **Dark-store-level public data** (designed, not built) — merchant_id/merchant_type from the atc block, the probe-vs-store model, evidence log, proposed DB changes, tier caveats |
+| [docs/staging.md](docs/staging.md) | **Public scrapes stage to local SQLite**, then `cli scrape load` pushes to Postgres in one all-or-nothing transaction — why, commands, retention, failure modes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |

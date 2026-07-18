@@ -8,28 +8,25 @@ writes the flat `sku_snapshots` fact table (price / mrp / discount / stock /
 inventory / rating), keyed on `platform_product_id`.
 
 Same machinery as the keyword orchestrator: one browser, N context-workers pulling
-stores off a shared queue, each with its own DB session. `--resume` skips stores
-already scraped under the incomplete job.
+stores off a shared queue. Results are staged to a local SQLite file (no DB session
+during the scrape — see `staging.py`); `--resume` skips stores already staged.
 """
 import asyncio
 import time
 import uuid
 
 from playwright.async_api import async_playwright
-from sqlalchemy import select, update
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import AsyncSessionLocal
-from app.models.job import ScrapeJob, JobStatus
-from app.models.search import MarketplaceLocation, TenantLocation, SkuSnapshot
+from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
 from scraper.platforms.blinkit.public_data import endpoints as ep
 from scraper.platforms.blinkit.public_data import scraper as bl_scraper
-from scraper.platforms.blinkit.public_data import sku_storage as bl_sku_storage
+from scraper.public import staging
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.search_result import classify_products
-from scraper.utils.jobs import complete_scrape_job, create_scrape_job, fail_scrape_job
 
 MP = "blinkit"
 DASHBOARD = "public_skus"
@@ -67,117 +64,93 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID) -> list[Marketplace
     )).scalars().all()
 
 
-async def _latest_incomplete_job(db: AsyncSession, tid: uuid.UUID) -> str | None:
-    row = (await db.execute(
-        select(ScrapeJob.id)
-        .where(ScrapeJob.tenant_id == tid,
-               ScrapeJob.dashboard == DASHBOARD,
-               ScrapeJob.status != JobStatus.success)
-        .order_by(ScrapeJob.created_at.desc())
-        .limit(1)
-    )).scalar_one_or_none()
-    return str(row) if row else None
-
-
-async def _done_stores(db: AsyncSession, job_id: str) -> set[tuple]:
-    """(lat, lon) already scraped under this job — a store with any sku rows is
-    considered done (one store = one brand-query pass)."""
-    rows = (await db.execute(
-        select(SkuSnapshot.lat, SkuSnapshot.lon)
-        .where(SkuSnapshot.job_id == uuid.UUID(job_id))
-        .distinct()
-    )).all()
-    return {(lat, lon) for lat, lon in rows}
-
-
 async def _worker(
-    wid, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id,
+    wid, browser, seed, queue, brands, done, stg, stats, total, tid, job_id,
 ) -> None:
-    """One concurrent worker: own browser context + session + DB session, pulling
-    stores off the shared queue until empty. Per store, runs each own brand's
-    query and saves its own-brand listings to sku_snapshots."""
+    """One concurrent worker: own browser context + session, pulling stores off the
+    shared queue until empty. Per store, runs each own brand's query and stages its
+    own-brand listings. Holds no DB session — see scraper/public/staging.py."""
     session = await bl_scraper.open_context_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
     stale = 0
-    async with AsyncSessionLocal() as wdb:
-        try:
-            while True:
-                try:
-                    loc = queue.get_nowait()
-                except asyncio.QueueEmpty:
+    try:
+        while True:
+            try:
+                loc = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            if (loc.lat, loc.lon) in done:
+                stats["skipped"] += 1
+                stats["processed"] += 1
+                continue
+
+            store_fail = 0
+            store_rows = 0
+            store_fetch = store_db = 0.0
+            for brand_slug, aliases, brand_cap in brands:
+                if store_fail >= _STORE_SKIP_AFTER:
                     break
-                if (loc.lat, loc.lon) in done:
-                    stats["skipped"] += 1
-                    stats["processed"] += 1
+                query = _brand_query(brand_slug, aliases)
+                _t = time.monotonic()
+                try:
+                    # Brand scrape follows the similarity tail — Blinkit returns
+                    # only ~18 own products as `basic`, the rest as similarity;
+                    # own-only classification discards non-own padding.
+                    res = await bl_scraper.search(
+                        session, query, brand_cap,
+                        lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                    )
+                except Exception as e:
+                    res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
+                store_fetch += time.monotonic() - _t
+
+                if not res.get("ok"):
+                    store_fail += 1
+                    stale += 1
+                    stats["errors"] += 1
+                    logger.warning(
+                        f"w{wid} {loc.city} brand '{query}' failed: "
+                        f"{res.get('error') or 'no result'}"
+                    )
+                    if stale >= _REFRESH_AFTER:
+                        await bl_scraper.close_session(session)
+                        session = await bl_scraper.open_context_session(browser, loc.lat, loc.lon)
+                        stale = 0
+                        if not session:
+                            logger.warning(f"worker {wid}: session refresh failed — exiting")
+                            return
                     continue
 
-                store_fail = 0
-                store_rows = 0
-                store_fetch = store_db = 0.0
-                for brand_slug, aliases, brand_cap in brands:
-                    if store_fail >= _STORE_SKIP_AFTER:
-                        break
-                    query = _brand_query(brand_slug, aliases)
-                    _t = time.monotonic()
-                    try:
-                        # Brand scrape follows the similarity tail — Blinkit returns
-                        # only ~18 own products as `basic`, the rest as similarity;
-                        # own-only classification discards non-own padding.
-                        res = await bl_scraper.search(
-                            session, query, brand_cap,
-                            lat=loc.lat, lon=loc.lon, follow_similarity=True,
-                        )
-                    except Exception as e:
-                        res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
-                    store_fetch += time.monotonic() - _t
-
-                    if not res.get("ok"):
-                        store_fail += 1
-                        stale += 1
-                        stats["errors"] += 1
-                        logger.warning(
-                            f"w{wid} {loc.city} brand '{query}' failed: "
-                            f"{res.get('error') or 'no result'}"
-                        )
-                        if stale >= _REFRESH_AFTER:
-                            await bl_scraper.close_session(session)
-                            session = await bl_scraper.open_context_session(browser, loc.lat, loc.lon)
-                            stale = 0
-                            if not session:
-                                logger.warning(f"worker {wid}: session refresh failed — exiting")
-                                return
-                        continue
-
-                    stale = 0
-                    if not res["products"]:
-                        continue
-                    # Own-brand only: empty competitor whitelist keeps just is_brand rows.
-                    cls = classify_products(res["products"], brand_slug, aliases, competitors=[])
-                    listings = cls["listings"]
-                    if not listings:
-                        continue
-                    _t = time.monotonic()
-                    n = await bl_sku_storage.save_skus(
-                        wdb, listings, brand_slug, tid, job_id,
-                        merchant_id=res.get("merchant_id", ""),
-                        city=loc.city, lat=loc.lat, lon=loc.lon, ensured=ensured,
-                    )
-                    store_db += time.monotonic() - _t
-                    stats["rows"] += n
-                    store_rows += n
-
-                stats["processed"] += 1
-                logger.info(
-                    f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
-                    f"{store_rows} skus  [fetch {store_fetch:5.1f}s db {store_db:4.1f}s]  "
-                    f"| {stats['rows']} rows, {stats['errors']} err"
+                stale = 0
+                if not res["products"]:
+                    continue
+                # Own-brand only: empty competitor whitelist keeps just is_brand rows.
+                cls = classify_products(res["products"], brand_slug, aliases, competitors=[])
+                listings = cls["listings"]
+                if not listings:
+                    continue
+                _t = time.monotonic()
+                n = await staging.save_skus(
+                    stg, listings, brand_slug, tid, job_id,
+                    merchant_id=res.get("merchant_id", ""),
+                    city=loc.city, lat=loc.lat, lon=loc.lon,
                 )
-                await asyncio.sleep(_PACING)
-        finally:
-            if session:
-                await bl_scraper.close_session(session)
+                store_db += time.monotonic() - _t
+                stats["rows"] += n
+                store_rows += n
+
+            stats["processed"] += 1
+            logger.info(
+                f"[{stats['processed']}/{total}] w{wid} {loc.city:<15} "
+                f"{store_rows} skus  [fetch {store_fetch:5.1f}s stage {store_db:4.1f}s]  "
+                f"| {stats['rows']} rows, {stats['errors']} err"
+            )
+            await asyncio.sleep(_PACING)
+    finally:
+        if session:
+            await bl_scraper.close_session(session)
 
 
 async def run_targeted(
@@ -207,22 +180,21 @@ async def run_targeted(
         logger.warning(f"targeted: tenant {tid} has no Blinkit locations — skipping")
         return summary
 
+    # Staged locally, not written to Postgres here — see scraper/public/staging.py.
     if resume:
-        job_id = await _latest_incomplete_job(db, tid)
-        if not job_id:
-            logger.warning(f"targeted: no incomplete job to resume for tenant {tid}")
+        prev = staging.resumable(staging.KIND_SKUS, tid)
+        if not prev:
+            logger.warning(f"targeted: no unloaded staging run to resume for tenant {tid}")
             return summary
-        done = await _done_stores(db, job_id)
-        await db.execute(
-            update(ScrapeJob).where(ScrapeJob.id == uuid.UUID(job_id)).values(status=JobStatus.running)
-        )
-        await db.commit()
-        logger.info(f"targeted: resuming job {job_id} — {len(done)} stores already done")
+        stg = staging.open_run(prev["path"])
+        done = staging.done_stores(stg)
+        logger.info(f"targeted: resuming {prev['path'].name} — {len(done)} stores already staged")
     else:
-        job_id = await create_scrape_job(db, str(tid), DASHBOARD, MP)
+        stg = staging.new_run(tid, staging.KIND_SKUS)
         done = set()
+    job_id = stg["job_id"]
     summary["job_id"] = job_id
-    ensured: set[str] = set()
+    summary["staging_file"] = stg["path"].name
     stats = {"rows": 0, "errors": 0, "skipped": 0, "processed": 0}
     total = len(locations)
     queue: asyncio.Queue = asyncio.Queue()
@@ -241,23 +213,31 @@ async def run_targeted(
                 )
                 tasks = [
                     asyncio.create_task(_worker(
-                        w, browser, seed, queue, brands, done, ensured, stats, total, tid, job_id,
+                        w, browser, seed, queue, brands, done, stg, stats, total, tid, job_id,
                     ))
                     for w in range(1, n_workers + 1)
                 ]
                 await asyncio.gather(*tasks)
             finally:
                 await browser.close()
-        await complete_scrape_job(db, job_id, stats["rows"])
+        staging.update_stats(stg, stats, total)
+        staging.finish_run(stg, "success")
     except Exception as e:
-        await fail_scrape_job(db, job_id, str(e))
+        staging.update_stats(stg, stats, total)
+        staging.finish_run(stg, "failed", str(e))
         logger.error(f"targeted: tenant {tid} run failed: {e}")
         raise
+    finally:
+        staging.close(stg)
 
     summary.update(rows=stats["rows"], errors=stats["errors"], skipped=stats["skipped"])
     logger.info(
         f"targeted: tenant {tid} done — {stats['rows']} sku rows, "
-        f"{stats['errors']} errors, {stats['skipped']} skipped, job={job_id}"
+        f"{stats['errors']} errors, {stats['skipped']} skipped"
+    )
+    logger.info(
+        f"targeted: staged to {stg['path'].name} — NOT yet in the database. "
+        f"Push it with:  python -m cli scrape load"
     )
     return summary
 
