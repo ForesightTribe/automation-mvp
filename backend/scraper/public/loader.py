@@ -19,11 +19,10 @@ local parent id is remapped to the real one.
 
 See `staging.py` for why any of this exists.
 """
-import json
 import uuid
 from pathlib import Path
 
-from sqlalchemy import insert
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import ScrapeJob, JobStatus
@@ -32,9 +31,10 @@ from app.utils.logger import logger
 from scraper.public import staging
 from scraper.utils.storage import ensure_refs
 
-# Rows per INSERT. Keeps each statement far inside statement_timeout and bounds the
-# parameter count (Postgres caps at 65535 bind params; ~23 cols × 1000 ≈ 23k).
-CHUNK = 1000
+# Rows pushed per COPY call. COPY streams, so this only bounds peak memory (~4 MB at
+# 20k rows). Bigger is measurably better — per-row cost roughly halves from 5k to 20k
+# (0.234 → 0.087 ms/row) because it is dominated by round trips, not data volume.
+CHUNK = 20000
 
 
 def _chunks(rows: list, n: int = CHUNK):
@@ -44,6 +44,35 @@ def _chunks(rows: list, n: int = CHUNK):
 
 def _dt(v):
     return staging.parse_dt(v)
+
+
+async def _raw(db: AsyncSession):
+    """The underlying asyncpg connection, for COPY. Still inside the SQLAlchemy
+    transaction — COPY FROM STDIN participates in it and rolls back with it."""
+    return (await (await db.connection()).get_raw_connection()).driver_connection
+
+
+async def _copy(db: AsyncSession, table: str, columns: list[str], records: list[tuple]) -> None:
+    """Bulk-insert via Postgres COPY, in CHUNK-sized batches.
+
+    Measured against this database (2026-07-19, 5000 real rows):
+
+        execute(insert(M), rows)   46.6  ms/row   -- executemany: A ROUND TRIP PER ROW
+        insert(M).values(rows)      0.61 ms/row   -- one multi-row statement per chunk
+        COPY                        0.15 ms/row
+
+    The first form is what shipped originally and it is a trap: it reads like a bulk
+    insert but is not. A 35,802-row load took **28 minutes** and duly died mid-flight
+    on a dropped connection. The same load COPYs in ~5 seconds.
+
+    Speed is the whole safety story here: a load that finishes in seconds is one the
+    connection has almost no chance to drop under.
+    """
+    if not records:
+        return
+    pg = await _raw(db)
+    for chunk in _chunks(records):
+        await pg.copy_records_to_table(table, records=chunk, columns=columns)
 
 
 async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -> dict:
@@ -103,66 +132,68 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
         ))
         await db.flush()
 
-        # ── snapshots, capturing the real ids ────────────────────────────────
+        # ── snapshots ────────────────────────────────────────────────────────
+        # Ids are pre-allocated from the sequence rather than read back from
+        # RETURNING: one round trip, and it removes any reliance on RETURNING coming
+        # back in VALUES order (true in Postgres, but not guaranteed by the standard).
         local_to_real: dict[int, int] = {}
-        for chunk in _chunks(snaps):
-            rows = [{
-                "tenant_id": tid, "job_id": job_id, "brand_slug": r["brand_slug"],
-                "mp_slug": r["mp_slug"], "keyword": r["keyword"], "city": r["city"],
-                "zone": r["zone"], "pincode": r["pincode"], "lat": r["lat"],
-                "lon": r["lon"], "merchant_id": r["merchant_id"] or "",
-                "scraped_at": _dt(r["scraped_at"]), "brand_rank": r["brand_rank"],
-                "brand_sov": r["brand_sov"], "total_results": r["total_results"],
-            } for r in chunk]
-            res = await db.execute(insert(SearchSnapshot).returning(SearchSnapshot.id), rows)
-            new_ids = [row[0] for row in res.fetchall()]
-            if len(new_ids) != len(chunk):
-                raise RuntimeError(
-                    f"snapshot id remap failed: inserted {len(new_ids)} of {len(chunk)}"
-                )
-            # SQLAlchemy's insertmanyvalues guarantees RETURNING order matches input.
-            for src, new_id in zip(chunk, new_ids):
-                local_to_real[src["id"]] = new_id
+        if snaps:
+            got = await db.execute(text(
+                "SELECT nextval(pg_get_serial_sequence('search_snapshots','id')) "
+                "FROM generate_series(1, :n)"
+            ), {"n": len(snaps)})
+            new_ids = [r[0] for r in got.fetchall()]
+            local_to_real = {s["id"]: nid for s, nid in zip(snaps, new_ids)}
+
+            await _copy(db, "search_snapshots", [
+                "id", "tenant_id", "job_id", "brand_slug", "mp_slug", "keyword", "city",
+                "zone", "pincode", "lat", "lon", "merchant_id", "scraped_at",
+                "brand_rank", "brand_sov", "total_results",
+            ], [(
+                local_to_real[r["id"]], tid, job_id, r["brand_slug"], r["mp_slug"],
+                r["keyword"], r["city"], r["zone"], r["pincode"], r["lat"], r["lon"],
+                r["merchant_id"] or "", _dt(r["scraped_at"]), r["brand_rank"],
+                r["brand_sov"], r["total_results"],
+            ) for r in snaps])
+            logger.info(f"loader: {len(snaps):,} snapshots copied")
 
         # ── listings, with snapshot_id remapped ──────────────────────────────
         missing = {r["snapshot_local_id"] for r in lists} - set(local_to_real)
         if missing:
             raise RuntimeError(f"{len(missing)} listings reference unknown snapshots")
 
-        for chunk in _chunks(lists):
-            rows = [{
-                "snapshot_id": local_to_real[r["snapshot_local_id"]],
-                "tenant_id": tid, "job_id": job_id, "mp_slug": r["mp_slug"],
-                "brand_slug": r["brand_slug"], "keyword": r["keyword"],
-                "city": r["city"], "zone": r["zone"], "pincode": r["pincode"],
-                "scraped_at": _dt(r["scraped_at"]), "position": r["position"],
-                "product_name": r["product_name"], "is_brand": bool(r["is_brand"]),
-                "price": r["price"], "mrp": r["mrp"], "discount_pct": r["discount_pct"],
-                "in_stock": bool(r["in_stock"]), "inventory": r["inventory"],
-                "platform_product_id": r["platform_product_id"],
-                "merchant_id": r["merchant_id"] or "",
-                "merchant_type": r["merchant_type"] or "",
-                "is_combo": bool(r["is_combo"]),
-                "extra": json.loads(r["extra"]) if r["extra"] else None,
-            } for r in chunk]
-            await db.execute(insert(SearchListing), rows)
+        # `extra` is a json column: asyncpg's COPY wants the encoded text, not a dict.
+        await _copy(db, "search_listings", [
+            "snapshot_id", "tenant_id", "job_id", "mp_slug", "brand_slug", "keyword",
+            "city", "zone", "pincode", "scraped_at", "position", "product_name",
+            "is_brand", "price", "mrp", "discount_pct", "in_stock", "inventory",
+            "platform_product_id", "merchant_id", "merchant_type", "is_combo", "extra",
+        ], [(
+            local_to_real[r["snapshot_local_id"]], tid, job_id, r["mp_slug"],
+            r["brand_slug"], r["keyword"], r["city"], r["zone"], r["pincode"],
+            _dt(r["scraped_at"]), r["position"], r["product_name"], bool(r["is_brand"]),
+            r["price"], r["mrp"], r["discount_pct"], bool(r["in_stock"]), r["inventory"],
+            r["platform_product_id"], r["merchant_id"] or "", r["merchant_type"] or "",
+            bool(r["is_combo"]), r["extra"] or None,
+        ) for r in lists])
+        if lists:
+            logger.info(f"loader: {len(lists):,} listings copied")
 
         # ── sku snapshots (no FK to remap) ───────────────────────────────────
-        for chunk in _chunks(skus):
-            rows = [{
-                "tenant_id": tid, "job_id": job_id, "mp_slug": r["mp_slug"],
-                "brand_slug": r["brand_slug"],
-                "platform_product_id": r["platform_product_id"],
-                "product_name": r["product_name"],
-                "merchant_id": r["merchant_id"] or "",
-                "merchant_type": r["merchant_type"] or "",
-                "city": r["city"], "lat": r["lat"], "lon": r["lon"],
-                "scraped_at": _dt(r["scraped_at"]), "price": r["price"],
-                "mrp": r["mrp"], "discount_pct": r["discount_pct"],
-                "in_stock": bool(r["in_stock"]), "inventory": r["inventory"],
-                "rating": r["rating"], "is_combo": bool(r["is_combo"]),
-            } for r in chunk]
-            await db.execute(insert(SkuSnapshot), rows)
+        await _copy(db, "sku_snapshots", [
+            "tenant_id", "job_id", "mp_slug", "brand_slug", "platform_product_id",
+            "product_name", "merchant_id", "merchant_type", "city", "lat", "lon",
+            "scraped_at", "price", "mrp", "discount_pct", "in_stock", "inventory",
+            "rating", "is_combo",
+        ], [(
+            tid, job_id, r["mp_slug"], r["brand_slug"], r["platform_product_id"],
+            r["product_name"], r["merchant_id"] or "", r["merchant_type"] or "",
+            r["city"], r["lat"], r["lon"], _dt(r["scraped_at"]), r["price"], r["mrp"],
+            r["discount_pct"], bool(r["in_stock"]), r["inventory"], r["rating"],
+            bool(r["is_combo"]),
+        ) for r in skus])
+        if skus:
+            logger.info(f"loader: {len(skus):,} sku rows copied")
 
         await db.commit()   # ← the single all-or-nothing boundary
 

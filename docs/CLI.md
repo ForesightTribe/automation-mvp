@@ -222,11 +222,17 @@ There are **two complementary scrapes**, run as separate commands (own SoV/rank 
 own complete inventory). Both reuse one browser and a concurrent worker pool
 (Blinkit selects the store from lat/lon headers, so one session serves many stores).
 
+> ⚠️ **Both public scrapes write to a local SQLite staging file, not to Postgres.**
+> Push them afterwards with `cli scrape load` (see 2c). A scraped-but-unloaded file is
+> the one new failure mode — `cli scrape staged` lists anything pending. Full rationale
+> in [staging.md](staging.md).
+
 **2a. Keyword scrape — `cli scrape public-run`.** Every category keyword × covered
-store → SoV/rank + declared competitors. Writes `search_snapshots` + `search_listings`.
+store → SoV/rank + declared competitors. Stages rows destined for `search_snapshots` +
+`search_listings`.
 
 ```bash
-python -m cli scrape public-run --tenant <id>                  # full run (new scrape_job)
+python -m cli scrape public-run --tenant <id>                  # full run (new staging file)
 python -m cli scrape public-run --tenant <id> --resume         # continue an interrupted run
 python -m cli scrape public-run --tenant <id> --city delhi     # one city
 python -m cli scrape public-run --tenant <id> --keyword "soda" # one keyword
@@ -250,12 +256,39 @@ python -m cli scrape public-skus --tenant <id> --workers 5     # concurrent pool
 python -m cli scrape public-skus --all                         # every active tenant
 ```
 
-**Common behaviour (both).** Each fresh run is a new `scrape_job` — run freely.
-`--resume` picks up the tenant's last incomplete job of that type, **skipping
-already-scraped stores** (keyword scrape: by keyword+store; SKU scrape: by store);
-commits are incremental so a crash keeps its progress. `--workers N` runs N
-isolated browser contexts on one browser, each with its own DB connection (~5–6 is
-a good IP/DB balance; drop to 3 if Cloudflare throttles). Transient failures are
+**2c. Push to Postgres — `cli scrape staged` / `load` / `discard`.**
+
+```bash
+python -m cli scrape staged                      # every staging file + quality signals
+python -m cli scrape staged --pending            # only what isn't in the DB yet
+python -m cli scrape load --dry-run              # what would be pushed
+python -m cli scrape load --file 145458          # push one (Ref from `staged`)
+python -m cli scrape load --all                  # push every pending file, oldest first
+python -m cli scrape discard --file 145458       # bin a bad run without loading it
+```
+
+`staged` shows **Stores** (done/total) and **Err** so a bad run is obvious:
+
+```
+Date         Time    Kind     Stores      Rows      Err   State           Ref
+2026-07-19   14:53   skus     2,059/2,059  35,802     1   ok · loaded     145345
+2026-07-18   09:12   search     500/2,059     100   847   failed · …      091203
+```
+
+Each file loads in **one all-or-nothing transaction** — a failure writes nothing, so
+rerunning is always safe. With several files pending, bare `load` refuses and makes
+you pass `--all` or `--file`; **`--all` refuses outright if any pending run didn't
+finish cleanly**, so a crashed run can't be swept in unnoticed. A partial run is never
+auto-skipped though — 500 of 2,059 stores is still 500 stores of real data, and only
+you can judge that. Loaded files are kept (last 5 per tenant per kind) then pruned.
+
+**Common behaviour (both scrapes).** Each fresh run is a new staging file — run
+freely. `--resume` picks up the tenant's last unloaded, unfinished run of that type,
+**skipping already-scraped stores** (keyword scrape: by keyword+store; SKU scrape: by
+store); it reads the staging file, so resume works even while the database is
+unreachable. `--workers N` runs N isolated browser contexts on one browser (~5–6 is a
+good IP balance; drop to 3 if Cloudflare throttles) — note the scrape holds **no DB
+connections at all**, so the pooler cap no longer bounds this. Transient failures are
 retried with backoff and each fetch has a hard timeout; a persistent failure logs a
 single line with the reason — e.g. `HTTP 403 · non-JSON body (Cloudflare?)` (the
 throttle signal — reduce `--workers`) vs `HTTP 400` (a genuinely bad store/keyword,

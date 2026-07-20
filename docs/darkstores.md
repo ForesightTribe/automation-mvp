@@ -6,12 +6,41 @@
   precise coordinates, `location_name` + `address`, `zone` dropped (`d4a9c7e2b6f1`)
 - ✅ `merchant_id` / `merchant_type` promoted to real columns (`e6c2a9d4f1b8`)
 - ✅ the `products[0]` collapse fixed; `RESULT_CAP` floor raised 12 → 48
-- ⬜ store-grain metrics / views / dashboard — **not started**
+- ✅ **first all-India store-level dataset landed 2026-07-19** — 2,004 stores, 238
+  cities, 35,802 SKU rows, every row carrying `merchant_id` + `merchant_type`
+  (0 missing). Reach 84.7%, Distribution 95.8%
+- ✅ client report generated from it (`exports/Dobra_Blinkit_Insights_2026-07-19.xlsx`)
+- ⬜ store-grain metrics / **API + views / dashboard — not started.** The read services
+  (`competition_service`, `inventory_service`, `product_service`) still aggregate by
+  `(lat,lon)`
 - ⬜ history not backfilled (by decision — see below); the store-level series starts
   from the first scrape after `e6c2a9d4f1b8`
 
-So the plumbing carries the store, and **nothing yet reads it**. "Dark-store data" is
-not live for the client until the views exist.
+So the data is store-grain and queryable, but **the product does not read it yet** —
+today it reaches the client via a generated Excel, not the dashboard.
+
+## Duplicate observations: one store, two probes
+
+On 2026-07-19, **20 stores were probed from two coordinates each**, producing 343
+duplicate `(store, product)` rows. Not a bug: the catalog says coordinate A belongs to
+store A, but Blinkit now routes it to store B (A closed or moved), and store B also has
+its own coordinate — so B answers twice.
+
+```
+probe 28.57404,77.24086  -> catalog expects 37026 (Block A)     -> got 37026  OK
+probe 28.60314,77.23836  -> catalog expects 48855 (Kaka Nagar)  -> got 37026  drifted
+```
+
+Both probes returned **identical inventory and price** (6/6 products checked), so the
+second observation is redundant, not conflicting. Deduping is therefore safe and
+required: **take one row per `(merchant_id, platform_product_id)`** — the client report
+uses `DISTINCT ON (...) ORDER BY scraped_at DESC`.
+
+Distinct from the *similarity-tail* duplicates fixed in the scraper on 2026-07-18 —
+that was one response listing a product twice (a real bug). This one is the map
+drifting, and the scrape faithfully recording it. It is also the only way we learn that
+`48855` has gone: the run logs
+`express store is 37026, catalog says 48855 — store moved/closed?`
 
 The client asked for **dark-store-level data**, not location-level. This doc records
 what Blinkit actually exposes, what we probed to find out, and what has to change.

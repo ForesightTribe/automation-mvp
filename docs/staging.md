@@ -47,12 +47,43 @@ safety free: either everything committed, or nothing did.
 Verified safe against this database (2026-07-17):
 
 ```
-statement_timeout                   = 2min   -- per STATEMENT; our 1000-row chunks are ms
+statement_timeout                   = 2min   -- per STATEMENT; a COPY chunk is ms
 idle_in_transaction_session_timeout = 0      -- nothing kills a long transaction
 ```
 
-The cost is redoing a failed load from scratch — ~60s, against the ~1.5h scrape it
+The cost is redoing a failed load from scratch — seconds, against the ~1.5h scrape it
 protects.
+
+### ⚠️ The insert method IS the safety story
+
+The load uses Postgres **`COPY`** (`asyncpg.copy_records_to_table`), chunked at 20k
+rows. This is not a micro-optimisation — measured on real data (2026-07-19):
+
+| how | ms/row | 35,802-row file |
+|---|---|---|
+| `execute(insert(M), rows)` | 46.6 | **28 min** |
+| `insert(M).values(rows)` | 0.61 | 22 s |
+| **`COPY`** | **0.087** | **7 s** |
+
+The first form is what originally shipped, and it is a **trap**: passing a list as
+`execute()`'s second argument reads like a bulk insert but compiles to
+`executemany` — *one network round trip per row*. The code was already chunking at
+1000; the chunking was simply at the wrong layer, so each chunk became 1000
+statements. Over a home link to Supabase a 35,802-row load took 28 minutes and duly
+died mid-flight on a dropped connection.
+
+**A load that finishes in seconds is one the connection has almost no chance to drop
+under.** Real-world timings after the fix: ~40s (36k SKU rows) and ~60s (165k keyword
+rows), the gap over the benchmark being network variance.
+
+Rule for anything bulk here: use `COPY`, and measure ms/row against the *real*
+database — never trust that an API named "bulk" behaves that way.
+
+Snapshot ids are **pre-allocated from the sequence**
+(`SELECT nextval(...) FROM generate_series(1, N)`) rather than read back via
+`RETURNING`, since `COPY` returns nothing. One round trip, and it removes any reliance
+on `RETURNING` coming back in `VALUES` order (true in Postgres, not guaranteed by the
+standard).
 
 ## Commands
 

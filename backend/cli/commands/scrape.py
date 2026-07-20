@@ -1069,16 +1069,36 @@ async def _load_staged(paths, keep) -> None:
     if keep is not None:
         staging.KEEP_PER_KIND = keep
 
+    from sqlalchemy.exc import DBAPIError
+
     results, failed = [], []
     for p in paths:
         console.print(f"[dim]Loading {p.name} …[/dim]")
-        async with AsyncSessionLocal() as db:
+        # Retry once on a DB-level failure. Safe by construction: the load is one
+        # all-or-nothing transaction, so a failed attempt wrote nothing. Each attempt
+        # gets a FRESH session — a dropped connection can't be reused, and the old
+        # session's pool entry is poisoned.
+        for attempt in (1, 2):
             try:
-                results.append(await loader.load_file(db, p))
+                async with AsyncSessionLocal() as db:
+                    results.append(await loader.load_file(db, p))
+                break
+            except DBAPIError as e:
+                err = getattr(e, "orig", None) or e
+                if attempt == 1:
+                    console.print(
+                        f"[yellow]Connection failed — retrying once:[/yellow] "
+                        f"{escape(str(err))[:120]}"
+                    )
+                    continue
+                failed.append((p.name, str(err)))
+                console.print(f"[red]FAILED[/red] {p.name}: {escape(str(err))[:300]}")
+                console.print("[dim]Nothing was written — rerun the same command to retry.[/dim]")
             except Exception as e:
                 failed.append((p.name, str(e)))
-                console.print(f"[red]FAILED[/red] {p.name}: {escape(str(e))}")
-                console.print("[dim]Nothing was written for this file — rerun to retry.[/dim]")
+                console.print(f"[red]FAILED[/red] {p.name}: {escape(str(e))[:300]}")
+                console.print("[dim]Nothing was written — rerun the same command to retry.[/dim]")
+                break
 
     if results:
         table = Table(show_header=True, header_style="bold", title="Loaded")

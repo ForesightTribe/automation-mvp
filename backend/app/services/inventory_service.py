@@ -132,10 +132,18 @@ async def get_fill_rate(
 
 
 def _latest_per_location(tenant_id, own, since, city, marketplace, kind="main"):
-    """Subquery: the latest sku_snapshots row per (product, serviceable LOCATION) in
-    the window. A location is the `(lat, lon)` delivery point we scrape — multiple
-    catalog stores can share one, and the search API resolves a coordinate to a
-    single serving store, so `(lat, lon)` is the honest unit (not `merchant_id`)."""
+    """Subquery: the latest sku_snapshots row per (product, probe location) in the
+    window.
+
+    ⚠️ **Grains out of date — not yet migrated.** This keys on `(lat, lon)`, from the
+    superseded belief that we could not tell which store served a coordinate. We can:
+    every row now carries `merchant_id` + `merchant_type` read per product. The honest
+    unit is the **store**, and this should group by `merchant_id`.
+
+    Two ways this is wrong today: a coordinate can return several stores (express plus
+    longtail hubs), and one store can answer several coordinates when the catalog
+    drifts — on 2026-07-19, 20 stores were probed twice, so `(lat,lon)` both splits and
+    double-counts. See docs/darkstores.md."""
     cond = [
         SkuSnapshot.tenant_id == tenant_id,
         SkuSnapshot.brand_slug.in_(own),

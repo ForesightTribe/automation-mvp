@@ -161,18 +161,27 @@ The runner is a thin dispatch layer above this diagram — see docs/jobs.md.
 | `tenant_locations` | `tenant_id`, `mp_slug`, `location_id` | which catalog locations a tenant scrapes |
 | `inventory_depth` | `tenant_id`, `brand_slug`, `mp_slug`, `sku`, `city` | old deep per-SKU stock probe — superseded by `sku_snapshots`, no write path |
 
-Append-only (no upsert). `search_*` written by `cli scrape public-run`;
-`sku_snapshots` by `cli scrape public-skus` — both via orchestrators under
-`scraper/public/`.
+Append-only (no upsert). `search_*` and `sku_snapshots` are written by
+`cli scrape load`, **not** by the scrapes themselves — `public-run` / `public-skus`
+write to a local SQLite staging file and the load pushes it in one transaction. See
+[staging.md](staging.md).
 
-**The unit is the serviceable location `(lat, lon)`, not the store.** The catalog
-lat/long is a delivery point (several dark stores can share one; the search API
-resolves a coordinate to one serving store), so **all public read metrics count
-distinct `(lat,lon)`, never `merchant_id`/rows** — see
-[docs/public-glossary.md](public-glossary.md) (Reach vs Distribution). `is_combo`
-separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The old
-`search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products` tables
-were dropped in migration `f3a9c1d7b2e5`.
+**The unit is the STORE (`merchant_id`); the coordinate is only the probe.** Every
+product in a response carries the store that fulfils it and the tier it is sold under
+(`merchant_type`), read **per product** — one response can span several stores, and
+one store can answer several coordinates. So public read metrics should
+`COUNT(DISTINCT merchant_id)` and take one row per `(store, product)`.
+
+> ⚠️ **Superseded 2026-07-18.** This section previously stated the unit was the
+> serviceable location `(lat,lon)` "not the store", on the belief that we could not
+> tell which store answered. We can — exactly, on every product. See
+> [darkstores.md](darkstores.md) for the evidence.
+> **The read services still aggregate by `(lat,lon)` and have not been migrated**
+> (`competition_service`, `inventory_service`, `product_service`).
+
+`is_combo` separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The
+old `search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products`
+tables were dropped in migration `f3a9c1d7b2e5`.
 
 ### Blinkit marketing tables (tenant-scoped)
 

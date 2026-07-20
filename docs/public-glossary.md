@@ -1,18 +1,33 @@
 # Public Data — Glossary & Model
 
 The definitive reference for every term in the public (scraped) system. All public
-metrics are counted in **serviceable locations**, split by **Main vs Combo**, sourced
-from **two scrapes**, and tagged with **freshness**. Blinkit-only.
+metrics are counted in **dark stores**, split by **Main vs Combo**, sourced from
+**two scrapes**, and tagged with **freshness**. Blinkit-only.
+
+> ⚠️ **Model change, 2026-07-18.** The unit was previously the *serviceable location*
+> `(lat,lon)`, on the belief that we could not tell which store served a coordinate.
+> We can: every product carries its own `merchant_id` + `merchant_type`. The unit is
+> now the **store**. See [darkstores.md](darkstores.md).
+> **The read services still compute at location grain — migration is pending**, so
+> what the API returns today still matches the old definitions.
 
 ## Foundations
 
-- **Serviceable location `(lat, lon)`** — the unit of everything. It's a **delivery
-  point**, *not* a store address. Several dark stores can serve one location, and the
-  public search API selects the serving store from the coordinate — so we scrape
-  *locations*, and every count is "how many locations," never "how many stores."
-  (A catalog of ~2,216 store rows collapses to ~1,924 distinct locations.)
-- **Covered locations** — the distinct `(lat,lon)` a client is set up to track (via
-  `tenant_locations`). The denominator for **Reach**.
+- **Dark store (`merchant_id`)** — the unit of everything. A real, physical store; the
+  same id seen from two different coordinates reports identical inventory and price.
+- **Probe point `(lat, lon)`** — where we *knock*, not what we measure. Blinkit resolves
+  a coordinate to its serving store(s) and the response names them. One coordinate can
+  return several stores (express + longtail hubs); one store can answer several
+  coordinates (when the catalog drifts). Hence **always `COUNT(DISTINCT merchant_id)`**,
+  and one row per `(store, product)`.
+- **Store tier (`merchant_type`)** — `express` (10-minute core shelf) · `longtail` /
+  `super_longtail` (extended range, hub-fulfilled, slower) · `dummy` (large-order).
+  A property of the **product's fulfilment**, not of the store: one store can be
+  express to its own catchment and longtail to a neighbour. **Denominators must be
+  segmented by tier** — ~2,059 express stores vs ~510 shared hubs; mixing them is
+  meaningless.
+- **Covered stores** — the stores a client's coordinates reach (via `tenant_locations`).
+  The denominator for **Reach**.
 - **The two public scrapes** (both hit `POST /v1/layout/search`, differing only in query):
   - **Keyword scrape** — `cli scrape public-run`. Searches category keywords ("soda")
     → *visibility*: rank, share of voice, competitors. Writes `search_snapshots` +
@@ -30,14 +45,14 @@ from **two scrapes**, and tagged with **freshness**. Blinkit-only.
 
 | Term | Meaning | Formula |
 |---|---|---|
-| **Reach** | How *widely present* the SKU is — % of covered areas where it appears at all | found locations ÷ covered locations |
-| **Distribution %** | Of the areas where it's present, how many have it **in stock** (an in-stock rate) | in-stock locations ÷ found locations |
-| **In-stock / locations** | The raw counts behind Distribution (e.g. 1,848 / 1,870) | — |
-| **Avg discount** | Average % off MRP across locations | (MRP − price) ÷ MRP |
+| **Reach** | How *widely present* the SKU is — % of covered stores where it appears at all | stores listed ÷ stores covered |
+| **Distribution %** | Of the stores where it's listed, how many have it **in stock** | stores in stock ÷ stores listed |
+| **In-stock / listed** | The raw counts behind Distribution (e.g. 24,410 / 25,474) | — |
+| **Avg discount** | Average % off MRP across stores | (MRP − price) ÷ MRP |
 | **Rating** | Consumer star rating on the listing | — |
-| **Price / median** | Typical price across locations | median of latest price per location |
-| **Price band (min–max)** | Cheapest → dearest across locations | — |
-| **Price dispersion** | The band per SKU — surfaces locations pricing you differently | min / median / max |
+| **Price / median** | Typical price across stores | median of latest price per store |
+| **Price band (min–max)** | Cheapest → dearest across stores | — |
+| **Price dispersion** | The band per SKU — surfaces stores pricing you differently | min / median / max |
 | **Availability trend** | Weekly on-shelf availability %; **OOS %** is its inverse | avg(in-stock) per week |
 | **SKUs with gaps** | How many own SKUs are below 100% distribution | count(distribution < 100%) |
 
@@ -45,6 +60,16 @@ from **two scrapes**, and tagged with **freshness**. Blinkit-only.
 > here at all?" (breadth). *Distribution* = "where I'm on the shelf, am I in stock?"
 > (health). A SKU can be 97% reach but 90% distribution if it's often OOS where it
 > reaches. (Note: retail sometimes uses "distribution" for breadth; here that's **Reach**.)
+>
+> They are also **different problems for different teams**: a SKU that is *not listed*
+> is a range/commercial gap; one that is *listed but out of stock* is a replenishment
+> gap. Measured all-India on 2026-07-19: Reach 84.7% (4,586 unlisted store×SKU slots)
+> vs Distribution 95.8% (1,064 stockouts) — i.e. the bigger opportunity was listings,
+> not replenishment. Keep them apart or that signal is lost.
+
+> **"Absent" is not "out of stock."** A SKU missing from a store's response may be
+> not-carried *or* past the scrape cap — indistinguishable from outside. So `N` is
+> always **stores observed**, never the brand's full catalogue.
 
 ## Visibility & competition (Competition page + Products "where it ranks")
 
