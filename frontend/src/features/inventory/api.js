@@ -2,35 +2,78 @@ import { api } from "../../lib/axios";
 
 /**
  * Inventory endpoints. The public own-SKU surface (from sku_snapshots, populated by
- * the weekly `public-skus` scrape) all under /clients/{clientId}/inventory and take
- * the window as ?days=, with optional ?city=/?marketplace=. `?kind=` splits singular
- * main SKUs from combos/multipacks (main | combo | all; default main) — combos are
- * stocked selectively so they aren't compared against main SKUs by default.
- * `/availability` is server-paginated (?page=&limit=); the rest return the full small
- * per-SKU set. Each response carries `as_of` for the freshness badge.
+ * the `public-skus` scrape) all sit under /clients/{clientId}/inventory and take the
+ * window as ?start=&end=, with optional ?city=/?marketplace=. `?kind=` splits singular main
+ * SKUs from combos/multipacks (main | combo | all; default main) — combos are stocked
+ * selectively so they aren't compared against main SKUs by default. Each response
+ * carries `as_of` for the freshness badge.
+ *
+ * The unit is the DARK STORE (`merchant_id`), not the coordinate we probed: one
+ * coordinate can be served by several stores and one store can answer several
+ * coordinates. Responses ship the denominators (`stores_scraped`, `active_range`)
+ * alongside every percentage so the UI can always render "X of N" — never a bare
+ * percentage. See docs/darkstores.md.
  */
-export const getDistribution = (clientId, { days, city, marketplace, kind } = {}) =>
+export const getDistribution = (clientId, { start, end, city, marketplace, kind } = {}) =>
 	api.get(`/clients/${clientId}/inventory/distribution`, {
-		params: { days, city, marketplace, kind },
+		params: { start, end, city, marketplace, kind },
 	});
 
 export const getAvailability = (
 	clientId,
-	{ days, city, marketplace, kind, page, limit } = {},
+	{ start, end, city, marketplace, kind, page, limit } = {},
 ) =>
 	api.get(`/clients/${clientId}/inventory/availability`, {
-		params: { days, city, marketplace, kind, page, limit },
+		params: { start, end, city, marketplace, kind, page, limit },
 	});
 
 export const getAvailabilityHistory = (
 	clientId,
-	{ days, city, marketplace, kind } = {},
+	{ start, end, city, marketplace, kind } = {},
 ) =>
 	api.get(`/clients/${clientId}/inventory/availability-history`, {
-		params: { days, city, marketplace, kind },
+		params: { start, end, city, marketplace, kind },
 	});
 
-export const getPricing = (clientId, { days, city, marketplace, kind } = {}) =>
+export const getPricing = (clientId, { start, end, city, marketplace, kind } = {}) =>
 	api.get(`/clients/${clientId}/inventory/pricing`, {
-		params: { days, city, marketplace, kind },
+		params: { start, end, city, marketplace, kind },
+	});
+
+/** Availability per dark store, worst first. `tier` narrows to one fulfilment tier. */
+export const getStores = (clientId, { start, end, city, marketplace, kind, tier } = {}) =>
+	api.get(`/clients/${clientId}/inventory/stores`, {
+		params: { start, end, city, marketplace, kind, tier },
+	});
+
+/** The same numbers rolled up one level, for the city view. */
+export const getCities = (clientId, { start, end, marketplace, kind } = {}) =>
+	api.get(`/clients/${clientId}/inventory/cities`, {
+		params: { start, end, marketplace, kind },
+	});
+
+/**
+ * The work queue — one row per problem, naming a store and a product.
+ * `action=oos` (listed but empty → replenishment) or `not-listed` (absent from the
+ * shelf → range). Two separate lists on purpose: different teams act on them.
+ * Server-paginated.
+ */
+export const getActions = (
+	clientId,
+	{ action, start, end, city, marketplace, kind, page, limit } = {},
+) =>
+	api.get(`/clients/${clientId}/inventory/actions`, {
+		params: { action, start, end, city, marketplace, kind, page, limit },
+	});
+
+/** One store's whole shelf — absent SKUs included, flagged `listed: false`. */
+export const getStoreDetail = (clientId, merchantId, { start, end, marketplace, kind } = {}) =>
+	api.get(`/clients/${clientId}/inventory/stores/${merchantId}`, {
+		params: { start, end, marketplace, kind },
+	});
+
+/** One product across every store — where it's OOS, not carried, or fine. */
+export const getProductStores = (clientId, productId, { start, end, city, marketplace, kind } = {}) =>
+	api.get(`/clients/${clientId}/inventory/products/${productId}/stores`, {
+		params: { start, end, city, marketplace, kind },
 	});

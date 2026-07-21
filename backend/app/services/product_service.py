@@ -4,9 +4,9 @@ PO history (blinkit_po_items), and the Blinkit scorecard signal
 (blinkit_scorecard_key_skus). Private plane only — keyed on `item_id`.
 """
 import uuid
-from datetime import date, timedelta
+from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import Integer, cast, distinct, func, select, tuple_
+from sqlalchemy import Integer, cast, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination, Period
@@ -471,7 +471,8 @@ async def get_product_public(
     *,
     tenant_id: uuid.UUID,
     item_id: str,
-    days: int = 30,
+    start: date,
+    end: date,
 ) -> dict:
     """The public (scraped) picture for one private SKU, bridged via `sku_map`:
     on-shelf distribution + price/discount/rating from `sku_snapshots`, and where it
@@ -486,13 +487,19 @@ async def get_product_public(
     if not pid:
         return {"mapped": False}
 
-    since = now_ist() - timedelta(days=days)
+    lo = datetime.combine(start, time.min)
+    hi = datetime.combine(end + timedelta(days=1), time.min)
     base = [
         SkuSnapshot.tenant_id == tenant_id,
         SkuSnapshot.platform_product_id == pid,
-        SkuSnapshot.scraped_at >= since,
+        SkuSnapshot.scraped_at >= lo,
+        SkuSnapshot.scraped_at < hi,
     ]
-    # Latest snapshot per LOCATION (lat/lon), then aggregate coverage + price band.
+    # Latest snapshot per DARK STORE, then aggregate coverage + price band. Keyed on
+    # merchant_id, not (lat,lon): one coordinate can return several stores and one
+    # store can answer several coordinates. `merchant_id != ""` excludes pre-2026-07-18
+    # rows that predate the store columns. See docs/darkstores.md.
+    base = [*base, SkuSnapshot.merchant_id != ""]
     latest = (
         select(
             SkuSnapshot.in_stock.label("in_stock"),
@@ -503,8 +510,8 @@ async def get_product_public(
             SkuSnapshot.scraped_at.label("scraped_at"),
         )
         .where(*base)
-        .distinct(SkuSnapshot.lat, SkuSnapshot.lon)
-        .order_by(SkuSnapshot.lat, SkuSnapshot.lon, SkuSnapshot.scraped_at.desc())
+        .distinct(SkuSnapshot.merchant_id)
+        .order_by(SkuSnapshot.merchant_id, SkuSnapshot.scraped_at.desc())
         .subquery()
     )
     agg = (await session.execute(
@@ -520,37 +527,42 @@ async def get_product_public(
             func.max(latest.c.scraped_at),
         )
     )).one()
-    total_locations = int(agg[0] or 0)
-    in_stock_locations = int(agg[1] or 0)
+    stores_listed = int(agg[0] or 0)
+    stores_in_stock = int(agg[1] or 0)
 
-    # Reach: covered serviceable locations for this tenant (the denominator).
-    covered = (await session.execute(
-        select(func.count(distinct(tuple_(MarketplaceLocation.lat, MarketplaceLocation.lon))))
-        .select_from(MarketplaceLocation)
-        .join(TenantLocation, TenantLocation.location_id == MarketplaceLocation.id)
-        .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == "blinkit")
+    # Reach denominator = stores that ACTUALLY ANSWERED for this tenant in the window,
+    # not the configured catalog count. A store we failed to reach is excluded rather
+    # than counted as a miss, which would understate the brand.
+    stores_scraped = (await session.execute(
+        select(func.count(distinct(SkuSnapshot.merchant_id)))
+        .where(
+            SkuSnapshot.tenant_id == tenant_id,
+            SkuSnapshot.scraped_at >= lo,
+        SkuSnapshot.scraped_at < hi,
+            SkuSnapshot.merchant_id != "",
+        )
     )).scalar() or 0
 
-    # Where it ranks: own-brand positions per keyword, counted over distinct
-    # locations (lat/lon on the joined snapshot), not rows.
+    # Where it ranks: own-brand positions per keyword, over distinct stores. Uses the
+    # listing's OWN merchant_id (the store fulfilling this product), so no join.
     kw_rows = (await session.execute(
         select(
             SearchListing.keyword,
             func.avg(SearchListing.position),
-            func.count(distinct(tuple_(SearchSnapshot.lat, SearchSnapshot.lon))),
+            func.count(distinct(SearchListing.merchant_id)),
         )
-        .select_from(SearchListing)
-        .join(SearchSnapshot, SearchSnapshot.id == SearchListing.snapshot_id)
         .where(
             SearchListing.tenant_id == tenant_id,
             SearchListing.platform_product_id == pid,
-            SearchListing.scraped_at >= since,
+            SearchListing.scraped_at >= lo,
+            SearchListing.scraped_at < hi,
+            SearchListing.merchant_id != "",
         )
         .group_by(SearchListing.keyword)
         .order_by(func.avg(SearchListing.position))
     )).all()
     keywords = [
-        {"keyword": kw, "avg_position": _p(pos, 1), "locations": n}
+        {"keyword": kw, "avg_position": _p(pos, 1), "stores": n}
         for kw, pos, n in kw_rows
     ]
 
@@ -559,11 +571,11 @@ async def get_product_public(
         "platform_product_id": pid,
         "product_name": row[1],
         "as_of": agg[8],
-        "total_locations": total_locations,
-        "in_stock_locations": in_stock_locations,
-        "distribution_pct": _p(in_stock_locations / total_locations * 100, 1) if total_locations else None,
-        "covered_locations": int(covered),
-        "reach_pct": _p(total_locations / covered * 100, 1) if covered else None,
+        "stores_listed": stores_listed,
+        "stores_in_stock": stores_in_stock,
+        "distribution_pct": _p(stores_in_stock / stores_listed * 100, 1) if stores_listed else None,
+        "stores_scraped": int(stores_scraped),
+        "reach_pct": _p(stores_listed / stores_scraped * 100, 1) if stores_scraped else None,
         "price_min": _p(agg[2]),
         "price_median": _p(agg[3]),
         "price_max": _p(agg[4]),

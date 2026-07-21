@@ -129,7 +129,7 @@ export const useAlerts = () => {
 	});
 };
 
-/** Public on-shelf distribution summary — weekly, so keyed on client + `days`. */
+/** Public on-shelf distribution summary — weekly, so keyed on client + window. */
 export const usePublicShelf = () => {
 	const { activeClientId } = useClient();
 	const { days } = useDateRange();

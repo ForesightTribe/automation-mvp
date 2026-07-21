@@ -65,13 +65,14 @@ export const useProductDetail = (itemId) => {
 };
 
 /** Public (scraped) view for one SKU — weekly data, so keyed on client + item +
- * the window's `days` (not the private start/end range). */
+ * the selected start/end window. */
 export const useProductPublic = (itemId) => {
 	const { activeClientId } = useClient();
-	const { days } = useDateRange();
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["product-public", activeClientId, itemId, days],
-		queryFn: () => getProductPublic(activeClientId, itemId, { days }),
+		queryKey: ["product-public", activeClientId, itemId, range],
+		queryFn: () =>
+			getProductPublic(activeClientId, itemId, { start: range.from, end: range.to }),
 		enabled: Boolean(activeClientId && itemId),
 	});
 };

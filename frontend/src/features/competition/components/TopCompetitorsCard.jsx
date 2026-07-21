@@ -9,9 +9,15 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed
 const pos = (v) => (v === null || v === undefined ? "—" : `#${Number(v).toFixed(1)}`);
 
 /**
- * Competitor leaderboard — who shows up most across the client's searches. Chart
- * ranks them by share of all competitor appearances; the table adds keyword spread,
- * avg position, and avg price.
+ * Competitor leaderboard — who shows up in the most DARK STORES across the client's
+ * searches. Chart ranks them by share of all (competitor, store) presences; the table
+ * adds keyword spread, avg position, and avg price.
+ *
+ * "Stores" counts the store fulfilling each competitor's product, which is not
+ * necessarily the store serving the coordinate — one response can span an express
+ * store and a longtail hub. Rows scraped before 2026-07-18 carry no store id and are
+ * excluded, so this card's window can be shorter than the SoV cards above, which stay
+ * search-based. See docs/darkstores.md.
  */
 export const TopCompetitorsCard = () => {
 	const { data, isLoading, error, refetch } = useTopCompetitors();
@@ -31,15 +37,15 @@ export const TopCompetitorsCard = () => {
 
 	const columns = [
 		{ key: "competitor", label: "Competitor" },
-		{ key: "share_pct", label: "Share", align: "right", render: (r) => pct(r.share_pct) },
+		{ key: "share_pct", label: "Share of results", align: "right", render: (r) => pct(r.share_pct) },
 		{
-			key: "locations",
-			label: "Areas seen in",
+			key: "stores",
+			label: "Stores",
 			align: "right",
-			render: (r) => formatNumber(r.locations),
+			render: (r) => formatNumber(r.stores),
 		},
 		{ key: "keywords", label: "Keywords", align: "right", render: (r) => formatNumber(r.keywords) },
-		{ key: "avg_position", label: "Avg pos", align: "right", render: (r) => pos(r.avg_position) },
+		{ key: "avg_position", label: "Avg position", align: "right", render: (r) => pos(r.avg_position) },
 		{
 			key: "avg_price",
 			label: "Avg price",
@@ -50,7 +56,7 @@ export const TopCompetitorsCard = () => {
 
 	return (
 		<ChartTableCard
-			title="Top competitors"
+			title="Who else shows up"
 			isLoading={isLoading}
 			error={error}
 			refetch={refetch}

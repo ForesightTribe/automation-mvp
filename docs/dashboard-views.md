@@ -38,9 +38,11 @@ See [api-reference.md](api-reference.md) for the existing endpoint surface and
    = `item_id`; public = `platform_product_id` (different Blinkit id systems, no
    shared UPC). The **`sku_map`** table links them (name-matched via `cli sku-map`),
    so the Product 360 now shows *sold* (private) next to *on-shelf + ranked* (public)
-   at `/products/{item_id}/public`. **All public counts are distinct serviceable
-   `(lat,lon)` locations, not stores** — see [public-glossary.md](public-glossary.md)
-   (Reach = found÷covered, Distribution = in-stock÷found).
+   at `/products/{item_id}/public`. **Public counts are distinct dark stores
+   (`merchant_id`), not `(lat,lon)`** — see [darkstores.md](darkstores.md) and
+   [public-glossary.md](public-glossary.md) (Reach = listed÷scraped, Distribution =
+   in-stock÷listed). The UI relabels these **"on shelf"** / **"in stock"** for a sales
+   reader (FMCG "distribution" means breadth — the opposite — so the raw words mislead).
 
 Legend: **[E]** existing endpoint · **[N]** new endpoint to build · **[E→N]** extend existing · **[B]** built for this catalog.
 
@@ -117,10 +119,14 @@ only (no public shelf/rank join yet — gap #2).
 | Stock on hand, low-first                              | Table                    | `blinkit_soh`(item_id, backend_facility_name, backend_inv_qty, frontend_inv_qty)                 | `inventory/soh` **[E]**                   |
 | **Reorder list** (days-of-cover ascending)            | Table                    | `blinkit_soh` ÷ `blinkit_seller_sales` velocity                                                  | `/inventory/cover` **[N]**                |
 | Fill rate / PO vs GRN / potential loss                | Summary + facility table | `blinkit_scorecard_facilities`(total_po_quantity, total_grn_quantity, fill_rate, potential_loss) | `inventory/fill-rate` **[E]**             |
-| Public shelf availability (own brand OOS)             | Table, city/mp filter    | `sku_snapshots`(platform_product_id, product_name, in_stock, inventory, city, mp_slug)           | `inventory/availability` **[E]**          |
-| **Stock-out timeline** (when/how long OOS)            | Trend                    | `sku_snapshots`(scraped_at, in_stock) per platform_product_id                                    | `/inventory/availability-history` **[N]** |
-| **Own-SKU price/discount by location** (price dispersion)| Table/heatmap, city/mp | `sku_snapshots`(platform_product_id, price, mrp, discount_pct, rating) per `(lat,lon)`           | `/inventory/pricing` **[B]**              |
-| **SKU 360 public panel** (reach, distribution, rank)  | Stat row + rank list     | `sku_map` ⨝ `sku_snapshots` (distribution/reach/price/rating) + `search_listings` (per-keyword rank), distinct `(lat,lon)` | `/products/{item_id}/public` **[B]** |
+| **Needs attention** (worst products + worst cities)   | Ranked lists, 2 tabs     | `/inventory/distribution` (per-SKU OOS / missing) + `/inventory/cities`                          | `inventory/distribution`+`cities` **[B]** |
+| **Where you're on the shelf** (city/store/product)    | Sortable table, 3 lenses; row → drawer | `/inventory/cities`, `/inventory/stores`, `/inventory/distribution`                | `inventory/cities`+`stores`+`distribution` **[B]** |
+| **Store shelf** (drawer: one store, every SKU)        | Slide-over               | `/inventory/stores/{merchant_id}` — listed + not-carried per SKU                                 | `/inventory/stores/{id}` **[B]**          |
+| **Product spread** (drawer: one SKU, every store)     | Slide-over               | `/inventory/products/{product_id}/stores`                                                        | `/inventory/products/{id}/stores` **[B]** |
+| **City detail** (drawer: one city's stores)           | Slide-over               | `/inventory/stores?city=`                                                                        | `/inventory/stores` **[B]**               |
+| **Availability trend** (weekly in-stock %)            | Trend, `?weeks=`         | `sku_snapshots`(scraped_at, in_stock) per `merchant_id`/week                                     | `/inventory/availability-history` **[B]** |
+| **Own-SKU price differences between stores**          | Table                    | `sku_snapshots`(platform_product_id, price, mrp, discount_pct) per `merchant_id`                 | `/inventory/pricing` **[B]**              |
+| **SKU 360 public panel** (on shelf, in stock, rank)   | Meters + rank list       | `sku_map` ⨝ `sku_snapshots` + `search_listings` (per-keyword rank), distinct `merchant_id`       | `/products/{item_id}/public` **[B]**      |
 | **Facility stock heatmap** (SKU × facility low spots) | Matrix                   | `blinkit_soh`(item_id, backend_facility_name, frontend_inv_qty)                                  | `/inventory/by-facility` **[N]**          |
 
 ## Ads — "is my spend working"

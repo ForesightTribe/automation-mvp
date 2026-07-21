@@ -3,7 +3,7 @@ watchlist. Scoped to the client's OWN brand(s) (relationship='own'); narrow
 further with optional keyword/city/marketplace filters.
 """
 import uuid
-from datetime import timedelta
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -14,6 +14,16 @@ from app.models.search import SearchListing, SearchSnapshot
 from app.schemas.common import Page
 from app.schemas.competition import CompetitorRankRow
 from app.services import watchlist_service
+
+
+def _bounds(start: date, end: date) -> tuple[datetime, datetime]:
+    """Inclusive calendar dates -> half-open [start 00:00, end+1 00:00). Public
+    metrics filter on the selected window, not "last N days from now" — anchoring to
+    now slides the cutoff past a window that doesn't end today and drops its data."""
+    return (
+        datetime.combine(start, time.min),
+        datetime.combine(end + timedelta(days=1), time.min),
+    )
 
 
 def _round(value: float | None, digits: int = 4) -> float | None:
@@ -41,7 +51,8 @@ async def get_share_of_voice(
     marketplace: str | None = None,
     keyword: str | None = None,
     city: str | None = None,
-    days: int = 30,
+    start: date,
+    end: date,
 ) -> dict:
     own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
     summary = {
@@ -49,7 +60,7 @@ async def get_share_of_voice(
         "marketplace": marketplace,
         "keyword": keyword,
         "city": city,
-        "period_days": days,
+        "period_days": (end - start).days + 1,
         "latest_sov": None,
         "avg_sov": None,
         "avg_rank": None,
@@ -59,11 +70,12 @@ async def get_share_of_voice(
         # No 'own' brand on the watchlist -> nothing to report.
         return {"summary": summary, "trend": []}
 
-    since = now_ist() - timedelta(days=days)
+    lo, hi = _bounds(start, end)
     conditions = [
         SearchSnapshot.tenant_id == tenant_id,
         SearchSnapshot.brand_slug.in_(own),
-        SearchSnapshot.scraped_at >= since,
+        SearchSnapshot.scraped_at >= lo,
+        SearchSnapshot.scraped_at < hi,
     ]
     if marketplace:
         conditions.append(SearchSnapshot.mp_slug == marketplace)
@@ -171,25 +183,32 @@ async def get_rank_matrix(
     *,
     tenant_id: uuid.UUID,
     marketplace: str | None = None,
-    days: int = 30,
+    start: date,
+    end: date,
 ) -> dict:
     """Own-brand avg rank + SoV per (keyword, city) over the window — the data
     for the "where am I weak?" heatmap. Cells are a flat list; the axes are the
     distinct keywords (rows) and cities (columns)."""
     own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
-    empty = {"keywords": [], "cities": [], "cells": [], "period_days": days, "as_of": None}
+    empty = {"keywords": [], "cities": [], "cells": [], "period_days": (end - start).days + 1, "as_of": None}
     if not own:
         return empty
 
-    since = now_ist() - timedelta(days=days)
+    lo, hi = _bounds(start, end)
     cond = [
         SearchSnapshot.tenant_id == tenant_id,
         SearchSnapshot.brand_slug.in_(own),
-        SearchSnapshot.scraped_at >= since,
+        SearchSnapshot.scraped_at >= lo,
+        SearchSnapshot.scraped_at < hi,
     ]
     if marketplace:
         cond.append(SearchSnapshot.mp_slug == marketplace)
 
+    # `searches` counts snapshots — one search at one probe point — NOT distinct
+    # stores. Rank and SoV are what the shopper sees in a blended result list, so the
+    # search is the honest sample unit here, and counting searches keeps the whole
+    # history usable (rows scraped before 2026-07-18 carry no merchant_id). Store-grain
+    # counting belongs where store identity actually matters — see get_top_competitors.
     rows = (
         await session.execute(
             select(
@@ -197,7 +216,7 @@ async def get_rank_matrix(
                 SearchSnapshot.city,
                 func.avg(SearchSnapshot.brand_rank),
                 func.avg(SearchSnapshot.brand_sov),
-                func.count(distinct(tuple_(SearchSnapshot.lat, SearchSnapshot.lon))),
+                func.count(),
                 func.max(SearchSnapshot.scraped_at),
             )
             .where(*cond)
@@ -214,7 +233,7 @@ async def get_rank_matrix(
             "city": city,
             "avg_rank": _round(rank, 2),
             "avg_sov": _round(sov),
-            "samples": n,
+            "searches": n,
         }
         for kw, city, rank, sov, n, _ in rows
     ]
@@ -225,7 +244,7 @@ async def get_rank_matrix(
         "keywords": keywords,
         "cities": cities,
         "cells": cells,
-        "period_days": days,
+        "period_days": (end - start).days + 1,
         "as_of": as_of,
     }
 
@@ -239,18 +258,29 @@ async def get_top_competitors(
     keyword: str | None = None,
     city: str | None = None,
     marketplace: str | None = None,
-    days: int = 30,
+    start: date,
+    end: date,
     limit: int = 15,
 ) -> dict:
-    """Which competitors show up most across the client's searches — the count is
-    distinct serviceable LOCATIONS (lat/lon on the joined snapshot), not rows, so
-    co-located catalog duplicates don't inflate it. Plus keyword spread, avg
-    position/price, and share of all competitor location-presences."""
-    since = now_ist() - timedelta(days=days)
+    """Which competitors show up in most DARK STORES across the client's searches,
+    plus keyword spread, avg position/price, and share of all competitor presences.
+
+    Counts distinct `SearchListing.merchant_id` — the store that fulfils *that
+    competitor's product*, which is not necessarily the store serving the coordinate.
+    One response can span an express store and one or more longtail hubs, so the old
+    version (joining the snapshot for its lat/lon) mis-attributed any competitor
+    product served from a hub. Reading the listing's own merchant also drops the join
+    entirely.
+
+    ⚠️ Rows scraped before 2026-07-18 have no `merchant_id` and are excluded — store
+    presence is meaningless without a store. Expect a shorter window here than on the
+    rank/SoV views, which stay search-based and keep their full history."""
+    lo, hi = _bounds(start, end)
     cond = [
         SearchListing.tenant_id == tenant_id,
         SearchListing.is_brand.is_(False),
-        SearchListing.scraped_at >= since,
+        SearchListing.scraped_at >= lo, SearchListing.scraped_at < hi,
+        SearchListing.merchant_id != "",
     ]
     if keyword:
         cond.append(SearchListing.keyword == keyword)
@@ -259,38 +289,33 @@ async def get_top_competitors(
     if marketplace:
         cond.append(SearchListing.mp_slug == marketplace)
 
-    loc = tuple_(SearchSnapshot.lat, SearchSnapshot.lon)
-    join = (SearchSnapshot, SearchSnapshot.id == SearchListing.snapshot_id)
+    store = SearchListing.merchant_id
     rows = (
         await session.execute(
             select(
                 SearchListing.brand_slug,
-                func.count(distinct(loc)),
+                func.count(distinct(store)),
                 func.count(distinct(SearchListing.keyword)),
                 func.avg(SearchListing.position),
                 func.avg(SearchListing.price),
                 func.max(SearchListing.scraped_at),
             )
-            .select_from(SearchListing)
-            .join(*join)
             .where(*cond)
             .group_by(SearchListing.brand_slug)
-            .order_by(func.count(distinct(loc)).desc())
+            .order_by(func.count(distinct(store)).desc())
             .limit(limit)
         )
     ).all()
     if not rows:
         return {
-            "period_days": days, "as_of": None,
-            "total_competitor_locations": 0, "competitors": [],
+            "period_days": (end - start).days + 1, "as_of": None,
+            "total_competitor_stores": 0, "competitors": [],
         }
 
-    # Total competitor location-presences = distinct (competitor, location).
+    # Total competitor presences = distinct (competitor, store) pairs.
     total = (
         await session.execute(
-            select(func.count(distinct(tuple_(SearchListing.brand_slug, SearchSnapshot.lat, SearchSnapshot.lon))))
-            .select_from(SearchListing)
-            .join(*join)
+            select(func.count(distinct(tuple_(SearchListing.brand_slug, store))))
             .where(*cond)
         )
     ).scalar_one()
@@ -298,19 +323,19 @@ async def get_top_competitors(
     competitors = [
         {
             "competitor": slug or "unknown",
-            "locations": locs,
+            "stores": n_stores,
             "keywords": kw_count,
             "avg_position": _round(pos, 1),
             "avg_price": _price(price),
-            "share_pct": _round(locs / total * 100, 1) if total else None,
+            "share_pct": _round(n_stores / total * 100, 1) if total else None,
         }
-        for slug, locs, kw_count, pos, price, _ in rows
+        for slug, n_stores, kw_count, pos, price, _ in rows
     ]
     as_of = max(r[5] for r in rows)
     return {
-        "period_days": days,
+        "period_days": (end - start).days + 1,
         "as_of": as_of,
-        "total_competitor_locations": total,
+        "total_competitor_stores": total,
         "competitors": competitors,
     }
 
@@ -324,14 +349,15 @@ async def get_price_position(
     keyword: str | None = None,
     city: str | None = None,
     marketplace: str | None = None,
-    days: int = 30,
+    start: date,
+    end: date,
     kind: str = "main",
 ) -> dict:
     """Per keyword: the own brand's price band vs the competitor price band, so
     you can see if you're priced into or out of the consideration set. `kind`
     filters combos/multipacks (default `main` = singles, on both own + competitor)."""
-    since = now_ist() - timedelta(days=days)
-    base = [SearchListing.tenant_id == tenant_id, SearchListing.scraped_at >= since,
+    lo, hi = _bounds(start, end)
+    base = [SearchListing.tenant_id == tenant_id, SearchListing.scraped_at >= lo, SearchListing.scraped_at < hi,
             SearchListing.price.is_not(None), *_kind_cond(kind)]
     if keyword:
         base.append(SearchListing.keyword == keyword)
@@ -396,4 +422,4 @@ async def get_price_position(
             select(func.max(SearchListing.scraped_at)).where(*base)
         )
     ).scalar()
-    return {"period_days": days, "as_of": as_of, "rows": rows}
+    return {"period_days": (end - start).days + 1, "as_of": as_of, "rows": rows}

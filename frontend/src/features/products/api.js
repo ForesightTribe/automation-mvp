@@ -31,7 +31,7 @@ export const getProductPos = (clientId, itemId, opts) =>
 
 /** Public (scraped) view of one SKU, bridged via sku_map — on-shelf distribution,
  * price/discount/rating, per-keyword rank. Weekly data, so it takes ?days=. */
-export const getProductPublic = (clientId, itemId, { days } = {}) =>
+export const getProductPublic = (clientId, itemId, { start, end } = {}) =>
 	api.get(`/clients/${clientId}/products/${itemId}/public`, {
-		params: { days },
+		params: { start, end },
 	});

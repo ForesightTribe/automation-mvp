@@ -16,40 +16,40 @@ import {
  */
 export const useShareOfVoice = () => {
 	const { activeClientId } = useClient();
-	const { days } = useDateRange();
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["comp-sov", activeClientId, days],
-		queryFn: () => getShareOfVoice(activeClientId, { days }),
+		queryKey: ["comp-sov", activeClientId, range],
+		queryFn: () => getShareOfVoice(activeClientId, { start: range.from, end: range.to }),
 		enabled: Boolean(activeClientId),
 	});
 };
 
 export const useRankMatrix = () => {
 	const { activeClientId } = useClient();
-	const { days } = useDateRange();
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["comp-rank-matrix", activeClientId, days],
-		queryFn: () => getRankMatrix(activeClientId, { days }),
+		queryKey: ["comp-rank-matrix", activeClientId, range],
+		queryFn: () => getRankMatrix(activeClientId, { start: range.from, end: range.to }),
 		enabled: Boolean(activeClientId),
 	});
 };
 
 export const useTopCompetitors = () => {
 	const { activeClientId } = useClient();
-	const { days } = useDateRange();
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["comp-top", activeClientId, days],
-		queryFn: () => getTopCompetitors(activeClientId, { days }),
+		queryKey: ["comp-top", activeClientId, range],
+		queryFn: () => getTopCompetitors(activeClientId, { start: range.from, end: range.to }),
 		enabled: Boolean(activeClientId),
 	});
 };
 
 export const usePricePosition = (kind = "main") => {
 	const { activeClientId } = useClient();
-	const { days } = useDateRange();
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["comp-price", activeClientId, days, kind],
-		queryFn: () => getPricePosition(activeClientId, { days, kind }),
+		queryKey: ["comp-price", activeClientId, range, kind],
+		queryFn: () => getPricePosition(activeClientId, { start: range.from, end: range.to, kind }),
 		enabled: Boolean(activeClientId),
 	});
 };
