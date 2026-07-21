@@ -125,8 +125,8 @@ python -m cli runner start                   # the daemon (systemd does this on 
   scrape one day/week → a miss is a permanent gap → they need `--catchup`.**
 - **⚠️ Never leave a runner running locally** — laptop and VM share one database, so a
   local runner will claim VM jobs and scrape from your home IP.
-- **Alembic has 2 heads** — `upgrade head` errors. Target explicitly:
-  `alembic upgrade b8e5d1a3f9c2`.
+- **Alembic is single-head again** (`b6b4f0f7ee83`, merge of the darkstore +
+  campaign lines, stamped 2026-07-21) — `alembic upgrade head` works normally.
 - **The campaign manager (`ad_campaigns/`) is off-limits** — coworker-owned. It moves
   onto the `live` lane later; its in-API APScheduler would break on Render (no
   Chromium, US IP, and double budget writes if the VM ran it too).
