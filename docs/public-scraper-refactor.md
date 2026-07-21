@@ -18,13 +18,16 @@ sizing + remaining open items** — it is not a how-to. For that:
   `search_snapshots`/`search_listings`), the **brand scrape** (`public-skus`) for
   own-shelf (price/stock → `sku_snapshots`). The dedicated PDP endpoint
   (`/v1/layout/product/{id}`) was evaluated and left unused (too heavy).
-- **The unit is the serviceable location `(lat,lon)`, not the store.** The catalog
-  lat/long is a delivery point several dark stores can share, and the search API
-  resolves a coordinate to one serving store — so all read metrics count distinct
-  `(lat,lon)`. This resolved a long "coverage gap" that was purely a store-vs-location
-  counting artifact (brand search returns only ~18 basic matches for a brand query,
-  but that never mattered — the real numbers are location-based and healthy, ~97%
-  reach for a main SKU).
+- ~~**The unit is the serviceable location `(lat,lon)`, not the store.**~~
+  **SUPERSEDED 2026-07-18 → the unit is the STORE (`merchant_id`).** The original
+  reasoning — that the API "resolves a coordinate to one serving store" and we can't
+  tell which — rested on an untested premise. Every product in the response is
+  stamped with its own `merchant_id` + `merchant_type`; the scraper had been
+  extracting both all along and discarding them. A coordinate can return **several**
+  stores (express + longtail hubs), so "one serving store" was wrong too.
+  Evidence, model and migrations: [darkstores.md](darkstores.md).
+  *Still true from the original note:* the "coverage gap" was a counting artifact,
+  not missing data.
 - **Header + detail** for the keyword scrape (`search_snapshots` header for cheap
   trends + `search_listings` per-product detail); **flat** `sku_snapshots` for the
   brand scrape.

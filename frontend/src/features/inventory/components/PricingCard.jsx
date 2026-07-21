@@ -19,26 +19,26 @@ export const PricingCard = ({ kind = "main" }) => {
 
 	const columns = [
 		{ key: "product_name", label: "Product", render: (r) => r.product_name || r.platform_product_id },
-		{ key: "locations", label: "Locations", align: "right", render: (r) => formatNumber(r.locations) },
-		{ key: "min_price", label: "Min", align: "right", render: (r) => formatCurrency(r.min_price) },
+		{ key: "stores", label: "Stores", align: "right", render: (r) => formatNumber(r.stores) },
+		{ key: "min_price", label: "Cheapest", align: "right", render: (r) => formatCurrency(r.min_price) },
 		{
 			key: "median_price",
-			label: "Median",
+			label: "Typical",
 			align: "right",
 			render: (r) => formatCurrency(r.median_price),
 		},
-		{ key: "max_price", label: "Max", align: "right", render: (r) => formatCurrency(r.max_price) },
-		{ key: "avg_discount", label: "Avg disc.", align: "right", render: (r) => pct(r.avg_discount) },
+		{ key: "max_price", label: "Dearest", align: "right", render: (r) => formatCurrency(r.max_price) },
+		{ key: "avg_discount", label: "Avg discount", align: "right", render: (r) => pct(r.avg_discount) },
 	];
 
 	return (
-		<Card title="Price dispersion by SKU">
+		<Card title="Price differences between stores">
 			{isLoading && <Loading label="Loading prices…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&
 				!error &&
 				(rows.length === 0 ? (
-					<EmptyState message="No priced own-SKU snapshots in this window." />
+					<EmptyState message="No prices captured in this window." />
 				) : (
 					<DataTable
 						columns={columns}

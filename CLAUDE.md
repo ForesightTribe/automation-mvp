@@ -15,6 +15,8 @@
 | [docs/ui-rules.md](docs/ui-rules.md) | Frontend coding/styling conventions — arrow components, Tailwind v4 theme tokens, error layers, logging |
 | [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) | Public scraper — decisions log, cost/volume sizing, and remaining open items (refactor shipped) |
 | [docs/public-glossary.md](docs/public-glossary.md) | Public-data glossary & model — serviceable location unit, Reach vs Distribution, SoV/rank, Main-vs-Combo, sku_map, the two scrapes |
+| [docs/darkstores.md](docs/darkstores.md) | **Dark-store-level public data** (designed, not built) — merchant_id/merchant_type from the atc block, the probe-vs-store model, evidence log, proposed DB changes, tier caveats |
+| [docs/staging.md](docs/staging.md) | **Public scrapes stage to local SQLite**, then `cli scrape load` pushes to Postgres in one all-or-nothing transaction — why, commands, retention, failure modes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
@@ -87,6 +89,47 @@ The things that bite:
   `python` fails with `ModuleNotFoundError` and unredirected output vanishes.
 - **`playwright install-deps` needs sudo; `playwright install chromium` must not** —
   as root the browser lands in root's cache and the scraper can't find it.
+
+## Jobs & Scheduler (quick ref — see [docs/jobs.md](docs/jobs.md) · [runbook](docs/jobs-runbook.md))
+
+**Live on the VM since 2026-07-17.** Scrapes no longer get typed by hand: the
+top-level **`jobs/`** package runs a `runner` daemon (systemd) that is both a
+**producer** (cron → enqueue) and a **consumer** (claim → run). Every run is a row in
+the `jobs` table; each job is executed as a **subprocess** — the exact
+`python -m cli scrape …` you would otherwise type — with its output going to a
+per-run log file.
+
+```bash
+python -m cli jobs types                     # job types, lanes, timeouts, valid params
+python -m cli jobs run <type> -t <uuid> city=bengaluru workers=5   # queue now
+python -m cli jobs list / logs <id> -f       # status+peak RAM / live-tail a run
+python -m cli schedules add|list|show|update|enable|disable|remove  # cron CRUD (IST)
+python -m cli runner start                   # the daemon (systemd does this on the VM)
+```
+
+- **Lanes, not one queue.** `batch` (public scrapes) · `dashboard` (marketing/seller/
+  scorecard) · `live` (bid optimizer, later) · `interactive` (explorer/heartbeat).
+  Lanes run in parallel, sequential within themselves — so a 5-hour scrape can never
+  starve a latency-critical loop. Lane comes from the **job type**, not the caller.
+- **Params are trailing `key=value` pairs** and map 1:1 onto the real CLI flags (but
+  the names differ sometimes: `date_from` → `--from`). Quote values with spaces:
+  `"city=delhi ncr"`.
+- **The registry is code** — [jobs/types.py](backend/jobs/types.py) is the single
+  extension point (type → lane, timeout, argv builder). Adding a job type = one entry.
+- **Config split:** job types/lanes/timeouts → code · `LANE_SLOTS`/`DB_POOL_SIZE`/
+  `LOG_DIR` → env (all have defaults; **no new `.env` keys required**) · cron/params/
+  catchup → the `job_schedules` **table**, editable live with no restart.
+- **`--catchup` ≠ "survives restarts"** (everything does — schedules are DB rows). It
+  only decides whether a fire **missed while the runner was down** runs once on
+  recovery. Marketing re-scrapes 7 days so a miss self-heals; **seller/scorecard only
+  scrape one day/week → a miss is a permanent gap → they need `--catchup`.**
+- **⚠️ Never leave a runner running locally** — laptop and VM share one database, so a
+  local runner will claim VM jobs and scrape from your home IP.
+- **Alembic has 2 heads** — `upgrade head` errors. Target explicitly:
+  `alembic upgrade b8e5d1a3f9c2`.
+- **The campaign manager (`ad_campaigns/`) is off-limits** — coworker-owned. It moves
+  onto the `live` lane later; its in-API APScheduler would break on Render (no
+  Chromium, US IP, and double budget writes if the VM ran it too).
 
 ## Database Patterns
 
@@ -186,14 +229,25 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   tenant's *brand name*, paginates the whole catalog to `brand_cap`, own-only →
   `sku_snapshots`, keyed on `platform_product_id`). Own price/inventory truth comes
   from the targeted scrape; SoV + competitors come from the keyword scrape.
-- **The unit is the serviceable location `(lat, lon)`, NOT the store.** The catalog
-  lat/long is a delivery point, not a store address — several dark stores can share
-  one, and the search API picks the serving store from the coordinate. So **all
-  public metrics count distinct `(lat,lon)` locations, never stores/rows** (`merchant_id`
-  duplicates across co-located catalog rows). `marketplace_locations` is keyed on
-  `merchant_id` (all distinct); pincode/zone are best-effort metadata.
-- **Reach vs Distribution**: *Reach* = found_locations ÷ covered_locations (breadth);
-  *Distribution %* = in_stock_locations ÷ found_locations (in-stock rate). See
+- **The unit is the STORE (`merchant_id`); the coordinate is only the probe.**
+  Every product in a search response is stamped with the store that fulfils it
+  (`merchant_id`) and the tier it is sold under (`merchant_type`) — read them
+  **per product**, never per response. `lat/lon` is where we knock; the response
+  says who answered. ⚠️ *Superseded 2026-07-18* — this used to say the unit was the
+  location `(lat,lon)` "not the store", which was a reasonable but untested belief.
+  See [docs/darkstores.md](docs/darkstores.md) for the evidence that overturned it.
+  **The read APIs still aggregate at location grain and have not been migrated yet.**
+- **`merchant_type` is a property of the PRODUCT's fulfilment tier, not of the store.**
+  Values seen: `express` · `longtail` · `super_longtail` · `dummy` (`unicorn` never
+  observed). One store can serve express to its own catchment and longtail to a
+  neighbour, and two tiers at once. **Never derive it from a store lookup table.**
+- **One coordinate can resolve to several stores** (express + longtail hubs), and
+  **one store can answer several coordinates** (when the catalog drifts). So always
+  `COUNT(DISTINCT merchant_id)` and take one row per `(store, product)` — raw row
+  counts over-report.
+- **Reach vs Distribution**: *Reach* = stores where the SKU is listed ÷ stores covered
+  (breadth); *Distribution %* = in-stock ÷ listed (in-stock rate). Segment denominators
+  **by tier** — ~2059 express stores vs ~510 shared hubs. See
   [docs/public-glossary.md](docs/public-glossary.md).
 - **Combos separated from main SKUs.** `is_combo` (on `sku_snapshots` + `search_listings`,
   classified by name) — combos are stocked selectively, so views filter `?kind=main|combo|all`
@@ -207,11 +261,16 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   per-location relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.
 - **Storage is per-tenant**: `search_snapshots`/`search_listings` (keyword scrape) +
   `sku_snapshots` (brand scrape). Append-only.
+- **⚠️ Public scrapes DO NOT write to Postgres.** They stage to a local SQLite file;
+  `cli scrape load` pushes it later in one all-or-nothing transaction. A ~1.5h run no
+  longer dies with the database, and the scrape phase needs **zero** DB connections.
+  A scraped file sitting unloaded is the new failure mode — `cli scrape staged` lists
+  them. See [docs/staging.md](docs/staging.md).
 - **Orchestrators**: `scraper/public/orchestrator.py` (keyword, `run_tenant`/`run_all`)
   + `scraper/public/targeted.py` (brand, `run_targeted`/`run_all_targeted`) — worker
-  pool (`--workers`), one `scrape_job` per run, `--resume` continues an interrupted job.
-  After the main pass, **one automatic retry pass** re-scrapes locations that errored
-  and returned nothing (transient Cloudflare/session blips) with fresh sessions.
+  pool (`--workers`), `--resume` continues an interrupted run (reads the staging file,
+  so it works even while Supabase is down). The `scrape_jobs` row is created at **load**
+  time, not scrape time, so an unloaded run leaves no phantom `running` job.
 
 ## CLI (quick ref)
 
@@ -234,8 +293,13 @@ python -m cli scrape blinkit-scorecard --tenant <uuid>
 python -m cli sync --file config.xlsx [--dry-run] [--prune]   # apply config workbook → DB
 python -m cli locations list [--city <slug>] [--tenant <uuid>]
 python -m cli watchlist list --tenant <uuid>
-python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors
-python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → sku_snapshots
+python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors → STAGING FILE
+python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → STAGING FILE
+
+# Public scrapes land in a local SQLite file — push them to Postgres afterwards:
+python -m cli scrape staged [--pending]                  # review; Stores/Err flag a bad run
+python -m cli scrape load [--all] [--file <ref>] [--dry-run]   # push (one txn per file)
+python -m cli scrape discard --file <ref>                # bin a bad run without loading it
 python -m cli sku-map build --tenant <uuid> [--file sku_map.xlsx]    # auto-match private item_id ↔ public product_id + export review workbook
 python -m cli sku-map apply --tenant <uuid> --file sku_map.xlsx      # apply manual mapping corrections
 

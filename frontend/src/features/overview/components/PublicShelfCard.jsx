@@ -23,27 +23,27 @@ export const PublicShelfCard = () => {
 	const worst = skus.slice(0, 5); // endpoint returns widest-gaps-first
 
 	return (
-		<Card title="On-shelf distribution" actions={<FreshnessBadge at={data?.as_of} />}>
+		<Card title="On the shelf" actions={<FreshnessBadge at={data?.as_of} />}>
 			{isLoading && <Loading label="Loading distribution…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&
 				!error &&
 				(skus.length === 0 ? (
-					<EmptyState message="No own-SKU data yet. Run the targeted scrape (public-skus)." />
+					<EmptyState message="No shelf data yet." />
 				) : (
 					<div className="flex flex-col gap-4">
 						<div className="grid grid-cols-2 gap-4">
 							<div>
 								<p className="text-xs font-medium uppercase tracking-wide text-content-subtle">
-									Avg distribution
+									Avg on shelf
 								</p>
 								<p className="mt-1 font-display text-2xl font-bold text-content">
-									{pct(avgDist)}
+									{pct(avgOnShelf)}
 								</p>
 							</div>
 							<div>
 								<p className="text-xs font-medium uppercase tracking-wide text-content-subtle">
-									SKUs with gaps
+									Products with gaps
 								</p>
 								<p className="mt-1 font-display text-2xl font-bold text-content">
 									{formatNumber(withGaps)}
@@ -56,7 +56,7 @@ export const PublicShelfCard = () => {
 
 						<div>
 							<p className="mb-2 text-xs font-medium uppercase tracking-wide text-content-subtle">
-								Widest gaps
+								Least available
 							</p>
 							<ul className="flex flex-col gap-2">
 								{worst.map((s) => (
@@ -70,8 +70,8 @@ export const PublicShelfCard = () => {
 										<span className="shrink-0 tabular-nums text-content-muted">
 											{pct(s.distribution_pct)}
 											<span className="ml-1 text-content-subtle">
-												({formatNumber(s.in_stock_locations)}/
-												{formatNumber(s.total_locations)})
+												({formatNumber(s.stores_in_stock)}/
+												{formatNumber(s.stores_listed)})
 											</span>
 										</span>
 									</li>

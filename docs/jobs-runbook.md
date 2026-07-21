@@ -2,8 +2,9 @@
 
 How to **operate** the job system. For _why_ it's built this way, see [jobs.md](jobs.md).
 
-> Status: Phases 1–3 built and tested locally. Cloud Logging is written but only
-> verifiable on the VM.
+> **Status: live on the VM since 2026-07-17.** Scheduled scrapes run unattended;
+> logs ship to Cloud Logging. **Not yet done:** the alert policy (so failures reach a
+> log, not your inbox) and the public-scraper test from the VM.
 
 ---
 

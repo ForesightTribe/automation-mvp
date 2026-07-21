@@ -8,10 +8,15 @@ import { Sparkline } from "../charts/Sparkline";
  * metric-specific; this tile only handles layout. `delta` is a fraction or null;
  * `goodWhenDown` flips the badge colors for lower-is-better metrics like rank.
  * Pass `series` (array of daily values) to render a sparkline under the number.
+ *
+ * `hint` is the small line under the value — use it to carry the counts behind a
+ * percentage ("24,410 of 25,474 listed"). A ratio with no denominator is not
+ * interpretable, so any percentage tile should set it.
  */
 export const MetricTile = ({
 	label,
 	value,
+	hint,
 	delta,
 	goodWhenDown = false,
 	series,
@@ -28,6 +33,9 @@ export const MetricTile = ({
 				</p>
 				<DeltaBadge delta={delta} goodWhenDown={goodWhenDown} />
 			</div>
+			{hint && (
+				<p className="mt-1 text-xs text-content-subtle">{hint}</p>
+			)}
 			{series && (
 				<div className="mt-2">
 					<Sparkline values={series} color={sparkColor} />

@@ -75,14 +75,15 @@ async def product_detail(
 async def product_public(
     session: SessionDep,
     client: ClientDep,
+    period: PeriodDep,
     item_id: str,
-    days: int = Query(30, ge=1, le=365),
 ):
-    """Public (scraped) view of one SKU — on-shelf distribution, price/discount/
-    rating, and per-keyword rank — bridged from private `item_id` via `sku_map`.
-    Returns `mapped: false` when the SKU has no public mapping yet."""
+    """Public (scraped) view of one SKU — on-shelf presence, price/discount/rating,
+    and per-keyword rank — bridged from private `item_id` via `sku_map`. Returns
+    `mapped: false` when the SKU has no public mapping yet."""
     return await product_service.get_product_public(
-        session, tenant_id=client.id, item_id=item_id, days=days
+        session, tenant_id=client.id, item_id=item_id,
+        start=period.start, end=period.end,
     )
 
 

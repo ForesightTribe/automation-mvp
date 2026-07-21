@@ -61,8 +61,13 @@ Once a client is selected, **everything is under `/api/clients/{client_id}/...`*
   { "items": [...], "total": 0, "page": 1, "limit": 20, "pages": 0 }
   ```
   Controlled by `?page=` (≥1) and `?limit=` (1–100).
-- **Time windows** — dashboard endpoints take `?days=` (default 30) and
-  aggregate in SQL, so payloads stay small regardless of row volume.
+- **Time windows** — dashboard endpoints take the reporting window via `PeriodDep`
+  (`?start=&end=`, inclusive dates; legacy `?days=` still accepted, default 30) and
+  aggregate in SQL, so payloads stay small regardless of row volume. Public
+  (scraped) endpoints filter `scraped_at` **within the selected dates** — NOT "last N
+  days from now", which slid the cutoff past a window that didn't end today and
+  returned nothing (fixed 2026-07-20). The one exception is `/availability-history`,
+  a trend that takes `?weeks=` and stays anchored to the present.
 
 ---
 
@@ -138,7 +143,7 @@ Window via `PeriodDep` (`?start=&end=`, legacy `?days=`); `?marketplaces=` (comm
 | GET | `/products` | SKU list joined with latest stock + days-of-cover + health `status`. Returns `{summary, products: Page}` — `summary` = KPI strip (active SKUs, revenue, units, avg price, #out-of-stock, #low-cover) for the search/category/window scope. Params: `?search=` (name), `?category=`, `?sort=revenue\|units\|price\|cover`, `?sku_status=out_of_stock\|low_cover\|no_sales\|healthy`, pagination. |
 | GET | `/products/{item_id}` | Product 360: totals + avg price, current stock, days-of-cover + status, scorecard potential loss, daily sales `trend`, daily `stock_trend`, per-`facilities` stock, per-`cities` split. 404 if no sales in window. |
 | GET | `/products/{item_id}/pos` | Paginated PO line history for the SKU (`blinkit_po_items` ⨝ `blinkit_pos`): po_number, state, issue_date, facility, units ordered/received/remaining, cost, amount. |
-| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: on-shelf distribution % + `total_locations`/`in_stock_locations`, **reach %** (`total_locations ÷ covered_locations`), price band (min/median/max), avg discount, rating, and per-keyword rank with distinct `locations` (from `search_listings ⨝ search_snapshots`). Counts are distinct `(lat,lon)` locations. `?days=`. Returns `mapped: false` when unmapped. |
+| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: `stores_listed`/`stores_in_stock`, `reach_pct` (listed ÷ `stores_scraped`), `distribution_pct` (in stock ÷ listed), price band, discount, rating, and per-keyword rank with distinct `stores`. Counts are distinct dark stores (`merchant_id`), not `(lat,lon)`; `stores_scraped` is observed, not the configured catalog count. Window (`?start=&end=`). Returns `mapped: false` when unmapped. |
 
 ### `ads` — `/api/clients/{id}/ads` *(private)*
 Paid marketing on the platform (sponsored placements, bidding, plans).
@@ -162,21 +167,36 @@ the marketplace filter is a no-op until more platforms connect.
 ### `inventory` — `/api/clients/{id}/inventory`
 Stock health: private SOH + fill-rate, plus the **public own-SKU** surface from
 `sku_snapshots` (populated by `scrape public-skus`). Public endpoints need an `own`
-watchlist brand and carry an `as_of` timestamp (weekly cadence → show freshness).
-They also take **`?kind=main|combo|all`** (default `main`) — combos/multipacks are
-stocked selectively, so they're analysed apart from singular main SKUs. **All public
-counts are distinct serviceable *locations* (`lat,lon`), not stores/rows** — the
-catalog lat/long is a delivery point that several stores can share, so counting
-locations is the honest unit (`total_locations`, `in_stock_locations`, `locations`).
+watchlist brand and carry an `as_of` timestamp (show freshness). They take
+**`?kind=main|combo|all`** (default `main`) — combos are stocked selectively, so
+analysed apart — and the **window as `PeriodDep` (`?start=&end=`, legacy `?days=`)**.
+
+**The unit is the DARK STORE (`merchant_id`), read per product off the scrape — NOT
+the `(lat,lon)` coordinate.** One coordinate can be served by several stores and one
+store can answer several coordinates, so counts use `COUNT(DISTINCT merchant_id)` and
+one row per `(store, product)`. Rows scraped before 2026-07-18 have no `merchant_id`
+and are excluded (history not backfilled). See [darkstores.md](darkstores.md).
+
+Every response carries its **denominators** so a percentage is never bare:
+`stores_scraped` (stores that answered — the reach denominator) and `active_range`
+(distinct SKUs seen on ≥1 shelf). Two metrics, both segmentable by `merchant_type`
+tier: **reach** = stores listed ÷ stores_scraped (breadth), **distribution** =
+in stock ÷ listed (health). *(The UI relabels these "on shelf" / "in stock" — in FMCG
+"distribution" means breadth, so the raw terms would read backwards.)*
 
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/soh` | Paginated stock-on-hand per SKU (summed across facilities, low-stock first). `?date=` defaults latest. *(private)* |
 | GET | `/fill-rate` | PO fill-rate summary (PO vs GRN qty, potential loss). `?from=` defaults latest. *(private)* |
-| GET | `/availability` | **Public** stock-out monitoring — latest `sku_snapshots` row per (marketplace, city, product), out-of-stock first. Filters `?city=`, `?marketplace=`, `?days=` (default 30). |
-| GET | `/distribution` | **Public** distribution % per own SKU = in-stock stores ÷ stores it appears in (latest snapshot per store); widest gaps first. `?city=`, `?marketplace=`, `?days=`. |
-| GET | `/availability-history` | **Public** weekly on-shelf availability % trend for own SKUs. `?days=` (default 84 = 12 weeks), `?city=`, `?marketplace=`. |
-| GET | `/pricing` | **Public** per-SKU price dispersion across stores (min/median/max) + avg discount, latest snapshot per store. `?city=`, `?marketplace=`, `?days=`. |
+| GET | `/availability` | **Public** stock-out monitoring — latest `sku_snapshots` row per (product × store), out-of-stock first; each row carries `merchant_id`, `store_name`, `merchant_type`. `?city=`, `?marketplace=`, window. |
+| GET | `/distribution` | **Public** per own SKU: `stores_listed`/`stores_in_stock`/`stores_out_of_stock`, `reach_pct`, `distribution_pct`; worst reach first. Response has `stores_scraped`, `active_range`, `tiers`. Window + `?city=`/`?marketplace=`. |
+| GET | `/stores` | **Public** availability per dark store, worst first — `skus_listed/in_stock/out_of_stock/not_listed`, `reach_pct`, `distribution_pct`. `?tier=express\|longtail\|…` narrows a tier; denominators are per-tier (`tiers`). Window + `?city=`. |
+| GET | `/cities` | **Public** city rollup of the same numbers (incl. `skus_not_listed`). Window + `?marketplace=`. |
+| GET | `/actions` | **Public** work queue, one row per problem (store + product): `?action=oos` (listed but empty) or `not-listed` (absent). Paginated. Window + `?city=`. |
+| GET | `/stores/{merchant_id}` | **Public** one store's whole shelf — every own SKU incl. `listed:false`. Backs the store drawer. Window. |
+| GET | `/products/{product_id}/stores` | **Public** one product across every store (OOS / not-carried / in-stock). Mirror of the store shelf; backs the product drawer. Window + `?city=`. |
+| GET | `/availability-history` | **Public** weekly on-shelf availability % trend. Takes **`?weeks=`** (default 12), NOT the window — a trend is history, so a 2-day window shouldn't empty it. `?city=`, `?marketplace=`. |
+| GET | `/pricing` | **Public** per-SKU price dispersion across stores (min/median/max) + avg discount. Window + `?city=`/`?marketplace=`. |
 
 ### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
 Blinkit brand-health scorecard. **Weekly snapshots** keyed on `from_date_ist`
@@ -198,11 +218,11 @@ Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlis
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/share-of-voice` | Own-brand SOV summary + daily trend. Filters `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
-| GET | `/rank-matrix` | Own-brand avg rank + SoV per (keyword × city) — the "where am I weak" **heatmap**. Returns `keywords` (rows), `cities` (cols), flat `cells`, `as_of`. `?marketplace=`, `?days=` (default 30). |
-| GET | `/top-competitors` | Competitor leaderboard: distinct **locations** seen in, distinct keywords, avg position/price, share % of all competitor location-presences. `?keyword=`, `?city=`, `?marketplace=`, `?days=`, `?limit=` (default 15). |
-| GET | `/price-position` | Per keyword: own price band (avg/min/max) vs competitor band (avg/min/median/max) — priced in or out of the set. `?keyword=`, `?city=`, `?marketplace=`, `?days=`. |
-| GET | `/rankings` | Paginated competitor positions/prices for the own brand. Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
+| GET | `/share-of-voice` | Own-brand SOV summary + daily trend, over `searches` (snapshots). Rank/SoV are the blended shopper list, so counted per search — keeps full history (pre-2026-07-18 rows have no `merchant_id`). Filters `?keyword=`, `?city=`, `?marketplace=`, window. |
+| GET | `/rank-matrix` | Own-brand avg rank + SoV per (keyword × city) — the "where am I weak" **heatmap**. Cells carry `searches` (not stores). Returns `keywords`, `cities`, flat `cells`, `as_of`. `?marketplace=`, window. |
+| GET | `/top-competitors` | Competitor leaderboard by distinct **`stores`** (`COUNT(DISTINCT SearchListing.merchant_id)` — the store fulfilling *that competitor's* product), distinct keywords, avg position/price, share % of all `(competitor, store)` presences. ⚠️ excludes pre-2026-07-18 rows (no store id) → shorter window than the rank/SoV views. `?keyword=`, `?city=`, `?marketplace=`, window, `?limit=`. |
+| GET | `/price-position` | Per keyword: own price band vs competitor band. `?keyword=`, `?city=`, `?marketplace=`, window. |
+| GET | `/rankings` | Paginated competitor positions/prices for the own brand (all-time, not windowed). Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
 
 Empty results until the client has an `own` watchlist entry. `rank-matrix` /
 `top-competitors` / `price-position` read the keyword-scrape tables

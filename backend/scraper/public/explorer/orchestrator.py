@@ -80,7 +80,7 @@ async def _resolve_locations(db: AsyncSession, spec: ExplorerSpec) -> list[Marke
     if spec.cities:
         q = q.where(MarketplaceLocation.city.in_(list(spec.cities)))
     rows = (await db.execute(
-        q.order_by(MarketplaceLocation.city, MarketplaceLocation.zone)
+        q.order_by(MarketplaceLocation.city, MarketplaceLocation.merchant_id)
     )).scalars().all()
 
     seen: set[tuple] = set()
@@ -109,6 +109,8 @@ def _listing_row(base: dict, keyword: str, row: dict) -> dict:
         **base,
         "keyword": keyword,
         "position": row.get("position"),
+        # Per-product store — one keyword's results routinely span several.
+        "merchant_id": row.get("merchant_id", ""),
         "name": row.get("name", ""),
         "brand": row.get("brand", ""),
         "is_brand": row.get("is_brand", False),
@@ -131,10 +133,14 @@ def _listing_row(base: dict, keyword: str, row: dict) -> dict:
     }
 
 
-def _sku_row(base: dict, merchant_id: str, row: dict) -> dict:
+def _sku_row(base: dict, row: dict) -> dict:
     return {
         **base,
-        "merchant_id": merchant_id,
+        # The product's OWN store/tier — a brand's catalog can span an express store
+        # and one or more longtail hubs at the same coordinate, so this can never be
+        # the snapshot's single merchant. See docs/darkstores.md.
+        "merchant_id": row.get("merchant_id", ""),
+        "merchant_type": row.get("merchant_type", ""),
         "product_id": row.get("product_id", ""),
         "name": row.get("name", ""),
         "brand_slug": row.get("brand_slug", ""),
@@ -195,7 +201,7 @@ async def _worker(wid: int, provider: Provider, browser, seed: tuple, queue: asy
                 loc = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            base = {"city": loc.city, "zone": loc.zone or "", "pincode": loc.pincode or "",
+            base = {"city": loc.city, "zone": loc.location_name or "", "pincode": loc.pincode or "",
                     "lat": loc.lat, "lon": loc.lon}
             store_fail = 0
             try:
@@ -241,7 +247,7 @@ async def _worker(wid: int, provider: Provider, browser, seed: tuple, queue: asy
                         stale = 0
                         cls = classify_products(res["products"], ctx["brand_slug"], ctx["aliases"], competitors=[])
                         for row in cls["listings"]:
-                            result.sku_rows.append(_sku_row(base, res.get("merchant_id", ""), row))
+                            result.sku_rows.append(_sku_row(base, row))
                             stats["skus"] += 1
                     elif not res.get("ok"):
                         stale += 1

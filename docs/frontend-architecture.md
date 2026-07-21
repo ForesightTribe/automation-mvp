@@ -40,7 +40,7 @@ src/
   context/                 # global client-state (provider + hook co-located)
     AuthContext.jsx        # token + user; AuthProvider + useAuth
     ClientContext.jsx      # active client switcher; ClientProvider + useClient
-    DateRangeContext.jsx   # global `?days=` window; DateRangeProvider + useDateRange
+    DateRangeContext.jsx   # global { from, to } window (→ ?start=&end=); DateRangeProvider + useDateRange
 
   components/
     ui/                    # domain-agnostic primitives (Button, Card, Pagination, ChartTableCard, …)
@@ -67,12 +67,16 @@ src/
 - **State split:** Context owns *what the app owns* (auth token, current user,
   active client, date range). React Query owns *what the backend owns* (every
   dashboard fetch). They coexist: `ClientContext`/`DateRangeContext` hold the
-  active client id and `days`; feature `useQuery` hooks put both in their
-  `queryKey`, so switching client **or** date range auto-refetches.
-- **Global date range:** `DateRangeContext` holds `days` (presets 7/30/90,
-  persisted to localStorage), shown as a Navbar picker. Backend takes only
-  `?days=`, so the range is a day-count, not arbitrary from/to. Feature hooks read
-  `useDateRange()` rather than taking a `days` prop.
+  active client id and the `{ from, to }` window; feature `useQuery` hooks put both
+  in their `queryKey`, so switching client **or** date range auto-refetches.
+- **Global date range:** `DateRangeContext`'s canonical value is a `{ from, to }`
+  window (presets 7/30/90 are sugar that compute it; custom picks both ends),
+  persisted to localStorage and shown as a Navbar picker. Hooks send it as
+  `?start=&end=`, resolved server-side by `PeriodDep`. It also exposes a derived
+  `days` for the handful of endpoints still on the legacy count (e.g. the weekly
+  trend, which takes `?weeks=`). **Public (scraped) endpoints filter on the actual
+  selected dates** — sending a bare `days` from *now* dropped a window that didn't
+  end today (fixed 2026-07-20). Feature hooks read `useDateRange()`, not a prop.
 - **`staleTime` = 5 min global default** (`app/queryClient.js`). Data is ~daily
   scraped; override per-query when fresher is needed, or use `refetchInterval`
   for polling. Background refetches don't flip `isLoading` — no spinner flash.

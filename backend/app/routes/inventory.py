@@ -9,15 +9,20 @@ from fastapi import APIRouter, Query
 # apart from main SKUs unless explicitly requested.
 KindQuery = Literal["main", "combo", "all"]
 
-from app.dependencies import ClientDep, PaginationDep, SessionDep
+from app.dependencies import ClientDep, PaginationDep, PeriodDep, SessionDep
 from app.schemas.common import Page
 from app.schemas.inventory import (
+    ActionRow,
     AvailabilityHistoryResponse,
     AvailabilityRow,
+    CitiesResponse,
     DistributionResponse,
     FillRateSummary,
     SkuPricingResponse,
     SohRow,
+    ProductDetailResponse,
+    StoreDetailResponse,
+    StoresResponse,
 )
 from app.services import inventory_service
 
@@ -52,7 +57,7 @@ async def availability(
     session: SessionDep,
     client: ClientDep,
     pagination: PaginationDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
     city: str | None = None,
     marketplace: str | None = None,
     kind: KindQuery = "main",
@@ -64,7 +69,8 @@ async def availability(
         session,
         tenant_id=client.id,
         pagination=pagination,
-        days=days,
+        start=period.start,
+        end=period.end,
         city=city,
         marketplace=marketplace,
         kind=kind,
@@ -75,7 +81,7 @@ async def availability(
 async def distribution(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
     city: str | None = None,
     marketplace: str | None = None,
     kind: KindQuery = "main",
@@ -83,7 +89,7 @@ async def distribution(
     """Per own SKU: % of covered stores it's actually in-stock in (widest gaps first).
     `kind` = main (default) | combo | all."""
     return await inventory_service.get_distribution(
-        session, tenant_id=client.id, days=days, city=city, marketplace=marketplace, kind=kind
+        session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind
     )
 
 
@@ -91,14 +97,19 @@ async def distribution(
 async def availability_history(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(84, ge=7, le=365),
+    weeks: int = Query(12, ge=1, le=52),
     city: str | None = None,
     marketplace: str | None = None,
     kind: KindQuery = "main",
 ):
-    """Weekly on-shelf availability % trend for own SKUs. `kind` = main | combo | all."""
+    """Weekly on-shelf availability % trend for own SKUs.
+
+    A trend is history, so it takes `weeks` of look-back and deliberately ignores the
+    page's reporting window — otherwise a narrow window (e.g. a 2-day custom range)
+    leaves nothing to plot. `kind` = main | combo | all."""
     return await inventory_service.get_availability_history(
-        session, tenant_id=client.id, days=days, city=city, marketplace=marketplace, kind=kind
+        session, tenant_id=client.id, days=weeks * 7, city=city,
+        marketplace=marketplace, kind=kind,
     )
 
 
@@ -106,7 +117,7 @@ async def availability_history(
 async def pricing(
     session: SessionDep,
     client: ClientDep,
-    days: int = Query(30, ge=1, le=365),
+    period: PeriodDep,
     city: str | None = None,
     marketplace: str | None = None,
     kind: KindQuery = "main",
@@ -114,5 +125,103 @@ async def pricing(
     """Per own SKU: price dispersion across stores (min/median/max) + avg discount.
     `kind` = main | combo | all."""
     return await inventory_service.get_pricing(
-        session, tenant_id=client.id, days=days, city=city, marketplace=marketplace, kind=kind
+        session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind
+    )
+
+
+# ── Store-grain views (the dark-store model; see docs/darkstores.md) ─────────
+# Percentages always ship with the counts behind them (`stores_scraped`,
+# `active_range`) so the UI can render "X of N" rather than a bare number.
+
+
+@router.get("/stores", response_model=StoresResponse)
+async def stores(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    city: str | None = None,
+    marketplace: str | None = None,
+    kind: KindQuery = "main",
+    tier: str | None = Query(None, description="express | longtail | super_longtail"),
+):
+    """Availability per dark store, worst first — which shops are letting you down.
+
+    `tier` narrows to one fulfilment tier. Denominators are per tier too (`tiers`),
+    since ~2,059 express stores and ~510 shared hubs are not comparable populations.
+    """
+    return await inventory_service.get_stores(
+        session, tenant_id=client.id, start=period.start, end=period.end, city=city,
+        marketplace=marketplace, kind=kind, tier=tier,
+    )
+
+
+@router.get("/cities", response_model=CitiesResponse)
+async def cities(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    marketplace: str | None = None,
+    kind: KindQuery = "main",
+):
+    """City rollup of store availability — the same numbers one level up."""
+    return await inventory_service.get_cities(
+        session, tenant_id=client.id, start=period.start, end=period.end, marketplace=marketplace, kind=kind
+    )
+
+
+@router.get("/actions", response_model=Page[ActionRow])
+async def actions(
+    session: SessionDep,
+    client: ClientDep,
+    pagination: PaginationDep,
+    period: PeriodDep,
+    action: Literal["oos", "not-listed"] = "oos",
+    city: str | None = None,
+    marketplace: str | None = None,
+    kind: KindQuery = "main",
+):
+    """The work queue: one row per problem, each naming a store and a product.
+
+    `oos` = listed but out of stock (replenishment). `not-listed` = absent from the
+    shelf (range). Two separate lists because they are two different teams' work.
+    """
+    return await inventory_service.get_actions(
+        session, tenant_id=client.id, pagination=pagination, action=action,
+        start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind,
+    )
+
+
+@router.get("/products/{product_id}/stores", response_model=ProductDetailResponse)
+async def product_stores(
+    session: SessionDep,
+    client: ClientDep,
+    product_id: str,
+    period: PeriodDep,
+    city: str | None = None,
+    marketplace: str | None = None,
+    kind: KindQuery = "main",
+):
+    """One product across every store — where it is out of stock, where it is not
+    carried at all, where it is fine. The mirror of the store shelf, for the product
+    drawer."""
+    return await inventory_service.get_product_detail(
+        session, tenant_id=client.id, product_id=product_id,
+        start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind,
+    )
+
+
+@router.get("/stores/{merchant_id}", response_model=StoreDetailResponse)
+async def store_detail(
+    session: SessionDep,
+    client: ClientDep,
+    merchant_id: str,
+    period: PeriodDep,
+    marketplace: str | None = None,
+    kind: KindQuery = "main",
+):
+    """One store's whole shelf — every own SKU, including the ones it does not
+    carry (`listed=false`), so range gaps sit next to stockouts."""
+    return await inventory_service.get_store_detail(
+        session, tenant_id=client.id, merchant_id=merchant_id,
+        start=period.start, end=period.end, marketplace=marketplace, kind=kind,
     )

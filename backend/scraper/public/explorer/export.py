@@ -207,7 +207,8 @@ def _raw_sheets(wb: Workbook, result: ExplorerResult) -> None:
 
     listing_cols = [
         ("Keyword", "keyword", None), ("City", "city", None), ("Lat", "lat", None),
-        ("Lon", "lon", None), ("Position", "position", _NUM), ("Name", "name", None),
+        ("Lon", "lon", None), ("Position", "position", _NUM),
+        ("Merchant", "merchant_id", None), ("Name", "name", None),
         ("Brand", "brand", None), ("Own?", "is_brand", None), ("Brand Slug", "brand_slug", None),
         ("Price", "price", _RUP), ("MRP", "mrp", _RUP), ("Discount %", "discount_pct", _PCT),
         ("In Stock", "in_stock", None), ("Inventory", "inventory", _NUM),
@@ -224,6 +225,7 @@ def _raw_sheets(wb: Workbook, result: ExplorerResult) -> None:
                [{"header": h, "key": k, "fmt": f} for h, k, f in [
                    ("Product ID", "product_id", None), ("Name", "name", None),
                    ("City", "city", None), ("Lat", "lat", None), ("Lon", "lon", None),
+                   ("Merchant", "merchant_id", None), ("Merchant Type", "merchant_type", None),
                    ("Price", "price", _RUP), ("MRP", "mrp", _RUP),
                    ("Discount %", "discount_pct", _PCT), ("In Stock", "in_stock", None),
                    ("Inventory", "inventory", _NUM), ("Rating", "rating", _DEC),

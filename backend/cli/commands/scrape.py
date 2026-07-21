@@ -754,7 +754,7 @@ async def _scrape_public(
 def public_run(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    cap: int = typer.Option(None, "--cap", help="Max products per search (default: RESULT_CAP=12)"),
+    cap: int = typer.Option(None, "--cap", help="Max products per search (default: tenant keyword_cap, else RESULT_CAP=48)"),
     keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),
@@ -919,3 +919,251 @@ def _print_soh(rows: list, date: str) -> None:
     console.print(table)
     if len(rows) > 10:
         console.print(f"[dim]... and {len(rows) - 10} more rows[/dim]")
+
+
+# ── Staging: local SQLite → Postgres ─────────────────────────────────────────
+
+@app.command("staged")
+def staged_list(
+    pending_only: bool = typer.Option(False, "--pending", help="Only runs not yet loaded"),
+):
+    """List local staging files from public scrapes (what `scrape load` would push).
+
+    Public scrapes write to a local SQLite file, not straight to Postgres — a long
+    run no longer dies with the database. See docs/staging.md.
+    """
+    from scraper.public import staging
+
+    runs = staging.pending() if pending_only else staging.list_runs()
+    if not runs:
+        console.print("[dim]No staging files.[/dim]")
+        return
+
+    table = Table(show_header=True, header_style="bold",
+                  title=f"Staging files — {len(runs)}")
+    table.add_column("Date")
+    table.add_column("Time")
+    table.add_column("Kind")
+    table.add_column("Stores", justify="right")
+    table.add_column("Rows", justify="right")
+    table.add_column("Err", justify="right")
+    table.add_column("State")
+    table.add_column("Ref", style="dim")
+    for r in runs:
+        started, loaded = r["started_at"] or "", r["loaded_at"]
+        date, _, tm = started.partition("T")
+        done, want = r.get("stores_done"), r.get("stores_total")
+        stores = f"{done:,}/{want:,}" if done is not None and want else (
+            f"{done:,}" if done is not None else "[dim]—[/dim]")
+        # A partial run is not automatically bad — 500 of 2059 stores is still 500
+        # stores of real data. Flag it, let the human decide.
+        if done is not None and want and done < want:
+            stores = f"[yellow]{stores}[/yellow]"
+        errs = r.get("errors")
+        err_txt = "[dim]—[/dim]" if errs is None else (
+            f"[red]{errs:,}[/red]" if errs else "0")
+        status = {"success": "[green]ok[/green]", "failed": "[red]failed[/red]"} \
+            .get(r["status"], f"[yellow]{r['status']}[/yellow]")
+        where = "[green]loaded[/green]" if loaded else "[yellow]pending[/yellow]"
+        table.add_row(
+            date, tm[:5],
+            r["kind"].replace("public_", ""),
+            stores, f"{r['rows']:,}", err_txt,
+            f"{status} · {where}",
+            staging.ref(r["path"]),
+        )
+    console.print(table)
+    n_pending = sum(1 for r in runs if not r["loaded_at"])
+    n_bad = sum(1 for r in runs if not r["loaded_at"] and r["status"] != "success")
+    if n_pending:
+        console.print(f"[yellow]{n_pending} file(s) not yet in the database.[/yellow] "
+                      f"Push with [bold]python -m cli scrape load[/bold]")
+    if n_bad:
+        console.print(
+            f"[red]{n_bad} pending file(s) did not finish cleanly.[/red] Review before "
+            f"loading — drop one with [bold]python -m cli scrape discard --file <name>[/bold]"
+        )
+
+
+@app.command("load")
+def load_staged(
+    file: str = typer.Option(None, "--file", "-f", help="Which file — the Ref from `scrape staged` (default: all pending, oldest first)"),
+    all_pending: bool = typer.Option(False, "--all", help="Load every pending file"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be loaded, write nothing"),
+    keep: int = typer.Option(None, "--keep", help=f"Loaded files to retain per tenant+kind (default {5})"),
+):
+    """Push staged public-scrape results into Postgres.
+
+    Each file is loaded in ONE all-or-nothing transaction: if the connection drops
+    the whole thing rolls back and nothing is written, so re-running is always safe
+    (public data is append-only with no upsert — a partial load would duplicate).
+
+    With no --file, loads every pending file oldest-first.
+    """
+    from scraper.public import staging
+
+    if file:
+        try:
+            targets = [{"path": staging.resolve(file)}]
+        except (FileNotFoundError, ValueError) as e:
+            console.print(f"[red]{escape(str(e))}[/red]")
+            console.print("[dim]List them with `python -m cli scrape staged`.[/dim]")
+            raise typer.Exit(1)
+    else:
+        targets = list(reversed(staging.pending()))   # oldest first
+        if not targets:
+            console.print("[dim]Nothing pending — all staging files are loaded.[/dim]")
+            return
+        if len(targets) > 1 and not all_pending and not dry_run:
+            console.print(
+                f"[yellow]{len(targets)} files pending.[/yellow] "
+                f"Pass --all to load them all, or --file <name> for one:"
+            )
+            for t in targets:
+                console.print(f"   {t['path'].name}  ({t['rows']:,} rows)")
+            raise typer.Exit(1)
+        # A run that crashed may still hold data worth keeping, so this is never an
+        # automatic skip — but sweeping one into the DB unnoticed via --all is the
+        # exact accident worth blocking. Force a deliberate choice.
+        unclean = [t for t in targets if t.get("status") != "success"]
+        if unclean and not dry_run:
+            console.print(
+                f"[red]{len(unclean)} pending file(s) did not finish cleanly:[/red]"
+            )
+            for t in unclean:
+                done, want = t.get("stores_done"), t.get("stores_total")
+                cover = f", {done}/{want} stores" if done is not None and want else ""
+                console.print(
+                    f"   [red]{t['status']}[/red]  {t['path'].name}  "
+                    f"({t['rows']:,} rows{cover}, {t.get('errors') or 0} errors)"
+                )
+            console.print(
+                "\nPartial data is often still worth loading — but decide per file:\n"
+                "  [bold]python -m cli scrape load --file <name>[/bold]     load it anyway\n"
+                "  [bold]python -m cli scrape discard --file <name>[/bold]  throw it away"
+            )
+            raise typer.Exit(1)
+
+    if dry_run:
+        table = Table(show_header=True, header_style="bold", title="DRY RUN — nothing written")
+        table.add_column("File")
+        table.add_column("Kind")
+        table.add_column("Snapshots", justify="right")
+        table.add_column("Listings", justify="right")
+        table.add_column("SKU rows", justify="right")
+        for t in targets:
+            c = t.get("counts") or {}
+            table.add_row(t["path"].name, t.get("kind", "?"),
+                          f"{c.get('search_snapshots', 0):,}",
+                          f"{c.get('search_listings', 0):,}",
+                          f"{c.get('sku_snapshots', 0):,}")
+        console.print(table)
+        return
+
+    asyncio.run(_load_staged([t["path"] for t in targets], keep))
+
+
+async def _load_staged(paths, keep) -> None:
+    from scraper.public import loader, staging
+
+    if keep is not None:
+        staging.KEEP_PER_KIND = keep
+
+    from sqlalchemy.exc import DBAPIError
+
+    results, failed = [], []
+    for p in paths:
+        console.print(f"[dim]Loading {p.name} …[/dim]")
+        # Retry once on a DB-level failure. Safe by construction: the load is one
+        # all-or-nothing transaction, so a failed attempt wrote nothing. Each attempt
+        # gets a FRESH session — a dropped connection can't be reused, and the old
+        # session's pool entry is poisoned.
+        for attempt in (1, 2):
+            try:
+                async with AsyncSessionLocal() as db:
+                    results.append(await loader.load_file(db, p))
+                break
+            except DBAPIError as e:
+                err = getattr(e, "orig", None) or e
+                if attempt == 1:
+                    console.print(
+                        f"[yellow]Connection failed — retrying once:[/yellow] "
+                        f"{escape(str(err))[:120]}"
+                    )
+                    continue
+                failed.append((p.name, str(err)))
+                console.print(f"[red]FAILED[/red] {p.name}: {escape(str(err))[:300]}")
+                console.print("[dim]Nothing was written — rerun the same command to retry.[/dim]")
+            except Exception as e:
+                failed.append((p.name, str(e)))
+                console.print(f"[red]FAILED[/red] {p.name}: {escape(str(e))[:300]}")
+                console.print("[dim]Nothing was written — rerun the same command to retry.[/dim]")
+                break
+
+    if results:
+        table = Table(show_header=True, header_style="bold", title="Loaded")
+        table.add_column("File")
+        table.add_column("Kind")
+        table.add_column("Snapshots", justify="right")
+        table.add_column("Listings", justify="right")
+        table.add_column("SKU rows", justify="right")
+        table.add_column("Total", justify="right")
+        for r in results:
+            table.add_row(r["file"], r["kind"], f"{r['snapshots']:,}",
+                          f"{r['listings']:,}", f"{r['skus']:,}", f"{r['total']:,}")
+        console.print(table)
+        pruned = sum(r["pruned"] for r in results)
+        if pruned:
+            console.print(f"[dim]Pruned {pruned} old staging file(s).[/dim]")
+    if failed:
+        console.print(f"[red]{len(failed)} file(s) failed to load.[/red]")
+        raise typer.Exit(1)
+
+
+@app.command("discard")
+def discard_staged(
+    file: str = typer.Option(..., "--file", "-f", help="Which file — the Ref from `scrape staged`, or a filename/path"),
+    force: bool = typer.Option(False, "--force", help="Skip the confirmation prompt"),
+):
+    """Delete a staging file without loading it.
+
+    For a file that was never loaded this destroys scraped data held nowhere else —
+    hence the prompt. Use it to drop a bad run (wrong city, wrong cap, a crash that
+    produced nothing useful) so `scrape load --all` can't sweep it into the database.
+    """
+    from scraper.public import staging
+
+    try:
+        path = staging.resolve(file)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        console.print("[dim]List them with `python -m cli scrape staged`.[/dim]")
+        raise typer.Exit(1)
+
+    match = next((r for r in staging.list_runs() if r["path"].resolve() == path.resolve()), None)
+    if match is None:
+        console.print(f"[red]{path.name} is not a readable staging file.[/red]")
+        raise typer.Exit(1)
+
+    loaded = match["loaded_at"]
+    console.print(
+        f"\n  [bold]{path.name}[/bold]\n"
+        f"  kind    : {match['kind']}\n"
+        f"  scraped : {(match['started_at'] or '').replace('T', ' ')[:16]}\n"
+        f"  status  : {match['status']}   errors: {match.get('errors') or 0}\n"
+        f"  rows    : {match['rows']:,}\n"
+        f"  loaded  : {'yes — ' + loaded[:16].replace('T', ' ') if loaded else 'NO'}\n"
+    )
+    if loaded:
+        console.print("[dim]Already in the database — deleting only removes the local backup.[/dim]")
+    else:
+        console.print(
+            f"[red]NOT loaded.[/red] These {match['rows']:,} rows exist nowhere else — "
+            f"deleting is irreversible."
+        )
+    if not force and not typer.confirm("Delete this file?"):
+        console.print("[dim]Cancelled.[/dim]")
+        raise typer.Exit(0)
+
+    staging.discard(path)
+    console.print(f"[green]Deleted[/green] {path.name}")

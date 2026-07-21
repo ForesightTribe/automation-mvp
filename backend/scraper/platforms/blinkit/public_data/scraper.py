@@ -261,6 +261,7 @@ async def search(
         headers = {**headers, "lat": str(lat), "lon": str(lon)}
 
     products: list[dict] = []
+    seen: set[str] = set()
     total_results: int | None = None
     ok = False
     error = ""
@@ -276,7 +277,18 @@ async def search(
             break
         ok = True
         page_body = resp.get("body") or {}
-        products.extend(_extract_products(page_body))
+        # Blinkit repeats products across pages — the `similarity` tail re-lists items
+        # already returned as `basic`, so a brand scrape (follow_similarity=True) saw
+        # the same SKU two or three times and wrote a duplicate row per store. Keep the
+        # FIRST sighting: it carries the true (best) rank. Deduping on product_id alone
+        # is safe — a product resolves to exactly one store per coordinate.
+        for p in _extract_products(page_body):
+            pid = p.get("product_id")
+            if pid:
+                if pid in seen:
+                    continue
+                seen.add(pid)
+            products.append(p)
 
         next_url, method, count = _pagination(page_body)
         if total_results is None:
@@ -295,9 +307,27 @@ async def search(
     for i, p in enumerate(products, 1):
         if p.get("position") is None:
             p["position"] = i
-    merchant_id = products[0]["merchant_id"] if products else ""
     return {"products": products, "total_results": total_results,
-            "merchant_id": merchant_id, "ok": ok, "error": error}
+            "merchant_id": _express_merchant(products), "ok": ok, "error": error}
+
+
+def _express_merchant(products: list[dict]) -> str:
+    """The express store serving this coordinate — the location's identity.
+
+    One response spans several stores and tiers (express + longtail hubs + the odd
+    super_longtail), interleaved by rank, so the FIRST product is not reliably the
+    express one: a longtail row often outranks it, and some keywords return no
+    express product at all. Only the per-product `merchant_type` identifies it.
+
+    Returns "" when no express product was returned — the honest answer. Every
+    product keeps its own merchant_id regardless; this is only the snapshot-level
+    label. See docs/darkstores.md.
+    """
+    return next(
+        (p["merchant_id"] for p in products
+         if p.get("merchant_type") == "express" and p.get("merchant_id")),
+        "",
+    )
 
 
 # ── Public entrypoint (CLI-compatible) ───────────────────────────────────────

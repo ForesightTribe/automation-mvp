@@ -8,23 +8,28 @@ from app.schemas.common import Page
 class ProductPublicKeyword(BaseModel):
     keyword: str
     avg_position: float | None
-    locations: int          # distinct serviceable locations it ranked in
+    stores: int             # distinct dark stores it ranked in
 
 
 class ProductPublicResponse(BaseModel):
     """The public (scraped) picture for one SKU, bridged via sku_map. `mapped` is
-    False when the SKU has no public mapping yet. Counts are distinct serviceable
-    locations (lat/lon), not stores/rows."""
+    False when the SKU has no public mapping yet.
+
+    Counts are distinct DARK STORES (`merchant_id`), read per product off the scrape.
+    `stores_scraped` — the reach denominator — is the stores that actually answered in
+    the window, not a configured catalog count: a store we failed to reach is excluded
+    rather than counted as a miss. Rows predating 2026-07-18 have no store id and are
+    excluded. See docs/darkstores.md."""
 
     mapped: bool
     platform_product_id: str | None = None
     product_name: str | None = None
     as_of: datetime | None = None
-    total_locations: int = 0        # locations where the SKU was found
-    in_stock_locations: int = 0
-    distribution_pct: float | None = None  # in-stock rate among found locations
-    covered_locations: int = 0      # total serviceable locations (reach denominator)
-    reach_pct: float | None = None  # found ÷ covered
+    stores_listed: int = 0          # stores where the SKU was on the shelf
+    stores_in_stock: int = 0
+    distribution_pct: float | None = None  # in stock ÷ listed
+    stores_scraped: int = 0         # stores that answered (reach denominator)
+    reach_pct: float | None = None  # listed ÷ scraped
     price_min: float | None = None
     price_median: float | None = None
     price_max: float | None = None

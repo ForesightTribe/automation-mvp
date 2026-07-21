@@ -26,7 +26,7 @@ export const CompetitionPage = () => {
 						Competition
 					</h1>
 					<p className="text-sm text-content-muted">
-						How you look on the shelf vs competitors.
+						How often shoppers see you when they search, versus rival brands.
 					</p>
 				</div>
 				<FreshnessBadge at={matrix?.as_of} />

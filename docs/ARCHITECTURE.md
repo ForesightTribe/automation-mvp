@@ -161,18 +161,27 @@ The runner is a thin dispatch layer above this diagram — see docs/jobs.md.
 | `tenant_locations` | `tenant_id`, `mp_slug`, `location_id` | which catalog locations a tenant scrapes |
 | `inventory_depth` | `tenant_id`, `brand_slug`, `mp_slug`, `sku`, `city` | old deep per-SKU stock probe — superseded by `sku_snapshots`, no write path |
 
-Append-only (no upsert). `search_*` written by `cli scrape public-run`;
-`sku_snapshots` by `cli scrape public-skus` — both via orchestrators under
-`scraper/public/`.
+Append-only (no upsert). `search_*` and `sku_snapshots` are written by
+`cli scrape load`, **not** by the scrapes themselves — `public-run` / `public-skus`
+write to a local SQLite staging file and the load pushes it in one transaction. See
+[staging.md](staging.md).
 
-**The unit is the serviceable location `(lat, lon)`, not the store.** The catalog
-lat/long is a delivery point (several dark stores can share one; the search API
-resolves a coordinate to one serving store), so **all public read metrics count
-distinct `(lat,lon)`, never `merchant_id`/rows** — see
-[docs/public-glossary.md](public-glossary.md) (Reach vs Distribution). `is_combo`
-separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The old
-`search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products` tables
-were dropped in migration `f3a9c1d7b2e5`.
+**The unit is the STORE (`merchant_id`); the coordinate is only the probe.** Every
+product in a response carries the store that fulfils it and the tier it is sold under
+(`merchant_type`), read **per product** — one response can span several stores, and
+one store can answer several coordinates. So public read metrics should
+`COUNT(DISTINCT merchant_id)` and take one row per `(store, product)`.
+
+> ⚠️ **Superseded 2026-07-18.** This section previously stated the unit was the
+> serviceable location `(lat,lon)` "not the store", on the belief that we could not
+> tell which store answered. We can — exactly, on every product. See
+> [darkstores.md](darkstores.md) for the evidence.
+> **The read services still aggregate by `(lat,lon)` and have not been migrated**
+> (`competition_service`, `inventory_service`, `product_service`).
+
+`is_combo` separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The
+old `search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products`
+tables were dropped in migration `f3a9c1d7b2e5`.
 
 ### Blinkit marketing tables (tenant-scoped)
 
@@ -223,8 +232,14 @@ The darkstore catalog, per-tenant keywords, and coverage live in `config.xlsx` a
 are synced to the DB by `cli sync` (`marketplace_locations`, `tenant_watchlist`,
 `tenant_locations`). `scraper/utils/cities.py` is **legacy and being retired** — the
 scraper reads locations from the DB, not from it. Blinkit selects the dark store
-from the **lat/lon** in the request headers; `pincode`/`zone` are metadata only.
-`marketplace_locations` is keyed on `merchant_id`.
+from the **lat/lon** in the request headers; `pincode`/`location_name`/`address` are
+metadata only. `marketplace_locations` is keyed on `merchant_id` — one row per
+**express** store, holding the coordinate to probe it at.
+
+One coordinate resolves to **several** stores, not one: the express store plus any
+longtail/super_longtail hubs serving it. Every product in the response names its own
+store (`merchant_id`) and tier (`merchant_type`) — read them per product, never per
+response. See [darkstores.md](darkstores.md).
 
 ### Why direct HTTP doesn't work (Cloudflare)
 
@@ -269,12 +284,10 @@ query, cap, classification, and storage target:
   [explorer.md](explorer.md).
 
 One `scrape_job` per run (dashboards `public_search` / `public_skus`). Resilience:
-per-fetch retry with backoff, a hard per-fetch timeout (a stalled fetch can't hang a
-worker), non-JSON/Cloudflare detection surfaced with the real HTTP status, session
-refresh on staleness, incremental commits, `--resume` to continue an interrupted job,
-and — after the main pass — **one automatic retry pass** over locations that errored
-and returned nothing (fresh sessions recover transient blips; no duplicate rows since
-those locations wrote nothing the first time).
+retry with backoff on transient failures, a hard per-fetch timeout (a stalled fetch
+can't hang a worker), non-JSON/Cloudflare detection surfaced with the real HTTP
+status, session refresh on staleness, incremental commits, and `--resume` to
+continue an interrupted job (skips already-scraped stores).
 
 Reference: `backend/scraper/platforms/blinkit/public_data/{scraper,storage,sku_storage}.py`
 + `backend/scraper/public/{orchestrator,targeted}.py` + the ephemeral

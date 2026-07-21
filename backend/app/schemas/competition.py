@@ -49,7 +49,10 @@ class RankCell(BaseModel):
     city: str
     avg_rank: float | None
     avg_sov: float | None
-    samples: int
+    # Number of SEARCHES behind the cell (one search = one keyword at one probe
+    # point), not distinct stores — rank/SoV describe a blended result list, so the
+    # search is the sample unit. Keeps pre-2026-07-18 history usable.
+    searches: int
 
 
 class RankMatrixResponse(BaseModel):
@@ -64,17 +67,17 @@ class RankMatrixResponse(BaseModel):
 
 class TopCompetitorRow(BaseModel):
     competitor: str
-    locations: int         # distinct serviceable locations the competitor showed up in
+    stores: int            # distinct dark stores the competitor was found in
     keywords: int          # distinct keywords the competitor showed up in
     avg_position: float | None
     avg_price: float | None
-    share_pct: float | None  # share of all competitor location-presences
+    share_pct: float | None  # share of all (competitor, store) presences
 
 
 class TopCompetitorsResponse(BaseModel):
     period_days: int
     as_of: datetime | None
-    total_competitor_locations: int
+    total_competitor_stores: int
     competitors: list[TopCompetitorRow]
 
 

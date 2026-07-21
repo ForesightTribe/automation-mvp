@@ -21,16 +21,16 @@ export const AvailabilityHistoryCard = ({ kind = "main" }) => {
 		{ key: "week", label: "Week", render: (r) => formatDate(r.week) },
 		{
 			key: "availability_pct",
-			label: "Availability",
+			label: "In stock",
 			align: "right",
 			render: (r) => pct(r.availability_pct),
 		},
-		{ key: "oos_pct", label: "OOS", align: "right", render: (r) => pct(r.oos_pct) },
+		{ key: "oos_pct", label: "Out of stock", align: "right", render: (r) => pct(r.oos_pct) },
 		{
-			key: "samples",
-			label: "Samples",
+			key: "stores",
+			label: "Stores",
 			align: "right",
-			render: (r) => formatNumber(r.samples),
+			render: (r) => formatNumber(r.stores),
 		},
 	];
 
