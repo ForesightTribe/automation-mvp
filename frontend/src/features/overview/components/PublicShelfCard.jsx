@@ -10,21 +10,23 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed
 const mean = (xs) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
 /**
- * On-shelf distribution summary for the Overview — the public availability headline
- * (avg distribution across own SKUs, count with coverage gaps) plus the worst-covered
- * SKUs, so a distribution problem surfaces here without opening the Inventory page.
- * Owns its own fetch/loading (like MarketplaceBreakdown).
+ * On-shelf summary for the Overview — average shelf presence across own SKUs, how
+ * many have gaps, and the least-available ones — so a shelf problem surfaces here
+ * without opening the Inventory page. "On shelf" = reach (breadth); the endpoint
+ * (`/inventory/distribution`) returns per-SKU `reach_pct`, worst first. Owns its own
+ * fetch/loading (like MarketplaceBreakdown).
  */
 export const PublicShelfCard = () => {
 	const { data, isLoading, error, refetch } = usePublicShelf();
 	const skus = data?.skus ?? [];
-	const avgDist = mean(skus.map((s) => s.distribution_pct));
-	const withGaps = skus.filter((s) => s.distribution_pct < 100).length;
-	const worst = skus.slice(0, 5); // endpoint returns widest-gaps-first
+	const scraped = data?.stores_scraped ?? 0;
+	const avgOnShelf = mean(skus.map((s) => s.reach_pct));
+	const withGaps = skus.filter((s) => s.reach_pct < 100).length;
+	const worst = skus.slice(0, 5); // endpoint returns worst-reach-first
 
 	return (
 		<Card title="On the shelf" actions={<FreshnessBadge at={data?.as_of} />}>
-			{isLoading && <Loading label="Loading distribution…" />}
+			{isLoading && <Loading label="Loading shelf data…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&
 				!error &&
@@ -68,10 +70,10 @@ export const PublicShelfCard = () => {
 											{s.product_name || s.platform_product_id}
 										</span>
 										<span className="shrink-0 tabular-nums text-content-muted">
-											{pct(s.distribution_pct)}
+											{pct(s.reach_pct)}
 											<span className="ml-1 text-content-subtle">
-												({formatNumber(s.stores_in_stock)}/
-												{formatNumber(s.stores_listed)})
+												({formatNumber(s.stores_listed)}/
+												{formatNumber(scraped)} stores)
 											</span>
 										</span>
 									</li>
