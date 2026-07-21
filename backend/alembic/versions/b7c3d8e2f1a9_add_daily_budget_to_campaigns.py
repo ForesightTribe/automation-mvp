@@ -17,11 +17,19 @@ depends_on: Union[str, Sequence[str], None] = None
 
 
 def upgrade() -> None:
-    op.add_column(
-        'blinkit_ad_campaigns',
-        sa.Column('daily_budget', sa.Integer(), nullable=True),
+    # Idempotent on purpose. On some databases (local campaign-manager dev, and the
+    # shared Supabase DB) this column is created out of band by the campaign-manager
+    # models' create_all, so a plain ADD COLUMN fails with DuplicateColumn. On a
+    # database provisioned purely from migrations the column is absent and must be
+    # created. `IF NOT EXISTS` is correct for both — no per-DB stamping needed.
+    op.execute(
+        "ALTER TABLE blinkit_ad_campaigns "
+        "ADD COLUMN IF NOT EXISTS daily_budget INTEGER"
     )
 
 
 def downgrade() -> None:
-    op.drop_column('blinkit_ad_campaigns', 'daily_budget')
+    op.execute(
+        "ALTER TABLE blinkit_ad_campaigns "
+        "DROP COLUMN IF EXISTS daily_budget"
+    )
