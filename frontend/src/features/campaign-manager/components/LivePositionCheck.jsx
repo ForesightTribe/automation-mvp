@@ -20,6 +20,12 @@ export const LivePositionCheck = ({ brandName = "dobra" }) => {
     const { data: zones = [] } = useBlinkitZones();
     const { mutate: check, isPending, isError, error, data: results } = useLivePositions();
 
+    const cities = zones.reduce((acc, z) => {
+        const city = z.city || z.label;
+        if (!acc.find((c) => c.city === city)) acc.push({ city, lat: z.lat, lon: z.lon });
+        return acc;
+    }, []);
+
     const positions = results ?? [];
 
     const handleCheck = () => {
@@ -60,17 +66,17 @@ export const LivePositionCheck = ({ brandName = "dobra" }) => {
                     </div>
 
                     <div className="flex flex-col gap-1">
-                        <label className="text-xs font-medium text-content-muted">Location</label>
+                        <label className="text-xs font-medium text-content-muted">City</label>
                         <select
                             onChange={(e) => {
-                                const z = zones.find((z) => z.label === e.target.value);
-                                setSelectedZone(z || null);
+                                const c = cities.find((c) => c.city === e.target.value);
+                                setSelectedZone(c || null);
                             }}
                             className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-content outline-none focus:border-primary"
                         >
                             <option value="">— Bengaluru (default) —</option>
-                            {zones.map((z) => (
-                                <option key={z.label} value={z.label}>{z.label}</option>
+                            {cities.map((c) => (
+                                <option key={c.city} value={c.city}>{c.city}</option>
                             ))}
                         </select>
                     </div>

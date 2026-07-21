@@ -52,15 +52,34 @@ def _matches_rule(rule: dict, now: datetime) -> bool:
     end_time = rule.get("end_time")
     if start_time or end_time:
         current_time = now.strftime("%H:%M")
-        if start_time and current_time < start_time:
-            return False
-        if end_time and current_time >= end_time:
-            return False
+        if start_time and end_time and end_time <= start_time:
+            # Midnight-crossing range (e.g. 18:15–02:00): active if after start OR before end
+            if current_time < start_time and current_time >= end_time:
+                return False
+        else:
+            if start_time and current_time < start_time:
+                return False
+            if end_time and current_time >= end_time:
+                return False
     elif rule.get("time_slots") and _current_slot(now) not in rule["time_slots"]:
         return False
 
     if rule.get("type") == "once":
-        return today == rule.get("date", "")
+        rule_date = rule.get("date", "")
+        if today == rule_date:
+            return True
+        # Midnight-crossing: also match on the next calendar day if still before end_time
+        _st = rule.get("start_time", "")
+        _et = rule.get("end_time", "")
+        if _st and _et and _et <= _st:
+            from datetime import timedelta
+            try:
+                next_day = (datetime.strptime(rule_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
+                if today == next_day:
+                    return now.strftime("%H:%M") < _et
+            except ValueError:
+                pass
+        return False
     # recurring — empty days list means "every day" (used when date range is the constraint)
     days = [d.lower() for d in rule.get("days", [])]
     if not days:
@@ -128,26 +147,27 @@ async def _run_core(client, now: datetime, schedules: list[dict] | None = None) 
 
         changes = {"bidding_strategy": {"total_budget": float(target_budget), "pacing_type": "DAILY"}}
 
-        # Attempt 1: full payload
-        resp = await client.update_campaign(campaign_id, changes)
-        console.print(f"[dim]  API response for {campaign_name}: {resp}[/dim]")
-        success = bool(resp.get("status") or resp.get("success"))
-
-        # Attempt 2: empty pids (handles delisted products)
-        if not success:
-            resp = await client.update_campaign(campaign_id, changes, empty_pids=True)
-            console.print(f"[dim]  API retry (empty pids) for {campaign_name}: {resp}[/dim]")
+        try:
+            # Attempt 1: full payload
+            resp = await client.update_campaign(campaign_id, changes)
+            console.print(f"[dim]  API response for {campaign_name}: {resp}[/dim]")
             success = bool(resp.get("status") or resp.get("success"))
 
-        if not success:
-            msgs = resp.get("message", [])
-            msg_str = " | ".join(str(m) for m in msgs) if isinstance(msgs, list) else str(msgs)
-            if "pid" in msg_str.lower():
-                console.print(f"[yellow]  ⚠ {campaign_name}: PIDs rejected — products may be delisted in Blinkit catalog.[/yellow]")
-            elif "spotlight image" in msg_str.lower():
-                console.print(f"[yellow]  ⚠ {campaign_name}: Listing spotlight campaign — if session token is stale, use Reconnect Blinkit.[/yellow]")
-            else:
+            # Attempt 2: empty pids (handles delisted products)
+            if not success:
+                resp = await client.update_campaign(campaign_id, changes, empty_pids=True)
+                console.print(f"[dim]  API retry (empty pids) for {campaign_name}: {resp}[/dim]")
+                success = bool(resp.get("status") or resp.get("success"))
+
+            if not success:
+                msgs = resp.get("message", [])
+                msg_str = " | ".join(str(m) for m in msgs) if isinstance(msgs, list) else str(msgs)
                 console.print(f"[yellow]  ⚠ {campaign_name}: {msg_str}[/yellow]")
+
+        except Exception as exc:
+            console.print(f"[red]  ✗ {campaign_name}: {exc}[/red]")
+            success = False
+            reason = f"{reason} [error: {exc}]"
 
         result = "[green]✓ done[/green]" if success else "[red]✗ failed[/red]"
 

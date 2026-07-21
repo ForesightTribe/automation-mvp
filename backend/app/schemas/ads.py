@@ -157,6 +157,7 @@ class SchedulerLogEntry(BaseModel):
     timestamp: str
     campaign_id: int | None = None
     campaign_name: str
+    schedule_name: str | None = None
     budget_applied: float
     rule: str
     success: bool

@@ -40,7 +40,7 @@ export const BidOptimizerRuleList = () => {
                                         <p className="font-medium text-content">{rule.campaign_name}</p>
                                         {rule.location_name ? (
                                             <span className="rounded-full bg-success/10 px-2 py-0.5 text-xs text-success">
-                                                📍 {rule.location_name}
+                                                📍 {rule.location_name.split(" — ")[0]}
                                             </span>
                                         ) : rule.lat ? (
                                             <span className="rounded-full bg-primary/10 px-2 py-0.5 text-xs text-primary">

@@ -17,7 +17,7 @@ async def _lifespan(app: FastAPI):
     _scheduler.add_job(
         run_bid_optimizer_all_tenants,
         trigger="interval",
-        minutes=30,
+        minutes=10,
         id="bid_optimizer_auto",
         replace_existing=True,
     )

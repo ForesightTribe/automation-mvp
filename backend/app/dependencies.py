@@ -186,7 +186,7 @@ class Pagination:
 
 def get_pagination(
     page: int = Query(1, ge=1, description="Page number"),
-    limit: int = Query(20, ge=1, le=100, description="Items per page"),
+    limit: int = Query(20, ge=1, le=500, description="Items per page"),
 ) -> Pagination:
     return Pagination(page=page, limit=limit)
 

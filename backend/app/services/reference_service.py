@@ -86,7 +86,7 @@ async def list_blinkit_zones(session: AsyncSession) -> list[dict]:
                 "city": r.city,
                 "zone": area,
                 "state": r.state or "",
-                "pincode": r.pincode or "",
+                "pincode": area,
                 "merchant_id": r.merchant_id or "",
                 "lat": r.lat,
                 "lon": r.lon,
