@@ -148,6 +148,7 @@ def _find_product_position(
     match_desc = f"pids={pid_set or 'none'} keywords={keywords or 'none'} brand={brand_name}"
     print(f"[bid_opt] searching for sponsored Ad — {match_desc} in {len(results)} results", flush=True)
 
+    organic_match = None
     for item in results:
         item_pid = str(item.get("pid") or "").strip()
         item_lower = item["name"].lower()
@@ -165,13 +166,17 @@ def _find_product_position(
                     flush=True,
                 )
                 return float(item["position"]), True, True
-            else:
-                print(
-                    f"[bid_opt] found organic [{match_type}] pos={item['position']} "
-                    f"name={item['name']} pid={item_pid} — not a sponsored Ad, skip",
-                    flush=True,
-                )
-                return None, False, True
+            elif organic_match is None:
+                organic_match = (item, match_type, item_pid)
+
+    if organic_match is not None:
+        item, match_type, item_pid = organic_match
+        print(
+            f"[bid_opt] found organic [{match_type}] pos={item['position']} "
+            f"name={item['name']} pid={item_pid} — no sponsored Ad found, skip",
+            flush=True,
+        )
+        return None, False, True
 
     print(f"[bid_opt] product NOT found in {len(results)} results ({match_desc}) — skip", flush=True)
     return None, False, False
@@ -251,7 +256,7 @@ async def run(client) -> list[dict]:
         for rule in camp_rules:
             keyword    = rule["keyword"]
             target     = rule["target_position"]
-            min_bid    = rule["min_bid"]
+            min_bid    = rule.get("min_bid") or kw_cpm_map.get(keyword) or 50
             max_bid    = rule["max_bid"]
             match_type = rule.get("match_type", "EXACT")
             rule_id    = rule.get("id", "")
@@ -349,6 +354,34 @@ async def run(client) -> list[dict]:
             step     = _dynamic_step(distance)
 
             if current_position > target:
+                last_pos = rule.get("last_position")
+                if last_pos is not None and current_position >= last_pos:
+                    # Position hasn't improved — check if we've waited long enough
+                    # for Blinkit to reflect the previous bid change.
+                    last_updated = rule.get("last_bid_updated_at")
+                    minutes_held = (
+                        (now_ist - datetime.fromisoformat(last_updated)).total_seconds() / 60
+                        if last_updated else 999
+                    )
+                    if minutes_held < 10:
+                        # Still within reflection window — hold and wait.
+                        entry = {
+                            "timestamp": now_str, "campaign_id": campaign_id,
+                            "campaign_name": campaign_name, "keyword": keyword,
+                            "action": (
+                                f"HOLD: pos {current_position} (was {last_pos}) — no improvement yet"
+                                f" | {pos_source} | holding Rs{current_cpm}"
+                                f" | {minutes_held:.0f}min since last bid change"
+                            ),
+                            "old_cpm": current_cpm, "new_cpm": current_cpm,
+                            "position": current_position, "target_position": target,
+                            "impressions": impressions, "success": True,
+                        }
+                        log_entries.append(entry); _append_log(entry)
+                        position_updates[rule_id] = current_position
+                        continue
+                    # 30+ min held — Blinkit has had time to reflect.
+                    # Current bid isn't enough; force an increase.
                 new_cpm = min(int(current_cpm + step), max_bid)
                 action  = (
                     f"↑ pos {current_position} > target {target} "

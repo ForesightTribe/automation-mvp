@@ -1,7 +1,7 @@
 BASE_URL = "https://brands.blinkit.com"
 
 # ── Page URLs (navigation + session verification) ──────────────────────────────
-CAMPAIGNS_PAGE = "/diy/list"
+CAMPAIGNS_PAGE = "/dashboard"
 BRAND_COLLECTIONS_PAGE = "/diy/brand-pages"
 VISIBILITY_PLANS_PAGE = "/diy/plans"
 

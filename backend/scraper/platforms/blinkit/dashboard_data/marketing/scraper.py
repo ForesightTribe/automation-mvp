@@ -181,7 +181,7 @@ async def _authenticate(page) -> str:
     page.on("request", on_request)
     await page.goto(f"{ep.BASE_URL}{ep.CAMPAIGNS_PAGE}", wait_until="networkidle", timeout=60_000)
 
-    if "/diy/" not in page.url:
+    if "/diy/" not in page.url and "/dashboard" not in page.url:
         raise RuntimeError(f"Session expired — redirected to {page.url}")
     if "firebase_user_token" not in captured:
         await asyncio.sleep(3)

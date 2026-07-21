@@ -504,18 +504,26 @@ async def remove_budget_schedule(session: AsyncSession, tenant_id: uuid.UUID, ca
 
 
 async def get_scheduler_log(session: AsyncSession, tenant_id: uuid.UUID) -> list[dict]:
-    from app.models.campaign_manager import BudgetSchedulerLogDB
+    from app.models.campaign_manager import BudgetSchedulerLogDB, BudgetScheduleDB
     rows = (await session.execute(
         select(BudgetSchedulerLogDB)
         .where(BudgetSchedulerLogDB.tenant_id == tenant_id)
         .order_by(BudgetSchedulerLogDB.timestamp.desc())
         .limit(50)
     )).scalars().all()
+
+    # Build campaign_id -> schedule_name map
+    schedules = (await session.execute(
+        select(BudgetScheduleDB).where(BudgetScheduleDB.tenant_id == tenant_id)
+    )).scalars().all()
+    name_map = {s.campaign_id: s.name for s in schedules}
+
     return [
         {
             "timestamp": r.timestamp.strftime("%Y-%m-%d %H:%M IST"),
             "campaign_id": r.campaign_id,
             "campaign_name": r.campaign_name,
+            "schedule_name": name_map.get(r.campaign_id),
             "budget_applied": r.budget_applied,
             "rule": r.rule,
             "success": r.success,
@@ -729,6 +737,31 @@ async def run_bid_optimizer_inprocess(tenant_id: uuid.UUID) -> None:
     log_entries = await loop.run_in_executor(_playwright_executor, _run) or []
     await _write_bid_optimizer_log(tenant_id, log_entries)
 
+    # Persist runtime fields back to DB so they survive the next _sync_bid_rules_to_json call
+    import json as _json
+    from app.models.campaign_manager import BidOptimizerRuleDB
+    if _BID_RULES_FILE.exists():
+        updated_rules = _json.loads(_BID_RULES_FILE.read_text(encoding="utf-8"))
+        async with AsyncSessionLocal() as db:
+            for r in updated_rules:
+                rule_id = r.get("id")
+                if not rule_id:
+                    continue
+                values: dict = {}
+                if r.get("last_position") is not None:
+                    values["last_position"] = r["last_position"]
+                if r.get("last_bid_updated_at") is not None:
+                    values["last_bid_updated_at"] = r["last_bid_updated_at"]
+                if r.get("last_cpm") is not None:
+                    values["last_cpm"] = r["last_cpm"]
+                if values:
+                    await db.execute(
+                        update(BidOptimizerRuleDB)
+                        .where(BidOptimizerRuleDB.id == rule_id)
+                        .values(**values)
+                    )
+            await db.commit()
+
 
 async def run_bid_optimizer_all_tenants() -> None:
     from app.models.job import PlatformSession
@@ -805,7 +838,26 @@ async def get_campaign_products(tenant_id: uuid.UUID, campaign_id: int) -> list[
 
     loop = asyncio.get_event_loop()
     await loop.run_in_executor(_playwright_executor, _run)
-    return result.get("products", [])
+    products = result.get("products", [])
+
+    # Enrich stub names using sku_map (platform_product_id = campaign PID)
+    pids = [p["pid"] for p in products if p.get("pid")]
+    if pids:
+        from app.models.search import SkuMap
+        from sqlalchemy import select as _select
+        async with AsyncSessionLocal() as db:
+            rows = (await db.execute(
+                _select(SkuMap.platform_product_id, SkuMap.product_name)
+                .where(SkuMap.tenant_id == tenant_id)
+                .where(SkuMap.platform_product_id.in_(pids))
+            )).all()
+        pid_to_name = {r.platform_product_id: r.product_name for r in rows if r.product_name}
+        for p in products:
+            sku_name = pid_to_name.get(p.get("pid", ""))
+            if sku_name and (not p["name"] or p["name"].startswith("Product (ID:")):
+                p["name"] = sku_name
+
+    return products
 
 
 # ── Live position (consumer scraper) ─────────────────────────────────────────

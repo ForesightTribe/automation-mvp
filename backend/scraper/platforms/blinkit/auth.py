@@ -59,12 +59,13 @@ async def login(email: str, base_url: str) -> dict:
             # The magic link lands on /auth/action while Firebase processes the JWT.
             # Wait for the resulting redirect to /diy/ before capturing the session —
             # otherwise IndexedDB is empty (Firebase hasn't written the auth token yet).
-            if "/diy/" not in page.url:
-                logger.info(f"On auth page ({page.url}) — waiting for redirect to /diy/...")
+            if "/diy/" not in page.url and "/dashboard" not in page.url:
+                logger.info(f"On auth page ({page.url}) — waiting for redirect to authenticated page...")
                 try:
-                    await page.wait_for_url("**/diy/**", timeout=20_000)
+                    import re as _re
+                    await page.wait_for_url(_re.compile(r"/diy/|/dashboard"), timeout=20_000)
                 except Exception:
-                    logger.warning(f"Redirect to /diy/ timed out, still on: {page.url}")
+                    logger.warning(f"Redirect timed out, still on: {page.url}")
 
             # Wait for Firebase to finish writing auth state to IndexedDB
             await page.wait_for_load_state("networkidle", timeout=20_000)

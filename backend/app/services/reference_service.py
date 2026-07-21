@@ -64,16 +64,16 @@ async def list_blinkit_zones(session: AsyncSession) -> list[dict]:
                 MarketplaceLocation.lat.is_not(None),
                 MarketplaceLocation.lon.is_not(None),
             )
-            .order_by(MarketplaceLocation.city, MarketplaceLocation.zone)
+            .order_by(MarketplaceLocation.city, MarketplaceLocation.pincode)
         )
     ).scalars().all()
 
     if rows:
-        # Deduplicate: one representative dark store per (city, zone/pincode) pair
+        # Deduplicate: one representative dark store per (city, pincode) pair
         seen: set[str] = set()
         zones = []
         for r in rows:
-            area = r.zone.strip() if r.zone and r.zone.strip() else (r.pincode.strip() if r.pincode and r.pincode.strip() else "")
+            area = r.pincode.strip() if r.pincode and r.pincode.strip() else ""
             key = f"{r.city}|{area}"
             if key in seen:
                 continue
@@ -84,7 +84,7 @@ async def list_blinkit_zones(session: AsyncSession) -> list[dict]:
                 "city": r.city,
                 "zone": area,
                 "state": r.state or "",
-                "pincode": r.pincode or "",
+                "pincode": area,
                 "merchant_id": r.merchant_id or "",
                 "lat": r.lat,
                 "lon": r.lon,

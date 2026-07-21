@@ -57,17 +57,28 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
     const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
     const selectKeyword = (kw) => {
-        set("keyword", kw.keyword);
-        set("match_type", kw.match_type || "EXACT");
+        setForm((f) => ({
+            ...f,
+            keyword: kw.keyword,
+            match_type: kw.match_type || "EXACT",
+            min_bid: kw.current_cpm ? String(kw.current_cpm) : f.min_bid,
+        }));
     };
 
+    // Deduplicate zones to one entry per city
+    const cities = zones.reduce((acc, z) => {
+        const city = z.city || z.label;
+        if (!acc.find((c) => c.city === city)) acc.push({ city, lat: z.lat, lon: z.lon });
+        return acc;
+    }, []);
+
     const selectZone = (e) => {
-        const label = e.target.value;
-        const zone = zones.find((z) => z.label === label);
+        const city = e.target.value;
+        const zone = cities.find((c) => c.city === city);
         if (zone) {
             setForm((f) => ({
                 ...f,
-                location_name: zone.label,
+                location_name: zone.city,
                 lat: zone.lat,
                 lon: zone.lon,
             }));
@@ -82,9 +93,8 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
         form.campaign_id &&
         form.keyword.trim() &&
         form.target_position &&
-        form.min_bid &&
         form.max_bid &&
-        parseInt(form.min_bid) <= parseInt(form.max_bid);
+        (!form.min_bid || parseInt(form.min_bid) <= parseInt(form.max_bid));
 
     const submit = () => {
         if (!canSubmit) return;
@@ -99,7 +109,7 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
                 keyword: form.keyword.trim().toLowerCase(),
                 match_type: form.match_type,
                 target_position: parseInt(form.target_position),
-                min_bid: parseInt(form.min_bid),
+                min_bid: form.min_bid ? parseInt(form.min_bid) : null,
                 max_bid: parseInt(form.max_bid),
                 start_time: form.start_time || null,
                 stop_time: form.stop_time || null,
@@ -133,8 +143,8 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
                     {/* Dark Store Zone */}
                     <div className="flex flex-col gap-1">
                         <label className="text-xs font-medium text-content-muted">
-                            Location
-                            <span className="ml-1 font-normal text-content-muted">(dark store zone for live position check)</span>
+                            City
+                            <span className="ml-1 font-normal text-content-muted">(city where position will be tracked)</span>
                         </label>
                         {zonesLoading ? (
                             <Loading label="Loading zones…" />
@@ -144,9 +154,9 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
                                 onChange={selectZone}
                                 className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-content outline-none focus:border-primary"
                             >
-                                <option value="">— select a zone (optional) —</option>
-                                {zones.map((z) => (
-                                    <option key={z.label} value={z.label}>{z.label}</option>
+                                <option value="">— select a city (optional) —</option>
+                                {cities.map((c) => (
+                                    <option key={c.city} value={c.city}>{c.city}</option>
                                 ))}
                             </select>
                         )}
@@ -177,38 +187,30 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
 
                     {/* Keywords from campaign */}
                     {campaignId && (
-                        <div className="flex flex-col gap-2">
-                            <label className="text-xs font-medium text-content-muted">
-                                Campaign Keywords
-                                <span className="ml-1 font-normal">(click to select)</span>
-                            </label>
+                        <div className="flex flex-col gap-1">
+                            <label className="text-xs font-medium text-content-muted">Campaign Keywords</label>
                             {kwLoading ? (
                                 <Loading label="Loading keywords…" />
                             ) : keywords.length === 0 ? (
                                 <p className="text-xs text-content-muted italic">No keywords found in this campaign.</p>
                             ) : (
-                                <div className="flex flex-wrap gap-2">
-                                    {keywords.map((kw) => {
-                                        const selected = form.keyword === kw.keyword && form.match_type === kw.match_type;
-                                        return (
-                                            <button
-                                                key={`${kw.keyword}-${kw.match_type}`}
-                                                type="button"
-                                                onClick={() => selectKeyword(kw)}
-                                                className={`flex flex-col items-start rounded-lg border px-3 py-2 text-left text-xs transition-colors ${
-                                                    selected
-                                                        ? "border-primary bg-primary/10 text-primary"
-                                                        : "border-border bg-muted text-content hover:border-primary/50"
-                                                }`}
-                                            >
-                                                <span className="font-semibold">{kw.keyword}</span>
-                                                <span className="text-content-muted">
-                                                    {kw.match_type} · ₹{kw.current_cpm?.toLocaleString() ?? "—"} CPM · pos {posLabel(kw.position)}
-                                                </span>
-                                            </button>
-                                        );
-                                    })}
-                                </div>
+                                <select
+                                    value={form.keyword ? `${form.keyword}|${form.match_type}` : ""}
+                                    onChange={(e) => {
+                                        if (!e.target.value) return;
+                                        const [kw, mt] = e.target.value.split("|");
+                                        const found = keywords.find((k) => k.keyword === kw && k.match_type === mt);
+                                        if (found) selectKeyword(found);
+                                    }}
+                                    className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-content outline-none focus:border-primary"
+                                >
+                                    <option value="">— select a keyword —</option>
+                                    {keywords.map((kw) => (
+                                        <option key={`${kw.keyword}-${kw.match_type}`} value={`${kw.keyword}|${kw.match_type}`}>
+                                            {kw.keyword} · {kw.match_type} · ₹{kw.current_cpm?.toLocaleString() ?? "—"} CPM · pos {posLabel(kw.position)}
+                                        </option>
+                                    ))}
+                                </select>
                             )}
                         </div>
                     )}
@@ -256,7 +258,7 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
                                             key={p.pid}
                                             className="rounded-full border border-border bg-muted px-2.5 py-1 text-xs text-content-muted"
                                         >
-                                            {p.name}
+                                            {p.pid} — {p.name}
                                         </span>
                                     ))}
                                 </div>
@@ -281,13 +283,13 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
                                     />
                                 </div>
                                 <div className="flex flex-col gap-1">
-                                    <label className="text-xs font-medium text-content-muted">Min Bid ₹</label>
+                                    <label className="text-xs font-medium text-content-muted">Min Bid ₹ <span className="font-normal text-content-muted">(optional — auto from Blinkit)</span></label>
                                     <input
                                         type="number"
                                         min="1"
                                         value={form.min_bid}
                                         onChange={(e) => set("min_bid", e.target.value)}
-                                        placeholder="e.g. 500"
+                                        placeholder="Auto (fetched from Blinkit)"
                                         className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-content outline-none focus:border-primary"
                                     />
                                 </div>

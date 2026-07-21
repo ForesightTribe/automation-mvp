@@ -138,7 +138,6 @@ class MarketplaceLocation(SQLModel, table=True):
     city: str = ""
     state: str = ""
     region: str = ""
-    zone: str = ""
     pincode: str = ""
     lat: float | None = None
     lon: float | None = None
