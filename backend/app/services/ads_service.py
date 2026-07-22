@@ -973,7 +973,7 @@ async def set_campaign_budget(tenant_id: uuid.UUID, campaign_id: int, budget: fl
 
 # ── Blinkit reconnect ─────────────────────────────────────────────────────────
 
-async def reconnect_blinkit(db_session: AsyncSession, tenant_id: uuid.UUID, magic_link: str) -> None:
+async def reconnect_blinkit(db_session: AsyncSession, tenant_id: uuid.UUID, magic_link: str, email: str = "") -> None:
     """Navigate to magic link in headless browser, capture session, save to DB."""
     result: dict = {}
 
@@ -988,7 +988,17 @@ async def reconnect_blinkit(db_session: AsyncSession, tenant_id: uuid.UUID, magi
                 browser, context = await create_browser_context(pw, headless=True)
                 page = await context.new_page()
                 try:
+                    # Set email in localStorage so Firebase signInWithEmailLink can complete
+                    if email:
+                        await page.goto("https://brands.blinkit.com", wait_until="domcontentloaded", timeout=15_000)
+                        await page.evaluate(f"localStorage.setItem('emailForSignIn', '{email}')")
                     await page.goto(magic_link.strip(), wait_until="networkidle", timeout=45_000)
+                    # Firebase auth action page redirects to /dashboard via JS — wait for it
+                    if "/diy/" not in page.url and "/dashboard" not in page.url:
+                        try:
+                            await page.wait_for_url("**/dashboard**", timeout=20_000)
+                        except Exception:
+                            pass
                     if "/diy/" not in page.url and "/dashboard" not in page.url:
                         raise RuntimeError(
                             f"Magic link did not land on Blinkit dashboard (landed on {page.url}). "

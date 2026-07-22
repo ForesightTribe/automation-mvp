@@ -20,6 +20,7 @@ TENANT_ID = "a870fd8d-7373-47ec-ad69-5dd08ce35542"
 
 
 async def main():
+    email = input("Enter your Blinkit login email: ").strip()
     magic_link = input("Paste your Blinkit magic link (from email): ").strip()
     if not magic_link.startswith("http"):
         print("ERROR: That doesn't look like a valid URL.")
@@ -33,7 +34,7 @@ async def main():
 
     async with AsyncSessionLocal() as db:
         try:
-            await reconnect_blinkit(db, uuid.UUID(TENANT_ID), magic_link)
+            await reconnect_blinkit(db, uuid.UUID(TENANT_ID), magic_link, email=email)
             print("\n✓ Session saved successfully! Backend can now connect to Blinkit.")
         except Exception as e:
             print(f"\nERROR: {e}")
