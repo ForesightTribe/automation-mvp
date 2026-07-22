@@ -115,6 +115,14 @@ def _public_skus(tenant_id, p):
     return a
 
 
+def _budget_scheduler(tenant_id, p):
+    return ["ads", "budget-scheduler", "--tenant", str(tenant_id)]
+
+
+def _bid_optimizer(tenant_id, p):
+    return ["ads", "bid-optimizer", "--tenant", str(tenant_id)]
+
+
 def _log_cleanup(tenant_id, p):
     a = ["maint", "log-cleanup"]
     _opt(a, "--days", p.get("days"))
@@ -150,6 +158,15 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "scrape.public_skus": JobTypeSpec(
         Lane.batch, 12 * 60 * 60, _public_skus,
         param_keys=("city", "brand_cap", "workers", "resume"),
+    ),
+    # Ad automations — tenant-specific, use the authenticated Blinkit dashboard.
+    # budget_scheduler: dashboard lane (shares Blinkit browser session with scrapers).
+    # bid_optimizer: live lane so it never waits behind a long scrape run.
+    "ads.budget_scheduler": JobTypeSpec(
+        Lane.dashboard, 15 * 60, _budget_scheduler,
+    ),
+    "ads.bid_optimizer": JobTypeSpec(
+        Lane.live, 10 * 60, _bid_optimizer,
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane
     # so it fires promptly (never queued behind a multi-hour scrape).
