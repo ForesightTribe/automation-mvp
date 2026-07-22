@@ -854,17 +854,21 @@ async def setup_with_state(storage_state: dict):
 
     page.remove_listener("request", _capture)
 
-    # Fallback: ask Firebase SDK directly for the current token
+    # Fallback: poll for Firebase SDK to initialize, then get fresh token
     if not token_holder["token"]:
         try:
             t = await page.evaluate("""
                 async () => {
-                    try {
-                        const auth = window.firebase && window.firebase.auth && window.firebase.auth();
-                        if (auth && auth.currentUser) {
-                            return await auth.currentUser.getIdToken(false);
-                        }
-                    } catch(e) {}
+                    for (let i = 0; i < 20; i++) {
+                        try {
+                            const auth = window.firebase && window.firebase.auth && window.firebase.auth();
+                            if (auth && auth.currentUser) {
+                                const token = await auth.currentUser.getIdToken(true);
+                                if (token) return token;
+                            }
+                        } catch(e) {}
+                        await new Promise(r => setTimeout(r, 500));
+                    }
                     return null;
                 }
             """)
