@@ -854,7 +854,30 @@ async def setup_with_state(storage_state: dict):
 
     page.remove_listener("request", _capture)
 
-    # Fallback: poll for Firebase SDK to initialize, then get fresh token
+    # Fallback 1: read token directly from localStorage (Firebase stores it there)
+    if not token_holder["token"]:
+        try:
+            t = await page.evaluate("""
+                () => {
+                    for (const key of Object.keys(localStorage)) {
+                        if (key.startsWith('firebase:authUser:')) {
+                            try {
+                                const data = JSON.parse(localStorage.getItem(key));
+                                if (data && data.stsTokenManager && data.stsTokenManager.accessToken) {
+                                    return data.stsTokenManager.accessToken;
+                                }
+                            } catch(e) {}
+                        }
+                    }
+                    return null;
+                }
+            """)
+            if t:
+                token_holder["token"] = t
+        except Exception:
+            pass
+
+    # Fallback 2: poll for Firebase SDK (legacy window.firebase global)
     if not token_holder["token"]:
         try:
             t = await page.evaluate("""
