@@ -27,17 +27,16 @@ async def main():
 
     print("\nOpening headless browser and navigating to magic link...")
 
-    from app.core.database import get_async_session
+    from app.core.database import AsyncSessionLocal
     from app.services.ads_service import reconnect_blinkit
     import uuid
 
-    async for db in get_async_session():
+    async with AsyncSessionLocal() as db:
         try:
             await reconnect_blinkit(db, uuid.UUID(TENANT_ID), magic_link)
             print("\n✓ Session saved successfully! Backend can now connect to Blinkit.")
         except Exception as e:
             print(f"\nERROR: {e}")
-        break
 
 
 if __name__ == "__main__":
