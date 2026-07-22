@@ -9,6 +9,13 @@ const columns = [
     { key: "timestamp", label: "Time (IST)" },
     { key: "campaign_name", label: "Campaign" },
     {
+        key: "schedule_name",
+        label: "Schedule",
+        render: (r) => r.schedule_name
+            ? <span className="font-medium text-content">{r.schedule_name}</span>
+            : <span className="text-content-muted italic">—</span>,
+    },
+    {
         key: "budget_applied",
         label: "Budget",
         align: "right",

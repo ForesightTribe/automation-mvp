@@ -19,7 +19,7 @@ from scraper.utils.browser import create_browser_context
 _IST = timezone(timedelta(hours=5, minutes=30))
 
 BASE_URL = "https://brands.blinkit.com"
-CAMPAIGNS_PAGE = "/diy/list"
+CAMPAIGNS_PAGE = "/dashboard"
 ADVERTISER_ID = 234  # Blinkit account-specific — update if account changes
 
 ALL_CAMPAIGN_TYPES = [
@@ -845,7 +845,7 @@ async def setup_with_state(storage_state: dict):
     page.on("request", _capture)
     await page.goto(f"{BASE_URL}{CAMPAIGNS_PAGE}", wait_until="networkidle", timeout=60_000)
 
-    if "/diy/" not in page.url:
+    if "/diy/" not in page.url and "/dashboard" not in page.url:
         await browser.close()
         await pw.stop()
         raise RuntimeError(
