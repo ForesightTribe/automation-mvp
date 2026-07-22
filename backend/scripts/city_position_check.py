@@ -95,15 +95,61 @@ async def check_position(keyword: str, lat: float, lon: float, brand: str) -> di
     }
 
 
-async def run(keyword: str, brand: str, output_dir: Path):
-    print(f"\nBengaluru City-Wide Position Check", flush=True)
+async def get_zones_from_db(city_filter: str) -> list[dict]:
+    """Pull dark store coordinates from marketplace_locations table."""
+    try:
+        from app.core.database import AsyncSessionLocal
+        from app.models.search import MarketplaceLocation
+        from sqlmodel import select
+        async with AsyncSessionLocal() as session:
+            q = (
+                select(MarketplaceLocation)
+                .where(
+                    MarketplaceLocation.mp_slug == "blinkit",
+                    MarketplaceLocation.is_active == True,
+                    MarketplaceLocation.lat.is_not(None),
+                    MarketplaceLocation.lon.is_not(None),
+                    MarketplaceLocation.city.ilike(f"%{city_filter}%"),
+                )
+                .order_by(MarketplaceLocation.city, MarketplaceLocation.location_name)
+            )
+            rows = (await session.execute(q)).scalars().all()
+
+        seen: set[str] = set()
+        zones = []
+        for r in rows:
+            area = (r.location_name.strip() if r.location_name and r.location_name.strip()
+                    else (r.pincode.strip() if r.pincode and r.pincode.strip() else ""))
+            key = f"{r.city}|{area}"
+            if key in seen:
+                continue
+            seen.add(key)
+            zones.append({
+                "locality": area or r.merchant_id,
+                "pincode":  r.pincode or "",
+                "lat":      r.lat,
+                "lon":      r.lon,
+            })
+        return zones
+    except Exception as e:
+        print(f"[DB] Could not load zones: {e} — falling back to hardcoded list", flush=True)
+        return []
+
+
+async def run(keyword: str, brand: str, output_dir: Path, city: str = "bengaluru"):
+    zones = await get_zones_from_db(city)
+    if not zones:
+        print("[DB] No zones found — using hardcoded BENGALURU_ZONES", flush=True)
+        zones = BENGALURU_ZONES
+
+    print(f"\n{city.title()} City-Wide Position Check", flush=True)
     print(f"  Keyword : {keyword}", flush=True)
     print(f"  Brand   : {brand}", flush=True)
-    print(f"  Zones   : {len(BENGALURU_ZONES)}\n", flush=True)
+    print(f"  Zones   : {len(zones)}\n", flush=True)
 
     rows = []
-    for i, z in enumerate(BENGALURU_ZONES, 1):
-        print(f"[{i}/{len(BENGALURU_ZONES)}] {z['locality']} ({z['pincode']}) lat={z['lat']} lon={z['lon']}", flush=True)
+    for i, z in enumerate(zones, 1):
+        print(f"[{i}/{len(zones)}] {z['locality']} ({z['pincode']}) lat={z['lat']} lon={z['lon']}", flush=True)
         result = await check_position(keyword, z["lat"], z["lon"], brand)
         rows.append({
             "Locality":          z["locality"],
@@ -176,10 +222,10 @@ async def run(keyword: str, brand: str, output_dir: Path):
         consistent        = len(unique_ad_pos) == 1
 
         summary_data = [
-            ("City",                    "Bengaluru"),
+            ("City",                    city.title()),
             ("Keyword",                 keyword),
             ("Brand",                   brand),
-            ("Total Zones Checked",     len(BENGALURU_ZONES)),
+            ("Total Zones Checked",     len(zones)),
             ("Zones with Ad Found",     len(ad_positions)),
             ("Zones with Organic Found",len(organic_positions)),
             ("Ad Positions Found",      ", ".join(str(p) for p in unique_ad_pos) if unique_ad_pos else "None"),
@@ -188,7 +234,7 @@ async def run(keyword: str, brand: str, output_dir: Path):
             ("Run At",                  datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         ]
 
-        ws2["A1"] = "Bengaluru City-Wide Position Check — Summary"
+        ws2["A1"] = f"{city.title()} City-Wide Position Check — Summary"
         ws2["A1"].font = Font(bold=True, size=14, color="1F4E79")
         ws2.merge_cells("A1:B1")
 
@@ -203,7 +249,7 @@ async def run(keyword: str, brand: str, output_dir: Path):
 
         # ── Save ──────────────────────────────────────────────────────────────
         safe_keyword = keyword.replace(" ", "_").replace("/", "-")
-        filename = f"bengaluru_position_check_{safe_keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
+        filename = f"{city.lower()}_position_check_{safe_keyword}_{datetime.now().strftime('%Y%m%d_%H%M')}.xlsx"
         out_path = output_dir / filename
         wb.save(out_path)
         print(f"Saved to: {out_path}", flush=True)
@@ -224,8 +270,8 @@ async def run(keyword: str, brand: str, output_dir: Path):
     ad_positions  = [r["Ad Position"] for r in rows if isinstance(r["Ad Position"], int)]
     unique_ad_pos = sorted(set(ad_positions))
     print(f"\n{'='*55}", flush=True)
-    print(f"SUMMARY — Bengaluru / '{keyword}'", flush=True)
-    print(f"  Zones checked     : {len(BENGALURU_ZONES)}", flush=True)
+    print(f"SUMMARY — {city.title()} / '{keyword}'", flush=True)
+    print(f"  Zones checked     : {len(zones)}", flush=True)
     print(f"  Zones with Ad     : {len(ad_positions)}", flush=True)
     if ad_positions:
         print(f"  Ad positions      : {unique_ad_pos}", flush=True)
@@ -237,16 +283,17 @@ async def run(keyword: str, brand: str, output_dir: Path):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Bengaluru city-wide Blinkit position checker")
+    parser = argparse.ArgumentParser(description="City-wide Blinkit position checker")
     parser.add_argument("--keyword", required=True, help="Search keyword e.g. 'cotton candy'")
     parser.add_argument("--brand",   default="dobra", help="Brand name (default: dobra)")
+    parser.add_argument("--city",    default="bengaluru", help="City to check (default: bengaluru)")
     parser.add_argument("--output",  default=".", help="Output directory (default: current)")
     args = parser.parse_args()
 
     if hasattr(asyncio, "WindowsProactorEventLoopPolicy"):
         asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
-    asyncio.run(run(args.keyword, args.brand, Path(args.output)))
+    asyncio.run(run(args.keyword, args.brand, Path(args.output), args.city))
 
 
 if __name__ == "__main__":
