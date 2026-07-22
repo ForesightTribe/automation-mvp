@@ -989,7 +989,7 @@ async def reconnect_blinkit(db_session: AsyncSession, tenant_id: uuid.UUID, magi
                 page = await context.new_page()
                 try:
                     await page.goto(magic_link.strip(), wait_until="networkidle", timeout=45_000)
-                    if "/diy/" not in page.url:
+                    if "/diy/" not in page.url and "/dashboard" not in page.url:
                         raise RuntimeError(
                             f"Magic link did not land on Blinkit dashboard (landed on {page.url}). "
                             "Link may be expired or already used."
