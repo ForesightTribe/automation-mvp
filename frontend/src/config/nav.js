@@ -14,6 +14,7 @@ export const NAV_ITEMS = [
 	{ label: "Campaign Manager", path: "/campaign-manager", icon: "◉" },
 	{ label: "Competition", path: "/competition", icon: "◎" },
 	{ label: "Scorecard", path: "/scorecard", icon: "◍" },
+	{ label: "Reports", path: "/reports", icon: "▧" },
 	// adminOnly: hidden from members in the Sidebar; the /settings route is also
 	// guarded by RequireAdmin and the backend's require_admin dependency.
 	{ label: "Settings", path: "/settings", icon: "⚙", adminOnly: true },

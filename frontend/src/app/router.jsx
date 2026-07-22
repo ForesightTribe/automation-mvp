@@ -15,6 +15,7 @@ import { AdsPage } from "../features/ads/AdsPage";
 import { CampaignManagerPage } from "../features/campaign-manager/CampaignManagerPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
+import { ReportsPage } from "../features/reports/ReportsPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 
 /**
@@ -49,6 +50,7 @@ export const router = createBrowserRouter([
 					{ path: "/campaign-manager", element: <CampaignManagerPage /> },
 					{ path: "/competition", element: <CompetitionPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
+					{ path: "/reports", element: <ReportsPage /> },
 					{
 						element: <RequireAdmin />,
 						children: [
