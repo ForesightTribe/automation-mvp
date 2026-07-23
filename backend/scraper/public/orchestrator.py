@@ -245,6 +245,13 @@ async def run_tenant(
     seed = (locations[0].lat, locations[0].lon)
     n_workers = max(1, min(workers, total))
 
+    # Every DB read is done — the scrape stages to SQLite and touches no database.
+    # Release the pooled connection now: held open across a ~1.5h scrape it goes idle,
+    # the Supabase pooler / home NAT silently drops it, and closing it later raises a
+    # spurious SQLAlchemy error at the end of an otherwise-clean run. `locations` are
+    # already-loaded ORM rows and stay readable detached (expire_on_commit=False).
+    await db.close()
+
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
@@ -273,7 +280,7 @@ async def run_tenant(
         staging.close(stg)
 
     summary.update(snapshots=stats["snapshots"], rows=stats["rows"],
-                   errors=stats["errors"], skipped=stats["skipped"])
+                   errors=stats["errors"], skipped=stats["skipped"], status="success")
     logger.info(
         f"orchestrator: tenant {tid} done — {stats['snapshots']} snapshots, "
         f"{stats['rows']} rows, {stats['errors']} errors, {stats['skipped']} skipped"
@@ -288,12 +295,22 @@ async def run_tenant(
 async def run_all(
     db: AsyncSession, cap: int | None = None,
     keyword: str | None = None, city: str | None = None, workers: int = 5,
+    on_tenant_done=None,
 ) -> list[dict]:
-    """Run every active tenant. Each gets its own scrape_job."""
+    """Run every active tenant, each into its own staging file.
+
+    `on_tenant_done(summary)` is awaited after each tenant finishes — the CLI uses it
+    to load that tenant's staging file immediately rather than waiting for the whole
+    sweep. On a weekly scheduled run that matters: one tenant failing (or the process
+    dying at tenant 7 of 9) must not strand the six tenants already scraped.
+    """
     tenants = (await db.execute(
         select(Tenant).where(Tenant.is_active == True)  # noqa: E712
     )).scalars().all()
     out = []
     for t in tenants:
-        out.append(await run_tenant(db, t.id, cap, keyword, city, workers=workers))
+        summary = await run_tenant(db, t.id, cap, keyword, city, workers=workers)
+        out.append(summary)
+        if on_tenant_done:
+            await on_tenant_done(summary)
     return out
