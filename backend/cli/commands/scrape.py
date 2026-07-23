@@ -759,6 +759,7 @@ def public_run(
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),
     workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). ~5–6 is a good balance."),
+    no_load: bool = typer.Option(False, "--no-load", help="Stage only; don't push to the database afterwards"),
 ):
     """Orchestrate a tenant's full Blinkit watchlist (keywords × locations), all
     sourced from the DB (watchlist + tenant_locations). Writes per-tenant
@@ -772,20 +773,81 @@ def public_run(
     if resume and all_tenants:
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
-    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers))
+    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers, no_load))
+
+
+async def _auto_load(summary: dict, no_load: bool) -> None:
+    """Push one finished scrape's staging file into Postgres, inline.
+
+    Called right after each tenant's scrape (including inside a --all sweep, via the
+    orchestrator's on_tenant_done hook) so a later tenant failing can never strand an
+    earlier tenant's data. Deliberately NON-FATAL: the rows are already safe on disk,
+    so a load failure leaves the file pending and prints the recovery command rather
+    than failing the run.
+
+    Only clean runs auto-load. A crashed/partial run still holds real data, but
+    sweeping it in unnoticed is the accident worth avoiding — same rule
+    `scrape load --all` follows. See docs/staging.md.
+    """
+    if no_load:
+        return
+    name = summary.get("staging_file")
+    if not name:
+        return
+    if summary.get("status") != "success":
+        console.print(
+            f"[yellow]Not auto-loading {name} — the run didn't finish cleanly.[/yellow] "
+            f"Review with [bold]cli scrape staged[/bold], then load or discard it."
+        )
+        return
+
+    from scraper.public import loader, staging
+
+    try:
+        path = staging.resolve(name)
+    except (FileNotFoundError, ValueError) as e:
+        console.print(f"[red]Auto-load skipped:[/red] {escape(str(e))}")
+        return
+
+    console.print(f"[dim]Loading {name} into the database…[/dim]")
+    try:
+        res = await loader.load_with_retry(path)
+    except Exception as e:
+        err = getattr(e, "orig", None) or e
+        console.print(f"[red]Auto-load FAILED:[/red] {escape(str(err))[:300]}")
+        console.print(
+            f"[dim]Nothing was written; the scrape is safe on disk. Retry with "
+            f"[/dim][bold]python -m cli scrape load --file {staging.ref(path)}[/bold]"
+        )
+        return
+    console.print(
+        f"[green]Loaded[/green] {res['total']:,} rows "
+        f"({res['snapshots']:,} snapshots, {res['listings']:,} listings, "
+        f"{res['skus']:,} sku rows)"
+    )
 
 
 async def _public_run(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
     keyword: str | None, city: str | None, resume: bool, workers: int,
+    no_load: bool = False,
 ) -> None:
     from scraper.public import orchestrator
 
+    async def _after(summary: dict) -> None:
+        await _auto_load(summary, no_load)
+
     async with AsyncSessionLocal() as db:
         if all_tenants:
-            summaries = await orchestrator.run_all(db, cap, keyword, city, workers)
+            # Load each tenant the moment its scrape finishes, not at the end of the
+            # sweep — on a weekly scheduled run, tenant 7 failing must not strand the
+            # six already scraped.
+            summaries = await orchestrator.run_all(
+                db, cap, keyword, city, workers, on_tenant_done=_after
+            )
         else:
             summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume, workers)]
+            await _after(summaries[0])
 
     if not summaries:
         console.print("[yellow]No active tenants to run.[/yellow]")
@@ -815,6 +877,7 @@ def public_skus(
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip scraped stores)"),
     workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size)."),
+    no_load: bool = typer.Option(False, "--no-load", help="Stage only; don't push to the database afterwards"),
 ):
     """Targeted own-SKU scrape: search each tenant's brand name, paginate its whole
     catalog, and write per-product rows to sku_snapshots (price/mrp/discount/stock/
@@ -827,20 +890,26 @@ def public_skus(
     if resume and all_tenants:
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
-    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers))
+    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers, no_load))
 
 
 async def _public_skus(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
-    city: str | None, resume: bool, workers: int,
+    city: str | None, resume: bool, workers: int, no_load: bool = False,
 ) -> None:
     from scraper.public import targeted
 
+    async def _after(summary: dict) -> None:
+        await _auto_load(summary, no_load)
+
     async with AsyncSessionLocal() as db:
         if all_tenants:
-            summaries = await targeted.run_all_targeted(db, cap, city, workers)
+            summaries = await targeted.run_all_targeted(
+                db, cap, city, workers, on_tenant_done=_after
+            )
         else:
             summaries = [await targeted.run_targeted(db, tenant_id, cap, city, resume, workers)]
+            await _after(summaries[0])
 
     if not summaries:
         console.print("[yellow]No active tenants to run.[/yellow]")

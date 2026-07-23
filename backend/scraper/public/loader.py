@@ -19,10 +19,12 @@ local parent id is remapped to the real one.
 
 See `staging.py` for why any of this exists.
 """
+import asyncio
 import uuid
 from pathlib import Path
 
 from sqlalchemy import text
+from sqlalchemy.exc import DBAPIError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.job import ScrapeJob, JobStatus
@@ -216,3 +218,40 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
         "listings": len(lists), "skus": len(skus), "total": total,
         "pruned": len(pruned),
     }
+
+
+# Backoff between load attempts. A dropped connection usually recovers in seconds;
+# beyond three tries the database is genuinely unavailable and the file should just
+# stay pending for a human.
+_RETRY_DELAYS = (2.0, 5.0, 10.0)
+
+
+async def load_with_retry(path: Path | str, *, attempts: int = 3, prune: bool = True) -> dict:
+    """Load one staging file, retrying connection-level failures.
+
+    Each attempt gets a FRESH session: a dropped connection cannot be reused, and the
+    pool entry behind it is poisoned. Retrying is safe by construction — the load is a
+    single all-or-nothing transaction, so a failed attempt wrote nothing (public data
+    is append-only with no upsert, so a *partial* load would duplicate).
+
+    Raises the last error if every attempt fails; the file is left untouched and
+    `cli scrape load --file <ref>` retries it later.
+    """
+    from app.core.database import AsyncSessionLocal
+
+    last: Exception | None = None
+    for i in range(1, attempts + 1):
+        try:
+            async with AsyncSessionLocal() as db:
+                return await load_file(db, path, prune=prune)
+        except DBAPIError as e:
+            last = e
+            if i == attempts:
+                break
+            delay = _RETRY_DELAYS[min(i - 1, len(_RETRY_DELAYS) - 1)]
+            logger.warning(
+                f"loader: attempt {i}/{attempts} failed on a connection error — "
+                f"retrying in {delay:.0f}s"
+            )
+            await asyncio.sleep(delay)
+    raise last if last else RuntimeError("load failed")
