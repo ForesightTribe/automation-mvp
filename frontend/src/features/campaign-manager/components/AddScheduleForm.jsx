@@ -6,6 +6,13 @@ import { CampaignSelector } from "./CampaignSelector";
 
 const DAYS = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"];
 
+const windowMinutes = (start, end) => {
+    if (!start || !end) return null;
+    const [sh, sm] = start.split(":").map(Number);
+    const [eh, em] = end.split(":").map(Number);
+    return (eh * 60 + em) - (sh * 60 + sm);
+};
+
 const emptyTimeRange = () => ({ start_time: "", end_time: "" });
 
 const emptyRule = () => ({
@@ -145,7 +152,7 @@ export const AddScheduleForm = () => {
     return (
         <Card
             title="Add New Schedule"
-            actions={!open && <Button size="sm" onClick={() => setOpen(true)}>+ Add</Button>}
+            actions={!open && <Button size="sm" onClick={() => setOpen(true)}>+ New Schedule</Button>}
         >
             {!open ? (
                 <p className="text-sm text-content-muted">Set automatic budget rules for a campaign.</p>
@@ -318,36 +325,47 @@ export const AddScheduleForm = () => {
                                     Time Slots <span className="text-danger">*</span>
                                     <span className="ml-1 font-normal">(both start and end time required)</span>
                                 </p>
-                                {rule.time_ranges.map((tr, idx) => (
-                                    <div key={idx} className="flex items-end gap-2">
-                                        <div className="flex flex-1 flex-col gap-1">
-                                            <label className="text-[10px] text-content-muted">Start Time <span className="text-danger">*</span></label>
-                                            <input
-                                                type="time"
-                                                value={tr.start_time}
-                                                onChange={(e) => updateTimeRange(idx, "start_time", e.target.value)}
-                                                className={inputCls}
-                                            />
+                                {rule.time_ranges.map((tr, idx) => {
+                                    const mins = windowMinutes(tr.start_time, tr.end_time);
+                                    const tooShort = mins !== null && mins < 6;
+                                    return (
+                                        <div key={idx} className="flex flex-col gap-1">
+                                            <div className="flex items-end gap-2">
+                                                <div className="flex flex-1 flex-col gap-1">
+                                                    <label className="text-[10px] text-content-muted">Start Time <span className="text-danger">*</span></label>
+                                                    <input
+                                                        type="time"
+                                                        value={tr.start_time}
+                                                        onChange={(e) => updateTimeRange(idx, "start_time", e.target.value)}
+                                                        className={inputCls}
+                                                    />
+                                                </div>
+                                                <div className="flex flex-1 flex-col gap-1">
+                                                    <label className="text-[10px] text-content-muted">End Time <span className="text-danger">*</span></label>
+                                                    <input
+                                                        type="time"
+                                                        value={tr.end_time}
+                                                        onChange={(e) => updateTimeRange(idx, "end_time", e.target.value)}
+                                                        className={inputCls}
+                                                    />
+                                                </div>
+                                                {rule.time_ranges.length > 1 && (
+                                                    <button
+                                                        onClick={() => removeTimeRange(idx)}
+                                                        className="mb-1.5 text-sm text-danger hover:opacity-75"
+                                                    >
+                                                        ✕
+                                                    </button>
+                                                )}
+                                            </div>
+                                            {tooShort && (
+                                                <p className="text-[11px] text-warning flex items-center gap-1">
+                                                    ⚠ Window is only {mins} min — the scheduler runs every minute, so keep windows at least 6 min to be safe.
+                                                </p>
+                                            )}
                                         </div>
-                                        <div className="flex flex-1 flex-col gap-1">
-                                            <label className="text-[10px] text-content-muted">End Time <span className="text-danger">*</span></label>
-                                            <input
-                                                type="time"
-                                                value={tr.end_time}
-                                                onChange={(e) => updateTimeRange(idx, "end_time", e.target.value)}
-                                                className={inputCls}
-                                            />
-                                        </div>
-                                        {rule.time_ranges.length > 1 && (
-                                            <button
-                                                onClick={() => removeTimeRange(idx)}
-                                                className="mb-1.5 text-sm text-danger hover:opacity-75"
-                                            >
-                                                ✕
-                                            </button>
-                                        )}
-                                    </div>
-                                ))}
+                                    );
+                                })}
                                 {rule.time_ranges[rule.time_ranges.length - 1]?.start_time && (
                                     <button
                                         onClick={addTimeRange}
@@ -376,7 +394,7 @@ export const AddScheduleForm = () => {
                             {ruleError && <p className="text-xs text-danger">{ruleError}</p>}
 
                             <div className="flex gap-2">
-                                <Button size="sm" onClick={confirmRule}>Confirm Rule</Button>
+                                <Button size="sm" onClick={confirmRule}>Add Time Slot</Button>
                                 <Button
                                     variant="ghost"
                                     size="sm"

@@ -132,7 +132,7 @@ export const ScheduleList = () => {
                                         disabled={removing}
                                         onClick={() => remove(sched.campaign_id)}
                                     >
-                                        Remove
+                                        Delete
                                     </Button>
                                 </div>
                             </div>

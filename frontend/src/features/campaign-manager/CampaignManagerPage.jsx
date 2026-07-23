@@ -5,61 +5,54 @@ import { AddScheduleForm } from "./components/AddScheduleForm";
 import { BidOptimizerHistory } from "./components/BidOptimizerHistory";
 import { BidOptimizerRuleList } from "./components/BidOptimizerRuleList";
 import { LivePositionCheck } from "./components/LivePositionCheck";
-import { ReconnectBlinkit } from "./components/ReconnectBlinkit";
 import { ScheduleList } from "./components/ScheduleList";
 import { SchedulerHistory } from "./components/SchedulerHistory";
 import { SetBudget } from "./components/SetBudget";
-import { useRunBidOptimizer, useRunScheduler } from "./hooks";
 
 export const CampaignManagerPage = () => {
-    const { mutate: runBudget, isPending: budgetPending, isSuccess: budgetSuccess, data: budgetResult } = useRunScheduler();
-    const { mutate: runBid, isPending: bidPending, isSuccess: bidSuccess, data: bidResult } = useRunBidOptimizer();
-    const [ranBudget, setRanBudget] = useState(false);
-    const [ranBid, setRanBid] = useState(false);
     const [openBidForm, setOpenBidForm] = useState(false);
 
     return (
-        <div className="flex flex-col gap-6">
-            <div>
-                <h1 className="font-display text-xl font-bold text-content">Campaign Manager</h1>
-                <p className="text-sm text-content-muted">
+        <div className="flex flex-col gap-8">
+
+            {/* ── Page heading ── */}
+            <div className="text-center">
+                <h1 className="font-display text-2xl font-bold text-content">Campaign Manager</h1>
+                <p className="text-sm text-content-muted mt-1">
                     Automated budget scheduling and bid optimization for Blinkit campaigns.
                 </p>
             </div>
 
             {/* ── Budget Scheduler ── */}
             <div className="flex flex-col gap-4">
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col items-center gap-1 py-3 border-y border-border bg-muted/30 rounded-lg">
+                    <h2 className="text-lg font-bold text-content tracking-wide">Budget Scheduler</h2>
+                    <p className="text-xs text-content-muted text-center max-w-md">
+                        Automatically changes a campaign's daily budget at your scheduled times.
+                    </p>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2.5 py-0.5 text-[11px] font-medium text-success">
+                        ● Auto-runs every 5 min
+                    </span>
+                </div>
+
+                <div className="flex items-center gap-3">
+                    <div className="w-1 h-8 rounded-full bg-primary shrink-0" />
                     <div>
-                        <h2 className="text-base font-semibold text-content">Budget Scheduler</h2>
-                        <p className="text-xs text-content-muted mt-0.5">
-                            Set rules to automatically change a campaign's daily budget at specific times or days.
-                            <span className="ml-2 inline-flex items-center gap-1 rounded-full bg-success/10 px-2 py-0.5 text-[10px] font-medium text-success">
-                                ● Auto-runs every 5 min
-                            </span>
-                        </p>
+                        <p className="text-sm font-semibold text-content">Update Daily Budget</p>
+                        <p className="text-xs text-content-muted">Manually set a campaign's daily budget right now on Blinkit.</p>
                     </div>
-                    <Button
-                        onClick={() => { runBudget(); setRanBudget(true); }}
-                        disabled={budgetPending}
-                        size="sm"
-                    >
-                        {budgetPending ? "Starting…" : "Run Now"}
-                    </Button>
                 </div>
+                <SetBudget />
 
-                {budgetSuccess && ranBudget && (
-                    <div className="rounded-lg border border-success/30 bg-success/10 px-4 py-2.5 text-sm text-success">
-                        {budgetResult?.message ?? "Scheduler started. Check history in ~30 seconds."}
+                <div className="flex items-center gap-3">
+                    <div className="w-1 h-8 rounded-full bg-primary shrink-0" />
+                    <div>
+                        <p className="text-sm font-semibold text-content">Schedule a Budget Rule</p>
+                        <p className="text-xs text-content-muted">Set time-based rules to automatically change the budget at specific hours or days.</p>
                     </div>
-                )}
-
-                <div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-                    <SetBudget />
-                    <ScheduleList />
                 </div>
-
                 <AddScheduleForm />
+                <ScheduleList />
                 <SchedulerHistory />
             </div>
 
@@ -67,46 +60,38 @@ export const CampaignManagerPage = () => {
 
             {/* ── Bid Optimizer ── */}
             <div className="flex flex-col gap-4">
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h2 className="text-base font-semibold text-content">Bid Optimizer</h2>
-                        <p className="text-xs text-content-muted">
-                            Automatically adjusts keyword CPM bids every 30 min to hit your target position.
-                        </p>
-                    </div>
-                    <div className="flex items-center gap-2">
-                        <Button
-                            variant="secondary"
-                            size="sm"
-                            onClick={() => setOpenBidForm(true)}
-                        >
-                            + Add Rule
-                        </Button>
-                        <Button
-                            onClick={() => { runBid(); setRanBid(true); }}
-                            disabled={bidPending}
-                            size="sm"
-                        >
-                            {bidPending ? "Starting…" : "Run Now"}
-                        </Button>
-                    </div>
+                <div className="flex flex-col items-center gap-1 py-3 border-y border-border bg-muted/30 rounded-lg">
+                    <h2 className="text-lg font-bold text-content tracking-wide">Bid Optimizer</h2>
+                    <p className="text-xs text-content-muted text-center max-w-md">
+                        Automatically adjusts keyword CPM bids to reach your target position.
+                    </p>
+                    <span className="inline-flex items-center gap-1 rounded-full bg-success/10 px-2.5 py-0.5 text-[11px] font-medium text-success">
+                        ● Auto-runs on VM
+                    </span>
                 </div>
 
-                {bidSuccess && ranBid && (
-                    <div className="rounded-lg border border-success/30 bg-success/10 px-4 py-2.5 text-sm text-success">
-                        {bidResult?.message ?? "Bid optimizer started. Check history in ~30 seconds."}
+                <div className="flex items-center justify-between">
+                    <div className="flex items-center gap-3">
+                        <div className="w-1 h-8 rounded-full bg-primary shrink-0" />
+                        <div>
+                            <p className="text-sm font-semibold text-content">Add Bid Optimizer Rule</p>
+                            <p className="text-xs text-content-muted">Set a keyword target position and bid range for a campaign.</p>
+                        </div>
                     </div>
-                )}
+                    <Button
+                        size="sm"
+                        onClick={() => setOpenBidForm(true)}
+                    >
+                        + New Bid Rule
+                    </Button>
+                </div>
 
-                <LivePositionCheck brandName="dobra" />
+                {/* <LivePositionCheck brandName="dobra" /> */}
                 <BidOptimizerRuleList />
                 <AddBidOptimizerForm triggerOpen={openBidForm} onTriggerConsumed={() => setOpenBidForm(false)} />
                 <BidOptimizerHistory />
             </div>
 
-            <hr className="border-border" />
-
-            <ReconnectBlinkit />
         </div>
     );
 };

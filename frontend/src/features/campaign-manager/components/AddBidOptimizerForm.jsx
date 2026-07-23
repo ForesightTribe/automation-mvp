@@ -120,17 +120,11 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
         );
     };
 
+    if (!open) return null;
+
     return (
-        <Card
-            title="Add Bid Optimizer Rule"
-            actions={!open && <Button size="sm" onClick={() => setOpen(true)}>+ Add Rule</Button>}
-        >
-            {!open ? (
-                <p className="text-sm text-content-muted">
-                    Set a keyword bid rule — the optimizer will automatically adjust CPM to hit your target position.
-                </p>
-            ) : (
-                <div className="flex flex-col gap-4">
+        <Card>
+            <div className="flex flex-col gap-4">
                     {/* Campaign */}
                     <CampaignSelector
                         value={form.campaign_id}
@@ -369,10 +363,10 @@ export const AddBidOptimizerForm = ({ triggerOpen = false, onTriggerConsumed } =
                             <Button variant="secondary" onClick={reset}>Cancel</Button>
                         </div>
                     )}
-                </div>
-            )}
+            </div>
         </Card>
     );
+
 };
 
 

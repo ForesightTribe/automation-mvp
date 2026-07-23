@@ -27,7 +27,7 @@ export const SetBudget = () => {
     };
 
     return (
-        <Card title="Update Daily Budget">
+        <Card>
             <div className="flex flex-col gap-3">
                 <CampaignSelector
                     value={campaignId}
