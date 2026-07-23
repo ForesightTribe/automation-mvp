@@ -1,4 +1,5 @@
 """Blinkit Ad Campaign API client."""
+import asyncio
 import base64
 import json
 import logging
@@ -836,7 +837,7 @@ async def setup_with_state(storage_state: dict):
     token_holder = {"token": None}
     page = await context.new_page()
 
-    async def _capture(request):
+    def _capture(request):
         if "adservice" in request.url and not token_holder["token"]:
             t = request.headers.get("firebase_user_token")
             if t:
@@ -851,6 +852,12 @@ async def setup_with_state(storage_state: dict):
         raise RuntimeError(
             f"Session expired — redirected to {page.url}. Please reconnect Blinkit from the Campaign Manager page."
         )
+
+    # Firebase token refresh + Blinkit API calls happen AFTER networkidle — wait up to 15s.
+    for _ in range(30):
+        if token_holder["token"]:
+            break
+        await asyncio.sleep(0.5)
 
     page.remove_listener("request", _capture)
 
