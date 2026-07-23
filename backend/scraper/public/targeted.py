@@ -203,6 +203,11 @@ async def run_targeted(
     seed = (locations[0].lat, locations[0].lon)
     n_workers = max(1, min(workers, total))
 
+    # All DB reads are done — the scrape stages to SQLite and touches no database.
+    # Release the pooled connection so it isn't held idle across the scrape and dropped
+    # (surfacing as a spurious SQLAlchemy error at the end). See orchestrator.py.
+    await db.close()
+
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
@@ -230,7 +235,8 @@ async def run_targeted(
     finally:
         staging.close(stg)
 
-    summary.update(rows=stats["rows"], errors=stats["errors"], skipped=stats["skipped"])
+    summary.update(rows=stats["rows"], errors=stats["errors"],
+                   skipped=stats["skipped"], status="success")
     logger.info(
         f"targeted: tenant {tid} done — {stats['rows']} sku rows, "
         f"{stats['errors']} errors, {stats['skipped']} skipped"
@@ -244,12 +250,21 @@ async def run_targeted(
 
 async def run_all_targeted(
     db: AsyncSession, cap: int | None = None, city: str | None = None, workers: int = 5,
+    on_tenant_done=None,
 ) -> list[dict]:
-    """Run the targeted own-SKU scrape for every active tenant."""
+    """Run the targeted own-SKU scrape for every active tenant.
+
+    `on_tenant_done(summary)` is awaited after each tenant — the CLI loads that
+    tenant's staging file immediately, so a later tenant failing can't strand the
+    earlier ones. See orchestrator.run_all.
+    """
     tenants = (await db.execute(
         select(Tenant).where(Tenant.is_active == True)  # noqa: E712
     )).scalars().all()
     out = []
     for t in tenants:
-        out.append(await run_targeted(db, t.id, cap, city, workers=workers))
+        summary = await run_targeted(db, t.id, cap, city, workers=workers)
+        out.append(summary)
+        if on_tenant_done:
+            await on_tenant_done(summary)
     return out
