@@ -24,6 +24,7 @@ _LABEL_FONT = Font(bold=True)
 
 # Number formats
 _RUP = "₹#,##0"
+_RUP2 = "₹#,##0.00"   # per-unit prices — small, need decimals (₹6.25 / 100 ml)
 _PCT = "0.0"
 _NUM = "#,##0"
 _DEC = "0.0"
@@ -169,6 +170,14 @@ def _insight_sheets(wb: Workbook, ins: ExplorerInsights) -> None:
         {"header": "Comp Min", "key": "comp_min", "fmt": _RUP},
         {"header": "Comp Median", "key": "comp_median", "fmt": _RUP},
         {"header": "Comp Max", "key": "comp_max", "fmt": _RUP},
+        # Per-unit band — the fair cross-pack-size comparison (see Basis column).
+        {"header": "Basis", "key": "unit_uom"},
+        {"header": "Own Avg /u", "key": "own_avg_unit", "fmt": _RUP2},
+        {"header": "Own Min /u", "key": "own_min_unit", "fmt": _RUP2},
+        {"header": "Own Max /u", "key": "own_max_unit", "fmt": _RUP2},
+        {"header": "Comp Avg /u", "key": "comp_avg_unit", "fmt": _RUP2},
+        {"header": "Comp Median /u", "key": "comp_median_unit", "fmt": _RUP2},
+        {"header": "Comp Max /u", "key": "comp_max_unit", "fmt": _RUP2},
     ], [r.model_dump() for r in ins.pricing])
 
     _table(wb, "Availability", [
@@ -186,9 +195,14 @@ def _insight_sheets(wb: Workbook, ins: ExplorerInsights) -> None:
             {"header": "Found Locations", "key": "found_locations", "fmt": _NUM},
             {"header": "Reach %", "key": "reach_pct", "fmt": _PCT, "cf": "good_high"},
             {"header": "Distribution %", "key": "distribution_pct", "fmt": _PCT, "cf": "good_high"},
+            {"header": "Pack", "key": "pack_size", "fmt": _DEC},
+            {"header": "Unit", "key": "pack_uom"},
             {"header": "Price Min", "key": "price_min", "fmt": _RUP},
             {"header": "Price Median", "key": "price_median", "fmt": _RUP},
             {"header": "Price Max", "key": "price_max", "fmt": _RUP},
+            {"header": "Min /u", "key": "unit_price_min", "fmt": _RUP2},
+            {"header": "Median /u", "key": "unit_price_median", "fmt": _RUP2},
+            {"header": "Max /u", "key": "unit_price_max", "fmt": _RUP2},
             {"header": "Disc %", "key": "discount_pct", "fmt": _PCT},
             {"header": "Rating", "key": "rating", "fmt": _DEC},
             {"header": "Combo", "key": "is_combo"},
@@ -212,7 +226,9 @@ def _raw_sheets(wb: Workbook, result: ExplorerResult) -> None:
         ("Brand", "brand", None), ("Own?", "is_brand", None), ("Brand Slug", "brand_slug", None),
         ("Price", "price", _RUP), ("MRP", "mrp", _RUP), ("Discount %", "discount_pct", _PCT),
         ("In Stock", "in_stock", None), ("Inventory", "inventory", _NUM),
-        ("Product ID", "product_id", None), ("Unit", "unit", None), ("Rating", "rating", _DEC),
+        ("Product ID", "product_id", None), ("Unit", "unit", None),
+        ("Pack Size", "pack_size", _DEC), ("Pack UOM", "pack_uom", None),
+        ("Pack Count", "pack_count", _NUM), ("Rating", "rating", _DEC),
         ("State", "product_state", None), ("L0", "l0", None), ("L1", "l1", None),
         ("L2", "l2", None), ("Merchant Type", "merchant_type", None), ("Combo", "is_combo", None),
     ]
@@ -227,7 +243,10 @@ def _raw_sheets(wb: Workbook, result: ExplorerResult) -> None:
                    ("City", "city", None), ("Lat", "lat", None), ("Lon", "lon", None),
                    ("Merchant", "merchant_id", None), ("Merchant Type", "merchant_type", None),
                    ("Price", "price", _RUP), ("MRP", "mrp", _RUP),
-                   ("Discount %", "discount_pct", _PCT), ("In Stock", "in_stock", None),
+                   ("Discount %", "discount_pct", _PCT),
+                   ("Unit", "unit", None), ("Pack Size", "pack_size", _DEC),
+                   ("Pack UOM", "pack_uom", None), ("Pack Count", "pack_count", _NUM),
+                   ("In Stock", "in_stock", None),
                    ("Inventory", "inventory", _NUM), ("Rating", "rating", _DEC),
                    ("Combo", "is_combo", None),
                ]], result.sku_rows)

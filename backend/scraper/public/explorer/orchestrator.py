@@ -34,7 +34,8 @@ from app.utils.logger import logger
 from app.utils.time import now_ist
 from scraper.public.explorer.providers import Provider, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
-from scraper.utils.search_result import classify_products, is_combo_name, slugify
+from scraper.utils.pack import pack_fields, combo_from_pack
+from scraper.utils.search_result import classify_products, slugify
 
 DEFAULT_KEYWORD_CAP = 12
 DEFAULT_BRAND_CAP = 60
@@ -105,6 +106,7 @@ async def _resolve_locations(db: AsyncSession, spec: ExplorerSpec) -> list[Marke
 
 def _listing_row(base: dict, keyword: str, row: dict) -> dict:
     cat = row.get("category") or {}
+    pf = pack_fields(row.get("unit"))
     return {
         **base,
         "keyword": keyword,
@@ -122,6 +124,9 @@ def _listing_row(base: dict, keyword: str, row: dict) -> dict:
         "inventory": row.get("inventory"),
         "product_id": row.get("product_id", ""),
         "unit": row.get("unit", ""),
+        "pack_size": pf["pack_size"],
+        "pack_uom": pf["pack_uom"],
+        "pack_count": pf["pack_count"],
         "rating": row.get("rating"),
         "product_state": row.get("product_state", ""),
         "l0": cat.get("l0"),
@@ -129,11 +134,12 @@ def _listing_row(base: dict, keyword: str, row: dict) -> dict:
         "l2": cat.get("l2"),
         "merchant_type": row.get("merchant_type", ""),
         "image_url": row.get("image_url", ""),
-        "is_combo": is_combo_name(row.get("name", "")),
+        "is_combo": combo_from_pack(row.get("name", ""), pf["pack_count"]),
     }
 
 
 def _sku_row(base: dict, row: dict) -> dict:
+    pf = pack_fields(row.get("unit"))
     return {
         **base,
         # The product's OWN store/tier — a brand's catalog can span an express store
@@ -151,7 +157,10 @@ def _sku_row(base: dict, row: dict) -> dict:
         "inventory": row.get("inventory"),
         "rating": row.get("rating"),
         "unit": row.get("unit", ""),
-        "is_combo": is_combo_name(row.get("name", "")),
+        "pack_size": pf["pack_size"],
+        "pack_uom": pf["pack_uom"],
+        "pack_count": pf["pack_count"],
+        "is_combo": combo_from_pack(row.get("name", ""), pf["pack_count"]),
     }
 
 

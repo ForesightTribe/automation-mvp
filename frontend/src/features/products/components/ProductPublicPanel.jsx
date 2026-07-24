@@ -4,10 +4,18 @@ import { FreshnessBadge } from "../../../components/ui/FreshnessBadge";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
-import { formatCurrency, formatNumber } from "../../../lib/format";
+import {
+	formatCurrency,
+	formatNumber,
+	formatUnitPrice,
+} from "../../../lib/format";
 
-const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`);
-const rank = (v) => (v === null || v === undefined ? "—" : `#${Number(v).toFixed(0)}`);
+const pct = (v) =>
+	v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`;
+const rank = (v) =>
+	v === null || v === undefined ? "—" : `#${Number(v).toFixed(0)}`;
+const packText = (size, uom) =>
+	size == null || !uom ? null : `${size} ${uom} pack`;
 
 /** A headline figure with a plain-language sub-line carrying the counts behind it. */
 const Stat = ({ label, value, sub, tone }) => (
@@ -17,7 +25,11 @@ const Stat = ({ label, value, sub, tone }) => (
 		</p>
 		<p
 			className={`mt-1 font-display text-2xl font-bold ${
-				tone === "danger" ? "text-danger" : tone === "warning" ? "text-warning" : "text-content"
+				tone === "danger"
+					? "text-danger"
+					: tone === "warning"
+						? "text-warning"
+						: "text-content"
 			}`}
 		>
 			{value}
@@ -93,7 +105,11 @@ export const ProductPublicPanel = ({ itemId }) => {
 							value={data.distribution_pct}
 							count={data.stores_in_stock}
 							total={data.stores_listed}
-							tone={data.distribution_pct >= 95 ? "success" : "danger"}
+							tone={
+								data.distribution_pct >= 95
+									? "success"
+									: "danger"
+							}
 						/>
 					</div>
 
@@ -103,12 +119,13 @@ export const ProductPublicPanel = ({ itemId }) => {
 							<span className="font-medium text-content">
 								{formatNumber(notStocked)}
 							</span>{" "}
-							stores that stock the rest of your range — a listing opportunity.
+							stores that stock the rest of your range — a listing
+							opportunity.
 						</p>
 					)}
 
 					{/* Secondary figures. */}
-					<div className="grid grid-cols-3 gap-4 border-t border-border pt-4">
+					<div className="grid grid-cols-2 gap-4 border-t border-border pt-4 sm:grid-cols-4">
 						<Stat
 							label="Typical price"
 							value={formatCurrency(data.price_median)}
@@ -118,10 +135,25 @@ export const ProductPublicPanel = ({ itemId }) => {
 									: undefined
 							}
 						/>
-						<Stat label="Avg discount" value={pct(data.avg_discount)} />
+						<Stat
+							label="Per unit"
+							value={formatUnitPrice(
+								data.unit_price_median,
+								data.pack_uom,
+							)}
+							sub={packText(data.pack_size, data.pack_uom)}
+						/>
+						<Stat
+							label="Avg discount"
+							value={pct(data.avg_discount)}
+						/>
 						<Stat
 							label="Rating"
-							value={data.rating != null ? data.rating.toFixed(1) : "—"}
+							value={
+								data.rating != null
+									? data.rating.toFixed(1)
+									: "—"
+							}
 						/>
 					</div>
 
@@ -141,11 +173,14 @@ export const ProductPublicPanel = ({ itemId }) => {
 										key={k.keyword}
 										className="flex items-center justify-between gap-3 text-sm"
 									>
-										<span className="text-content">{k.keyword}</span>
+										<span className="text-content">
+											{k.keyword}
+										</span>
 										<span className="tabular-nums text-content-muted">
 											position {rank(k.avg_position)}
 											<span className="ml-2 text-content-subtle">
-												in {formatNumber(k.stores)} stores
+												in {formatNumber(k.stores)}{" "}
+												stores
 											</span>
 										</span>
 									</li>

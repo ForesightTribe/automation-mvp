@@ -31,7 +31,7 @@ from pathlib import Path
 
 from app.utils.logger import logger
 from app.utils.time import now_ist
-from scraper.utils.search_result import is_combo_name
+from scraper.utils.pack import pack_fields, combo_from_pack
 
 # Kinds mirror ScrapeJob.dashboard so the loader can create the job row verbatim.
 KIND_SEARCH = "public_search"
@@ -74,6 +74,7 @@ CREATE TABLE IF NOT EXISTS search_listings (
     city          TEXT, zone TEXT, pincode TEXT, scraped_at TEXT,
     position      INTEGER, product_name TEXT, is_brand INTEGER,
     price         REAL, mrp REAL, discount_pct REAL,
+    pack_raw      TEXT, pack_size REAL, pack_uom TEXT, pack_count INTEGER,
     in_stock      INTEGER, inventory INTEGER, platform_product_id TEXT,
     merchant_id   TEXT, merchant_type TEXT, is_combo INTEGER, extra TEXT
 );
@@ -85,6 +86,7 @@ CREATE TABLE IF NOT EXISTS sku_snapshots (
     merchant_id   TEXT, merchant_type TEXT,
     city          TEXT, lat REAL, lon REAL, scraped_at TEXT,
     price         REAL, mrp REAL, discount_pct REAL,
+    pack_raw      TEXT, pack_size REAL, pack_uom TEXT, pack_count INTEGER,
     in_stock      INTEGER, inventory INTEGER, rating REAL, is_combo INTEGER
 );
 
@@ -107,13 +109,27 @@ def _connect(path: Path) -> sqlite3.Connection:
     conn.execute("PRAGMA synchronous=NORMAL")
     conn.executescript(_SCHEMA)
     # CREATE TABLE IF NOT EXISTS won't add columns to a file written by an older
-    # build, so top them up — a staged run must stay readable across upgrades.
-    have = {r["name"] for r in conn.execute("PRAGMA table_info(run)")}
-    for col in ("stores_total", "stores_done", "errors", "skipped"):
-        if col not in have:
-            conn.execute(f"ALTER TABLE run ADD COLUMN {col} INTEGER")
+    # build, so top them up — a staged run must stay readable (and loadable) across
+    # upgrades. A file staged before the pack columns existed gains them here as NULL
+    # (i.e. "not yet parsed"), which the loader then COPYs straight through.
+    _add_missing(conn, "run",
+                 [("stores_total", "INTEGER"), ("stores_done", "INTEGER"),
+                  ("errors", "INTEGER"), ("skipped", "INTEGER")])
+    _pack_cols = [("pack_raw", "TEXT"), ("pack_size", "REAL"),
+                  ("pack_uom", "TEXT"), ("pack_count", "INTEGER")]
+    _add_missing(conn, "search_listings", _pack_cols)
+    _add_missing(conn, "sku_snapshots", _pack_cols)
     conn.commit()
     return conn
+
+
+def _add_missing(conn: sqlite3.Connection, table: str, cols: list[tuple[str, str]]) -> None:
+    """Add any of `cols` (name, sqlite_type) not already on `table` — the forward-
+    compat top-up for staging files written by an older build."""
+    have = {r["name"] for r in conn.execute(f"PRAGMA table_info({table})")}
+    for name, typ in cols:
+        if name not in have:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
 
 def new_run(tenant_id, kind: str, job_id: str | None = None) -> dict:
@@ -228,22 +244,25 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
             """INSERT INTO search_listings
                (snapshot_local_id, tenant_id, job_id, mp_slug, brand_slug, keyword,
                 city, zone, pincode, scraped_at, position, product_name, is_brand,
-                price, mrp, discount_pct, in_stock, inventory, platform_product_id,
+                price, mrp, discount_pct, pack_raw, pack_size, pack_uom, pack_count,
+                in_stock, inventory, platform_product_id,
                 merchant_id, merchant_type, is_combo, extra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(snap_id, tid, jid, "blinkit", l.get("brand_slug"), result["keyword"],
               result.get("city", ""), result.get("zone", ""), result.get("pincode", ""),
               scraped_at, l.get("position"), l.get("name", ""),
               int(bool(l.get("is_brand", False))), l.get("price"), l.get("mrp"),
-              l.get("discount_pct"), int(bool(l.get("in_stock", True))),
+              l.get("discount_pct"),
+              _pk["pack_raw"], _pk["pack_size"], _pk["pack_uom"], _pk["pack_count"],
+              int(bool(l.get("in_stock", True))),
               l.get("inventory"), l.get("product_id") or None,
               l.get("merchant_id") or "", l.get("merchant_type") or "",
-              int(is_combo_name(l.get("name", ""))),
+              int(combo_from_pack(l.get("name", ""), _pk["pack_count"])),
               json.dumps({"group_id": l.get("group_id"), "unit": l.get("unit"),
                           "ptype": l.get("ptype"), "category": l.get("category"),
                           "match_reason": l.get("match_reason"),
                           "image_url": l.get("image_url")}))
-             for l in listings],
+             for l in listings for _pk in (pack_fields(l.get("unit")),)],
         )
         conn.commit()
     return 1 + len(listings)
@@ -262,15 +281,17 @@ async def save_skus(stg: dict, listings: list[dict], brand_slug: str, tenant_id,
             """INSERT INTO sku_snapshots
                (tenant_id, job_id, mp_slug, brand_slug, platform_product_id,
                 product_name, merchant_id, merchant_type, city, lat, lon, scraped_at,
-                price, mrp, discount_pct, in_stock, inventory, rating, is_combo)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                price, mrp, discount_pct, pack_raw, pack_size, pack_uom, pack_count,
+                in_stock, inventory, rating, is_combo)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(tid, jid, "blinkit", brand_slug, l.get("product_id") or "",
               l.get("name", ""), l.get("merchant_id") or merchant_id,
               l.get("merchant_type") or "", city, lat, lon, scraped_at,
               l.get("price"), l.get("mrp"), l.get("discount_pct"),
+              _pk["pack_raw"], _pk["pack_size"], _pk["pack_uom"], _pk["pack_count"],
               int(bool(l.get("in_stock", True))), l.get("inventory"), l.get("rating"),
-              int(is_combo_name(l.get("name", ""))))
-             for l in listings],
+              int(combo_from_pack(l.get("name", ""), _pk["pack_count"])))
+             for l in listings for _pk in (pack_fields(l.get("unit")),)],
         )
         conn.commit()
     return len(listings)

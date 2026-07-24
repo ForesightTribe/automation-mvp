@@ -25,7 +25,7 @@ const REPORTS = [
 const SUBTITLES = {
 	sales: "Daily sell-through per SKU, by marketplace, with weekly rollups and week-over-week movement.",
 	marketing: "Daily ad ledger — spend, revenue, RoAS, ROI — with budget pacing and marketing notes.",
-	competition: "Own price vs competitors, normalized per gram so different pack sizes compare fairly.",
+	competition: "Own price vs competitors, normalized per unit (₹/100 ml · 100 g · piece) so different pack sizes compare fairly.",
 };
 
 export const ReportsPage = () => {

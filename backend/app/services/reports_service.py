@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchListing
+from scraper.utils.pack import per_unit_price
 from app.schemas.reports import (
     CompetitionReport,
     CompGroup,
@@ -276,8 +277,9 @@ async def get_competition_report(
     """Own SKU vs competitors, grouped by (marketplace, keyword) — the client's
     price-comparison table. Sourced from `search_listings` (own + competitors
     surface together per search), taking the latest listing per product in the
-    window. `sp_per_gram` is None until grammage is captured. `kind` filters
-    combos (default `main` = singles on both sides)."""
+    window. `unit_price` normalizes price to the pack's UOM basis (₹/100 ml, ₹/100 g,
+    ₹/piece) so different pack sizes compare fairly. `kind` filters combos (default
+    `main` = singles on both sides)."""
     lo = datetime.combine(start, datetime.min.time())
     hi = datetime.combine(end + timedelta(days=1), datetime.min.time())
     conds = [
@@ -303,36 +305,46 @@ async def get_competition_report(
                 Listing.is_brand,
                 Listing.price,
                 Listing.mrp,
-                Listing.grammage,
+                Listing.pack_size,
+                Listing.pack_uom,
+                Listing.pack_count,
             )
             .where(*conds)
-            .order_by(Listing.scraped_at.desc())  # latest first ⇒ first-wins dedupe
+            # Latest listing per (marketplace, keyword, product) — done in SQL, not by
+            # fetching everything and dropping duplicates in Python. That earlier shape
+            # pulled ~100k rows to build ~124: 99.9% waste, slow enough that the pooler
+            # dropped the connection mid-transfer and the page never loaded.
+            .distinct(Listing.mp_slug, Listing.keyword, Listing.product_name)
+            .order_by(
+                Listing.mp_slug,
+                Listing.keyword,
+                Listing.product_name,
+                Listing.scraped_at.desc(),   # ⇒ DISTINCT ON keeps the newest
+            )
         )
     ).all()
 
-    seen: set[tuple] = set()
     groups: dict[tuple[str, str], dict[str, list[CompRow]]] = {}
-    for mp, kw, brand, name, is_brand, price, mrp, grammage in rows:
-        dedupe_key = (mp, kw, name)
-        if dedupe_key in seen:
-            continue
-        seen.add(dedupe_key)
+    for mp, kw, brand, name, is_brand, price, mrp, pack_size, pack_uom, pack_count in rows:
         g = groups.setdefault((mp, kw), {"own": [], "competitors": []})
         row = CompRow(
             name=name,
             brand=brand,
             mrp=_num(mrp),
             sp=_num(price),
-            grammage=_num(grammage),
-            sp_per_gram=round(price / grammage, 4) if price and grammage else None,
+            pack_size=_num(pack_size),
+            pack_uom=pack_uom or "",
+            pack_count=pack_count,
+            unit_price=per_unit_price(price, pack_size, pack_uom or ""),
         )
         g["own" if is_brand else "competitors"].append(row)
 
     out: list[CompGroup] = []
     for (mp, kw), g in groups.items():
-        # Cheapest-per-gram first (nulls last), else by selling price.
+        # Cheapest-per-unit first (nulls last), else by selling price. Within one
+        # (marketplace, keyword) the packs share a UOM, so per-unit sorts cleanly.
         g["competitors"].sort(
-            key=lambda r: (r.sp_per_gram is None, r.sp_per_gram or r.sp or 0.0)
+            key=lambda r: (r.unit_price is None, r.unit_price or r.sp or 0.0)
         )
         out.append(
             CompGroup(marketplace=mp, keyword=kw, own=g["own"], competitors=g["competitors"])

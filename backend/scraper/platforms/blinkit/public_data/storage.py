@@ -6,7 +6,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import SearchSnapshot, SearchListing
 from app.utils.logger import logger
 from app.utils.time import now_ist
-from scraper.utils.search_result import is_combo_name
+from scraper.utils.pack import pack_fields, combo_from_pack
 from scraper.utils.storage import ensure_refs
 
 
@@ -69,6 +69,7 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensu
         await session.flush()  # assign snapshot.id for the FK below
 
         for l in listings:
+            pack = pack_fields(l.get("unit"))
             session.add(
                 SearchListing(
                     snapshot_id=snapshot.id,
@@ -84,10 +85,16 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensu
                     position=l.get("position"),
                     product_name=l.get("name", ""),
                     is_brand=l.get("is_brand", False),
-                    is_combo=is_combo_name(l.get("name", "")),
+                    # pack_count is the reliable combo signal (name misses ~13%);
+                    # combo_from_pack falls back to the name when the unit is unparsed.
+                    is_combo=combo_from_pack(l.get("name", ""), pack["pack_count"]),
                     price=l.get("price"),
                     mrp=l.get("mrp"),
                     discount_pct=l.get("discount_pct"),
+                    pack_raw=pack["pack_raw"],
+                    pack_size=pack["pack_size"],
+                    pack_uom=pack["pack_uom"],
+                    pack_count=pack["pack_count"],
                     in_stock=l.get("in_stock", True),
                     inventory=l.get("inventory"),
                     platform_product_id=l.get("product_id") or None,

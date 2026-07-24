@@ -13,7 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import SkuSnapshot
 from app.utils.logger import logger
 from app.utils.time import now_ist
-from scraper.utils.search_result import is_combo_name
+from scraper.utils.pack import pack_fields, combo_from_pack
 from scraper.utils.storage import ensure_refs
 
 MP = "blinkit"
@@ -47,6 +47,7 @@ async def save_skus(
         rows = []
         for l in listings:
             name = l.get("name", "")
+            pack = pack_fields(l.get("unit"))
             rows.append(SkuSnapshot(
                 tenant_id=tid,
                 job_id=jid,
@@ -54,7 +55,7 @@ async def save_skus(
                 brand_slug=brand_slug,
                 platform_product_id=(l.get("product_id") or ""),
                 product_name=name,
-                is_combo=is_combo_name(name),
+                is_combo=combo_from_pack(name, pack["pack_count"]),
                 # The listing's OWN store/tier is the truth — `merchant_id` here is
                 # only a fallback for the rare row Blinkit returns without one.
                 merchant_id=(l.get("merchant_id") or merchant_id),
@@ -66,6 +67,10 @@ async def save_skus(
                 price=l.get("price"),
                 mrp=l.get("mrp"),
                 discount_pct=l.get("discount_pct"),
+                pack_raw=pack["pack_raw"],
+                pack_size=pack["pack_size"],
+                pack_uom=pack["pack_uom"],
+                pack_count=pack["pack_count"],
                 in_stock=l.get("in_stock", True),
                 inventory=l.get("inventory"),
                 rating=l.get("rating"),

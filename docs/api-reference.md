@@ -143,7 +143,7 @@ Window via `PeriodDep` (`?start=&end=`, legacy `?days=`); `?marketplaces=` (comm
 | GET | `/products` | SKU list joined with latest stock + days-of-cover + health `status`. Returns `{summary, products: Page}` — `summary` = KPI strip (active SKUs, revenue, units, avg price, #out-of-stock, #low-cover) for the search/category/window scope. Params: `?search=` (name), `?category=`, `?sort=revenue\|units\|price\|cover`, `?sku_status=out_of_stock\|low_cover\|no_sales\|healthy`, pagination. |
 | GET | `/products/{item_id}` | Product 360: totals + avg price, current stock, days-of-cover + status, scorecard potential loss, daily sales `trend`, daily `stock_trend`, per-`facilities` stock, per-`cities` split. 404 if no sales in window. |
 | GET | `/products/{item_id}/pos` | Paginated PO line history for the SKU (`blinkit_po_items` ⨝ `blinkit_pos`): po_number, state, issue_date, facility, units ordered/received/remaining, cost, amount. |
-| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: `stores_listed`/`stores_in_stock`, `reach_pct` (listed ÷ `stores_scraped`), `distribution_pct` (in stock ÷ listed), price band, discount, rating, and per-keyword rank with distinct `stores`. Counts are distinct dark stores (`merchant_id`), not `(lat,lon)`; `stores_scraped` is observed, not the configured catalog count. Window (`?start=&end=`). Returns `mapped: false` when unmapped. |
+| GET | `/products/{item_id}/public` | **Public** (scraped) view of one SKU, bridged private `item_id` → public `platform_product_id` via **`sku_map`**: `stores_listed`/`stores_in_stock`, `reach_pct` (listed ÷ `stores_scraped`), `distribution_pct` (in stock ÷ listed), price band, per-unit band (`pack_size`/`pack_uom` + `unit_price_*`), discount, rating, and per-keyword rank with distinct `stores`. Counts are distinct dark stores (`merchant_id`), not `(lat,lon)`; `stores_scraped` is observed, not the configured catalog count. Window (`?start=&end=`). Returns `mapped: false` when unmapped. |
 
 ### `ads` — `/api/clients/{id}/ads` *(private)*
 Paid marketing on the platform (sponsored placements, bidding, plans).
@@ -196,7 +196,7 @@ in stock ÷ listed (health). *(The UI relabels these "on shelf" / "in stock" —
 | GET | `/stores/{merchant_id}` | **Public** one store's whole shelf — every own SKU incl. `listed:false`. Backs the store drawer. Window. |
 | GET | `/products/{product_id}/stores` | **Public** one product across every store (OOS / not-carried / in-stock). Mirror of the store shelf; backs the product drawer. Window + `?city=`. |
 | GET | `/availability-history` | **Public** weekly on-shelf availability % trend. Takes **`?weeks=`** (default 12), NOT the window — a trend is history, so a 2-day window shouldn't empty it. `?city=`, `?marketplace=`. |
-| GET | `/pricing` | **Public** per-SKU price dispersion across stores (min/median/max) + avg discount. Window + `?city=`/`?marketplace=`. |
+| GET | `/pricing` | **Public** per-SKU price dispersion across stores (min/median/max) + avg discount, plus a per-unit band (`pack_size`/`pack_uom` + `unit_price_min/median/max` — ₹/100 ml·100 g·piece). Window + `?city=`/`?marketplace=`. |
 
 ### `scorecard` — `/api/clients/{id}/scorecard` *(private)*
 Blinkit brand-health scorecard. **Weekly snapshots** keyed on `from_date_ist`
@@ -221,7 +221,7 @@ Competitive intel, auto-scoped to the client's **own** brand(s) via the watchlis
 | GET | `/share-of-voice` | Own-brand SOV summary + daily trend, over `searches` (snapshots). Rank/SoV are the blended shopper list, so counted per search — keeps full history (pre-2026-07-18 rows have no `merchant_id`). Filters `?keyword=`, `?city=`, `?marketplace=`, window. |
 | GET | `/rank-matrix` | Own-brand avg rank + SoV per (keyword × city) — the "where am I weak" **heatmap**. Cells carry `searches` (not stores). Returns `keywords`, `cities`, flat `cells`, `as_of`. `?marketplace=`, window. |
 | GET | `/top-competitors` | Competitor leaderboard by distinct **`stores`** (`COUNT(DISTINCT SearchListing.merchant_id)` — the store fulfilling *that competitor's* product), distinct keywords, avg position/price, share % of all `(competitor, store)` presences. ⚠️ excludes pre-2026-07-18 rows (no store id) → shorter window than the rank/SoV views. `?keyword=`, `?city=`, `?marketplace=`, window, `?limit=`. |
-| GET | `/price-position` | Per keyword: own price band vs competitor band. `?keyword=`, `?city=`, `?marketplace=`, window. |
+| GET | `/price-position` | Per keyword: own price band vs competitor band — both raw rupees and a per-unit band (`unit_uom` + `own/comp_*_unit_price`, ₹/100 ml·100 g·piece, the fair cross-pack comparison). `?keyword=`, `?city=`, `?marketplace=`, window. |
 | GET | `/rankings` | Paginated competitor positions/prices for the own brand (all-time, not windowed). Filters `?keyword=`, `?city=`, `?marketplace=`, `?competitor=`. |
 
 Empty results until the client has an `own` watchlist entry. `rank-matrix` /
