@@ -51,10 +51,27 @@ async def get_firebase_token(storage_state: dict) -> str:
     return resp.json()["id_token"]
 
 
+def _session_cookies(storage_state: dict) -> dict[str, str]:
+    """Extract cookies for brands.blinkit.com from Playwright storage state."""
+    out: dict[str, str] = {}
+    for c in storage_state.get("cookies", []):
+        domain = c.get("domain", "")
+        if "blinkit.com" in domain:
+            out[c["name"]] = c["value"]
+    return out
+
+
 def _auth_headers(token: str) -> dict:
     return {
         "Content-Type": "application/json",
         "firebase_user_token": token,
+        "Origin": BASE_URL,
+        "Referer": f"{BASE_URL}/dashboard",
+        "User-Agent": (
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/126.0.0.0 Safari/537.36"
+        ),
     }
 
 
@@ -69,8 +86,9 @@ async def get_campaign_keywords(campaign_id: int, storage_state: dict) -> list[d
     """Return keywords with CPM + position/impressions — no browser."""
     token = await get_firebase_token(storage_state)
     headers = _auth_headers(token)
+    cookies = _session_cookies(storage_state)
 
-    async with httpx.AsyncClient(timeout=30, base_url=BASE_URL) as http:
+    async with httpx.AsyncClient(timeout=30, base_url=BASE_URL, cookies=cookies) as http:
         detail_resp = await http.get(
             f"/adservice/v1/campaigns/{campaign_id}",
             headers=headers,
@@ -89,6 +107,7 @@ async def get_campaign_keywords(campaign_id: int, storage_state: dict) -> list[d
             json={"from_date": from_date, "to_date": to_date},
             headers=headers,
         )
+        report_resp.raise_for_status()
         report_resp.raise_for_status()
         reporting = report_resp.json().get("data", {}).get("reporting", {})
 
@@ -121,8 +140,9 @@ async def get_campaign_keywords(campaign_id: int, storage_state: dict) -> list[d
 async def get_campaign_products(campaign_id: int, storage_state: dict) -> list[dict]:
     """Return products in a campaign — no browser."""
     token = await get_firebase_token(storage_state)
+    cookies = _session_cookies(storage_state)
 
-    async with httpx.AsyncClient(timeout=30, base_url=BASE_URL) as http:
+    async with httpx.AsyncClient(timeout=30, base_url=BASE_URL, cookies=cookies) as http:
         resp = await http.get(
             f"/adservice/v1/campaigns/{campaign_id}",
             headers=_auth_headers(token),
