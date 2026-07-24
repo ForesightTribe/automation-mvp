@@ -18,7 +18,7 @@
 | [docs/darkstores.md](docs/darkstores.md) | **Dark-store-level public data** (designed, not built) — merchant_id/merchant_type from the atc block, the probe-vs-store model, evidence log, proposed DB changes, tier caveats |
 | [docs/staging.md](docs/staging.md) | **Public scrapes stage to local SQLite**, then `cli scrape load` pushes to Postgres in one all-or-nothing transaction — why, commands, retention, failure modes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
-| [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count`; migration + backfills written, not yet applied |
+| [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
 | [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth over SSH, cost/capacity model, and the VM gotchas |
@@ -167,6 +167,28 @@ alembic revision --autogenerate -m "describe change"
 alembic upgrade head
 ```
 
+**⚠️ Disk is the binding constraint** — Supabase free tier, **500 MB hard quota**, and one
+day of public scrape is ~92 MB (refills the tier in 3–5 days). `DELETE` frees **nothing**
+(rows are only marked dead; the file never shrinks) and every `UPDATE` leaves a dead row
+version, so a bulk backfill costs **~2× the table** until vacuumed. Only `VACUUM FULL`
+reclaims. Before any bulk `UPDATE`/`DELETE`, check free space and plan the reclaim as part
+of the job:
+```bash
+python -m scripts.reclaim_space                  # report sizes
+python -m scripts.reclaim_space --apply          # REINDEX each index, then VACUUM FULL
+```
+- **Smallest table first** — `VACUUM FULL` writes the new copy before dropping the old, so
+  near the quota it fails (or tips the project read-only). Each table frees headroom for
+  the next; that's why the script reindexes before vacuuming.
+- **Never from the Supabase SQL editor** — its HTTP gateway times out ~1 min ("upstream
+  timeout") while Postgres keeps working, and `SET statement_timeout` can't fix a *proxy*
+  timeout. Never during a scrape/`scrape load` either (ACCESS EXCLUSIVE lock).
+- **Don't benchmark right after a vacuum** — it rewrites into a new file, so every read is
+  cold (we saw 18–28 s settle to 0.5 s). Trust `EXPLAIN ANALYZE` over wall-clock.
+
+Script docstring has the full rationale. Growth levers not yet built: slim `extra`
+(284 bytes/row, >half of each listing row, mostly `image_url`) and a retention policy.
+
 ## Accounts, Clients, Users
 
 The API is multi-tenant: **Account** (subscriber org, logs in & pays) → **Client**
@@ -257,9 +279,10 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   `keyword_cap`/`brand_cap` live on the `brands` config sheet.
 - **Per-unit price** normalizes price across pack sizes (₹/100 ml · 100 g · piece),
   parsed from the `unit` string into `pack_size`/`pack_uom`/`pack_count` on both public
-  tables; per-unit price is derived (`price ÷ pack_size`), never stored. Supersedes the
-  never-populated `grammage`. Migration + backfills written but NOT applied. See
-  [docs/per-unit-price.md](docs/per-unit-price.md).
+  tables; per-unit price is derived (`price ÷ pack_size`), never stored. All parsing goes
+  through `scraper/utils/pack.py` — scraper, staging, loader, backfill and Explorer alike.
+  Supersedes the never-populated `grammage` (dropped). **Shipped + backfilled 2026-07-24,
+  100% coverage.** See [docs/per-unit-price.md](docs/per-unit-price.md).
 - **`sku_map` bridges private↔public** (`item_id` ↔ `platform_product_id`) — different
   Blinkit id systems, no shared UPC, built by name-match (`cli sku-map build`/`apply`).
   Powers the Products page public panel (`/products/{item_id}/public`).

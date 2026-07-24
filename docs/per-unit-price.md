@@ -1,7 +1,8 @@
 # Per-unit price — pack-size normalization
 
-**Status: built 2026-07-24. Migration written but NOT applied; backfill scripts
-written but NOT run — both gated on explicit sign-off.**
+**Status: SHIPPED 2026-07-24.** Migration `a1c3e5f7b9d2` applied, both backfills run,
+verified end-to-end (DB → API → frontend). See [Verification](#verification-2026-07-24)
+and [Aftermath](#aftermath--what-the-backfill-cost) at the bottom.
 
 Our public scrape captures each product's selling price and MRP, but a raw price is
 not comparable across pack sizes: a `12 x 250 ml` multipack at ₹206 and a single
@@ -104,7 +105,7 @@ at the backfill boundary. Approved, but noted: it makes the numbers correct.
 columns to both tables and **drops `grammage`** (the grams-only float added
 2026-07-22, never populated; a single float can't represent the ~93% of this
 catalogue measured in ml, nor pack count). Nullable/defaulted adds + one drop of a
-wholly-NULL column — no table rewrite. **Not yet applied.**
+wholly-NULL column — no table rewrite. **Applied 2026-07-24; it is the current head.**
 
 **Scrape → load pipeline** — `blinkit/public_data/storage.py` + `sku_storage.py`
 populate the columns (and keep `unit` in `extra`, so a future backfill can never be
@@ -113,19 +114,34 @@ starved — mirrors the merchant-column lesson in [darkstores.md](darkstores.md)
 files staged by an older build (so the currently-staged runs stay loadable);
 `loader.py` COPYs them through.
 
-**Backfill** — two one-off scripts under `backend/scripts/`, **dry-run by default,
-`--apply` gated, neither run yet**:
-- `backfill_pack_listings.py` — parses `extra->>'unit'` on `search_listings`.
-- `backfill_pack_skus.py` — `sku_snapshots` has no local unit, so it enriches from a
-  `platform_product_id → unit` map built off `search_listings` (100% row coverage on
-  the staged sample; unmatched ids stay NULL).
-Both re-derive `is_combo` (skippable with `--no-recombo`), only touch rows with an
-empty `pack_raw` (idempotent, resumable, and can never blank a fresh row), and use
-temp-table + COPY + `UPDATE … FROM` (the loader proved executemany is a trap).
+**Backfill — done, scripts since deleted.** Two one-off scripts backfilled history on
+2026-07-24 to 100% coverage on both tables, then were removed as spent (recoverable from
+commit `b463535` if ever needed again):
+- listings parsed `extra->>'unit'` directly.
+- `sku_snapshots` has no local unit, so it was enriched from a `platform_product_id →
+  unit` map built off `search_listings` — 100% of rows matched; unmatched ids would have
+  stayed NULL rather than be guessed.
+
+Both re-derived `is_combo`, touched only rows with an empty `pack_raw` (idempotent and
+resumable, and could never blank a freshly-scraped row), and used temp-table + COPY +
+`UPDATE … FROM` (the loader had already proved executemany is a trap). The listings run
+died mid-way on a dropped pooler connection at 100k rows and resumed cleanly on re-run —
+batches commit independently — which is why per-batch retry was added.
+
+⚠️ **If a staging file predating 2026-07-24 is ever loaded**, its rows land with NULL
+pack columns and would need that backfill rewritten. Prefer `cli scrape discard` for such
+files unless the history is genuinely wanted.
 
 **API** — additive on every endpoint:
 - `reports_service.get_competition_report` — `sp_per_gram` → `unit_price` +
   `pack_size`/`pack_uom`/`pack_count`; competitor sort re-keyed to per-unit price.
+  **Also rewritten to dedupe in SQL** (`DISTINCT ON (mp_slug, keyword, product_name)
+  ORDER BY …, scraped_at DESC`). The previous shape fetched every matching listing and
+  dropped duplicates in Python — **100,510 rows over the wire to build 124** (99.9%
+  waste), slow enough that the pooler dropped the connection and the Reports
+  → Competition page never loaded. Same semantics, same 124 rows; 0.5 s instead of
+  never. This flaw predated the per-unit work; it just became visible once the page
+  had live data worth loading.
 - `competition_service.get_price_position` — keeps the raw-rupee band (absolute shelf
   price) and **adds** a per-unit band + `unit_uom` (the keyword's dominant UOM via
   `mode()`). Raw-price averaging across pack sizes was the core flaw; the per-unit
@@ -154,6 +170,52 @@ card, inventory Pricing card and product public panel each gain per-unit figures
 The migration must land **before** the loader code that COPYs into the new columns,
 or `cli scrape load` fails on pending files. Staged files created before the code
 deploy carry NULL pack columns until step 3.
+
+## Verification (2026-07-24)
+
+Schema: alembic head `a1c3e5f7b9d2`, zero `grammage` columns remaining.
+
+| table | rows | pack_raw / size / uom / count |
+|---|---|---|
+| `search_listings` | 146,462 | **100%** all four |
+| `sku_snapshots` | 35,802 | **100%** all four, 0 unmatched |
+
+Consistency — all zero: rows with size but no uom, uom but no size, `pack_count > 1`
+not flagged combo, `pack_count = 1` flagged combo. UOM split: 125,328 ml + 21,134 g.
+`is_combo`: 45,952 true / 100,510 false.
+
+All four endpoints exercised against live data, sub-second cold:
+`reports/competition` 0.80 s · `competition/price-position` 1.20 s ·
+`inventory/pricing` 1.61 s · `products/{id}/public` 0.92 s.
+
+The comparison the feature exists for, now visible on the Reports page:
+
+```
+Dobra Blueberry Goli Soda            ₹73   225 ml ×1    ₹32.44 /100ml
+Dobra Blueberry Goli Soda Pack of 3  ₹203  675 ml ×3    ₹30.07 /100ml
+Lahori Nimboo Lime Soft Drink        ₹240  3840 ml ×24  ₹6.25  /100ml
+Bombay Banta Black Jeera Masala      ₹188  3000 ml ×12  ₹6.27  /100ml
+```
+
+Dobra's sodas are ~₹33/100 ml against a competitor median of ₹12/100 ml — nearly 3×.
+Raw prices hid that behind pack-size differences.
+
+## Aftermath — what the backfill cost
+
+**The backfill nearly filled the 500 MB Supabase free tier.** Postgres is MVCC: the
+`UPDATE` on all 146k listings + 36k sku rows wrote a new version of every row and left
+the old one dead, so both tables carried a full extra dead copy — on top of a large
+pre-existing `DELETE` of pre-19-July data, which also frees nothing. The database hit
+463 MB / 500 MB and started reporting "exceeding usage limits".
+
+Reclaimed with `backend/scripts/reclaim_space.py` (REINDEX per index, then
+`VACUUM FULL`): **463 MB → 172 MB**, `search_listings` 318 MB → 92 MB. The ordering
+rules and traps live in that script's docstring and the Database Patterns section of
+[CLAUDE.md](../CLAUDE.md).
+
+**Lesson for the next bulk backfill on this DB:** budget for the table temporarily
+doubling, check free space first, and plan the `VACUUM FULL` as part of the job — not
+as a surprise afterwards.
 
 ## Not done (out of scope)
 

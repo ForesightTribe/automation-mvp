@@ -55,15 +55,12 @@ _TERM = re.compile(
     r"(?P<qty>\d+(?:\.\d+)?)\s*(?P<uom>[a-zA-Z]+)\s*$"
 )
 
-# Display basis per family: (multiplier, suffix). Volume/weight read as ₹ per 100
-# ml/g (the Indian shelf convention, and it keeps this catalog in a 6–311 band where
-# ₹/ml underflows and ₹/L inflates). Count items read as ₹ per piece — per-100 is
-# meaningless for them. The frontend mirrors these suffixes; keep the two in sync.
-_BASIS: dict[str, tuple[float, str]] = {
-    "ml": (100.0, "100 ml"),
-    "g": (100.0, "100 g"),
-    "pc": (1.0, "piece"),
-}
+# Display basis multiplier per family: volume/weight read as ₹ per 100 ml / 100 g (the
+# Indian shelf convention, and it keeps this catalog in a ~₹6–311 band where ₹/ml
+# underflows and ₹/L inflates); count items read as ₹ per piece, since per-100 is
+# meaningless for them. `formatUnitPrice` in the frontend renders the matching suffix
+# ("100 ml" / "100 g" / "piece") — keep the two in sync.
+_BASIS: dict[str, float] = {"ml": 100.0, "g": 100.0, "pc": 1.0}
 
 
 def parse_pack(raw: str | None) -> tuple[float | None, str, int | None] | None:
@@ -127,18 +124,10 @@ def per_unit_price(price, size, uom: str) -> float | None:
         size = float(size)
     except (TypeError, ValueError):
         return None
-    basis = _BASIS.get(uom)
-    if basis is None or size <= 0 or price <= 0:
+    mult = _BASIS.get(uom)
+    if mult is None or size <= 0 or price <= 0:
         return None
-    mult, _ = basis
     return round(price / size * mult, 3)
-
-
-def basis_label(uom: str) -> str:
-    """The per-unit basis suffix for a UOM — "100 ml" / "100 g" / "piece". "" for a
-    UOM with no basis, so a header can fall back to a plain label."""
-    basis = _BASIS.get(uom)
-    return basis[1] if basis else ""
 
 
 def combo_from_pack(name: str, pack_count: int | None) -> bool:
