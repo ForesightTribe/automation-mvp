@@ -234,8 +234,8 @@ class BlinkitClient:
         try:
             await self._page.goto(
                 f"{BASE_URL}/diy/campaign/{campaign_id}",
-                wait_until="networkidle",
-                timeout=45_000,
+                wait_until="domcontentloaded",
+                timeout=90_000,
             )
             await self._page.wait_for_timeout(2000)
         finally:
@@ -844,7 +844,7 @@ async def setup_with_state(storage_state: dict):
                 token_holder["token"] = t
 
     page.on("request", _capture)
-    await page.goto(f"{BASE_URL}{CAMPAIGNS_PAGE}", wait_until="networkidle", timeout=60_000)
+    await page.goto(f"{BASE_URL}{CAMPAIGNS_PAGE}", wait_until="domcontentloaded", timeout=120_000)
 
     if "/diy/" not in page.url and "/dashboard" not in page.url:
         await browser.close()
