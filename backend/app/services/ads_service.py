@@ -782,31 +782,63 @@ async def run_bid_optimizer_all_tenants() -> None:
 # ── Campaign keywords ─────────────────────────────────────────────────────────
 
 async def get_campaign_keywords(tenant_id: uuid.UUID, campaign_id: int) -> list[dict]:
-    """Fetch live keyword CPM + position data directly from Blinkit API (no browser)."""
+    """Fetch live keyword CPM + position data from Blinkit via Playwright."""
     from scraper.utils.session import load_session
-    from ad_campaigns.direct_api import get_campaign_keywords as _direct_keywords
 
     async with AsyncSessionLocal() as db:
         storage_state = await load_session(db, str(tenant_id), "blinkit")
     if not storage_state:
         raise RuntimeError("No Blinkit session found. Please reconnect via the Blinkit Connection card.")
 
-    return await _direct_keywords(campaign_id, storage_state)
+    result: dict = {}
+
+    def _run():
+        from ad_campaigns.client import setup_with_state
+
+        async def _inner():
+            pw, browser, client = await setup_with_state(storage_state)
+            try:
+                result["keywords"] = await client.get_campaign_keywords(campaign_id)
+            finally:
+                await browser.close()
+                await pw.stop()
+
+        _run_in_new_loop(_inner)
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_playwright_executor, _run)
+    return result.get("keywords", [])
 
 
 # ── Campaign products ─────────────────────────────────────────────────────────
 
 async def get_campaign_products(tenant_id: uuid.UUID, campaign_id: int) -> list[dict]:
-    """Fetch products in a campaign directly from Blinkit API (no browser)."""
+    """Fetch products in a campaign via Playwright."""
     from scraper.utils.session import load_session
-    from ad_campaigns.direct_api import get_campaign_products as _direct_products
 
     async with AsyncSessionLocal() as db:
         storage_state = await load_session(db, str(tenant_id), "blinkit")
     if not storage_state:
         raise RuntimeError("No Blinkit session found. Please reconnect via the Blinkit Connection card.")
 
-    products = await _direct_products(campaign_id, storage_state)
+    result: dict = {}
+
+    def _run():
+        from ad_campaigns.client import setup_with_state
+
+        async def _inner():
+            pw, browser, client = await setup_with_state(storage_state)
+            try:
+                result["products"] = await client.get_campaign_products(campaign_id)
+            finally:
+                await browser.close()
+                await pw.stop()
+
+        _run_in_new_loop(_inner)
+
+    loop = asyncio.get_event_loop()
+    await loop.run_in_executor(_playwright_executor, _run)
+    products = result.get("products", [])
 
     # Enrich stub names using sku_map (platform_product_id = campaign PID)
     pids = [p["pid"] for p in products if p.get("pid")]
