@@ -228,7 +228,7 @@ export const AddScheduleForm = () => {
                         <div className="flex flex-col gap-4 rounded-lg border border-border p-4">
                             <div className="flex items-center justify-between">
                                 <p className="text-xs font-semibold text-content">New Rule</p>
-                                <span className="text-[10px] text-content-muted italic">Scheduler checks every 15 min (IST)</span>
+                                <span className="text-[10px] text-content-muted italic">Scheduler checks every 5 min (IST)</span>
                             </div>
 
                             {/* Rule type */}
@@ -329,7 +329,7 @@ export const AddScheduleForm = () => {
                                 </p>
                                 {rule.time_ranges.map((tr, idx) => {
                                     const mins = windowMinutes(tr.start_time, tr.end_time);
-                                    const tooShort = mins !== null && mins < 20;
+                                    const tooShort = mins !== null && mins < 6;
                                     return (
                                         <div key={idx} className="flex flex-col gap-1">
                                             <div className="flex items-end gap-2">
@@ -362,7 +362,7 @@ export const AddScheduleForm = () => {
                                             </div>
                                             {tooShort && (
                                                 <p className="text-[11px] text-warning flex items-center gap-1">
-                                                    ⚠ Window is only {mins} min — the scheduler runs every 15 min, so keep windows at least 20 min to be safe.
+                                                    ⚠ Window is only {mins} min — the scheduler runs every 5 min, so keep windows at least 6 min to be safe.
                                                 </p>
                                             )}
                                         </div>
