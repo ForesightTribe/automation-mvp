@@ -123,6 +123,10 @@ def _bid_optimizer(tenant_id, p):
     return ["ads", "bid-optimizer", "--tenant", str(tenant_id)]
 
 
+def _sync_campaign_data(tenant_id, p):
+    return ["ads", "sync-campaign-data", "--tenant", str(tenant_id)]
+
+
 def _log_cleanup(tenant_id, p):
     a = ["maint", "log-cleanup"]
     _opt(a, "--days", p.get("days"))
@@ -167,6 +171,9 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     ),
     "ads.bid_optimizer": JobTypeSpec(
         Lane.live, 10 * 60, _bid_optimizer,
+    ),
+    "ads.sync_campaign_data": JobTypeSpec(
+        Lane.dashboard, 60 * 60, _sync_campaign_data,
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane
     # so it fires promptly (never queued behind a multi-hour scrape).

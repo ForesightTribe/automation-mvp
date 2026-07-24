@@ -83,6 +83,22 @@ class BidOptimizerRuleDB(SQLModel, table=True):
     created_at: datetime = Field(default_factory=now_ist)
 
 
+class CampaignDataCache(SQLModel, table=True):
+    """Cached keywords + products per campaign, populated by VM sync job."""
+    __tablename__ = "campaign_data_cache"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "campaign_id", name="uq_cdc_tenant_campaign"),
+        Index("idx_cdc_tenant", "tenant_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    campaign_id: int
+    keywords: list = Field(default=[], sa_column=Column(JSON))
+    products: list = Field(default=[], sa_column=Column(JSON))
+    synced_at: datetime = Field(default_factory=now_ist)
+
+
 class BidOptimizerLogDB(SQLModel, table=True):
     __tablename__ = "bid_optimizer_log"
     __table_args__ = (Index("idx_bol_tenant", "tenant_id", "timestamp"),)
