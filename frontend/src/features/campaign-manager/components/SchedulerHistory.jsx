@@ -30,7 +30,10 @@ const columns = [
 
 export const SchedulerHistory = () => {
     const [open, setOpen] = useState(false);
-    const { data: log = [], isLoading } = useSchedulerHistory();
+    const { data: raw = [], isLoading } = useSchedulerHistory();
+
+    // Only show entries where a rule actually fired or something failed — hide default-budget noise
+    const log = raw.filter((r) => !r.success || !r.rule?.startsWith("No active rule"));
 
     const passed = log.filter((r) => r.success).length;
     const failed = log.filter((r) => !r.success).length;
