@@ -54,7 +54,21 @@ const isRuleActive = (rule) => {
     const { currentTime, today, dayName } = getISTNow();
 
     if (rule.type === "once") {
-        if (rule.date !== today) return false;
+        if (today !== rule.date) {
+            // Overnight: if end_time < start_time, also active on the next calendar day before end_time
+            const st = rule.start_time;
+            const et = rule.end_time;
+            if (st && et && et <= st) {
+                let nextDay = rule.end_date;
+                if (!nextDay) {
+                    const [y, m, d] = rule.date.split("-").map(Number);
+                    const nd = new Date(y, m - 1, d + 1);
+                    nextDay = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}-${String(nd.getDate()).padStart(2, "0")}`;
+                }
+                if (today === nextDay) return currentTime < et;
+            }
+            return false;
+        }
     } else {
         if (rule.days.length && !rule.days.includes(dayName)) return false;
         if (rule.start_date && today < rule.start_date) return false;
@@ -120,7 +134,7 @@ export const EditScheduleForm = ({ schedule, onSave, onCancel, isPending }) => {
             const newRules = rule.time_ranges.map((tr) => ({
                 type: "once", days: [], time_slots: [],
                 budget: String(rule.budget),
-                date: rule.date, start_date: null, end_date: null,
+                date: rule.date, start_date: null, end_date: rule.end_date || null,
                 start_time: tr.start_time, end_time: tr.end_time || null,
             }));
             setRules((rs) => [...rs, ...newRules]);
@@ -213,7 +227,7 @@ export const EditScheduleForm = ({ schedule, onSave, onCancel, isPending }) => {
                                             )}
                                             <span className="text-content-muted">
                                                 {r.type === "once"
-                                                    ? `📅 ${r.date}`
+                                                    ? `📅 ${r.date}${r.end_date && r.end_date !== r.date ? ` → ${r.end_date}` : ""}`
                                                     : `🔁 ${r.days.length ? r.days.map(d => d.slice(0, 3)).join(", ") : "every day"}`}
                                                 {r.start_date && (
                                                     <span> · {r.start_date}{r.end_date ? ` → ${r.end_date}` : " onwards"}</span>
@@ -309,9 +323,15 @@ export const EditScheduleForm = ({ schedule, onSave, onCancel, isPending }) => {
                     </div>
 
                     {rule.type === "once" && (
-                        <div className="flex flex-col gap-1">
-                            <label className="text-xs font-medium text-content-muted">Date <span className="text-danger">*</span></label>
-                            <input type="date" value={rule.date} onChange={(e) => setRule((r) => ({ ...r, date: e.target.value }))} className={inputCls} />
+                        <div className="grid grid-cols-2 gap-3">
+                            <div className="flex flex-col gap-1">
+                                <label className="text-xs font-medium text-content-muted">Start Date <span className="text-danger">*</span></label>
+                                <input type="date" value={rule.date} onChange={(e) => setRule((r) => ({ ...r, date: e.target.value }))} className={inputCls} />
+                            </div>
+                            <div className="flex flex-col gap-1">
+                                <label className="text-xs text-content-muted">End Date <span className="text-[10px] text-content-muted">(if overnight)</span></label>
+                                <input type="date" value={rule.end_date} onChange={(e) => setRule((r) => ({ ...r, end_date: e.target.value }))} className={inputCls} />
+                            </div>
                         </div>
                     )}
 
