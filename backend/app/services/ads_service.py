@@ -156,6 +156,7 @@ async def get_campaigns(
     status: str | None = None,
     sort: str = "spend",
     order: str = "desc",
+    recent_only: bool = False,
 ) -> Page[CampaignRow]:
     # Per-campaign rollup of the daily backbone over the window.
     rollups = (
@@ -190,6 +191,15 @@ async def get_campaigns(
         conds.append(BlinkitAdCampaign.platform.in_(marketplaces))
     if status:
         conds.append(BlinkitAdCampaign.status == status)
+    if recent_only:
+        latest_scraped_at = (
+            await session.execute(
+                select(func.max(BlinkitAdCampaign.scraped_at))
+                .where(BlinkitAdCampaign.tenant_id == tenant_id)
+            )
+        ).scalar()
+        if latest_scraped_at:
+            conds.append(BlinkitAdCampaign.scraped_at >= latest_scraped_at - timedelta(hours=2))
     campaigns = (
         await session.execute(select(BlinkitAdCampaign).where(*conds))
     ).scalars().all()

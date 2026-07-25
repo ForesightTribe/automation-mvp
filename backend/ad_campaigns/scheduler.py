@@ -54,7 +54,7 @@ def _matches_rule(rule: dict, now: datetime) -> bool:
         current_time = now.strftime("%H:%M")
         if start_time and end_time and end_time <= start_time:
             # Midnight-crossing range (e.g. 18:15–02:00): active if after start OR before end
-            if current_time < start_time and current_time >= end_time:
+            if current_time < start_time and current_time > end_time:
                 return False
         else:
             if start_time and current_time < start_time:
@@ -196,9 +196,9 @@ async def _run_core(client, now: datetime, schedules: list[dict] | None = None) 
 async def run_with_state(storage_state: dict, schedules: list[dict] | None = None) -> list[dict]:
     """Run scheduler with a pre-loaded storage state. Returns log entries."""
     from ad_campaigns.client import setup_with_state
-    now = datetime.now(_IST)
     pw, browser, client = await setup_with_state(storage_state)
     try:
+        now = datetime.now(_IST)  # capture AFTER browser setup so time is fresh
         return await _run_core(client, now, schedules=schedules)
     finally:
         await browser.close()
@@ -206,9 +206,9 @@ async def run_with_state(storage_state: dict, schedules: list[dict] | None = Non
 
 
 async def run() -> None:
-    now = datetime.now(_IST)
     pw, browser, client = await setup(TENANT_ID)
     try:
+        now = datetime.now(_IST)  # capture AFTER browser setup so time is fresh
         await _run_core(client, now)
     finally:
         await browser.close()

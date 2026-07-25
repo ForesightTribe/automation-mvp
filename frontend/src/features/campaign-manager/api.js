@@ -3,7 +3,7 @@
 export const getCampaigns = (clientId) => {
     const end = new Date().toISOString().split("T")[0];
     const start = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    return api.get(`/clients/${clientId}/ads/campaigns`, { params: { limit: 500, start, end } });
+    return api.get(`/clients/${clientId}/ads/campaigns`, { params: { limit: 500, start, end, recent_only: true } });
 };
 
 export const getBudgetSchedules = (clientId) =>

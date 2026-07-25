@@ -4,6 +4,7 @@ import { Card } from "../../../components/ui/Card";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { Loading } from "../../../components/feedback/Loading";
 import { useAddBudgetSchedule, useBudgetSchedules, useDeleteBudgetSchedule, useToggleBudgetSchedule } from "../hooks";
+import { EditScheduleForm } from "./EditScheduleForm";
 
 const SLOT_LABELS = {
     morning: "Morning 6–12",
@@ -19,23 +20,11 @@ export const ScheduleList = () => {
     const { mutate: toggle, isPending: toggling } = useToggleBudgetSchedule();
 
     const [editingId, setEditingId] = useState(null);
-    const [editForm, setEditForm] = useState({ name: "", default_budget: "" });
 
-    const startEdit = (sched) => {
-        setEditingId(sched.campaign_id);
-        setEditForm({ name: sched.name || "", default_budget: String(sched.default_budget) });
-    };
+    const startEdit = (sched) => setEditingId(sched.campaign_id);
 
-    const saveEdit = (sched) => {
-        if (!editForm.default_budget) return;
-        update(
-            {
-                ...sched,
-                name: editForm.name.trim() || null,
-                default_budget: parseFloat(editForm.default_budget),
-            },
-            { onSuccess: () => setEditingId(null) },
-        );
+    const saveEdit = (updatedSchedule) => {
+        update(updatedSchedule, { onSuccess: () => setEditingId(null) });
     };
 
     if (isLoading) return <Loading label="Loading schedules…" />;
@@ -54,39 +43,12 @@ export const ScheduleList = () => {
                         }`}
                         >
                             {editingId === sched.campaign_id ? (
-                                <div className="flex flex-col gap-3">
-                                    <p className="text-xs font-semibold text-content">{sched.campaign_name}</p>
-                                    <div className="grid grid-cols-2 gap-3">
-                                        <div className="flex flex-col gap-1">
-                                            <label className="text-xs text-content-muted">Schedule Name</label>
-                                            <input
-                                                type="text"
-                                                value={editForm.name}
-                                                onChange={(e) => setEditForm((f) => ({ ...f, name: e.target.value }))}
-                                                placeholder="e.g. Weekend Boost"
-                                                className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-content outline-none focus:border-primary"
-                                            />
-                                        </div>
-                                        <div className="flex flex-col gap-1">
-                                            <label className="text-xs text-content-muted">Default Budget ₹</label>
-                                            <input
-                                                type="number"
-                                                value={editForm.default_budget}
-                                                onChange={(e) => setEditForm((f) => ({ ...f, default_budget: e.target.value }))}
-                                                placeholder="e.g. 1000"
-                                                className="rounded-md border border-border bg-card px-3 py-1.5 text-sm text-content outline-none focus:border-primary"
-                                            />
-                                        </div>
-                                    </div>
-                                    <div className="flex gap-2">
-                                        <Button size="sm" disabled={saving} onClick={() => saveEdit(sched)}>
-                                            {saving ? "Saving…" : "Save"}
-                                        </Button>
-                                        <Button variant="secondary" size="sm" onClick={() => setEditingId(null)}>
-                                            Cancel
-                                        </Button>
-                                    </div>
-                                </div>
+                                <EditScheduleForm
+                                    schedule={sched}
+                                    onSave={saveEdit}
+                                    onCancel={() => setEditingId(null)}
+                                    isPending={saving}
+                                />
                             ) : (
                             <div className="flex items-start justify-between gap-3">
                                 <div>

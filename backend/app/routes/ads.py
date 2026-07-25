@@ -103,6 +103,7 @@ async def campaigns(
     status: str | None = None,
     sort: str = Query("spend", pattern="^(spend|roas|sales|impressions)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
+    recent_only: bool = False,
 ):
     return await ads_service.get_campaigns(
         session,
@@ -114,6 +115,7 @@ async def campaigns(
         status=status,
         sort=sort,
         order=order,
+        recent_only=recent_only,
     )
 
 
