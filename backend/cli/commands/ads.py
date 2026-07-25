@@ -23,14 +23,23 @@ def budget_scheduler(
 async def _run_budget(tenant_id: str) -> None:
     from ad_campaigns.client import setup
     from ad_campaigns.scheduler import _run_core
+    from app.core.database import AsyncSessionLocal
+    from app.services.ads_service import get_budget_schedules, _write_scheduler_log
+
+    # Load schedules from DB — shared with Render API, not local JSON file
+    async with AsyncSessionLocal() as db:
+        schedules = await get_budget_schedules(db, uuid.UUID(tenant_id))
 
     pw, browser, client = await setup(tenant_id)
     try:
         now = datetime.now(_IST)  # capture AFTER browser setup so time is fresh
-        await _run_core(client, now)
+        log_entries = await _run_core(client, now, schedules=schedules)
     finally:
         await browser.close()
         await pw.stop()
+
+    # Write log entries to DB so they appear in the Campaign Manager history
+    await _write_scheduler_log(uuid.UUID(tenant_id), log_entries)
 
 
 @app.command("bid-optimizer")
