@@ -13,6 +13,43 @@ const SLOT_LABELS = {
     night: "Night 22–6",
 };
 
+const getISTToday = () => {
+    const ist = new Date(new Date().toLocaleString("en-US", { timeZone: "Asia/Kolkata" }));
+    const yyyy = ist.getFullYear();
+    const mo   = String(ist.getMonth() + 1).padStart(2, "0");
+    const dd   = String(ist.getDate()).padStart(2, "0");
+    const hh   = String(ist.getHours()).padStart(2, "0");
+    const mm   = String(ist.getMinutes()).padStart(2, "0");
+    return { today: `${yyyy}-${mo}-${dd}`, currentTime: `${hh}:${mm}` };
+};
+
+const isRuleExpired = (rule) => {
+    if (rule.type !== "once") return false;
+    const { today, currentTime } = getISTToday();
+    const ruleDate = rule.date;
+    if (!ruleDate) return false;
+
+    if (ruleDate > today) return false; // future date — not expired
+
+    const st = rule.start_time;
+    const et = rule.end_time;
+
+    if (ruleDate < today) {
+        // Overnight rule (e.g. 19:00–02:00): extends into the next calendar day
+        if (st && et && et <= st) {
+            const [y, m, d] = ruleDate.split("-").map(Number);
+            const nd = new Date(y, m - 1, d + 1);
+            const nextDay = `${nd.getFullYear()}-${String(nd.getMonth()+1).padStart(2,"0")}-${String(nd.getDate()).padStart(2,"0")}`;
+            if (today === nextDay && currentTime < et) return false; // still within overnight window
+        }
+        return true; // date is in the past and overnight window (if any) has ended
+    }
+
+    // ruleDate === today: expired only if end_time has passed
+    if (et && et > (st || "00:00") && currentTime >= et) return true;
+    return false;
+};
+
 export const ScheduleList = () => {
     const { data: schedules = [], isLoading } = useBudgetSchedules();
     const { mutate: remove, isPending: removing } = useDeleteBudgetSchedule();
@@ -101,36 +138,44 @@ export const ScheduleList = () => {
                             )}
                             {editingId !== sched.campaign_id && sched.rules.length > 0 && (
                                 <div className="mt-3 flex flex-col gap-1.5">
-                                    {sched.rules.map((rule, i) => (
-                                        <div
-                                            key={i}
-                                            className="rounded bg-muted px-3 py-2 text-xs text-content-muted flex flex-col gap-0.5"
-                                        >
-                                            <div>
-                                                <span className="mr-1">
-                                                    {rule.type === "once" ? "📅" : "🔁"}
-                                                </span>
-                                                {rule.type === "once"
-                                                    ? rule.date
-                                                    : (rule.days.length ? rule.days.join(", ") : "every day")}
-                                                {rule.time_slots?.length > 0 && (
-                                                    <> · {rule.time_slots.map((s) => SLOT_LABELS[s] || s).join(", ")}</>
-                                                )}
-                                                {(rule.start_time || rule.end_time) && (
-                                                    <> · {rule.start_time || "—"}–{rule.end_time || "—"}</>
-                                                )}
-                                                {" → "}
-                                                <span className="font-semibold text-content">
-                                                    ₹{rule.budget.toLocaleString()}
-                                                </span>
-                                            </div>
-                                            {(rule.start_date || rule.end_date) && (
-                                                <div className="text-[10px] text-content-muted">
-                                                    Valid: {rule.start_date || "any"} → {rule.end_date || "ongoing"}
+                                    {sched.rules.map((rule, i) => {
+                                        const done = isRuleExpired(rule);
+                                        return (
+                                            <div
+                                                key={i}
+                                                className="rounded bg-muted px-3 py-2 text-xs text-content-muted flex flex-col gap-0.5"
+                                            >
+                                                <div className="flex items-center gap-2 flex-wrap">
+                                                    <span>
+                                                        <span className="mr-1">{rule.type === "once" ? "📅" : "🔁"}</span>
+                                                        {rule.type === "once"
+                                                            ? rule.date
+                                                            : (rule.days.length ? rule.days.join(", ") : "every day")}
+                                                        {rule.time_slots?.length > 0 && (
+                                                            <> · {rule.time_slots.map((s) => SLOT_LABELS[s] || s).join(", ")}</>
+                                                        )}
+                                                        {(rule.start_time || rule.end_time) && (
+                                                            <> · {rule.start_time || "—"}–{rule.end_time || "—"}</>
+                                                        )}
+                                                        {" → "}
+                                                        <span className="font-semibold text-content">
+                                                            ₹{rule.budget.toLocaleString()}
+                                                        </span>
+                                                    </span>
+                                                    {done && (
+                                                        <span className="rounded-full bg-success/15 px-2 py-0.5 text-[10px] font-semibold text-success">
+                                                            DONE
+                                                        </span>
+                                                    )}
                                                 </div>
-                                            )}
-                                        </div>
-                                    ))}
+                                                {(rule.start_date || rule.end_date) && rule.type !== "once" && (
+                                                    <div className="text-[10px] text-content-muted">
+                                                        Valid: {rule.start_date || "any"} → {rule.end_date || "ongoing"}
+                                                    </div>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
                                 </div>
                             )}
                         </div>
