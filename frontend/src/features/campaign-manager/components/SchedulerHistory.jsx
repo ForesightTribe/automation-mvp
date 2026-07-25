@@ -15,12 +15,6 @@ const columns = [
             ? <span className="font-medium text-content">{r.schedule_name}</span>
             : <span className="text-content-muted italic">—</span>,
     },
-    {
-        key: "budget_applied",
-        label: "Budget",
-        align: "right",
-        render: (r) => `₹${r.budget_applied.toLocaleString()}`,
-    },
     { key: "rule", label: "Rule" },
     {
         key: "success",
