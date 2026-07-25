@@ -274,19 +274,6 @@ export const EditScheduleForm = ({ schedule, onSave, onCancel, isPending }) => {
                                         </div>
                                     </div>
 
-                                    {/* Delete — disabled if active */}
-                                    <button
-                                        onClick={() => removeRule(i)}
-                                        disabled={active}
-                                        title={active ? "Cannot delete an active rule" : "Remove rule"}
-                                        className={`shrink-0 text-base ${
-                                            active
-                                                ? "opacity-25 cursor-not-allowed"
-                                                : "text-danger hover:opacity-75"
-                                        }`}
-                                    >
-                                        ✕
-                                    </button>
                                 </div>
                             </div>
                         );
