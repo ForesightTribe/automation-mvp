@@ -5,7 +5,7 @@ further with optional keyword/city/marketplace filters.
 import uuid
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import distinct, func, select, tuple_
+from sqlalchemy import case, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
@@ -42,6 +42,19 @@ def _kind_cond(kind: str) -> list:
     if kind == "all":
         return []
     return [SearchListing.is_combo.is_(False)]
+
+
+# Per-row price at the pack's display basis: ₹/100 ml, ₹/100 g, ₹/piece. NULL when
+# the pack is unparseable, heterogeneous (pack_uom ""), or size 0 — so the aggregate
+# bands below ignore exactly the rows that can't be compared, without dropping their
+# raw-rupee contribution. Comparing raw prices across pack sizes is meaningless (a
+# 12-pack vs a single); this is the fair band. Only compare within one UOM.
+_UNIT_MULT = case(
+    (SearchListing.pack_uom.in_(("ml", "g")), 100.0),
+    (SearchListing.pack_uom == "pc", 1.0),
+    else_=None,
+)
+_UNIT_PRICE = SearchListing.price / func.nullif(SearchListing.pack_size, 0) * _UNIT_MULT
 
 
 async def get_share_of_voice(
@@ -353,9 +366,12 @@ async def get_price_position(
     end: date,
     kind: str = "main",
 ) -> dict:
-    """Per keyword: the own brand's price band vs the competitor price band, so
-    you can see if you're priced into or out of the consideration set. `kind`
-    filters combos/multipacks (default `main` = singles, on both own + competitor)."""
+    """Per keyword: the own brand's price band vs the competitor price band, so you
+    can see if you're priced into or out of the consideration set. Reports BOTH the
+    raw-rupee band (absolute shelf price) and the per-unit band (₹/100 ml · 100 g ·
+    piece), the latter being the fair comparison across pack sizes. `unit_uom` names
+    the keyword's dominant UOM so the caller can label the basis. `kind` filters
+    combos (default `main` = singles, on both own + competitor)."""
     lo, hi = _bounds(start, end)
     base = [SearchListing.tenant_id == tenant_id, SearchListing.scraped_at >= lo, SearchListing.scraped_at < hi,
             SearchListing.price.is_not(None), *_kind_cond(kind)]
@@ -366,7 +382,8 @@ async def get_price_position(
     if marketplace:
         base.append(SearchListing.mp_slug == marketplace)
 
-    # Own price band per keyword.
+    # Own band per keyword — raw rupees + per-unit. mode() gives the keyword's
+    # dominant UOM (drinks-with-drinks in practice), for labelling the basis.
     own_rows = (
         await session.execute(
             select(
@@ -375,14 +392,18 @@ async def get_price_position(
                 func.min(SearchListing.price),
                 func.max(SearchListing.price),
                 func.count(),
+                func.avg(_UNIT_PRICE),
+                func.min(_UNIT_PRICE),
+                func.max(_UNIT_PRICE),
+                func.mode().within_group(SearchListing.pack_uom.asc()),
             )
             .where(*base, SearchListing.is_brand.is_(True))
             .group_by(SearchListing.keyword)
         )
     ).all()
-    own = {kw: (avg, mn, mx, n) for kw, avg, mn, mx, n in own_rows}
+    own = {r[0]: r[1:] for r in own_rows}
 
-    # Competitor price band (+ median) per keyword.
+    # Competitor band (+ median) per keyword — raw rupees + per-unit.
     comp_rows = (
         await session.execute(
             select(
@@ -392,18 +413,25 @@ async def get_price_position(
                 func.percentile_cont(0.5).within_group(SearchListing.price.asc()),
                 func.max(SearchListing.price),
                 func.count(),
+                func.avg(_UNIT_PRICE),
+                func.min(_UNIT_PRICE),
+                func.percentile_cont(0.5).within_group(_UNIT_PRICE.asc()),
+                func.max(_UNIT_PRICE),
+                func.mode().within_group(SearchListing.pack_uom.asc()),
             )
             .where(*base, SearchListing.is_brand.is_(False))
             .group_by(SearchListing.keyword)
         )
     ).all()
-    comp = {kw: (avg, mn, med, mx, n) for kw, avg, mn, med, mx, n in comp_rows}
+    comp = {r[0]: r[1:] for r in comp_rows}
 
     keywords = sorted(set(own) | set(comp))
     rows = []
     for kw in keywords:
         o = own.get(kw)
         c = comp.get(kw)
+        # UOM label: prefer own's dominant, fall back to competitors'.
+        uom = (o[7] if o else None) or (c[9] if c else None) or ""
         rows.append({
             "keyword": kw,
             "own_avg_price": _price(o[0]) if o else None,
@@ -415,6 +443,14 @@ async def get_price_position(
             "comp_max_price": _price(c[3]) if c else None,
             "own_samples": o[3] if o else 0,
             "comp_samples": c[4] if c else 0,
+            "unit_uom": uom,
+            "own_avg_unit_price": _price(o[4]) if o else None,
+            "own_min_unit_price": _price(o[5]) if o else None,
+            "own_max_unit_price": _price(o[6]) if o else None,
+            "comp_avg_unit_price": _price(c[5]) if c else None,
+            "comp_min_unit_price": _price(c[6]) if c else None,
+            "comp_median_unit_price": _price(c[7]) if c else None,
+            "comp_max_unit_price": _price(c[8]) if c else None,
         })
 
     as_of = (

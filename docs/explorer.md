@@ -141,10 +141,11 @@ pool and session-reuse carry over unchanged.
 4. **Competitor Landscape** — run-wide leaderboard: competitor, #locations seen,
    avg position, share-of-shelf%, avg price.
 5. **Price & Discount** — own vs competitor price band (min/median/max) + discount
-   depth, per keyword.
+   depth, per keyword, plus a per-unit band (₹/100 ml·100 g·piece, `Basis` column)
+   that compares across pack sizes. See [per-unit-price.md](per-unit-price.md).
 6. **Availability** — in-stock% per keyword × city; OOS hotspots.
 7. **Own Catalog** *(catalog mode)* — per SKU: distribution%, reach%, price band,
-   discount, rating.
+   per-unit band, discount, rating.
 
 Insight sheets get frozen headers, ₹/% number formats, conditional-format colour
 scales (SoV / rank / in-stock), and a couple of native `openpyxl` bar charts on

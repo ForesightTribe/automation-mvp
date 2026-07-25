@@ -112,15 +112,19 @@ class MarketingReport(BaseModel):
 
 class CompRow(BaseModel):
     """One product in a competition group — own or competitor. `sp` is selling
-    price, `mrp` list price. `grammage`/`sp_per_gram` stay None until grammage is
-    captured (system-wide gap), so the per-gram comparison is blank for now."""
+    price, `mrp` list price. `pack_size`+`pack_uom` are the normalized pack (675.0 /
+    "ml"); `unit_price` is the price at that UOM's display basis (₹/100 ml, ₹/100 g,
+    ₹/piece) — the fair cross-pack comparison. `unit_price`/`pack_uom` are empty for
+    an unparseable or heterogeneous pack. Only compare `unit_price` within one UOM."""
 
     name: str
     brand: str | None
     mrp: float | None
     sp: float | None
-    grammage: float | None
-    sp_per_gram: float | None
+    pack_size: float | None
+    pack_uom: str
+    pack_count: int | None
+    unit_price: float | None
 
 
 class CompGroup(BaseModel):

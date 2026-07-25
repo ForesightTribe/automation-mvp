@@ -20,6 +20,20 @@ export const formatCurrency = (value) =>
 export const formatNumber = (value) =>
 	value === null || value === undefined ? "—" : inrNumber.format(value);
 
+/**
+ * Per-unit price with its basis suffix: ₹6.25 / 100 ml. The values are small
+ * (≈₹6–₹311), so unlike formatCurrency (whole rupees) this keeps 2 decimals. `uom`
+ * is the pack UOM from the API ("ml" | "g" | "pc"); the basis matches the backend
+ * (₹ per 100 ml/g, ₹ per piece). Returns "—" when either input is missing.
+ */
+const UNIT_BASIS = { ml: "100 ml", g: "100 g", pc: "piece" };
+export const formatUnitPrice = (value, uom) => {
+	if (value === null || value === undefined || !uom) return "—";
+	const basis = UNIT_BASIS[uom];
+	if (!basis) return "—";
+	return `₹${Number(value).toFixed(2)} / ${basis}`;
+};
+
 /** Compact money for KPI tiles: ₹1.2L, ₹3.4Cr. */
 export const formatCompactCurrency = (value) => {
 	if (value === null || value === undefined) return "—";

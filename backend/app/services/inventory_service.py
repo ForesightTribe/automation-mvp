@@ -13,6 +13,7 @@ from app.models.search import MarketplaceLocation, SkuSnapshot
 from app.schemas.common import Page
 from app.schemas.inventory import AvailabilityRow, SohRow
 from app.services import watchlist_service
+from scraper.utils.pack import per_unit_price
 
 SOH = BlinkitSOH
 FAC = BlinkitScorecardFacility
@@ -189,6 +190,8 @@ def _latest_per_store(tenant_id, own, window, city, marketplace, kind="main"):
             SkuSnapshot.inventory.label("inventory"),
             SkuSnapshot.price.label("price"),
             SkuSnapshot.discount_pct.label("discount_pct"),
+            SkuSnapshot.pack_size.label("pack_size"),
+            SkuSnapshot.pack_uom.label("pack_uom"),
             SkuSnapshot.scraped_at.label("scraped_at"),
         )
         .where(*_store_cond(tenant_id, own, window, city, marketplace, kind))
@@ -425,7 +428,9 @@ async def get_pricing(
     kind: str = "main",
 ) -> dict:
     """Per own SKU: price dispersion across stores (min/median/max) + avg discount,
-    using the latest snapshot per store."""
+    using the latest snapshot per store. `unit_price_*` mirror the rupee band at the
+    pack's UOM basis (₹/100 ml, ₹/100 g, ₹/piece) — a product's pack is constant
+    across stores, so each rupee bound divides by the same pack_size."""
     own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
     empty = {"period_days": (end - start).days + 1, "as_of": None, "stores_scraped": 0, "skus": []}
     if not own:
@@ -447,6 +452,8 @@ async def get_pricing(
                 func.max(latest.c.price),
                 func.avg(latest.c.discount_pct),
                 func.max(latest.c.scraped_at),
+                func.max(latest.c.pack_size),
+                func.max(latest.c.pack_uom),
             )
             .where(latest.c.price.is_not(None))
             .group_by(latest.c.pid)
@@ -464,8 +471,13 @@ async def get_pricing(
             "median_price": _round(med),
             "max_price": _round(mx),
             "avg_discount": _round(disc, 1),
+            "pack_size": _round(psize),
+            "pack_uom": puom or "",
+            "unit_price_min": per_unit_price(mn, psize, puom or ""),
+            "unit_price_median": per_unit_price(med, psize, puom or ""),
+            "unit_price_max": per_unit_price(mx, psize, puom or ""),
         }
-        for pid, name, n, mn, med, mx, disc, _ in rows
+        for pid, name, n, mn, med, mx, disc, _, psize, puom in rows
     ]
     return {
         "period_days": (end - start).days + 1,

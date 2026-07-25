@@ -1,18 +1,15 @@
 import { useState } from "react";
 import { useCompetition } from "../hooks";
-import { formatCurrency } from "../../../lib/format";
+import { formatCurrency, formatUnitPrice } from "../../../lib/format";
 import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 
 /**
  * Competition pricing — own SKU vs competitors, grouped by marketplace + keyword,
- * normalized per gram so different pack sizes compare fairly. Sourced from
- * `search_listings` (own + competitors surface together per search).
- *
- * NOTE: `grammage` is a provisioned-but-blank column (system-wide gap), so
- * SP/gram and the index badge read "—" until grammage is captured. The layout is
- * final; only those two columns light up once the data lands.
+ * normalized per unit (₹/100 ml · 100 g · piece) so different pack sizes compare
+ * fairly. Sourced from `search_listings` (own + competitors surface together per
+ * search). The per-unit index compares each competitor against the own reference.
  */
 
 const KINDS = [
@@ -21,21 +18,30 @@ const KINDS = [
 	{ value: "all", label: "All" },
 ];
 
-const IndexBadge = ({ ownPerGram, compPerGram }) => {
-	if (!ownPerGram || !compPerGram)
+const IndexBadge = ({ ownPerUnit, compPerUnit }) => {
+	if (!ownPerUnit || !compPerUnit)
 		return <span className="text-content-subtle">—</span>;
-	const diff = (ownPerGram - compPerGram) / compPerGram;
+	const diff = (ownPerUnit - compPerUnit) / compPerUnit;
 	const cheaper = diff < 0;
 	return (
 		<span
 			className={`rounded px-1.5 py-0.5 text-xs font-medium ${
-				cheaper ? "bg-success-soft text-success" : "bg-danger-soft text-danger"
+				cheaper
+					? "bg-success-soft text-success"
+					: "bg-danger-soft text-danger"
 			}`}
 		>
 			{diff > 0 ? "+" : ""}
 			{(diff * 100).toFixed(0)}% vs comp
 		</span>
 	);
+};
+
+/** "675 ml ×3" / "225 ml" — pack size, unit, and count (count omitted when 1). */
+const packLabel = (row) => {
+	if (row.pack_size == null || !row.pack_uom) return "—";
+	const base = `${row.pack_size} ${row.pack_uom}`;
+	return row.pack_count > 1 ? `${base} ×${row.pack_count}` : base;
 };
 
 export const CompetitionReport = () => {
@@ -70,8 +76,8 @@ export const CompetitionReport = () => {
 };
 
 const CompGroup = ({ group }) => {
-	// Own reference SP/gram — the first own SKU that has one (usually the only one).
-	const ownPerGram = group.own.find((o) => o.sp_per_gram)?.sp_per_gram ?? null;
+	// Own reference per-unit price — the first own SKU that has one (usually the only).
+	const ownPerUnit = group.own.find((o) => o.unit_price)?.unit_price ?? null;
 
 	return (
 		<div className="overflow-x-auto rounded-xl border border-border bg-card">
@@ -79,17 +85,29 @@ const CompGroup = ({ group }) => {
 				<span className="font-display text-sm font-semibold text-content capitalize">
 					{group.marketplace}
 				</span>
-				<span className="text-sm text-content-muted">· {group.keyword}</span>
+				<span className="text-sm text-content-muted">
+					· {group.keyword}
+				</span>
 			</div>
 			<table className="w-full border-collapse text-sm">
 				<thead>
 					<tr className="border-b border-border text-content-subtle">
-						<th className="px-3 py-2 text-left font-medium">Brand / Product</th>
-						<th className="px-3 py-2 text-right font-medium">MRP</th>
+						<th className="px-3 py-2 text-left font-medium">
+							Brand / Product
+						</th>
+						<th className="px-3 py-2 text-right font-medium">
+							MRP
+						</th>
 						<th className="px-3 py-2 text-right font-medium">SP</th>
-						<th className="px-3 py-2 text-right font-medium">Grammage</th>
-						<th className="px-3 py-2 text-right font-medium">SP / gram</th>
-						<th className="px-3 py-2 text-right font-medium">Index</th>
+						<th className="px-3 py-2 text-right font-medium">
+							Pack
+						</th>
+						<th className="px-3 py-2 text-right font-medium">
+							Per unit
+						</th>
+						<th className="px-3 py-2 text-right font-medium">
+							Index
+						</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -100,7 +118,7 @@ const CompGroup = ({ group }) => {
 						<PriceRow
 							key={`comp-${row.name}`}
 							row={row}
-							ownPerGram={ownPerGram}
+							ownPerUnit={ownPerUnit}
 						/>
 					))}
 				</tbody>
@@ -109,7 +127,7 @@ const CompGroup = ({ group }) => {
 	);
 };
 
-const PriceRow = ({ row, own = false, ownPerGram }) => {
+const PriceRow = ({ row, own = false, ownPerUnit }) => {
 	return (
 		<tr
 			className={`border-b border-border/60 last:border-0 ${
@@ -127,18 +145,18 @@ const PriceRow = ({ row, own = false, ownPerGram }) => {
 				{row.sp === null ? "—" : formatCurrency(row.sp)}
 			</td>
 			<td className="px-3 py-1.5 text-right tabular-nums text-content-muted">
-				{row.grammage === null ? "—" : `${row.grammage} g`}
+				{packLabel(row)}
 			</td>
 			<td className="px-3 py-1.5 text-right tabular-nums text-content-muted">
-				{row.sp_per_gram === null ? "—" : `₹${row.sp_per_gram.toFixed(2)}`}
+				{formatUnitPrice(row.unit_price, row.pack_uom)}
 			</td>
 			<td className="px-3 py-1.5 text-right">
 				{own ? (
 					<span className="text-xs text-content-subtle">own</span>
 				) : (
 					<IndexBadge
-						ownPerGram={ownPerGram}
-						compPerGram={row.sp_per_gram}
+						ownPerUnit={ownPerUnit}
+						compPerUnit={row.unit_price}
 					/>
 				)}
 			</td>

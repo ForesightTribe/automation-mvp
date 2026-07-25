@@ -26,6 +26,7 @@ from app.models.search import (
     TenantLocation,
 )
 from app.utils.time import now_ist
+from scraper.utils.pack import per_unit_price
 from app.schemas.common import Page
 from app.schemas.product import (
     STATUS_HEALTHY,
@@ -507,6 +508,8 @@ async def get_product_public(
             SkuSnapshot.mrp.label("mrp"),
             SkuSnapshot.discount_pct.label("discount_pct"),
             SkuSnapshot.rating.label("rating"),
+            SkuSnapshot.pack_size.label("pack_size"),
+            SkuSnapshot.pack_uom.label("pack_uom"),
             SkuSnapshot.scraped_at.label("scraped_at"),
         )
         .where(*base)
@@ -525,6 +528,8 @@ async def get_product_public(
             func.avg(latest.c.discount_pct),
             func.avg(latest.c.rating),
             func.max(latest.c.scraped_at),
+            func.max(latest.c.pack_size),
+            func.max(latest.c.pack_uom),
         )
     )).one()
     stores_listed = int(agg[0] or 0)
@@ -582,5 +587,12 @@ async def get_product_public(
         "mrp": _p(agg[5]),
         "avg_discount": _p(agg[6], 1),
         "rating": _p(agg[7], 2),
+        # Pack is constant per product, so the per-unit band divides the price band by
+        # the same pack_size (₹/100 ml · 100 g · piece per pack_uom).
+        "pack_size": _p(agg[9]),
+        "pack_uom": agg[10] or "",
+        "unit_price_min": per_unit_price(agg[2], agg[9], agg[10] or ""),
+        "unit_price_median": per_unit_price(agg[3], agg[9], agg[10] or ""),
+        "unit_price_max": per_unit_price(agg[4], agg[9], agg[10] or ""),
         "keywords": keywords,
     }

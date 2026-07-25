@@ -94,6 +94,17 @@ class PricePositionRow(BaseModel):
     comp_max_price: float | None
     own_samples: int
     comp_samples: int
+    # Per-unit band at `unit_uom`'s basis (₹/100 ml · 100 g · piece) — the fair
+    # comparison across pack sizes. `unit_uom` is the keyword's dominant UOM ("" when
+    # nothing parsed); per-unit values are None for rows with no parseable pack.
+    unit_uom: str = ""
+    own_avg_unit_price: float | None = None
+    own_min_unit_price: float | None = None
+    own_max_unit_price: float | None = None
+    comp_avg_unit_price: float | None = None
+    comp_min_unit_price: float | None = None
+    comp_median_unit_price: float | None = None
+    comp_max_unit_price: float | None = None
 
 
 class PricePositionResponse(BaseModel):

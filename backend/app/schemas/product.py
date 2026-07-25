@@ -36,6 +36,13 @@ class ProductPublicResponse(BaseModel):
     mrp: float | None = None
     avg_discount: float | None = None
     rating: float | None = None
+    # Pack + per-unit band (₹ per 100 ml / 100 g / piece per `pack_uom`). `pack_uom`
+    # is "" and unit_price_* are None when the pack couldn't be parsed.
+    pack_size: float | None = None
+    pack_uom: str = ""
+    unit_price_min: float | None = None
+    unit_price_median: float | None = None
+    unit_price_max: float | None = None
     keywords: list[ProductPublicKeyword] = []
 
 

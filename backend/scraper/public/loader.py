@@ -168,13 +168,17 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
         await _copy(db, "search_listings", [
             "snapshot_id", "tenant_id", "job_id", "mp_slug", "brand_slug", "keyword",
             "city", "zone", "pincode", "scraped_at", "position", "product_name",
-            "is_brand", "price", "mrp", "discount_pct", "in_stock", "inventory",
+            "is_brand", "price", "mrp", "discount_pct",
+            "pack_raw", "pack_size", "pack_uom", "pack_count",
+            "in_stock", "inventory",
             "platform_product_id", "merchant_id", "merchant_type", "is_combo", "extra",
         ], [(
             local_to_real[r["snapshot_local_id"]], tid, job_id, r["mp_slug"],
             r["brand_slug"], r["keyword"], r["city"], r["zone"], r["pincode"],
             _dt(r["scraped_at"]), r["position"], r["product_name"], bool(r["is_brand"]),
-            r["price"], r["mrp"], r["discount_pct"], bool(r["in_stock"]), r["inventory"],
+            r["price"], r["mrp"], r["discount_pct"],
+            r["pack_raw"] or "", r["pack_size"], r["pack_uom"] or "", r["pack_count"],
+            bool(r["in_stock"]), r["inventory"],
             r["platform_product_id"], r["merchant_id"] or "", r["merchant_type"] or "",
             bool(r["is_combo"]), r["extra"] or None,
         ) for r in lists])
@@ -185,13 +189,16 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
         await _copy(db, "sku_snapshots", [
             "tenant_id", "job_id", "mp_slug", "brand_slug", "platform_product_id",
             "product_name", "merchant_id", "merchant_type", "city", "lat", "lon",
-            "scraped_at", "price", "mrp", "discount_pct", "in_stock", "inventory",
-            "rating", "is_combo",
+            "scraped_at", "price", "mrp", "discount_pct",
+            "pack_raw", "pack_size", "pack_uom", "pack_count",
+            "in_stock", "inventory", "rating", "is_combo",
         ], [(
             tid, job_id, r["mp_slug"], r["brand_slug"], r["platform_product_id"],
             r["product_name"], r["merchant_id"] or "", r["merchant_type"] or "",
             r["city"], r["lat"], r["lon"], _dt(r["scraped_at"]), r["price"], r["mrp"],
-            r["discount_pct"], bool(r["in_stock"]), r["inventory"], r["rating"],
+            r["discount_pct"],
+            r["pack_raw"] or "", r["pack_size"], r["pack_uom"] or "", r["pack_count"],
+            bool(r["in_stock"]), r["inventory"], r["rating"],
             bool(r["is_combo"]),
         ) for r in skus])
         if skus:

@@ -110,6 +110,13 @@ class SkuPricingRow(BaseModel):
     median_price: float | None
     max_price: float | None
     avg_discount: float | None
+    # Pack + per-unit band (₹ per 100 ml / 100 g / piece per `pack_uom`). `pack_uom`
+    # is "" and unit_price_* are None when the pack couldn't be parsed.
+    pack_size: float | None = None
+    pack_uom: str = ""
+    unit_price_min: float | None = None
+    unit_price_median: float | None = None
+    unit_price_max: float | None = None
 
 
 class SkuPricingResponse(BaseModel):

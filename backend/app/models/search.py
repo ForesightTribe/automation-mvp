@@ -76,10 +76,16 @@ class SearchListing(SQLModel, table=True):
     price: float | None = None
     mrp: float | None = None
     discount_pct: float | None = None
-    # Pack size in grams — provisioned but stays NULL until the scraper/parser
-    # captures it (grammage lives in the product name today, e.g. "400 g"). A
-    # known system-wide gap; per-gram price views compute None until it's filled.
-    grammage: float | None = None
+    # Pack size, parsed from Blinkit's `unit` string (also kept raw in `extra.unit`).
+    # `pack_raw` is the source verbatim; `pack_size`+`pack_uom` are the total content
+    # normalized to one base unit ("1.2 ltr" and "1200 ml" → 1200.0/"ml"); `pack_count`
+    # is the number of physical items. Per-unit price is DERIVED (price ÷ pack_size),
+    # never stored. NULL size/"" uom = unparseable or a heterogeneous combo (no single
+    # denominator). See scraper/utils/pack.py + docs/per-unit-price.md.
+    pack_raw: str = ""
+    pack_size: float | None = None
+    pack_uom: str = ""
+    pack_count: int | None = None
     in_stock: bool = True
     inventory: int | None = None
     platform_product_id: str | None = None
@@ -136,8 +142,12 @@ class SkuSnapshot(SQLModel, table=True):
     price: float | None = None
     mrp: float | None = None
     discount_pct: float | None = None
-    # Pack size in grams — provisioned but NULL until captured (see SearchListing).
-    grammage: float | None = None
+    # Pack size parsed from Blinkit's `unit` string — see SearchListing for the field
+    # semantics. Per-unit price is derived (price ÷ pack_size), never stored.
+    pack_raw: str = ""
+    pack_size: float | None = None
+    pack_uom: str = ""
+    pack_count: int | None = None
     in_stock: bool = True
     inventory: int | None = None
     rating: float | None = None

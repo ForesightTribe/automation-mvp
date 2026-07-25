@@ -128,6 +128,16 @@ class PriceRow(BaseModel):
     comp_min: float | None
     comp_median: float | None
     comp_max: float | None
+    # Per-unit band at `unit_uom`'s basis (₹/100 ml · 100 g · piece) — the fair
+    # comparison across pack sizes. "" / None when nothing in the keyword parsed.
+    unit_uom: str = ""
+    own_avg_unit: float | None = None
+    own_min_unit: float | None = None
+    own_max_unit: float | None = None
+    comp_avg_unit: float | None = None
+    comp_min_unit: float | None = None
+    comp_median_unit: float | None = None
+    comp_max_unit: float | None = None
 
 
 class AvailabilityRow(BaseModel):
@@ -150,6 +160,12 @@ class CatalogRow(BaseModel):
     discount_pct: float | None
     rating: float | None
     is_combo: bool
+    # Pack + per-unit band (₹ per 100 ml / 100 g / piece per `pack_uom`).
+    pack_size: float | None = None
+    pack_uom: str = ""
+    unit_price_min: float | None = None
+    unit_price_median: float | None = None
+    unit_price_max: float | None = None
 
 
 class ExplorerInsights(BaseModel):

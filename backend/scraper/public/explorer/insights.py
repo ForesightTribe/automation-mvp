@@ -26,6 +26,20 @@ from app.schemas.explorer import (
 )
 from app.utils.time import now_ist
 from scraper.public.explorer.orchestrator import ExplorerResult
+from scraper.utils.pack import per_unit_price
+
+
+def _dominant_uom(rows: list) -> str:
+    """The most common parseable UOM among rows — labels the per-unit basis."""
+    c = Counter(r.get("pack_uom") for r in rows if r.get("pack_uom"))
+    return c.most_common(1)[0][0] if c else ""
+
+
+def _unit_prices(rows: list) -> list:
+    """Per-unit price (₹/100 ml · 100 g · piece) for each row that has a parseable
+    pack — the fair cross-pack comparison; unparseable rows drop out."""
+    return [p for r in rows
+            if (p := per_unit_price(r.get("price"), r.get("pack_size"), r.get("pack_uom") or "")) is not None]
 
 
 def _avg(xs: list) -> float | None:
@@ -132,18 +146,31 @@ def _price_rows(listings) -> list[PriceRow]:
 
     out: list[PriceRow] = []
     for kw in sorted(set(own_by_kw) | set(comp_by_kw)):
-        own_prices = [l.get("price") for l in own_by_kw.get(kw, []) if l.get("price")]
-        comp_prices = [l.get("price") for l in comp_by_kw.get(kw, []) if l.get("price")]
+        own_rows = own_by_kw.get(kw, [])
+        comp_rows = comp_by_kw.get(kw, [])
+        own_prices = [l.get("price") for l in own_rows if l.get("price")]
+        comp_prices = [l.get("price") for l in comp_rows if l.get("price")]
+        # Per-unit band (₹/100 ml · 100 g · piece) — comparable across pack sizes.
+        own_unit = _unit_prices(own_rows)
+        comp_unit = _unit_prices(comp_rows)
         out.append(PriceRow(
             keyword=kw,
             own_avg=_avg(own_prices),
             own_min=min(own_prices) if own_prices else None,
             own_max=max(own_prices) if own_prices else None,
-            own_discount_pct=_avg([l.get("discount_pct") for l in own_by_kw.get(kw, [])]),
+            own_discount_pct=_avg([l.get("discount_pct") for l in own_rows]),
             comp_avg=_avg(comp_prices),
             comp_min=min(comp_prices) if comp_prices else None,
             comp_median=_median(comp_prices),
             comp_max=max(comp_prices) if comp_prices else None,
+            unit_uom=_dominant_uom(own_rows) or _dominant_uom(comp_rows),
+            own_avg_unit=_avg(own_unit),
+            own_min_unit=min(own_unit) if own_unit else None,
+            own_max_unit=max(own_unit) if own_unit else None,
+            comp_avg_unit=_avg(comp_unit),
+            comp_min_unit=min(comp_unit) if comp_unit else None,
+            comp_median_unit=_median(comp_unit),
+            comp_max_unit=max(comp_unit) if comp_unit else None,
         ))
     return out
 
@@ -175,6 +202,10 @@ def _catalog_rows(sku_rows, total_locations: int) -> list[CatalogRow]:
         in_stock = {_loc(r) for r in rows if r.get("in_stock")}
         prices = [r.get("price") for r in rows if r.get("price")]
         names = Counter(r.get("name") for r in rows if r.get("name"))
+        # Pack is constant per product, so the per-unit band divides the price band by
+        # the same pack_size (₹/100 ml · 100 g · piece).
+        uom = _dominant_uom(rows)
+        psize = next((r.get("pack_size") for r in rows if r.get("pack_size")), None)
         out.append(CatalogRow(
             product_id=pid,
             name=(names.most_common(1)[0][0] if names else ""),
@@ -187,6 +218,11 @@ def _catalog_rows(sku_rows, total_locations: int) -> list[CatalogRow]:
             discount_pct=_avg([r.get("discount_pct") for r in rows]),
             rating=_avg([r.get("rating") for r in rows]),
             is_combo=any(r.get("is_combo") for r in rows),
+            pack_size=psize,
+            pack_uom=uom,
+            unit_price_min=per_unit_price(min(prices), psize, uom) if prices else None,
+            unit_price_median=per_unit_price(_median(prices), psize, uom) if prices else None,
+            unit_price_max=per_unit_price(max(prices), psize, uom) if prices else None,
         ))
     return sorted(out, key=lambda r: (r.distribution_pct or 0))
 
