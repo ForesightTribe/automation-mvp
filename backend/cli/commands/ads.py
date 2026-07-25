@@ -51,15 +51,55 @@ def bid_optimizer(
 
 
 async def _run_optimizer(tenant_id: str) -> None:
+    import json as _json
     from ad_campaigns.bid_optimizer import run as _optimize
     from ad_campaigns.client import setup
+    from app.core.database import AsyncSessionLocal
+    from app.models.campaign_manager import BidOptimizerRuleDB
+    from app.services.ads_service import (
+        _sync_bid_rules_to_json, _write_bid_optimizer_log, _BID_RULES_FILE,
+    )
+    from sqlalchemy import update
 
+    tid = uuid.UUID(tenant_id)
+
+    # Step 1: Sync rules from DB → JSON so bid_optimizer.py can read them
+    async with AsyncSessionLocal() as db:
+        await _sync_bid_rules_to_json(db, tid)
+
+    # Step 2: Run optimizer (reads JSON, writes updates back to JSON)
     pw, browser, client = await setup(tenant_id)
     try:
-        await _optimize(client)
+        log_entries = await _optimize(client)
     finally:
         await browser.close()
         await pw.stop()
+
+    # Step 3: Write log entries to DB so they appear in Campaign Manager history
+    await _write_bid_optimizer_log(tid, log_entries)
+
+    # Step 4: Persist runtime fields (last_cpm, last_position, last_bid_updated_at) back to DB
+    if _BID_RULES_FILE.exists():
+        updated_rules = _json.loads(_BID_RULES_FILE.read_text(encoding="utf-8"))
+        async with AsyncSessionLocal() as db:
+            for r in updated_rules:
+                rule_id = r.get("id")
+                if not rule_id:
+                    continue
+                values: dict = {}
+                if r.get("last_position") is not None:
+                    values["last_position"] = r["last_position"]
+                if r.get("last_bid_updated_at") is not None:
+                    values["last_bid_updated_at"] = r["last_bid_updated_at"]
+                if r.get("last_cpm") is not None:
+                    values["last_cpm"] = r["last_cpm"]
+                if values:
+                    await db.execute(
+                        update(BidOptimizerRuleDB)
+                        .where(BidOptimizerRuleDB.id == rule_id)
+                        .values(**values)
+                    )
+            await db.commit()
 
 
 @app.command("sync-campaign-data")
