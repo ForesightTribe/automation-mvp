@@ -165,13 +165,13 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     ),
     # Ad automations — each has its own dedicated lane so they never block each other.
     "ads.budget_scheduler": JobTypeSpec(
-        Lane.budget_scheduler, 15 * 60, _budget_scheduler,
+        Lane.budget_scheduler, 5 * 60, _budget_scheduler,
     ),
     "ads.bid_optimizer": JobTypeSpec(
-        Lane.bid_optimizer, 10 * 60, _bid_optimizer,
+        Lane.bid_optimizer, 5 * 60, _bid_optimizer,
     ),
     "ads.sync_campaign_data": JobTypeSpec(
-        Lane.sync_campaign_data, 60 * 60, _sync_campaign_data,
+        Lane.sync_campaign_data, 2 * 60 * 60, _sync_campaign_data,
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane
     # so it fires promptly (never queued behind a multi-hour scrape).
