@@ -62,16 +62,37 @@ def sync_campaign_data(
 
 
 async def _run_sync(tenant_id: str) -> None:
+    from datetime import timedelta
     from ad_campaigns.client import setup
     from app.core.database import AsyncSessionLocal
+    from app.models.blinkit_marketing import BlinkitAdCampaign
     from app.models.campaign_manager import CampaignDataCache
     from app.utils.time import now_ist
+    from sqlalchemy import func
     from sqlalchemy.dialects.postgresql import insert as pg_insert
+    from sqlmodel import select
 
-    pw, browser, client = await setup(tenant_id)
-    try:
-        campaigns = await client.get_campaigns(days=90)
-        console.print(f"Syncing campaign data for {len(campaigns)} campaigns...")
+    # Get campaign IDs from DB (recently scraped) instead of Blinkit API
+    async with AsyncSessionLocal() as db:
+        latest_scraped = (await db.execute(
+            select(func.max(BlinkitAdCampaign.scraped_at))
+            .where(BlinkitAdCampaign.tenant_id == uuid.UUID(tenant_id))
+        )).scalar()
+
+        if not latest_scraped:
+            console.print("[yellow]No campaigns found in DB. Run the campaign scraper first.[/yellow]")
+            return
+
+        rows = (await db.execute(
+            select(BlinkitAdCampaign.campaign_id, BlinkitAdCampaign.name)
+            .where(
+                BlinkitAdCampaign.tenant_id == uuid.UUID(tenant_id),
+                BlinkitAdCampaign.scraped_at >= latest_scraped - timedelta(hours=2),
+            )
+        )).all()
+
+    campaigns = [{"campaign_id": r[0], "name": r[1]} for r in rows]
+    console.print(f"Syncing campaign data for {len(campaigns)} campaigns...")
 
         for campaign in campaigns:
             campaign_id = campaign.get("campaign_id")
