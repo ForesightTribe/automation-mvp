@@ -109,7 +109,8 @@ class BlinkitClient:
                     },
                     body: body ? JSON.stringify(body) : null
                 });
-                return await resp.json();
+                const text = await resp.text();
+                try { return JSON.parse(text); } catch(e) { return {}; }
             }""",
             [method, url, self._token, body],
         )
