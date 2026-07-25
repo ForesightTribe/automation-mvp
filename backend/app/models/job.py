@@ -23,10 +23,13 @@ class Lane(str, Enum):
     (bid optimizer) must never queue behind a 5-hour batch scrape. See docs/jobs.md.
     """
 
-    batch = "batch"            # public scrapes — hours long, nobody waiting
-    dashboard = "dashboard"    # marketing/seller/scorecard — minutes, scheduled
-    live = "live"              # bid optimizer — latency-critical, never blocked
-    interactive = "interactive"  # explorer/heartbeat — a human is waiting
+    batch = "batch"                        # public scrapes — hours long, nobody waiting
+    dashboard = "dashboard"                # marketing/seller/scorecard — minutes, scheduled
+    live = "live"                          # generic live lane
+    interactive = "interactive"            # explorer/heartbeat — a human is waiting
+    budget_scheduler = "budget_scheduler"  # dedicated lane — fires every 5 min
+    bid_optimizer = "bid_optimizer"        # dedicated lane — fires every 15 min
+    sync_campaign_data = "sync_campaign_data"  # dedicated lane — daily sync
 
 
 class Job(SQLModel, table=True):

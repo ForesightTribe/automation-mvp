@@ -163,17 +163,15 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         Lane.batch, 12 * 60 * 60, _public_skus,
         param_keys=("city", "brand_cap", "workers", "resume"),
     ),
-    # Ad automations — tenant-specific, use the authenticated Blinkit dashboard.
-    # budget_scheduler: dashboard lane (shares Blinkit browser session with scrapers).
-    # bid_optimizer: live lane so it never waits behind a long scrape run.
+    # Ad automations — each has its own dedicated lane so they never block each other.
     "ads.budget_scheduler": JobTypeSpec(
-        Lane.dashboard, 15 * 60, _budget_scheduler,
+        Lane.budget_scheduler, 15 * 60, _budget_scheduler,
     ),
     "ads.bid_optimizer": JobTypeSpec(
-        Lane.live, 10 * 60, _bid_optimizer,
+        Lane.bid_optimizer, 10 * 60, _bid_optimizer,
     ),
     "ads.sync_campaign_data": JobTypeSpec(
-        Lane.dashboard, 60 * 60, _sync_campaign_data,
+        Lane.sync_campaign_data, 60 * 60, _sync_campaign_data,
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane
     # so it fires promptly (never queued behind a multi-hour scrape).

@@ -41,6 +41,9 @@ class Settings(BaseSettings):
         "dashboard": 1,
         "live": 1,
         "interactive": 1,
+        "budget_scheduler": 1,
+        "bid_optimizer": 1,
+        "sync_campaign_data": 1,
     }
     # A job whose subprocess runs longer than its type's ceiling is killed and
     # marked timeout, so a wedged Chromium can't hold a lane forever. Overrides
