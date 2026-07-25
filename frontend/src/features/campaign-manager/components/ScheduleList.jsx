@@ -72,7 +72,9 @@ export const ScheduleList = () => {
                 <EmptyState />
             ) : (
                 <div className="flex flex-col gap-3">
-                    {schedules.map((sched) => (
+                    {schedules.map((sched) => {
+                        const allDone = sched.rules.length > 0 && sched.rules.every(isRuleExpired);
+                        return (
                         <div
                             key={sched.campaign_id}
                             className={`rounded-lg border p-4 transition-opacity ${
@@ -110,21 +112,25 @@ export const ScheduleList = () => {
                                     </p>
                                 </div>
                                 <div className="flex gap-2">
-                                    <Button
-                                        variant="secondary"
-                                        size="sm"
-                                        disabled={toggling}
-                                        onClick={() => toggle(sched.campaign_id)}
-                                    >
-                                        {sched.enabled !== false ? "Pause" : "Resume"}
-                                    </Button>
-                                    <Button
-                                        variant="secondary"
-                                        size="sm"
-                                        onClick={() => startEdit(sched)}
-                                    >
-                                        Edit
-                                    </Button>
+                                    {!allDone && (
+                                        <>
+                                            <Button
+                                                variant="secondary"
+                                                size="sm"
+                                                disabled={toggling}
+                                                onClick={() => toggle(sched.campaign_id)}
+                                            >
+                                                {sched.enabled !== false ? "Pause" : "Resume"}
+                                            </Button>
+                                            <Button
+                                                variant="secondary"
+                                                size="sm"
+                                                onClick={() => startEdit(sched)}
+                                            >
+                                                Edit
+                                            </Button>
+                                        </>
+                                    )}
                                     <Button
                                         variant="danger"
                                         size="sm"
@@ -179,7 +185,8 @@ export const ScheduleList = () => {
                                 </div>
                             )}
                         </div>
-                    ))}
+                        );
+                    })}
                 </div>
             )}
         </Card>
