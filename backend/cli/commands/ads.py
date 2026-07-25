@@ -94,6 +94,8 @@ async def _run_sync(tenant_id: str) -> None:
     campaigns = [{"campaign_id": r[0], "name": r[1]} for r in rows]
     console.print(f"Syncing campaign data for {len(campaigns)} campaigns...")
 
+    pw, browser, client = await setup(tenant_id)
+    try:
         for campaign in campaigns:
             campaign_id = campaign.get("campaign_id")
             if not campaign_id:
@@ -133,7 +135,6 @@ async def _run_sync(tenant_id: str) -> None:
                 f"  [green]✓[/green] campaign {campaign_id}: "
                 f"{len(keywords)} keywords, {len(products)} products"
             )
-
     finally:
         await browser.close()
         await pw.stop()
