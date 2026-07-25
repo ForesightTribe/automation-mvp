@@ -90,7 +90,7 @@ export const AddScheduleForm = () => {
                 budget: parseFloat(rule.budget),
                 date: rule.date,
                 start_date: null,
-                end_date: null,
+                end_date: rule.end_date || null,
                 start_time: tr.start_time,
                 end_time: tr.end_time || null,
             }));
@@ -200,7 +200,7 @@ export const AddScheduleForm = () => {
                                 <div key={i} className="flex items-center justify-between rounded bg-muted px-3 py-1.5 text-xs">
                                     <span className="text-content-muted">
                                         {r.type === "once"
-                                            ? `📅 ${r.date}`
+                                            ? `📅 ${r.date}${r.end_date && r.end_date !== r.date ? ` → ${r.end_date}` : ""}`
                                             : `🔁 ${r.days.length ? r.days.map(d => d.slice(0,3)).join(", ") : "every day"}`}
                                         {r.start_date && <span> · {r.start_date}{r.end_date ? ` → ${r.end_date}` : " onwards"}</span>}
                                         {" · "}
@@ -248,18 +248,31 @@ export const AddScheduleForm = () => {
                                 ))}
                             </div>
 
-                            {/* One-time: single date */}
+                            {/* One-time: start date + end date (for overnight) */}
                             {rule.type === "once" && (
-                                <div className="flex flex-col gap-1">
-                                    <label className="text-xs font-medium text-content-muted">
-                                        Date <span className="text-danger">*</span>
-                                    </label>
-                                    <input
-                                        type="date"
-                                        value={rule.date}
-                                        onChange={(e) => setRule((r) => ({ ...r, date: e.target.value }))}
-                                        className={inputCls}
-                                    />
+                                <div className="grid grid-cols-2 gap-3">
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-xs font-medium text-content-muted">
+                                            Start Date <span className="text-danger">*</span>
+                                        </label>
+                                        <input
+                                            type="date"
+                                            value={rule.date}
+                                            onChange={(e) => setRule((r) => ({ ...r, date: e.target.value }))}
+                                            className={inputCls}
+                                        />
+                                    </div>
+                                    <div className="flex flex-col gap-1">
+                                        <label className="text-xs text-content-muted">
+                                            End Date <span className="text-[10px]">(if overnight)</span>
+                                        </label>
+                                        <input
+                                            type="date"
+                                            value={rule.end_date}
+                                            onChange={(e) => setRule((r) => ({ ...r, end_date: e.target.value }))}
+                                            className={inputCls}
+                                        />
+                                    </div>
                                 </div>
                             )}
 
