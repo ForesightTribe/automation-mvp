@@ -35,6 +35,13 @@ from app.models.campaign_manager import (
     BidOptimizerRuleDB,
     BidOptimizerLogDB,
 )
+from app.models.campaign_manager_v2 import (
+    CmBudgetSchedule,
+    CmBudgetRule,
+    CmBidRule,
+    CmBidRuntime,
+    CmRunLog,
+)
 
 __all__ = [
     "Account",
@@ -49,4 +56,5 @@ __all__ = [
     "ExplorerRun",
     "BudgetScheduleDB", "BudgetScheduleRuleDB", "BudgetSchedulerLogDB",
     "BidOptimizerRuleDB", "BidOptimizerLogDB",
+    "CmBudgetSchedule", "CmBudgetRule", "CmBidRule", "CmBidRuntime", "CmRunLog",
 ]

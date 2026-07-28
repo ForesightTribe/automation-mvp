@@ -41,9 +41,11 @@ class Settings(BaseSettings):
         "dashboard": 1,
         "live": 1,
         "interactive": 1,
-        "budget_scheduler": 1,
-        "bid_optimizer": 1,
-        "sync_campaign_data": 1,
+        "budget_scheduler": 1,     # v1 ads.* — deprecated at cutover
+        "bid_optimizer": 1,        # v1 ads.* — deprecated at cutover
+        "sync_campaign_data": 1,   # v1 ads.* — deprecated at cutover
+        "cm_bid": 1,               # Campaign Manager v2 — bid, isolated
+        "cm_ops": 1,               # Campaign Manager v2 — budget / sync / set-budget
     }
     # A job whose subprocess runs longer than its type's ceiling is killed and
     # marked timeout, so a wedged Chromium can't hold a lane forever. Overrides

@@ -127,6 +127,38 @@ def _sync_campaign_data(tenant_id, p):
     return ["ads", "sync-campaign-data", "--tenant", str(tenant_id)]
 
 
+# Campaign Manager v2 (cm.*) — parallel to ads.* (deleted at cutover). Dry-run by
+# default; the `live` param maps to --live to arm a real write (only at/after cutover).
+def _cm_budget_scheduler(tenant_id, p):
+    a = ["cm", "budget-scheduler", "--tenant", str(tenant_id)]
+    _flag(a, "--live", p.get("live"))
+    return a
+
+
+def _cm_bid_optimizer(tenant_id, p):
+    a = ["cm", "bid-optimizer", "--tenant", str(tenant_id)]
+    _flag(a, "--live", p.get("live"))
+    return a
+
+
+def _cm_reconcile(tenant_id, p):
+    a = ["cm", "reconcile", "--tenant", str(tenant_id)]
+    _flag(a, "--live", p.get("live"))
+    return a
+
+
+def _cm_sync_campaign_data(tenant_id, p):
+    return ["cm", "sync-campaign-data", "--tenant", str(tenant_id)]
+
+
+def _cm_set_budget(tenant_id, p):
+    a = ["cm", "set-budget", "--tenant", str(tenant_id)]
+    _opt(a, "--campaign", p.get("campaign"))
+    _opt(a, "--budget", p.get("budget"))
+    _flag(a, "--live", p.get("live"))
+    return a
+
+
 def _log_cleanup(tenant_id, p):
     a = ["maint", "log-cleanup"]
     _opt(a, "--days", p.get("days"))
@@ -172,6 +204,24 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     ),
     "ads.sync_campaign_data": JobTypeSpec(
         Lane.sync_campaign_data, 2 * 60 * 60, _sync_campaign_data,
+    ),
+    # Campaign Manager v2 — its OWN lanes (D18): bid isolated in cm_bid (latency-
+    # critical); budget + set-budget + sync share cm_ops (latency-tolerant); reconcile
+    # is no-browser → the shared interactive lane (prompt).
+    "cm.budget_scheduler": JobTypeSpec(
+        Lane.cm_ops, 15 * 60, _cm_budget_scheduler, param_keys=("live",),
+    ),
+    "cm.bid_optimizer": JobTypeSpec(
+        Lane.cm_bid, 15 * 60, _cm_bid_optimizer, param_keys=("live",),
+    ),
+    "cm.set_budget": JobTypeSpec(
+        Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("campaign", "budget", "live"),
+    ),
+    "cm.sync_campaign_data": JobTypeSpec(
+        Lane.cm_ops, 2 * 60 * 60, _cm_sync_campaign_data,
+    ),
+    "cm.reconcile": JobTypeSpec(
+        Lane.interactive, 5 * 60, _cm_reconcile, param_keys=("live",),
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane
     # so it fires promptly (never queued behind a multi-hour scrape).

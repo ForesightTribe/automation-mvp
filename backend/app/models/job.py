@@ -26,10 +26,12 @@ class Lane(str, Enum):
     batch = "batch"                        # public scrapes — hours long, nobody waiting
     dashboard = "dashboard"                # marketing/seller/scorecard — minutes, scheduled
     live = "live"                          # generic live lane
-    interactive = "interactive"            # explorer/heartbeat — a human is waiting
-    budget_scheduler = "budget_scheduler"  # dedicated lane — fires every 5 min
-    bid_optimizer = "bid_optimizer"        # dedicated lane — fires every 15 min
-    sync_campaign_data = "sync_campaign_data"  # dedicated lane — daily sync
+    interactive = "interactive"            # explorer/heartbeat/cm-reconcile — no browser, prompt
+    budget_scheduler = "budget_scheduler"  # v1 ads.* — deprecated at cutover
+    bid_optimizer = "bid_optimizer"        # v1 ads.* — deprecated at cutover
+    sync_campaign_data = "sync_campaign_data"  # v1 ads.* — deprecated at cutover
+    cm_bid = "cm_bid"                      # Campaign Manager v2 — bid optimizer, isolated (latency-critical)
+    cm_ops = "cm_ops"                      # Campaign Manager v2 — budget / sync / set-budget (share; latency-tolerant)
 
 
 class Job(SQLModel, table=True):

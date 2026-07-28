@@ -2,6 +2,7 @@ import sys
 import asyncio
 import typer
 from cli.commands import account, ads, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore, jobs, runner, schedules, maint, monitor
+from cli.commands import campaign_manager as cm
 
 # Windows requires ProactorEventLoop for Playwright subprocess spawning
 if sys.platform == "win32":
@@ -24,6 +25,7 @@ app = typer.Typer(
 
 app.add_typer(account.app, name="account")
 app.add_typer(ads.app, name="ads")
+app.add_typer(cm.app, name="cm")
 app.add_typer(auth.app, name="auth")
 app.add_typer(scrape.app, name="scrape")
 app.add_typer(tenant.app, name="tenant")
