@@ -12,6 +12,6 @@ second MP lands — see D17.
 
 def get_adapter(slug: str):
     if slug == "blinkit":
-        from campaign_manager.marketplaces import blinkit
-        return blinkit.adapter
+        from campaign_manager.marketplaces.blinkit import adapter
+        return adapter
     raise ValueError(f"no campaign-manager adapter for marketplace {slug!r}")

@@ -103,6 +103,14 @@ touches no Blinkit, writes no rows (empty rules). Guardrail unit tests pass. `al
 
 Goal: correct budget decisions end-to-end, dry-run, for the live tenant.
 
+> **Status — DONE 2026-07-27.** Rule-matching ported to `budget.py` (`target_for_now` / `_matches_rule`, pure)
+> + full `run()` wiring (load schedules → session → per campaign: target → read current → `writes.apply_budget`
+> dry → `cm_run_log`). **15/15 unit tests pass** (9 budget-rule + 6 guardrail). **V1.5/V1.6 validated end-to-end:**
+> seeded a temp schedule (campaign 574687 "Tech Test", `default_budget=999`), ran the dry-run → **read the real
+> budget ₹201 from Blinkit** → logged `would set 201→999`, guardrail PASS, `would-apply (not sent)`, **zero
+> writes**; temp data cleaned up. Fixed a `get_adapter` import bug (relied on the submodule being pre-imported —
+> masked by test ordering, caught by the real run).
+
 - [ ] **V1.1** `repo.py` — read `cm_budget_schedules` + rules (tenant + platform scoped); write `cm_run_log`.
 - [ ] **V1.2** `budget.py` — port the rule-matching (reuse `ad_campaigns.scheduler` logic) → compute the target
       budget for _now_ (IST) or `default_budget` → call `writes.apply_budget()`.
