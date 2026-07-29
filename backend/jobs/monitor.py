@@ -54,7 +54,18 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
         for s in scheds:
             if s.job_type in _SELF_MONITORING_TYPES:
                 continue
-            window = _cron_period(s.cron, now) * 1.1
+
+            # One-shots have no cron period. They are not overdue until their single
+            # fire time passes; a fired one-shot disables itself, so any one-shot still
+            # enabled past its next_run_at genuinely failed to fire. (A recurring row
+            # gets its expected cadence from the cron.)
+            if not (s.repeat and s.cron):
+                if s.next_run_at is None or now <= s.next_run_at:
+                    continue
+                window = timedelta(seconds=settings.SCHEDULER_MISFIRE_GRACE_SECONDS)
+            else:
+                window = _cron_period(s.cron, now) * 1.1
+
             q = select(func.max(Job.completed_at)).where(
                 Job.job_type == s.job_type, Job.status == JobStatus.success
             )
@@ -65,8 +76,12 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
             # A schedule cannot be overdue before it existed. Measure from its last
             # success, or from creation if it has never succeeded — otherwise a
             # brand-new weekly schedule is flagged instantly, days before its first
-            # run is even due. (Observed on the VM, 2026-07-16.)
-            age = now - (last or s.created_at)
+            # run is even due. (Observed on the VM, 2026-07-16.) For a one-shot,
+            # measure from its fire time — that is when it should have completed.
+            if s.repeat and s.cron:
+                age = now - (last or s.created_at)
+            else:
+                age = now - s.next_run_at
             if age <= window:
                 continue
 

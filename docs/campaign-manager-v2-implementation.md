@@ -153,23 +153,45 @@ rows update.
 Goal: rules → `job_schedules` (recurring + one-shot), written at edit time, idempotent; fully testable
 without Blinkit.
 
-- [ ] **V3.0** ⚠️ **Jobs-system enhancement (prerequisite): one-shot schedules.** Add a `repeat` flag to
-      `job_schedules`; the producer **fires-then-disables** when `repeat=false` (instead of re-arming via cron);
-      the deadman monitor treats a pending one-shot as overdue only after its `next_run_at`. Additive (existing
-      recurring schedules unchanged). **Migration** ⚠️ (confirm). Lives in the **jobs system**, not
-      `campaign_manager/` — a general capability the CM consumes.
-- [ ] **V3.1** `reconciler.py` — read a tenant's rules → compute desired `job_schedules`: recurring windows as
-      cron rows (future-start → `next_run_at` set to the start so it's dormant until then); `once` rules +
-      expiry cleanups as **one-shot** rows. Deterministic names (`auto:cm:budget:<tenant>:<mp>:<hhmm>`,
-      `auto:cm:bid:<tenant>:<mp>:<window>`).
-- [ ] **V3.2** Idempotent apply: create missing / update changed / delete no-longer-wanted (match by name prefix).
-- [ ] **V3.3** "**Stop = reset**": on rule pause/removal, enqueue a final reset job (budget→default / clear bid);
-      **expiry** → pre-schedule a one-shot cleanup for the rule's end date at edit time.
-- [ ] **V3.4** Triggers: **`cm.reconcile` is a VM job**; the API **enqueues** it after any rule CRUD (V4) — the
-      API never mutates schedules itself. Plus an _optional_ weekly drift-check schedule.
-- [ ] **V3.5** Tests — no Blinkit: seed rule sets (recurring, future-start, `once`, with end-date) for the test
-      tenant, run reconcile, assert exact `job_schedules` rows **incl. one-shots**; re-run → no change
-      (idempotent); a rapid double-edit doesn't lose a reconcile.
+- [x] **V3.0** ✅ **DONE (code; migration pending confirm) — Jobs-system enhancement: one-shot schedules.** Added a
+      `repeat` flag to `job_schedules` (default `True`; `cron` now nullable). The producer **fires-then-disables**
+      when `repeat=False` (and keeps a duplicate-blocked one-shot armed to retry rather than lose its single run);
+      a malformed one-shot with no `next_run_at` self-retires. The deadman monitor skips a pending one-shot until
+      its `next_run_at` passes, then windows on a flat misfire-grace slack (never calls `_cron_period` on a null
+      cron). CLI: `schedules add --at "YYYY-MM-DD HH:MM"` creates a one-shot (mutually exclusive with `--cron`);
+      `list`/`show` render `once`/one-shot safely; `update --cron` converts a one-shot back to recurring;
+      enable/disable preserves a one-shot's fire time. **Files:** `app/models/job.py`, `jobs/scheduler.py`,
+      `jobs/monitor.py`, `cli/commands/schedules.py`, migration `b1d7e4a92f30`. Additive — existing recurring
+      schedules unchanged. **Migration `b1d7e4a92f30` written, NOT yet applied (awaiting go-ahead).** Lives in the
+      **jobs system**, not `campaign_manager/` — a general capability the CM consumes.
+- [x] **V3.1** ✅ **DONE** `reconciler.py` — reads a tenant's budget schedules + bid rules → `desired_schedules(...)`
+      (pure, unit-testable). Emits: one recurring `cm.budget_scheduler` cron per distinct **budget boundary**
+      (rule start/end time, tenant-wide union); an hourly **safety poll**; **`once`** budget rules → apply+revert
+      **one-shots**; **expiry** (recurring rule end_date) → a reset-to-default one-shot the morning after;
+      **bid windows** → `*/15`-within-window `cm.bid_optimizer` crons (merged across active rules). Deterministic
+      names `auto:cm:<kind>:<tenant>:<mp>:<rest>`. The dumb budget job reverts to default at an end boundary, so
+      no separate revert schedule is needed.
+- [x] **V3.2** ✅ **DONE** Idempotent `_apply`: matches managed rows by prefix **and platform** (`_is_managed`),
+      create missing / update changed (`_differs` — never diffs a recurring row's drifting `next_run_at`) / delete
+      no-longer-wanted. Re-run with no rule change → zero writes. `reconcile --dry-run` (default) previews the diff
+      without writing `job_schedules`; `--live` writes it.
+- [~] **V3.3** ⚠️ **PARTIAL** — **expiry** one-shots (reset-to-default after end_date) and time-window reverts
+      (via the end-boundary fire) are done. **Deletion/pause `stop=reset`** — resetting a campaign's *live* Blinkit
+      budget when its whole schedule is deleted — is **deferred to V4** (the API knows `default_budget` at delete
+      time and enqueues the reset before reconcile forgets the row). Safe today because every scheduled job runs
+      **dry-run** until cutover. Bid `stop=reset` (clear bids) deferred with the live bid path.
+- [x] **V3.4** ✅ **DONE (job side)** `cm.reconcile` is a VM job (lane `interactive`, [jobs/types.py](../backend/jobs/types.py)),
+      dry-run by default → **enqueue it with `live=true`** to actually write schedules. The **API enqueue-after-CRUD**
+      is V4 (rules CRUD lives there). The _optional_ weekly drift-check schedule is skipped for MVP (activation +
+      expiry are encoded at edit time, so periodic reconcile isn't functionally required — §7.3).
+- [x] **V3.5** ✅ **DONE (2026-07-29)** Tests, no Blinkit. **Pure suite** `tests/test_reconciler.py` — **13/13**
+      (boundaries + dedup, `once` on/off, past-skip, expiry, bid window + merge, `_is_managed` scoping, and
+      idempotency incl. `next_run_at` drift not churning). **DB integration** (scratchpad `test_reconciler_db.py`,
+      self-cleaning) — seeded a real tenant, reconcile-live → **9 correct `auto:cm:*` rows**; re-run → **0/0/0**;
+      edit 20:00→22:00 → **1 created + 1 deleted**; cleanup → **0 residue**. All green.
+
+**Files (V3.1–V3.4):** [reconciler.py](../backend/campaign_manager/reconciler.py) (the compile), `logs.py`
+(`reconcile_change`). No Blinkit, no browser — pure DB against `job_schedules`.
 
 **Gate:** reconcile yields correct, idempotent `job_schedules` (recurring + one-shot) for representative rule
 sets, incl. edits/pauses/removals/expiry; one-shot rows fire once then disable. **Verify:** unit/integration
@@ -271,6 +293,29 @@ a numbered task.
       global defaults in `config.py` for now. *When tenant #2 with a different scale lands.*
 - [ ] **Arming UX** — `live` is currently a per-job param (`live=true` → `--live`). Decide the real arming
       mechanism for the UI/scheduler (per-schedule param vs. per-tenant flag) at **V4/V5**.
+
+### Control model — Pause/Resume/Stop/Reset (D19, locked 2026-07-28 — see design §7.3.1)
+
+Budget = **Reset** (→default, per campaign); Bidding = **Pause / Resume / Stop** (per keyword rule); bid Stop
+**freezes** the bid (no value write), budget Reset **writes default**; the asymmetry is safe because the budget
+cap backstops a frozen bid. No bid baseline restore (`baseline_cpm` dropped). Concrete build tasks:
+
+- [ ] **`state` field** (`active`/`paused`/`stopped`) on `cm_bid_rules` (all three) + `cm_budget_schedules`
+      (active/stopped) — model + migration. Reconciler reads it: active→control+guards, paused→guard only,
+      stopped→nothing. **V4 (with the buttons); needs a migration ⚠️.**
+- [ ] **`cm.reset` job** — writes `default_budget` + marks a budget schedule `stopped` (`catchup=true` — a missed
+      reset is a permanent overspend gap). Bid Stop reuses no value write (state + schedule cleanup only). **V4.**
+- [ ] **Button endpoints** (API, V4) = `state` write + `cm.reconcile` enqueue (+ `cm.reset` for budget Reset).
+- [ ] **Terminal-guard-survives-pause** — a paused bid keeps its `stop_date` one-shot so it still auto-stops at
+      end-time (the "boundaries win" invariant). Wire when `state`/pause lands.
+- [ ] **Future-start dormancy precision** — a recurring boundary cron currently arms from `now`; before a rule's
+      `start_date` the dumb budget job simply applies default (safe, but opens a browser). Set `next_run_at` to the
+      start datetime to keep it truly dormant. *Optimization, not correctness.*
+- [ ] **Stale-schedule cleanup after expiry** — expiry fires a reset one-shot but leaves the (now-inert) boundary
+      crons, which keep applying default. A weekly drift-reconcile (or the expiry job triggering a re-reconcile)
+      would remove them. *Tidiness, not safety.*
+- [ ] **Bid window minute-precision** — `bid_windows` is hour-granular (`*/15 9-19`); sub-hour start/stop edges are
+      rounded. Fine for MVP; tighten if a client sets, e.g., 09:30–20:45.
 
 ### Tables
 

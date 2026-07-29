@@ -114,12 +114,20 @@ class ScrapeJob(SQLModel, table=True):
 
 
 class JobSchedule(SQLModel, table=True):
-    """A recurring job definition — "run this job_type on this cron".
+    """A recurring OR one-shot job definition — "run this job_type on this cron",
+    or "run it once at this time".
 
     The scheduler (the producer half of the runner) reads enabled rows, and when
     `next_run_at` is due it ENQUEUES a Job (never runs anything itself). Editing a
     row takes effect within one producer tick — schedules live here, not in a
     crontab, so the future UI can manage them without SSH. See docs/jobs.md.
+
+    Two shapes share this table (Campaign Manager v2 needs both — a recurring budget
+    window and a one-shot expiry cleanup ride the same scheduler):
+    - `repeat=True` (recurring): `cron` set; after firing, `next_run_at` advances to
+      the next cron occurrence.
+    - `repeat=False` (one-shot): `cron` is NULL, `next_run_at` is an explicit fire
+      time; after firing it disables itself instead of re-arming.
     """
 
     __tablename__ = "job_schedules"
@@ -134,7 +142,8 @@ class JobSchedule(SQLModel, table=True):
     tenant_id: uuid.UUID | None = Field(default=None, foreign_key="tenants.id")
     params: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
-    cron: str                                 # 5-field crontab, interpreted in Asia/Kolkata
+    cron: str | None = None                   # 5-field crontab (IST); NULL for one-shots
+    repeat: bool = True                        # True=recurring (re-arm via cron); False=one-shot (fire once, then disable)
     priority: int = 100                       # passed through to the enqueued job
     enabled: bool = True
     # If the runner was down at a fire time: run the missed occurrence once on

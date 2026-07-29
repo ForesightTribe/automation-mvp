@@ -378,6 +378,38 @@ Because activation and expiry are both encoded in the rows **at edit time**, the
 longer functionally required** — it downgrades to an optional **weekly drift check** (re-assert correctness if
 anything drifted out of sync). MVP can skip it.
 
+#### 7.3.1 Control model — the UI buttons (D19, locked 2026-07-28)
+
+Budget and bidding get **different** controls because a budget is a *spend cap* while a bid is a *position
+lever* — a deliberate asymmetry, not an oversight.
+
+| | **Budget** (per campaign) | **Bidding** (per keyword rule) |
+|---|---|---|
+| Buttons | **Reset** | **Pause / Resume / Stop** |
+| On stop/reset | budget → `default_budget` (write) | bid **frozen** — no write, just stop adjusting |
+| Cleans schedules | yes | yes |
+| Marks state | `stopped` | `stopped` |
+| Pause | — (a value can't be "frozen in motion") | control schedule dormant, bid frozen, **resumable** |
+| At end-time (`stop_date`) | auto → default | **auto-stop, bid frozen — fires even while paused** |
+| Restart | fresh schedules from new params | fresh schedules from new params; optimizer resumes from the current bid |
+
+**Why the asymmetry is safe:** a frozen bid keeps costing, but spend is capped by the daily budget — which
+*does* reset to default. So a stopped-but-frozen bid = "possibly spend the default budget at a higher CPM,"
+never runaway spend. There is therefore **no bid baseline to restore** — "reset a bid" was a non-concept; Stop
+just means "stop placing bids." (An earlier `baseline_cpm` snapshot idea was dropped.)
+
+**Mechanism (feeds V3.3 → V4):**
+- A **`state` field** (`active` / `paused` / `stopped`) — on `cm_bid_rules` (all three) and `cm_budget_schedules`
+  (`active` / `stopped` only; no pause). The reconciler reads it:
+  `active` → control + terminal guards · `paused` → terminal guard only · `stopped` → nothing.
+- **Terminal guard survives pause** (the "boundaries win" invariant): a paused bid keeps its `stop_date`
+  one-shot, so it still auto-stops at end-time. Only Stop supersedes it.
+- **Buttons = a `state` write + a `cm.reconcile` enqueue.** Budget Reset additionally enqueues a **`cm.reset`**
+  job (writes `default_budget`, marks `stopped`); bid Stop needs no value write — state + schedule cleanup only.
+- **Budget resets are `catchup=true`** — a reset missed while the runner was down is a permanent overspend gap,
+  so it must self-heal on recovery.
+- **Granularity:** budget per campaign; **bid pause/resume/stop per keyword rule.**
+
 ### 7.4 Auth (D5)
 
 Keep the DB session model. **Delete the CM's own reconnect**; re-auth via the shared `cli auth blinkit`

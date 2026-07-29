@@ -1,5 +1,6 @@
 import asyncio
 import uuid
+from datetime import datetime
 
 import typer
 from rich.console import Console
@@ -11,8 +12,18 @@ from app.models.job import JobSchedule
 from jobs.scheduler import initial_next_run, validate_cron
 from jobs.types import parse_params, spec_for
 
-app = typer.Typer(help="Recurring job schedules (cron → queue). See docs/jobs.md.")
+app = typer.Typer(help="Recurring + one-shot job schedules (→ queue). See docs/jobs.md.")
 console = Console()
+
+_AT_FORMAT = "%Y-%m-%d %H:%M"
+
+
+def _parse_at(at: str) -> datetime:
+    """Parse a one-shot fire time ('YYYY-MM-DD HH:MM', naive IST). Raises ValueError."""
+    try:
+        return datetime.strptime(at.strip(), _AT_FORMAT)
+    except ValueError:
+        raise ValueError(f"--at must be '{_AT_FORMAT}' (IST), e.g. '2026-07-31 20:00'; got {at!r}")
 
 
 @app.command("add")
@@ -23,21 +34,32 @@ def add_schedule(
     ),
     name: str = typer.Option(..., "--name", "-n", help="Human label, e.g. 'Dobra public weekly'"),
     job_type: str = typer.Option(..., "--type", help="e.g. scrape.public_keyword (see `cli jobs types`)"),
-    cron: str = typer.Option(..., "--cron", help="5-field crontab in IST, e.g. '0 3 * * *' (daily 03:00)"),
+    cron: str = typer.Option(None, "--cron", help="5-field crontab in IST, e.g. '0 3 * * *' (daily 03:00). Recurring."),
+    at: str = typer.Option(None, "--at", help="One-shot fire time '2026-07-31 20:00' (IST). Fires once, then disables. Mutually exclusive with --cron."),
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID"),
     priority: int = typer.Option(100, "--priority", help="Lower runs first, within a lane"),
     catchup: bool = typer.Option(False, "--catchup", help="Run a missed occurrence once on recovery"),
     disabled: bool = typer.Option(False, "--disabled", help="Create it disabled"),
 ):
-    """Create a recurring schedule. Validates the job type, params, and cron up front.
+    """Create a recurring (--cron) or one-shot (--at) schedule. Validates the job
+    type, params, and timing up front.
 
     Params are trailing key=value pairs:
       cli schedules add -n "Dobra weekly" --type scrape.public_keyword -t <uuid> \\
           --cron "0 1 * * 0" workers=5
+      cli schedules add -n "promo end reset" --type cm.set_budget -t <uuid> \\
+          --at "2026-07-31 20:00"
     """
+    if bool(cron) == bool(at):
+        console.print("[red]Pass exactly one of --cron (recurring) or --at (one-shot).[/red]")
+        raise typer.Exit(1)
     try:
         spec = spec_for(job_type)
-        validate_cron(cron)
+        if cron:
+            validate_cron(cron)
+            fire_at = None
+        else:
+            fire_at = _parse_at(at)
         parsed = parse_params(params, spec)
     except ValueError as e:
         console.print(f"[red]{e}[/red]")
@@ -45,23 +67,31 @@ def add_schedule(
     if spec.needs_tenant and not tenant_id:
         console.print(f"[red]{job_type} requires --tenant[/red]")
         raise typer.Exit(1)
-    asyncio.run(_add(name, job_type, cron, tenant_id, parsed, priority, catchup, not disabled))
+    asyncio.run(_add(name, job_type, cron, fire_at, tenant_id, parsed, priority, catchup, not disabled))
 
 
-async def _add(name, job_type, cron, tenant_id, params, priority, catchup, enabled) -> None:
+async def _add(name, job_type, cron, fire_at, tenant_id, params, priority, catchup, enabled) -> None:
+    repeat = cron is not None
+    if not enabled:
+        next_run = None
+    elif repeat:
+        next_run = initial_next_run(cron)
+    else:
+        next_run = fire_at
     async with AsyncSessionLocal() as db:
         sched = JobSchedule(
-            name=name, job_type=job_type, cron=cron,
+            name=name, job_type=job_type, cron=cron, repeat=repeat,
             tenant_id=uuid.UUID(tenant_id) if tenant_id else None,
             params=params, priority=priority, catchup=catchup, enabled=enabled,
-            next_run_at=initial_next_run(cron) if enabled else None,
+            next_run_at=next_run,
         )
         db.add(sched)
         await db.commit()
         await db.refresh(sched)
+    kind = "recurring" if repeat else "one-shot"
     state = "enabled" if enabled else "[dim]disabled[/dim]"
     nxt = sched.next_run_at.strftime("%Y-%m-%d %H:%M IST") if sched.next_run_at else "—"
-    console.print(f"[green]Schedule #{sched.id} created[/green] ({state}) — next run {nxt}")
+    console.print(f"[green]Schedule #{sched.id} created[/green] ({kind}, {state}) — next run {nxt}")
 
 
 @app.command("list")
@@ -77,14 +107,15 @@ async def _list() -> None:
         console.print("[dim]No schedules. Add one with `cli schedules add`.[/dim]")
         return
     table = Table(show_header=True, header_style="bold")
-    for col in ("id", "name", "type", "cron", "enabled", "next run", "last run"):
+    for col in ("id", "name", "type", "schedule", "enabled", "next run", "last run"):
         table.add_column(col)
     for s in rows:
+        when = s.cron if s.repeat and s.cron else "[dim]once[/dim]"
         table.add_row(
             str(s.id),
             s.name,
             s.job_type.replace("scrape.", ""),
-            s.cron,
+            when,
             "[green]yes[/green]" if s.enabled else "[red]no[/red]",
             s.next_run_at.strftime("%m-%d %H:%M") if s.next_run_at else "—",
             s.last_enqueued_at.strftime("%m-%d %H:%M") if s.last_enqueued_at else "—",
@@ -103,12 +134,14 @@ def show_schedule(schedule_id: int = typer.Argument(..., help="Schedule id from 
             raise typer.Exit(1)
         spec = spec_for(s.job_type)
         params = " ".join(f"{k}={v}" for k, v in (s.params or {}).items()) or "—"
+        timing = (f"{s.cron}  [dim](IST)[/dim]" if s.repeat and s.cron
+                  else "[dim]one-shot — fires once, then disables[/dim]")
         rows = [
             ("id", str(s.id)),
             ("name", s.name),
             ("job_type", f"{s.job_type}  [dim](lane: {spec.lane.value})[/dim]"),
             ("tenant", str(s.tenant_id) if s.tenant_id else "—"),
-            ("cron", f"{s.cron}  [dim](IST)[/dim]"),
+            ("schedule", timing),
             ("params", params),
             ("priority", str(s.priority)),
             ("enabled", "[green]yes[/green]" if s.enabled else "[red]no[/red]"),
@@ -160,6 +193,7 @@ def update_schedule(
                     console.print(f"[red]{e}[/red]")
                     raise typer.Exit(1)
                 s.cron = cron
+                s.repeat = True                  # a cron makes it recurring
                 # Re-arm from the new cron so the change takes effect immediately.
                 s.next_run_at = initial_next_run(cron) if s.enabled else None
                 changed.append("cron")
@@ -205,8 +239,14 @@ def _set_enabled(schedule_id: int, enabled: bool) -> None:
                 console.print(f"[red]No schedule #{schedule_id}[/red]")
                 raise typer.Exit(1)
             s.enabled = enabled
-            # Re-arm next_run_at on enable; clear it on disable so it can't fire.
-            s.next_run_at = initial_next_run(s.cron) if enabled else None
+            if enabled:
+                # Recurring: re-arm from the cron. One-shot: keep its explicit fire
+                # time (re-enabling must not lose it).
+                if s.repeat and s.cron:
+                    s.next_run_at = initial_next_run(s.cron)
+            elif s.repeat:
+                s.next_run_at = None             # recurring: clear so it can't fire
+            # one-shot disable keeps next_run_at (the `enabled` flag already gates it)
             await db.commit()
         console.print(f"[green]Schedule #{schedule_id} {'enabled' if enabled else 'disabled'}[/green]")
     asyncio.run(_run())

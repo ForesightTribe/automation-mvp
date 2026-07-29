@@ -78,7 +78,11 @@ async def tick(now: datetime | None = None) -> None:
 
         for s in rows:
             if s.next_run_at is None:            # first sight — seed it, don't fire yet
-                s.next_run_at = next_fire_after(s.cron, now)
+                if s.cron:                       # recurring: compute the first fire from the cron
+                    s.next_run_at = next_fire_after(s.cron, now)
+                else:                            # one-shot with no fire time is malformed — retire it
+                    logger.error(f"schedule '{s.name}': one-shot has no next_run_at — disabling")
+                    s.enabled = False
                 continue
             if s.next_run_at > now:              # not due
                 continue
@@ -88,11 +92,21 @@ async def tick(now: datetime | None = None) -> None:
                 logger.info(
                     f"schedule '{s.name}': missed run due {s.next_run_at} skipped (catchup off)"
                 )
-            elif await _fire(s, now):
-                s.last_enqueued_at = now
+                retire = True                    # its slot has passed; a one-shot is now done
+            else:
+                fired = await _fire(s, now)
+                if fired:
+                    s.last_enqueued_at = now
+                # If the enqueue was skipped as a duplicate, keep a one-shot armed so it
+                # retries next tick rather than silently losing its single run.
+                retire = fired
 
-            # Advance past the current minute so we never re-fire the same slot.
-            s.next_run_at = next_fire_after(s.cron, now + timedelta(minutes=1))
+            if s.repeat and s.cron:
+                # Advance past the current minute so we never re-fire the same slot.
+                s.next_run_at = next_fire_after(s.cron, now + timedelta(minutes=1))
+            elif retire:
+                s.enabled = False                # one-shot: fire once, then disable
+                logger.info(f"schedule '{s.name}': one-shot fired → disabled")
 
         await db.commit()
 

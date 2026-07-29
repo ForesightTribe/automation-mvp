@@ -83,6 +83,15 @@ def write_result(run_id: str, *, dry_run: bool, campaign_id, applied: bool,
           run_id=run_id, campaign_id=campaign_id, applied=applied)
 
 
+def reconcile_change(run_id: str, *, dry_run: bool, action: str, name: str,
+                     detail: str = "") -> None:
+    """One create/update/delete the reconciler made (or would make) to job_schedules.
+    `dry_run` here means the reconciler did NOT write the schedule row — it only
+    touches our own `job_schedules`, never Blinkit."""
+    _emit("info", "reconcile.change", dry_run, f"{action} {name} {detail}".strip(),
+          run_id=run_id, action=action, name=name)
+
+
 def run_summary(run_id: str, job: str, *, dry_run: bool, processed: int,
                 applied: int, skipped: int, errors: int) -> None:
     _emit("info" if not errors else "warning", "run.summary", dry_run,

@@ -205,17 +205,25 @@ WHERE id = (SELECT id FROM jobs
 RETURNING *;
 ```
 
-### `job_schedules` — recurring work
+### `job_schedules` — recurring **and one-shot** work
 
 | Column | Notes |
 |---|---|
 | `id` | int, PK |
 | `name` | human label — "Dobra marketing daily" |
 | `job_type` / `tenant_id` / `params` | what to enqueue |
-| `cron` | `"0 3 * * *"`, interpreted in Asia/Kolkata |
+| `cron` | `"0 3 * * *"`, interpreted in Asia/Kolkata. **NULL for one-shots** |
+| `repeat` | `true` = recurring (re-arm via cron after firing); `false` = one-shot (fire once at `next_run_at`, then the producer disables the row). Default `true` |
 | `enabled` | bool |
 | `catchup` | if the VM was down at the fire time, run once on recovery? See [Missed runs](#missed-runs-and-catchup) |
-| `last_enqueued_at` / `next_run_at` | drives the UI ("last run / next run") |
+| `last_enqueued_at` / `next_run_at` | drives the UI ("last run / next run"). For a one-shot, `next_run_at` **is** the fire time |
+
+**One-shots** let one-time and recurring work share a single scheduler (added for the
+Campaign Manager v2 reconciler — a recurring budget window and a one-shot expiry cleanup
+both live here). Create one with `schedules add --at "2026-07-31 20:00"` (instead of
+`--cron`). After it fires the producer flips `enabled=false`; a duplicate-blocked
+one-shot stays armed and retries rather than losing its single run; the deadman monitor
+ignores it until its `next_run_at` passes.
 
 ---
 
