@@ -267,10 +267,14 @@ class BlinkitClient:
         log.warning("[get_campaign_products] no products found for campaign %s", campaign_id)
         return []
 
-    async def update_keyword_bids(self, campaign_id: int, keyword_updates: list[dict]) -> dict:
+    async def update_keyword_bids(self, campaign_id: int, keyword_updates: list[dict],
+                                  *, advertiser_id: int | None = None) -> dict:
         """
         Update CPM bids for specific keywords.
         keyword_updates: [{"keyword": "mojito", "match_type": "EXACT", "cpm": 400}]
+
+        advertiser_id: optional explicit account override (campaign-manager v2 passes the
+        per-tenant stored id here). Falls back to get_advertiser_id() when None.
         """
         detail, min_cpm_config = await self.get_campaign_detail(campaign_id)
         if not detail:
@@ -318,7 +322,7 @@ class BlinkitClient:
         # (sending products:[] triggers Blinkit's "Please select atleast one PID" validation)
         has_products = bool(pids_str) or bool(products_for_put_kw)
 
-        actual_advertiser_id = await self.get_advertiser_id()
+        actual_advertiser_id = advertiser_id if advertiser_id is not None else await self.get_advertiser_id()
 
         # Build update map: keyword → {cpm, match_type}
         update_map = {u["keyword"]: u for u in keyword_updates}
@@ -434,10 +438,13 @@ class BlinkitClient:
         log.warning("[get_advertiser_id] advertiser_id=%r (hardcoded=%r)", adv_id, ADVERTISER_ID)
         return adv_id
 
-    async def update_campaign(self, campaign_id: int, changes: dict, *, empty_pids: bool = False) -> dict:
+    async def update_campaign(self, campaign_id: int, changes: dict, *, empty_pids: bool = False,
+                              advertiser_id: int | None = None) -> dict:
         """Minimal PUT payload for campaign updates (e.g. budget).
-        empty_pids=True skips product/pids validation — use when catalog PIDs are delisted."""
-        actual_advertiser_id = await self.get_advertiser_id()
+        empty_pids=True skips product/pids validation — use when catalog PIDs are delisted.
+        advertiser_id: optional explicit account override (campaign-manager v2 passes the
+        per-tenant stored id here). Falls back to get_advertiser_id() when None."""
+        actual_advertiser_id = advertiser_id if advertiser_id is not None else await self.get_advertiser_id()
         detail, min_cpm_config = await self.get_campaign_detail(campaign_id)
         if not detail:
             raise RuntimeError(f"Could not fetch details for campaign {campaign_id}")

@@ -157,33 +157,55 @@ def _expiry_fires(schedules, tenant: str, platform: str, now: datetime) -> list[
     return out
 
 
-def bid_windows(bid_rules) -> list[tuple[int, int]]:
-    """Merged (start_hour, end_hour_inclusive) windows across ACTIVE bid rules. Hour
-    granularity (minute precision deferred — see docs backlog). A missing window = all
-    day. The last hour is the last one that still needs a run before stop_time."""
-    intervals: list[tuple[int, int]] = []
+def _rule_hours(start_time: str | None, stop_time: str | None) -> set[int]:
+    """Active clock-hours (0–23) for a time window; wraps past midnight when stop ≤ start
+    (e.g. 18:00–02:00 → {18..23, 0..1}). No window → all 24. Hour granularity (minute
+    precision deferred — see backlog)."""
+    sh = _parse_hhmm(start_time)
+    eh = _parse_hhmm(stop_time)
+    if not (sh or eh):
+        return set(range(24))
+    start_h = sh[0] if sh else 0
+    if eh is None:
+        return set(range(start_h, 24))
+    end_h = max(0, min(eh[0] - 1 if eh[1] == 0 else eh[0], 23))   # last hour needing a run
+    if sh and eh <= sh:                                          # crosses midnight
+        return set(range(start_h, 24)) | set(range(0, end_h + 1))
+    return set(range(start_h, end_h + 1)) if end_h >= start_h else set()
+
+
+def bid_active_hours(bid_rules, now: datetime) -> set[int]:
+    """Union of active clock-hours across active, non-expired bid rules. A `once` rule
+    whose date has passed (or a recurring rule past its stop_date) drops out, so its
+    hours stop keeping the optimizer cron alive."""
+    today = now.strftime("%Y-%m-%d")
+    hours: set[int] = set()
     for r in bid_rules:
         if not r.active:
             continue
-        sh = _parse_hhmm(r.start_time)
-        eh = _parse_hhmm(r.stop_time)
-        start_h = sh[0] if sh else 0
-        if eh is None:
-            end_h = 23
-        else:
-            end_h = eh[0] - 1 if eh[1] == 0 else eh[0]
-        end_h = min(end_h, 23)
-        if end_h < start_h:
+        if getattr(r, "type", "recurring") == "once":
+            if r.date and today > r.date:
+                continue
+        elif r.stop_date and today > r.stop_date:
             continue
-        intervals.append((start_h, end_h))
+        hours |= _rule_hours(r.start_time, r.stop_time)
+    return hours
 
-    merged: list[tuple[int, int]] = []
-    for s, e in sorted(intervals):
-        if merged and s <= merged[-1][1] + 1:                  # overlapping or adjacent
-            merged[-1] = (merged[-1][0], max(merged[-1][1], e))
-        else:
-            merged.append((s, e))
-    return merged
+
+def _hours_to_cron_field(hours: set[int]) -> str:
+    """Compress a set of hours into a cron hour field: {0,1,2,9,18..23} → '0-2,9,18-23'."""
+    if len(hours) == 24:
+        return "*"
+    parts, s = [], sorted(hours)
+    lo = prev = s[0]
+    for h in s[1:]:
+        if h == prev + 1:
+            prev = h
+            continue
+        parts.append(f"{lo}-{prev}" if lo != prev else f"{lo}")
+        lo = prev = h
+    parts.append(f"{lo}-{prev}" if lo != prev else f"{lo}")
+    return ",".join(parts)
 
 
 def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
@@ -203,10 +225,13 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
     d += _once_fires(budget_schedules, tenant, platform, now)
     d += _expiry_fires(budget_schedules, tenant, platform, now)
 
-    for sh, eh in bid_windows(bid_rules):
-        hours = f"{sh}-{eh}" if sh != eh else f"{sh}"
-        cron = f"*/{_BID_STEP_MIN} {hours} * * *"
-        d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:{sh:02d}-{eh:02d}",
+    # One optimizer cron covering the union of all active bid windows (overnight-aware).
+    # The job re-checks each rule's own window/date via `_in_window`, so a single cron is
+    # enough — the lane is serial anyway.
+    hours = bid_active_hours(bid_rules, now)
+    if hours:
+        cron = f"*/{_BID_STEP_MIN} {_hours_to_cron_field(hours)} * * *"
+        d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:opt",
                          BID_JOB, cron, True, initial_next_run(cron)))
 
     return d

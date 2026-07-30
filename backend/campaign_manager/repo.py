@@ -53,6 +53,163 @@ async def get_bid_rules(tenant_id: uuid.UUID, platform: str = "blinkit"):
         return out
 
 
+# ── Platform account (advertiser id) — per (tenant, platform), B3 ───────────
+
+async def get_advertiser(tenant_id: uuid.UUID, platform: str = "blinkit") -> int | None:
+    """The stored advertiser (ad-account) id for a tenant, or None if not configured."""
+    from app.models.campaign_manager_v2 import CmPlatformAccount
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(CmPlatformAccount).where(
+                CmPlatformAccount.tenant_id == tenant_id,
+                CmPlatformAccount.platform == platform,
+            )
+        )).scalars().first()
+        return int(row.advertiser_id) if row else None
+
+
+async def set_advertiser(tenant_id: uuid.UUID, advertiser_id: int, platform: str = "blinkit") -> None:
+    """Upsert the tenant's advertiser id (set once at onboarding from a dashboard PUT)."""
+    from app.models.campaign_manager_v2 import CmPlatformAccount
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(CmPlatformAccount).where(
+                CmPlatformAccount.tenant_id == tenant_id,
+                CmPlatformAccount.platform == platform,
+            )
+        )).scalars().first()
+        if row:
+            row.advertiser_id = int(advertiser_id)
+            row.updated_at = now_ist()
+        else:
+            db.add(CmPlatformAccount(tenant_id=tenant_id, platform=platform,
+                                     advertiser_id=int(advertiser_id)))
+        await db.commit()
+
+
+# ── Rules CRUD (service layer — the CLI uses it now, the V4 API will reuse it) ──
+
+async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
+                                 campaign_name: str, default_budget: float, name: str | None = None):
+    """Create a budget-schedule container for a campaign. Raises on the unique
+    (tenant, platform, campaign_id) conflict."""
+    from app.models.campaign_manager_v2 import CmBudgetSchedule
+    async with AsyncSessionLocal() as db:
+        s = CmBudgetSchedule(tenant_id=tenant_id, platform=platform, campaign_id=campaign_id,
+                             campaign_name=campaign_name, name=name, default_budget=default_budget,
+                             enabled=True)
+        db.add(s)
+        await db.commit()
+        await db.refresh(s)
+        return s
+
+
+async def add_budget_rule(schedule_id: int, *, budget: float, type: str = "recurring",
+                          days: list | None = None, time_slots: list | None = None,
+                          start_time=None, end_time=None, start_date=None, end_date=None, date=None):
+    """Add one rule to an existing budget schedule."""
+    from app.models.campaign_manager_v2 import CmBudgetRule
+    async with AsyncSessionLocal() as db:
+        r = CmBudgetRule(schedule_id=schedule_id, type=type, days=days or [],
+                         time_slots=time_slots or [], start_time=start_time, end_time=end_time,
+                         start_date=start_date, end_date=end_date, date=date, budget=budget)
+        db.add(r)
+        await db.commit()
+        await db.refresh(r)
+        return r
+
+
+async def delete_budget_schedule(schedule_id: int) -> bool:
+    """Delete a budget schedule and its rules (FK is ON DELETE CASCADE; explicit too)."""
+    from app.models.campaign_manager_v2 import CmBudgetRule, CmBudgetSchedule
+    async with AsyncSessionLocal() as db:
+        s = await db.get(CmBudgetSchedule, schedule_id)
+        if not s:
+            return False
+        for r in (await db.execute(
+            select(CmBudgetRule).where(CmBudgetRule.schedule_id == schedule_id)
+        )).scalars().all():
+            await db.delete(r)
+        await db.delete(s)
+        await db.commit()
+        return True
+
+
+async def delete_budget_rule(rule_id: int) -> bool:
+    """Delete a single budget rule, keeping its schedule (so the schedule's default
+    budget applies on the next run — the clean way to revert a rule-driven change)."""
+    from app.models.campaign_manager_v2 import CmBudgetRule
+    async with AsyncSessionLocal() as db:
+        r = await db.get(CmBudgetRule, rule_id)
+        if not r:
+            return False
+        await db.delete(r)
+        await db.commit()
+        return True
+
+
+async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int, campaign_name: str,
+                          keyword: str, target_position: int, min_bid: int, max_bid: int, *,
+                          match_type: str = "EXACT", type: str = "recurring", date=None,
+                          days: list | None = None, start_time=None, stop_time=None,
+                          start_date=None, stop_date=None, lat=None, lon=None,
+                          location_name=None, brand_name=None):
+    """Create a keyword bid rule (runtime row is created lazily by the optimizer)."""
+    from app.models.campaign_manager_v2 import CmBidRule
+    async with AsyncSessionLocal() as db:
+        r = CmBidRule(id=uuid.uuid4().hex, tenant_id=tenant_id, platform=platform,
+                      campaign_id=campaign_id, campaign_name=campaign_name, keyword=keyword,
+                      match_type=match_type, type=type, date=date, days=days or [],
+                      target_position=target_position, min_bid=min_bid, max_bid=max_bid,
+                      start_time=start_time, stop_time=stop_time, start_date=start_date,
+                      stop_date=stop_date, lat=lat, lon=lon, location_name=location_name,
+                      brand_name=brand_name, active=True)
+        db.add(r)
+        await db.commit()
+        await db.refresh(r)
+        return r
+
+
+async def resolve_store(platform: str, *, city: str | None = None,
+                        location_id: str | None = None) -> tuple[float | None, float | None, str] | None:
+    """Resolve a bid rule's measurement point from the darkstore catalog: a specific
+    store by `location_id` (merchant_id), or a representative active store in `city`.
+    Returns (lat, lon, label) or None if nothing matches."""
+    from sqlalchemy import func
+    from app.models.search import MarketplaceLocation
+
+    async with AsyncSessionLocal() as db:
+        q = select(MarketplaceLocation).where(
+            MarketplaceLocation.mp_slug == platform,
+            MarketplaceLocation.is_active == True,  # noqa: E712
+        )
+        if location_id:
+            q = q.where(MarketplaceLocation.merchant_id == location_id)
+        elif city:
+            q = q.where(func.lower(MarketplaceLocation.city) == city.lower())
+        # Deterministic representative store when a city matches several.
+        row = (await db.execute(q.order_by(MarketplaceLocation.merchant_id).limit(1))).scalars().first()
+        if not row:
+            return None
+        label = row.location_name or f"{row.city}/{row.merchant_id}"
+        return row.lat, row.lon, label
+
+
+async def delete_bid_rule(rule_id: str) -> bool:
+    """Delete a bid rule and its runtime row (FK is ON DELETE CASCADE; explicit too)."""
+    from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
+    async with AsyncSessionLocal() as db:
+        r = await db.get(CmBidRule, rule_id)
+        if not r:
+            return False
+        rt = await db.get(CmBidRuntime, rule_id)
+        if rt:
+            await db.delete(rt)
+        await db.delete(r)
+        await db.commit()
+        return True
+
+
 async def recent_write_count(tenant_id: uuid.UUID, campaign_id: int, *,
                              window_minutes: int, kind: str) -> int:
     """How many successful writes this campaign got within the window (rate limit)."""
@@ -72,6 +229,27 @@ async def recent_write_count(tenant_id: uuid.UUID, campaign_id: int, *,
             )
         )).scalar()
         return int(n or 0)
+
+
+async def write_bid_runtime(rows: list[dict]) -> None:
+    """Upsert 1:1 runtime state per bid rule (Q2). Each row = {rule_id, + any of
+    last_cpm / last_position / last_bid_updated_at}. Only the provided fields are
+    updated (a HOLD/dry-run pass that saw a position but wrote no bid updates only
+    `last_position`, never nulling `last_cpm`). No-op on empty."""
+    if not rows:
+        return
+    from sqlalchemy.dialects.postgresql import insert
+    from app.models.campaign_manager_v2 import CmBidRuntime
+
+    async with AsyncSessionLocal() as db:
+        for r in rows:
+            values = {**r, "updated_at": now_ist()}
+            stmt = insert(CmBidRuntime).values(**values).on_conflict_do_update(
+                index_elements=["rule_id"],
+                set_={k: v for k, v in values.items() if k != "rule_id"},
+            )
+            await db.execute(stmt)
+        await db.commit()
 
 
 async def write_run_log(rows: list[dict]) -> None:

@@ -15,7 +15,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from campaign_manager.reconciler import (
-    BID_JOB, BUDGET_JOB, Desired, _differs, _is_managed, bid_windows,
+    BID_JOB, BUDGET_JOB, Desired, _differs, _is_managed, bid_active_hours,
     budget_boundaries, desired_schedules,
 )
 
@@ -37,8 +37,10 @@ def brule(id=1, type="recurring", start_time=None, end_time=None, date=None, end
                            end_time=end_time, start_date=None, end_date=end_date, date=date, budget=budget)
 
 
-def bidrule(active=True, start_time=None, stop_time=None):
-    return SimpleNamespace(active=active, start_time=start_time, stop_time=stop_time)
+def bidrule(active=True, start_time=None, stop_time=None, type="recurring", date=None,
+            start_date=None, stop_date=None):
+    return SimpleNamespace(active=active, start_time=start_time, stop_time=stop_time,
+                           type=type, date=date, start_date=start_date, stop_date=stop_date)
 
 
 def _names(ds):
@@ -104,16 +106,27 @@ def test_expiry_oneshot():
 
 def test_bid_window_cron():
     ds = _desired(bid_rules=[bidrule(active=True, start_time="09:00", stop_time="20:00")])
-    by = _by_name(ds)
-    assert by["auto:cm:bid:T:blinkit:09-19"].cron == "*/15 9-19 * * *"
-    assert by["auto:cm:bid:T:blinkit:09-19"].job_type == BID_JOB
+    opt = _by_name(ds)["auto:cm:bid:T:blinkit:opt"]
+    assert opt.cron == "*/15 9-19 * * *" and opt.job_type == BID_JOB
 
 
-def test_bid_windows_merged():
+def test_bid_windows_unioned():
     rules = [bidrule(True, "09:00", "12:00"), bidrule(True, "11:00", "15:00")]
-    assert bid_windows(rules) == [(9, 14)]              # (9,11) + (11,14) → merged
-    ds = _desired(bid_rules=rules)
-    assert "auto:cm:bid:T:blinkit:09-14" in _names(ds)
+    assert bid_active_hours(rules, NOW) == {9, 10, 11, 12, 13, 14}
+    assert _by_name(_desired(bid_rules=rules))["auto:cm:bid:T:blinkit:opt"].cron == "*/15 9-14 * * *"
+
+
+def test_bid_overnight_window():
+    # 18:00–02:00 wraps midnight → hours {18..23, 0..1} → compressed cron field
+    rules = [bidrule(True, "18:00", "02:00")]
+    assert bid_active_hours(rules, NOW) == {18, 19, 20, 21, 22, 23, 0, 1}
+    assert _by_name(_desired(bid_rules=rules))["auto:cm:bid:T:blinkit:opt"].cron == "*/15 0-1,18-23 * * *"
+
+
+def test_bid_once_expired_dropped():
+    live = bidrule(True, "09:00", "12:00", type="once", date=FUTURE)
+    dead = bidrule(True, "18:00", "20:00", type="once", date=PAST)
+    assert bid_active_hours([live, dead], NOW) == {9, 10, 11}   # expired once contributes nothing
 
 
 def test_inactive_bid_skipped():

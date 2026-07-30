@@ -9,7 +9,7 @@ ported from `ad_campaigns/scheduler.py` (validated v1 logic) and unit-tested in
 tests/test_budget_rules.py without Blinkit or the DB.
 """
 import uuid
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from app.utils.time import now_ist
 from campaign_manager import config, logs, repo, writes
@@ -30,21 +30,18 @@ def _current_slot(now: datetime) -> str:
 
 
 def _matches_rule(rule: dict, now: datetime) -> bool:
-    """Does this rule apply at `now`? (date range → time range/slots → once/recurring)."""
-    today = now.strftime("%Y-%m-%d")
-    start_date = rule.get("start_date")
-    end_date = rule.get("end_date")
-    if start_date and today < start_date:
-        return False
-    if end_date and today > end_date:
-        return False
-
+    """Does this rule apply at `now`? (time-of-day gate → date/day against the window's
+    START day). An overnight window's post-midnight tail belongs to the day it started,
+    so a Sun 16:00–02:00 rule is active until Mon 02:00, and a Fri 00:00–02:00 moment is
+    NOT active (that tail belongs to Thursday, which has no window)."""
+    current_time = now.strftime("%H:%M")
     start_time = rule.get("start_time")
     end_time = rule.get("end_time")
+    overnight = bool(start_time and end_time and end_time <= start_time)
+
+    # ── time-of-day gate (overnight-aware) ──
     if start_time or end_time:
-        current_time = now.strftime("%H:%M")
-        if start_time and end_time and end_time <= start_time:
-            # Midnight-crossing (e.g. 18:15–02:00): active if after start OR before end.
+        if overnight:
             if current_time < start_time and current_time > end_time:
                 return False
         else:
@@ -55,27 +52,23 @@ def _matches_rule(rule: dict, now: datetime) -> bool:
     elif rule.get("time_slots") and _current_slot(now) not in rule["time_slots"]:
         return False
 
-    if rule.get("type") == "once":
-        rule_date = rule.get("date", "")
-        if today == rule_date:
-            return True
-        # Midnight-crossing "once": also match next calendar day while still before end_time.
-        st, et = rule.get("start_time", ""), rule.get("end_time", "")
-        if st and et and et <= st:
-            from datetime import timedelta
-            try:
-                next_day = (datetime.strptime(rule_date, "%Y-%m-%d") + timedelta(days=1)).strftime("%Y-%m-%d")
-                if today == next_day:
-                    return now.strftime("%H:%M") < et
-            except ValueError:
-                pass
-        return False
+    # The overnight tail (past midnight, before the window end) belongs to yesterday.
+    in_tail = overnight and current_time < end_time
+    eff = (now - timedelta(days=1)) if in_tail else now
+    eff_date = eff.strftime("%Y-%m-%d")
 
-    # recurring — empty days = "every day" (used when a date range is the constraint).
-    days = [d.lower() for d in rule.get("days", [])]
+    if rule.get("type") == "once":
+        return eff_date == (rule.get("date") or "")
+
+    # recurring — date range + weekday, both against the effective (start) day.
+    if rule.get("start_date") and eff_date < rule["start_date"]:
+        return False
+    if rule.get("end_date") and eff_date > rule["end_date"]:
+        return False
+    days = [d.lower() for d in (rule.get("days") or [])]   # empty = every day
     if not days:
         return True
-    return now.strftime("%A").lower() in days
+    return eff.strftime("%A").lower() in days
 
 
 def _reason(rule: dict) -> str:
@@ -140,6 +133,21 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     logs.session_ok(run_id, dry_run=dry_run)
+
+    # Live runs must pass the account guardrail (B3) before any write.
+    if not dry_run:
+        try:
+            await writes.arm_live(adapter, client, run_id,
+                                  await repo.get_advertiser(tenant_id, platform))
+        except RuntimeError as e:
+            logs.live_refused(run_id, reason=str(e))
+            if browser is not None:
+                await browser.close()
+            if pw is not None:
+                await pw.stop()
+            logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run,
+                             processed=0, applied=0, skipped=0, errors=1)
+            return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
     now = now_ist()  # captured after setup so the time is fresh at a boundary
     try:

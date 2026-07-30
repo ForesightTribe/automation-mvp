@@ -26,3 +26,7 @@ MAX_BUDGET: float = float(os.getenv("CM_MAX_BUDGET", "100000"))
 # incident). Counted from cm_run_log at apply time.
 MAX_WRITES_PER_WINDOW: int = int(os.getenv("CM_MAX_WRITES_PER_WINDOW", "12"))
 RATE_WINDOW_MINUTES: int = int(os.getenv("CM_RATE_WINDOW_MINUTES", "60"))
+
+# The advertiser account for LIVE writes (B3) is stored PER-TENANT in the DB
+# (cm_platform_accounts), set via `cm set-advertiser`. Blinkit doesn't expose it in its
+# read APIs, so it's captured once at onboarding. No global env var — see repo.get_advertiser.

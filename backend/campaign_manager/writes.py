@@ -47,6 +47,22 @@ def exceeds_rate_limit(recent_writes: int, *, limit: int | None = None) -> bool:
     return recent_writes >= cap
 
 
+# ── Live-write arming (B3 account guardrail) ────────────────────────────────
+
+async def arm_live(adapter, client, run_id: str, advertiser: int | None) -> int:
+    """Gate a LIVE run on the account guardrail: the tenant's STORED advertiser must exist
+    (Blinkit doesn't expose it, so it can't be derived). Sets it on the client so every
+    write sends that exact account, and returns it. Raises RuntimeError (→ refused run) if
+    none is stored. Never called in dry-run."""
+    if advertiser is None:
+        raise RuntimeError(
+            "no advertiser stored for this tenant — capture it from a Blinkit dashboard PUT "
+            "and run `cm set-advertiser -t <id> --id <n>`. Refusing live write.")
+    adapter.set_advertiser(client, advertiser)
+    logs.live_armed(run_id, advertiser=advertiser)
+    return advertiser
+
+
 # ── The choke-point (only entry to a Blinkit budget/bid mutation) ───────────
 
 async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, current,

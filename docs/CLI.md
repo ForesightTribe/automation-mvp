@@ -384,6 +384,126 @@ Geography · Competitor Landscape · Price & Discount · Availability · Own Cat
 
 ---
 
+## Campaign Manager (`cm`)
+
+Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
+
+- **Budget scheduler** — sets a campaign's daily budget from time/day rules (elevated during a window, back to a default otherwise).
+- **Bid optimizer** — a ~15-min control loop that nudges a keyword's CPM to hold a target search position.
+
+**Rules are the source of truth.** You create rules (`cm rules …`); a **reconciler** compiles them into `job_schedules` rows; the runner fires the engines on schedule. See [campaign-manager-refactor.md](campaign-manager-refactor.md) for the design.
+
+**Two ways to run every engine** (same as `cli scrape …` vs `jobs run scrape.…`):
+
+| Path | Command | Use |
+|---|---|---|
+| Direct | `python -m cli cm budget-scheduler -t <id>` | dev / manual / dry-run testing |
+| Scheduler | `python -m cli jobs run cm.budget_scheduler -t <id>` | production (queue + lanes, on the VM) |
+
+> ⚠️ **Dry-run is the default; nothing touches Blinkit unless you pass `--live`.** The engines read real budgets/positions in dry-run but write nothing. Live writes are the cutover step (not armed yet). Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing, but never `cli runner start` locally (it claims the VM's jobs).
+
+### Timing model (rules)
+
+Both systems share the same timing shapes:
+
+| Shape | How | Example |
+|---|---|---|
+| **Recurring daily window** | `--start-time`/`--end-time` (+ optional `--days`, `--start-date`/`--end-date`) | boost 4pm–11pm every Fri/Sat/Sun this month |
+| **Continuous (all day)** | omit the times, set a date range | around-the-clock for a 2-day sale |
+| **One-time span** | `--once --date` (+ times) | a single night, 6pm–2am |
+| **Overnight** | set end ≤ start time (e.g. `16:00`→`02:00`) | window that crosses midnight |
+
+**Overnight tails belong to the start day**: a Sun 16:00–02:00 rule runs to **Mon 02:00**, and `--days friday,saturday,sunday` still covers Sunday's tail. `--days` is the weekday filter (empty = every day); it applies to budget and bid.
+
+### Manage rules — `cm rules …`
+
+```bash
+# Budget: create a schedule (container) for a campaign, optionally with one inline rule
+python -m cli cm rules add-budget-schedule -t <id> --campaign <cid> --default-budget 300 \
+    --name "Weekend nights" \
+    --budget 1500 --days "friday,saturday,sunday" --start-time 16:00 --end-time 02:00 \
+    --start-date 2026-07-31 --end-date 2026-08-30
+
+# Budget: add more rules to an existing schedule (id from `cm rules list`)
+python -m cli cm rules add-budget-rule --schedule <sid> --budget 2000 --once --date 2026-08-15 --start-time 10:00 --end-time 14:00
+
+# Bid: chase position 3 for a keyword, measured at a specific store (lat/lon)
+python -m cli cm rules add-bid -t <id> --campaign <cid> --keyword "goli soda" \
+    --target 3 --min-bid 20 --max-bid 120 --lat 12.97 --lon 77.57 \
+    --days "friday,saturday,sunday" --start-time 16:00 --stop-time 02:00
+
+python -m cli cm rules list   -t <id>              # budget schedules (+rules) and bid rules
+python -m cli cm rules remove-budget --schedule <sid>
+python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list`
+```
+
+**Budget** (`add-budget-schedule` / `add-budget-rule`):
+
+| Flag | Notes |
+|---|---|
+| `--campaign` | Blinkit campaign id (schedule) |
+| `--default-budget` | ₹ applied when no rule matches (schedule) |
+| `--name` / `--campaign-name` | labels |
+| `--budget` | ₹ the rule applies (rule; on `add-budget-schedule` it creates one inline rule) |
+| `--start-time` / `--end-time` | daily window `HH:MM` IST (end ≤ start = overnight) |
+| `--days` | `"friday,saturday,sunday"` (empty = every day) |
+| `--start-date` / `--end-date` | recurring date range `YYYY-MM-DD` |
+| `--once` / `--date` | one-time span on a single date (mutually exclusive with the recurring flags) |
+
+**Bid** (`add-bid`) — all of the above timing flags (with `--stop-time`/`--stop-date` instead of `--end-*`), plus:
+
+| Flag | Notes |
+|---|---|
+| `--keyword` | search keyword to chase |
+| `--target` | target sponsored position (e.g. `3`) |
+| `--min-bid` / `--max-bid` | CPM floor / ceiling (₹) |
+| `--lat` / `--lon` | store to **measure** position at (position is per-store; find one via `cli locations list --city <slug>`) |
+| `--location` / `--brand` | store label / brand-name fallback for product matching |
+| `--match-type` | `EXACT` (default) or `BROAD` |
+
+> One bid rule per (campaign, keyword) — the bid is campaign-wide; `--lat/--lon` only chooses where you measure.
+
+### Reconcile — rules → schedules
+
+After any rule change, compile the rules into `job_schedules` so the runner fires the engines:
+
+```bash
+python -m cli cm reconcile -t <id>            # DRY: preview the schedule diff, writes nothing
+python -m cli cm reconcile -t <id> --live     # write job_schedules (create/update/delete)
+```
+
+Here `--live` means "actually write **`job_schedules`**" (our own table) — reconcile **never** touches Blinkit. It's idempotent: re-running with unchanged rules is a no-op. (The V4 API will enqueue this for you on every edit.)
+
+### Run the engines (dry-run testing)
+
+```bash
+python -m cli cm budget-scheduler -t <id>     # reads real budget → "would set ₹X" → writes nothing
+python -m cli cm bid-optimizer    -t <id>     # reads live position → "would bid ₹Y" → writes nothing
+```
+
+Add `--live` to actually write to Blinkit (cutover only). History lands in `cm_run_log`; bid runtime (last position/CPM) in `cm_bid_runtime`. `cm set-budget` and `cm sync-campaign-data` are V4 stubs.
+
+### Worked example — a solo dry-run pass
+
+```bash
+python -m cli cm rules add-budget-schedule -t <id> --campaign <cid> --default-budget 300 \
+    --budget 1500 --start-time 16:00 --end-time 02:00 --days "friday,saturday,sunday" \
+    --start-date 2026-07-31 --end-date 2026-08-30
+python -m cli cm rules add-bid -t <id> --campaign <cid> --keyword "goli soda" \
+    --target 3 --min-bid 20 --max-bid 120 --lat 12.97 --lon 77.57 \
+    --start-time 16:00 --stop-time 02:00 --days "friday,saturday,sunday"
+python -m cli cm rules list        -t <id>
+python -m cli cm reconcile         -t <id> --live      # rules → job_schedules
+python -m cli cm budget-scheduler  -t <id>             # dry: would-set budgets
+python -m cli cm bid-optimizer     -t <id>             # dry: would-bid CPMs
+python -m cli cm rules remove-budget --schedule <sid>  # teardown
+python -m cli cm rules remove-bid    --rule <hex>
+```
+
+The scheduler side (`jobs run`, `schedules`, the runner) is documented in [jobs.md](jobs.md) and [jobs-runbook.md](jobs-runbook.md).
+
+---
+
 ## Export to Excel
 
 Export all scraped data for a tenant to a multi-sheet Excel workbook.

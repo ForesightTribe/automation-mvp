@@ -42,6 +42,17 @@ def session_ok(run_id: str, *, dry_run: bool) -> None:
     _emit("info", "session.ok", dry_run, "Blinkit session loaded", run_id=run_id)
 
 
+def live_armed(run_id: str, *, advertiser: int) -> None:
+    _emit("warning", "live.armed", False,
+          f"LIVE writes armed — advertiser {advertiser} (stored account config)",
+          run_id=run_id, advertiser=advertiser)
+
+
+def live_refused(run_id: str, *, reason: str) -> None:
+    _emit("error", "live.refused", False,
+          f"LIVE write refused — {reason}", run_id=run_id, reason=reason)
+
+
 def session_expired(run_id: str, *, dry_run: bool) -> None:
     _emit("error", "session.expired", dry_run,
           "Blinkit session expired — re-auth with `cli auth blinkit`", run_id=run_id)

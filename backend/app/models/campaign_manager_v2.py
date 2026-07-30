@@ -76,6 +76,9 @@ class CmBidRule(SQLModel, table=True):
     target_position: int
     min_bid: int
     max_bid: int
+    type: str = "recurring"                 # "recurring" (daily window) | "once" (single-date span)
+    date: str | None = None                 # the single day, for a "once" rule
+    days: list = Field(default=[], sa_column=Column(JSON))   # weekday filter (empty = every day)
     start_time: str | None = None
     stop_time: str | None = None
     start_date: str | None = None
@@ -101,6 +104,24 @@ class CmBidRuntime(SQLModel, table=True):
     last_cpm: int | None = None
     last_position: float | None = None
     last_bid_updated_at: str | None = None
+    updated_at: datetime = Field(default_factory=now_ist)
+
+
+class CmPlatformAccount(SQLModel, table=True):
+    """The marketplace ad-account (advertiser) id for a tenant, per platform. Blinkit does
+    not expose this in its read APIs, so it's captured once at onboarding (from a dashboard
+    PUT) and stored here; live writes send it explicitly. Per (tenant, platform) so it's
+    multi-marketplace ready — see docs (B3)."""
+    __tablename__ = "cm_platform_accounts"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "platform", name="uq_cm_platacct_tenant_platform"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    advertiser_id: int
+    created_at: datetime = Field(default_factory=now_ist)
     updated_at: datetime = Field(default_factory=now_ist)
 
 

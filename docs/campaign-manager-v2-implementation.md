@@ -131,20 +131,27 @@ tenant, with **zero writes**. **Verify:** log stream + `cm_run_log` history rows
 
 Goal: correct bid decisions, DB-only (no JSON), tiered positions, dry-run.
 
-- [ ] **V2.1** `repo.py` — read `cm_bid_rules` + `cm_bid_runtime`; write runtime (`last_cpm/last_position/
-last_bid_updated_at`) to `cm_bid_runtime` via scoped `UPDATE`; create the runtime row when a rule is
-      added, cascade-delete with the rule; write `cm_run_log`. (No JSON anywhere.)
-- [ ] **V2.2** `blinkit/positions.py` — tiered source: actively-chasing → live scrape; at-target → report API
-      / latest public-scrape snapshot. Dedup by `(keyword, location)`.
-- [ ] **V2.3** `bid.py` — port the bid loop (distance step, **10-min HOLD**, min/max clamp) → compute new CPM →
-      `writes.apply_bid()`.
-- [ ] **V2.4** `blinkit/adapter.py` — `read_position`, `read_bid`, `apply_bid` (`update_keyword_bids`).
-- [ ] **V2.5** `writes.apply_bid` — clamp `[min,max]`, no-op skip, rate-limit.
-- [ ] **V2.6** Dry-run for the live tenant — real position reads, zero writes.
+- [x] **V2.1** ✅ **DONE** `repo.py` — `get_bid_rules` (rule + runtime) + **`write_bid_runtime`** (Postgres upsert
+      on `rule_id`; only the provided fields update, so a HOLD/dry-run pass writes `last_position` without nulling
+      `last_cpm`); `write_run_log` reused. No JSON anywhere.
+- [~] **V2.2** ⚠️ **PARTIAL (always-live; tiering deferred by decision)** `blinkit/positions.py` — live scrape +
+      ported product matching (`match_position`: pid → name-token → brand fallback; sponsored-only, else skip).
+      **Tiered source (report-API / DB-snapshot for at-target keywords) + `(keyword,location)` dedup deferred** to a
+      scale-optimization backlog item — MVP scrapes every keyword live.
+- [x] **V2.3** ✅ **DONE** `bid.py` — ported loop: `_dynamic_step` (₹100/50/25/12.5), `compute_bid` (raise / lower /
+      target / **10-min HOLD**), `_in_window`; new CPM → `writes.apply_bid`; runtime persisted (`last_position`
+      always; `last_cpm`/`last_bid_updated_at` only on a real applied write).
+- [x] **V2.4** ✅ **DONE** `blinkit/adapter.py` — `read_bids` (bulk), `read_products`, `resolve_position` (wraps
+      `positions.py`), plus the pre-existing `read_position` / `read_bid` / `apply_bid`.
+- [x] **V2.5** ✅ **DONE (pre-built in V0)** `writes.apply_bid` — clamp `[min,max]`, no-op skip, rate-limit.
+- [ ] **V2.6** ⏳ **PENDING (needs real data)** Dry-run for the live tenant — real position reads, zero writes.
+      Requires a `cm_bid_rule` pointing at a **real advertised keyword + store lat/lon** for Dobra (it does an
+      actual consumer scrape). Awaiting a keyword+location from the user (mirrors V1.6 against Tech Test).
 
-**Gate:** bid decisions + would-apply logs correct in dry-run; runtime state persists to **DB, not JSON**.
-**Verify:** log stream shows `decision` (pos vs target, verdict) + `write.intent` per keyword; `cm_bid_runtime`
-rows update.
+**Tests:** pure suite `tests/test_bid_logic.py` — **18/18** (step tiers, raise/lower/target/HOLD incl.
+improved / post-window / never-changed, `_in_window`, and `match_position` pid/name/organic/not-found/empty).
+**Gate:** bid decisions + would-apply logs correct in dry-run; runtime persists to **DB, not JSON** — pure side
+proven; V2.6 live-read smoke pending real data.
 
 ---
 
@@ -287,8 +294,25 @@ a numbered task.
       **fail loud**, no cross-account fallback). *Deferred from V0.5* — it's the shared v1 engine and isn't
       exercised in dry-run; do it as a deliberate, tested change in **V1.3** (first live-write work). ⚠️ must be
       done before any live write.
-- [ ] **B3 guardrail — session-matches-account assertion** in `writes.py` (per-tenant *expected* advertiser_id
-      → refuse a write if the loaded session's account doesn't match). *Multi-tenant hardening — tenant #2.*
+- [x] **B3 guardrail — no-hardcoded live writes** ✅ **DONE (2026-07-29, option B)** — `adapter.resolve_advertiser`
+      derives the advertiser from Blinkit with **no hardcoded fallback** (raises if absent). `writes.arm_live` gates
+      every live run (in `budget.run`/`bid.run` after session-load): it ALWAYS derives-or-refuses and logs
+      `live.armed` (advertiser + "CONFIRM this is the intended account" when unverified); if the optional
+      `CM_EXPECTED_ADVERTISER_ID` env is set it ALSO asserts a match. Dry-run unaffected. `cm advertiser -t <id>`
+      prints the derived id (read-only preflight). The coworker's `client.py` `234` fallback is untouched
+      (off-limits) but can no longer be silently used.
+- [x] **B3 (production) — per-tenant advertiser in the DB** ✅ **DONE (2026-07-29)** — `cm_platform_accounts`
+      `(tenant_id, platform, advertiser_id)` (migration `d8a3f16b5e94`), set via `cm set-advertiser`. A live run
+      fetches it (`repo.get_advertiser`), refuses if unset, and **injects it onto the client** (`adapter.set_advertiser`
+      → `client.cm_advertiser_id`) so the write **sends the stored id**. ⚠️ **Root cause found via the live test:
+      the hardcoded `234` was the STALE pre-split Dobra account; the real one is `19802` (captured from a dashboard
+      PUT). Blinkit doesn't expose the advertiser in any read API, so it must be stored.** The coworker's
+      `update_campaign`/`update_keyword_bids` gained an optional `advertiser_id` override (backward-compatible; their
+      default path untouched) so our writes carry the right account without a monkeypatch. Env var removed. Test
+      `test_budget_write_sends_stored_advertiser` proves the write carries the stored id.
+- [ ] **Coworker's stale `ADVERTISER_ID=234`** — flag to the coworker: their live writes to Dobra also send 234
+      (the dead account) since the split. Our path is fixed (explicit override); theirs needs the constant updated or
+      derivation fixed. *Coordinate — not ours to silently change.*
 - [ ] **Per-tenant guardrail bounds** (min/max budget, rate limits) — clients have different budget scales;
       global defaults in `config.py` for now. *When tenant #2 with a different scale lands.*
 - [ ] **Arming UX** — `live` is currently a per-job param (`live=true` → `--live`). Decide the real arming
@@ -316,6 +340,18 @@ cap backstops a frozen bid. No bid baseline restore (`baseline_cpm` dropped). Co
       would remove them. *Tidiness, not safety.*
 - [ ] **Bid window minute-precision** — `bid_windows` is hour-granular (`*/15 9-19`); sub-hour start/stop edges are
       rounded. Fine for MVP; tighten if a client sets, e.g., 09:30–20:45.
+
+### Bid optimizer (from V2)
+
+- [ ] **Tiered position sourcing** (the §8 scale lever, deferred by decision 2026-07-29) — MVP scrapes every
+      keyword live every run. Add: at-target keywords → cheap source (24h report API or latest public-scrape DB
+      snapshot), checked hourly; actively-chasing → fresh live scrape; **dedup by `(keyword, location)`** across
+      campaigns/tenants. *Build when tenant count strains the box — it degrades gracefully until then.*
+- [ ] **`recent_writes` wiring for the bid rate-limit** — `bid.run` passes `recent_writes=0` (same as budget);
+      wire `repo.recent_write_count(kind="bid")` when live writes arm (V5), so the runaway-loop guardrail bites.
+- [ ] **Windows-local live scrape** — v1 offloaded the consumer scrape to a thread executor (Playwright event-loop
+      workaround). `positions.resolve` awaits `get_live_positions` directly; fine on the Linux VM, but the V2.6
+      dry-run on a Windows laptop may need that workaround. *Confirm during V2.6.*
 
 ### Tables
 

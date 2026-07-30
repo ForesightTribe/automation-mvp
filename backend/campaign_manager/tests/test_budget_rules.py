@@ -75,6 +75,24 @@ def test_empty_days_is_every_day():
     assert target_for_now(500, [rule], NOW)[0] == 2000
 
 
+# Explicit weekday anchors: 2026-07-30 Thu, 07-31 Fri, 08-01 Sat, 08-02 Sun, 08-03 Mon.
+def test_overnight_tail_belongs_to_start_day():
+    rule = {"type": "recurring", "days": ["friday", "saturday", "sunday"],
+            "start_time": "16:00", "end_time": "02:00", "budget": 1500}
+    assert target_for_now(300, [rule], datetime(2026, 7, 31, 18, 0))[0] == 1500   # Fri evening
+    assert target_for_now(300, [rule], datetime(2026, 8, 3, 1, 0))[0] == 1500     # Mon 01:00 = Sun's tail
+    assert target_for_now(300, [rule], datetime(2026, 7, 31, 1, 0))[0] == 300     # Fri 01:00 = Thu's tail (off)
+    assert target_for_now(300, [rule], datetime(2026, 8, 3, 3, 0))[0] == 300      # Mon 03:00 = past the tail
+
+
+def test_once_overnight_tail():
+    rule = {"type": "once", "date": "2026-08-02", "start_time": "16:00", "end_time": "02:00", "budget": 2000}
+    assert target_for_now(300, [rule], datetime(2026, 8, 2, 20, 0))[0] == 2000    # Sun evening
+    assert target_for_now(300, [rule], datetime(2026, 8, 3, 1, 0))[0] == 2000     # Mon 01:00 = Sun's tail
+    assert target_for_now(300, [rule], datetime(2026, 8, 3, 3, 0))[0] == 300      # past the tail
+    assert target_for_now(300, [rule], datetime(2026, 8, 1, 20, 0))[0] == 300     # wrong day
+
+
 def _run() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
