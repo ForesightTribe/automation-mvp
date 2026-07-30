@@ -12,6 +12,7 @@ export const NAV_ITEMS = [
 	{ label: "Inventory", path: "/inventory", icon: "▥" },
 	{ label: "Ads", path: "/ads", icon: "◈" },
 	{ label: "Campaign Manager", path: "/campaign-manager", icon: "◉" },
+	{ label: "Campaign Manager v2", path: "/campaign-manager-v2", icon: "⊛" },
 	{ label: "Competition", path: "/competition", icon: "◎" },
 	{ label: "Scorecard", path: "/scorecard", icon: "◍" },
 	{ label: "Reports", path: "/reports", icon: "▧" },

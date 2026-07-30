@@ -107,9 +107,9 @@ def set_budget(
     budget: float = typer.Option(..., "--budget", help="Daily budget (₹)"),
     live: bool = _LIVE,
 ):
-    """One-off: set a campaign's daily budget now (dry-run unless --live). [V4]"""
-    typer.echo(f"cm set-budget is a V4 stub (tenant={tenant} campaign={campaign} "
-               f"budget={budget} dry_run={_dry(live)}).")
+    """One-off: set a campaign's daily budget now (dry-run unless --live)."""
+    from campaign_manager import set_budget as sb
+    asyncio.run(sb.run(uuid.UUID(tenant), campaign, budget, dry_run=_dry(live)))
 
 
 @app.command("sync-campaign-data")

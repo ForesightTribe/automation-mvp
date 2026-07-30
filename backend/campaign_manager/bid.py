@@ -128,7 +128,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
     now = now_ist()
     pairs = await repo.get_bid_rules(tenant_id, platform)
-    active = [(r, rt) for r, rt in pairs if r.active and _in_window(_rule_dict(r), now)]
+    active = [(r, rt) for r, rt in pairs if r.state == "active" and _in_window(_rule_dict(r), now)]
     if not active:
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run,
                          processed=0, applied=0, skipped=0, errors=0)

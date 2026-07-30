@@ -67,8 +67,14 @@ async def _fire(sched: JobSchedule, now: datetime) -> bool:
     return True
 
 
-async def tick(now: datetime | None = None) -> None:
-    """One producer pass: fire every due, enabled schedule and advance its next run."""
+async def tick(now: datetime | None = None, job_type_prefix: str | None = None) -> None:
+    """One producer pass: fire every due, enabled schedule and advance its next run.
+
+    `job_type_prefix` scopes the pass to schedules whose job_type starts with it (e.g.
+    "cm." for a local campaign-manager-only test) — every other schedule is left
+    completely untouched, next_run_at included, so a scoped producer never fires or
+    perturbs another tenant's scrapes.
+    """
     now = now or now_ist()
     grace = settings.SCHEDULER_MISFIRE_GRACE_SECONDS
     async with AsyncSessionLocal() as db:
@@ -77,6 +83,8 @@ async def tick(now: datetime | None = None) -> None:
         ).scalars().all()
 
         for s in rows:
+            if job_type_prefix and not s.job_type.startswith(job_type_prefix):
+                continue                         # out of scope — don't seed, fire, or advance
             if s.next_run_at is None:            # first sight — seed it, don't fire yet
                 if s.cron:                       # recurring: compute the first fire from the cron
                     s.next_run_at = next_fire_after(s.cron, now)
@@ -111,16 +119,24 @@ async def tick(now: datetime | None = None) -> None:
         await db.commit()
 
 
-async def run_producer(shutdown: asyncio.Event) -> None:
+async def run_producer(
+    shutdown: asyncio.Event, job_type_prefix: str | None = None, force: bool = False
+) -> None:
     """Poll `job_schedules` on an interval until shutdown. Runs alongside the
-    consumer inside the runner process."""
-    if not settings.SCHEDULER_ENABLED:
+    consumer inside the runner process.
+
+    `job_type_prefix` scopes every tick to matching schedules (see `tick`). `force`
+    runs the producer even when SCHEDULER_ENABLED is false — used by the scoped
+    `--only-cm` local runner, where firing only cm.* schedules is safe by construction.
+    """
+    if not force and not settings.SCHEDULER_ENABLED:
         logger.info("scheduler disabled (SCHEDULER_ENABLED=false) — consumer only")
         return
-    logger.info(f"scheduler producer started · tick={settings.SCHEDULER_TICK_SECONDS}s")
+    scope = f" · scope={job_type_prefix}*" if job_type_prefix else ""
+    logger.info(f"scheduler producer started · tick={settings.SCHEDULER_TICK_SECONDS}s{scope}")
     while not shutdown.is_set():
         try:
-            await tick()
+            await tick(job_type_prefix=job_type_prefix)
         except Exception as e:
             logger.error(f"scheduler tick failed: {e}")
         try:

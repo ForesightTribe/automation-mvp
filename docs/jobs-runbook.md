@@ -245,6 +245,7 @@ Bad expressions are rejected at `schedules add`, not silently at 3am.
 
 ```bash
 cli runner start                      # the daemon: producer + consumer, foreground
+cli runner start --only-cm            # SAFE local mode: campaign-manager lanes only (see below)
 cli maint log-cleanup --dry-run       # what WOULD be pruned (safe to run anytime)
 cli maint log-cleanup --days 7        # actually prune logs older than 7 days
 cli monitor heartbeat                 # deadman + disk check; exits non-zero if unhealthy
@@ -257,8 +258,9 @@ cli monitor heartbeat --disk-pct 90   # only complain about disk at 90%+
 | ------------- | ---------------------------------------------- | -------------------------- |
 | `batch`       | `public_keyword`, `public_skus`, `log_cleanup` | hours; nobody waiting      |
 | `dashboard`   | `marketing`, `seller`, `scorecard`             | minutes; scheduled         |
-| `interactive` | `heartbeat`                                    | must fire promptly         |
-| `live`        | (bid optimizer, later)                         | latency **is** the product |
+| `interactive` | `heartbeat`, `cm.reconcile`                    | must fire promptly         |
+| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.sync_campaign_data` | latency-tolerant CM writes |
+| `cm_bid`      | `cm.bid_optimizer`                             | latency **is** the product |
 
 Lanes run **in parallel**; each is sequential inside itself. So a 5-hour public scrape
 delays the _next public scrape_, but never the dashboard scrapes or the heartbeat.
@@ -284,6 +286,30 @@ python -m cli jobs logs <id> -f
 ```
 
 **⚠️ Read the "two runners" warning below before starting a runner locally.**
+
+### Local Campaign-Manager testing — `--only-cm`
+
+Plain `runner start` is producer + consumer over **all** lanes — never run it locally
+against the shared DB: its producer fires every tenant's overdue scrapes and ad crons,
+and its consumer runs them from your home IP (see the two-runners warning). To test the
+campaign manager end-to-end without that blast radius:
+
+```bash
+python -m cli runner start --only-cm
+```
+
+This scopes the process to the campaign-manager lanes only:
+
+- **Consumer** gets slots for `cm_ops` / `cm_bid` / `interactive` **only** — it
+  physically cannot claim a scrape or a coworker's ad job off the shared queue.
+- **Producer** fires **only `cm.*` schedules** and leaves every other schedule
+  completely untouched (`next_run_at` included) — no other tenant is perturbed.
+
+It runs the producer even when `SCHEDULER_ENABLED=false`, because a cm-only producer is
+safe by construction. Boot log confirms the scope: `--only-cm mode · lanes={...} ·
+producer fires cm.* only`. This is the intended way to run the full UI → reconcile →
+schedule → engine loop on a laptop while the VM is off. The cm engines are **dry-run**
+by default; live writes still require `--live` / `live=true` (the cutover is separate).
 
 ## Running it — VM (production)
 

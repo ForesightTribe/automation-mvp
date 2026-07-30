@@ -185,13 +185,18 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
           + (f" ({error})" if error else "") + f" · peak {peak} MB")
 
 
-async def _consume(shutdown: asyncio.Event) -> None:
-    """The consumer half: claim due jobs per lane and run them as subprocesses."""
+async def _consume(shutdown: asyncio.Event, lane_slots: dict[str, int] | None = None) -> None:
+    """The consumer half: claim due jobs per lane and run them as subprocesses.
+
+    `lane_slots` overrides settings.LANE_SLOTS — used by the scoped `--only-cm` runner
+    to give slots to only the campaign-manager lanes, so it physically cannot claim a
+    scrape or a coworker's ad job off the shared queue."""
+    lane_slots = lane_slots if lane_slots is not None else settings.LANE_SLOTS
     active: dict[Lane, set[asyncio.Task]] = {lane: set() for lane in Lane}
 
     while not shutdown.is_set():
         for lane in Lane:
-            slots = settings.LANE_SLOTS.get(lane.value, 0)
+            slots = lane_slots.get(lane.value, 0)
             while len(active[lane]) < slots and not shutdown.is_set():
                 async with AsyncSessionLocal() as db:
                     job = await job_queue.claim_one(db, lane, WORKER_ID)
@@ -211,12 +216,32 @@ async def _consume(shutdown: asyncio.Event) -> None:
         await asyncio.gather(*inflight, return_exceptions=True)
 
 
-async def run() -> None:
-    """Start the runner: producer (scheduler) + consumer, until SIGTERM/SIGINT."""
+# Campaign-manager lanes — the only lanes a `--only-cm` runner serves. `interactive`
+# is included because cm.reconcile runs there (it's browser-less); the VM being down
+# means no non-cm interactive job (heartbeat/explorer) is enqueued to compete.
+_CM_LANES = ("cm_ops", "cm_bid", "interactive")
+
+
+async def run(only_cm: bool = False) -> None:
+    """Start the runner: producer (scheduler) + consumer, until SIGTERM/SIGINT.
+
+    `only_cm` is the safe local-test mode: the consumer is scoped to the campaign-manager
+    lanes and the producer fires only cm.* schedules, so nothing else on the shared DB
+    (scrapes, coworker ad crons) is claimed or fired from this machine.
+    """
     shutdown = asyncio.Event()
     _install_signal_handlers(shutdown)
 
-    logger.info(f"runner {WORKER_ID} starting · lanes={settings.LANE_SLOTS}")
+    lane_slots = settings.LANE_SLOTS
+    prefix = None
+    if only_cm:
+        lane_slots = {k: v for k, v in settings.LANE_SLOTS.items() if k in _CM_LANES}
+        prefix = "cm."
+        logger.warning(
+            f"runner {WORKER_ID} in --only-cm mode · lanes={lane_slots} · producer fires cm.* only"
+        )
+    else:
+        logger.info(f"runner {WORKER_ID} starting · lanes={lane_slots}")
 
     # Reaper: clean up jobs stranded by a previous crash before claiming anything.
     async with AsyncSessionLocal() as db:
@@ -229,7 +254,10 @@ async def run() -> None:
     # import graph flat (scheduler imports jobs.queue, not jobs.runner).
     from jobs.scheduler import run_producer
 
-    await asyncio.gather(run_producer(shutdown), _consume(shutdown))
+    await asyncio.gather(
+        run_producer(shutdown, job_type_prefix=prefix, force=only_cm),
+        _consume(shutdown, lane_slots),
+    )
     logger.info("runner stopped")
 
 

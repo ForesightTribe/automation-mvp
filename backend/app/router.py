@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.routes import auth, clients, reference, analytics, overview, products, inventory, scorecard, competition, ads, platforms, watchlist, jobs, purchase_orders, reports
+from app.routes import auth, clients, reference, analytics, overview, products, inventory, scorecard, competition, ads, platforms, watchlist, jobs, purchase_orders, reports, campaign_manager
 
 api_router = APIRouter()
 
@@ -18,3 +18,4 @@ api_router.include_router(competition.router, prefix="/clients/{client_id}/compe
 api_router.include_router(ads.router,         prefix="/clients/{client_id}/ads", tags=["ads"])
 api_router.include_router(platforms.router,   prefix="/clients/{client_id}/platforms", tags=["platforms"])
 api_router.include_router(reports.router,      prefix="/clients/{client_id}/reports", tags=["reports"])
+api_router.include_router(campaign_manager.router, prefix="/clients/{client_id}/campaign-manager", tags=["campaign-manager"])

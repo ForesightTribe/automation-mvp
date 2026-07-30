@@ -152,7 +152,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     now = now_ist()  # captured after setup so the time is fresh at a boundary
     try:
         for schedule, rules in schedules:
-            if not schedule.enabled:
+            if schedule.state != "active":
                 continue
             processed += 1
             cid, cname = schedule.campaign_id, schedule.campaign_name

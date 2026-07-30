@@ -35,6 +35,9 @@ class CmBudgetSchedule(SQLModel, table=True):
     name: str | None = None
     default_budget: float
     enabled: bool = True
+    # D19 lifecycle: "active" | "stopped" (budget has no pause). The reconciler emits
+    # schedules only while active; Reset → "stopped" + a set-budget→default job.
+    state: str = "active"
     created_at: datetime = Field(default_factory=now_ist)
 
 
@@ -84,6 +87,9 @@ class CmBidRule(SQLModel, table=True):
     start_date: str | None = None
     stop_date: str | None = None
     active: bool = True
+    # D19 lifecycle: "active" | "paused" | "stopped". active → optimizer runs; paused →
+    # frozen (no control cron, resumable); stopped → off. Bid never auto-resets (freeze).
+    state: str = "active"
     lat: float | None = None
     lon: float | None = None
     location_name: str | None = None

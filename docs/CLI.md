@@ -400,7 +400,7 @@ Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
 | Direct | `python -m cli cm budget-scheduler -t <id>` | dev / manual / dry-run testing |
 | Scheduler | `python -m cli jobs run cm.budget_scheduler -t <id>` | production (queue + lanes, on the VM) |
 
-> ⚠️ **Dry-run is the default; nothing touches Blinkit unless you pass `--live`.** The engines read real budgets/positions in dry-run but write nothing. Live writes are the cutover step (not armed yet). Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing, but never `cli runner start` locally (it claims the VM's jobs).
+> ⚠️ **Dry-run is the default; nothing touches Blinkit unless you pass `--live`.** The engines read real budgets/positions in dry-run but write nothing. Live writes are the cutover step (not armed yet). Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing. Never run the *plain* `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
 
 ### Timing model (rules)
 

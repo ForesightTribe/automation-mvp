@@ -96,7 +96,7 @@ def budget_boundaries(schedules) -> set[tuple[int, int]]:
     campaigns changing then."""
     out: set[tuple[int, int]] = set()
     for sched, rules in schedules:
-        if not sched.enabled:
+        if sched.state != "active":
             continue
         for r in rules:
             if r.type == "once":
@@ -112,7 +112,7 @@ def _once_fires(schedules, tenant: str, platform: str, now: datetime) -> list[De
     """One-shot apply+revert fires for each `once` budget rule (future only)."""
     out: list[Desired] = []
     for sched, rules in schedules:
-        if not sched.enabled:
+        if sched.state != "active":
             continue
         for r in rules:
             if r.type != "once":
@@ -141,7 +141,7 @@ def _expiry_fires(schedules, tenant: str, platform: str, now: datetime) -> list[
     """One-shot reset-to-default the morning after each recurring rule's end_date."""
     out: list[Desired] = []
     for sched, rules in schedules:
-        if not sched.enabled:
+        if sched.state != "active":
             continue
         for r in rules:
             if r.type == "once" or not r.end_date:
@@ -181,7 +181,7 @@ def bid_active_hours(bid_rules, now: datetime) -> set[int]:
     today = now.strftime("%Y-%m-%d")
     hours: set[int] = set()
     for r in bid_rules:
-        if not r.active:
+        if getattr(r, "state", "active") != "active":     # paused/stopped → no control cron
             continue
         if getattr(r, "type", "recurring") == "once":
             if r.date and today > r.date:
@@ -218,7 +218,7 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
         d.append(Desired(f"{_PREFIX}budget:{tenant}:{platform}:{h:02d}{m:02d}",
                          BUDGET_JOB, cron, True, initial_next_run(cron)))
 
-    if any(s.enabled for s, _ in budget_schedules):
+    if any(s.state == "active" for s, _ in budget_schedules):
         d.append(Desired(f"{_PREFIX}budget:{tenant}:{platform}:poll",
                          BUDGET_JOB, _SAFETY_POLL_CRON, True, initial_next_run(_SAFETY_POLL_CRON)))
 

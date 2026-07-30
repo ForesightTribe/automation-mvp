@@ -210,15 +210,57 @@ tests against the test tenant; inspect `job_schedules`.
 
 Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default.
 
-- [ ] **V4.1** `jobs/types.py` — `cm.set_budget` (+ any other on-demand) as enqueue→poll jobs (lane `cm_ops`).
-- [ ] **V4.2** `app/routes/campaign_manager.py` — rules CRUD (read/write DB), enqueue endpoints (set-budget,
-      run-now), a **job-status/poll** endpoint, history reads. **No Playwright.** Calls `reconcile` after CRUD.
-- [ ] **V4.3** `app/schemas/campaign_manager.py` — request/response contracts.
-- [ ] **V4.4** Frontend `features/campaign-manager-v2/` (route `/campaign-manager-v2`): page, `api.js`,
-      `hooks.js`, components — schedule builder (day timeline), bid-rule list, **automation status panels**
-      (on/off, last run, next run, last error), history, set-budget with **enqueue→poll** feedback (spinner +
-      real success/error, not a blind `setTimeout`).
-- [ ] **V4.5** Nav: add the v2 page alongside v1 (don't remove v1 yet).
+- [x] **V4.1** ✅ **DONE** Real `cm.set_budget` orchestration (`campaign_manager/set_budget.py`) — single-campaign
+      guardrailed budget set (session → arm_live → read → choke-point), reused by the UI action AND budget Reset.
+      CLI stub replaced. Job type already registered (lane `cm_ops`).
+- [x] **V4.2** ✅ **DONE (backend)** `app/routes/campaign_manager.py` — **19 route entries** under
+      `/clients/{client_id}/campaign-manager`: budget schedules/rules CRUD, bid rules CRUD, **D19 buttons**
+      (budget `/reset`; bid `/pause` `/resume` `/stop`), on-demand `/set-budget` + `/run/{budget-scheduler,bid-optimizer}`
+      (enqueue→poll), `/jobs/{id}` poll, `/history`, `/advertiser` GET/PUT. Every mutation reconciles-after
+      (`enqueue cm.reconcile live=true`, dup-guarded). Ownership-checked. **No Playwright** — reads/writes DB +
+      enqueues only. Registered in `app/router.py`.
+- [x] **V4.3** ✅ **DONE** `app/schemas/campaign_manager.py` — Pydantic v2 contracts (budget/bid In/Out, SetBudgetIn,
+      AdvertiserIn/Out, EnqueuedOut, CmJobOut, RunLogOut).
+- [x] **D19 state field** ✅ **DONE** `state` (active/paused/stopped) on cm_budget_schedules + cm_bid_rules
+      (**migration `e5c9b2d7a418`, awaiting apply**); reconciler + budget.run + bid.run all key off `state`
+      (active→emit/run; paused→bid frozen/no cron; stopped→nothing). Tests updated, all green.
+- [ ] **Status enrichment (deferred)** — list endpoints return `state` but not last-run/next-run; UI derives
+      last-run from `/history`. Add next-run (from job_schedules) + last-error to a status endpoint when the UI needs it.
+- [x] **V4.4** ✅ **DONE** Frontend `features/campaign-manager-v2/` (route `/campaign-manager-v2`): `api.js` (all
+      endpoints), `hooks.js` (queries + mutations w/ cache-invalidation + **`useJob` enqueue→poll**), `CampaignManagerV2Page`
+      + components — `BudgetSchedulesCard` (schedules + rules + Reset/delete), `BidRulesCard` (+ D19 Pause/Resume/Stop),
+      `TimingFields` (recurring/once + days + overnight, shared, `timingPayload` remaps end→stop), `QuickActionsCard`
+      (set-budget + run engines, **`JobStatus` real spinner→success/error, not a blind setTimeout**), `HistoryCard`
+      (cm_run_log, dry-run tagged), `AdvertiserCard` (set/show B3 account). State badges throughout. Backend gained
+      `city`/`location_id` on `BidRuleIn` + service resolves via `repo.resolve_store` (for the form's city convenience).
+      **Build ✓ (vite, 563 modules), oxlint ✓.** Deferred status enrichment (next-run/last-error on cards) still open.
+- [x] **V4.5** ✅ **DONE** Nav + route added alongside v1 ("Campaign Manager v2" → `/campaign-manager-v2`); v1 kept.
+- [x] **V4.6** ✅ **DONE (2026-07-30)** **End-user UI redesign** — the V4.4 card set was reshaped from an
+      engineer's console into a task-first page (client feedback: "make it from the end user's perspective").
+      - **Layout:** a left **launcher** (two tiles → in-place `AutomateBudgetForm` / `AutomateBidForm` composers)
+        + `SetBudgetNowCard`; a right **`ScheduledPane`** listing every budget + bid automation with inline
+        controls; `HistoryCard` full-width below. `AdvertiserCard` + the "Run engine" buttons were **removed**
+        from the UI (advertiser is CLI-only setup; runs are scheduler-driven). Superseded components deleted:
+        `BudgetSchedulesCard`, `BidRulesCard`, `AddBudgetScheduleForm`, `AddBidRuleForm`, `QuickActionsCard`,
+        `AdvertiserCard`.
+      - **`CampaignPicker`** — pick campaigns by **name** (searchable, name + #id), backed by the ads
+        `/campaigns` endpoint; bid form suggests the campaign's existing keywords. History shows campaign name + id.
+      - **Budget composer** shows timing inline (no toggle) — campaign + everyday budget + one scheduled window
+        (budget + `TimingFields`) in a single request (backend's inline `rule`). `TimingFields` rebuilt: segmented
+        recurring/once, aligned From/Until with a smart overnight/all-day hint, day pills, `start → end` range.
+      - **`ScheduledPane` fixes:** mutations are now **optimistic** (delete/pause/resume/stop/reset apply
+        instantly, roll back on error, invalidate on settle — fixes "list only updates on full refresh");
+        uniform footer actions; **two-step delete confirm** (guards the mid-run delete edge); sticky + scrollable.
+      - **Build ✓ (vite), oxlint ✓.**
+- [x] **V4.7** ✅ **DONE (2026-07-30)** **Local integration testing (dry) proven** for budget + bid via the UI
+      loop, using a new **`cli runner start --only-cm`** mode (serves only `cm_ops`/`cm_bid`/`interactive` lanes
+      and fires only `cm.*` schedules — safe against the shared DB while the VM is off; see jobs-runbook). Full
+      loop verified: UI edit → `cm.reconcile` → `job_schedules` → producer → engine (dry) → `cm_run_log`/History;
+      the reconciler correctly retires expired schedules on runner restart. Budget also proven **live** via
+      direct CLI (`cm set-budget --live`, ₹205 → Dobra via advertiser 19802). ⚠️ **Migration incident fixed:**
+      `cm_bid`/`cm_ops` were missing from the PG `lane` enum (aef972735d57 was *stamped* during a multi-author
+      merge, so its `ALTER TYPE` never ran on the shared DB) → corrective idempotent migration **`f2a7c4e1d9b3`**
+      (mirrors e3b1f7a9c2d5 for the ad lanes).
 
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +

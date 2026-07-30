@@ -195,6 +195,72 @@ async def resolve_store(platform: str, *, city: str | None = None,
         return row.lat, row.lon, label
 
 
+async def get_budget_schedule(schedule_id: int):
+    from app.models.campaign_manager_v2 import CmBudgetSchedule
+    async with AsyncSessionLocal() as db:
+        return await db.get(CmBudgetSchedule, schedule_id)
+
+
+async def get_bid_rule(rule_id: str):
+    from app.models.campaign_manager_v2 import CmBidRule
+    async with AsyncSessionLocal() as db:
+        return await db.get(CmBidRule, rule_id)
+
+
+async def get_budget_rule(rule_id: int):
+    from app.models.campaign_manager_v2 import CmBudgetRule
+    async with AsyncSessionLocal() as db:
+        return await db.get(CmBudgetRule, rule_id)
+
+
+async def set_budget_state(schedule_id: int, state: str):
+    """Set a budget schedule's D19 state (active/stopped). Returns the row or None."""
+    from app.models.campaign_manager_v2 import CmBudgetSchedule
+    async with AsyncSessionLocal() as db:
+        s = await db.get(CmBudgetSchedule, schedule_id)
+        if not s:
+            return None
+        s.state = state
+        s.enabled = (state == "active")
+        await db.commit()
+        await db.refresh(s)
+        return s
+
+
+async def set_bid_state(rule_id: str, state: str):
+    """Set a bid rule's D19 state (active/paused/stopped). Returns the row or None."""
+    from app.models.campaign_manager_v2 import CmBidRule
+    async with AsyncSessionLocal() as db:
+        r = await db.get(CmBidRule, rule_id)
+        if not r:
+            return None
+        r.state = state
+        r.active = (state == "active")
+        await db.commit()
+        await db.refresh(r)
+        return r
+
+
+async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
+                       kind: str | None = None, limit: int = 50, offset: int = 0):
+    """Recent cm_run_log rows for a tenant (newest first) + total count."""
+    from sqlalchemy import func
+    from app.models.campaign_manager_v2 import CmRunLog
+
+    async with AsyncSessionLocal() as db:
+        base = select(CmRunLog).where(CmRunLog.tenant_id == tenant_id,
+                                      CmRunLog.platform == platform)
+        if kind:
+            base = base.where(CmRunLog.kind == kind)
+        total = (await db.execute(
+            select(func.count()).select_from(base.subquery())
+        )).scalar() or 0
+        rows = (await db.execute(
+            base.order_by(CmRunLog.timestamp.desc()).limit(limit).offset(offset)
+        )).scalars().all()
+        return list(rows), int(total)
+
+
 async def delete_bid_rule(rule_id: str) -> bool:
     """Delete a bid rule and its runtime row (FK is ON DELETE CASCADE; explicit too)."""
     from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime

@@ -28,8 +28,8 @@ PAST = "2026-07-01"
 
 # ── fakes ────────────────────────────────────────────────────────────────────
 
-def bsched(enabled=True):
-    return SimpleNamespace(enabled=enabled, campaign_id=1, campaign_name="c", default_budget=500)
+def bsched(enabled=True, state="active"):
+    return SimpleNamespace(state=state, enabled=enabled, campaign_id=1, campaign_name="c", default_budget=500)
 
 
 def brule(id=1, type="recurring", start_time=None, end_time=None, date=None, end_date=None, budget=1000):
@@ -38,8 +38,8 @@ def brule(id=1, type="recurring", start_time=None, end_time=None, date=None, end
 
 
 def bidrule(active=True, start_time=None, stop_time=None, type="recurring", date=None,
-            start_date=None, stop_date=None):
-    return SimpleNamespace(active=active, start_time=start_time, stop_time=stop_time,
+            start_date=None, stop_date=None, state="active"):
+    return SimpleNamespace(state=state, active=active, start_time=start_time, stop_time=stop_time,
                            type=type, date=date, start_date=start_date, stop_date=stop_date)
 
 
@@ -129,9 +129,9 @@ def test_bid_once_expired_dropped():
     assert bid_active_hours([live, dead], NOW) == {9, 10, 11}   # expired once contributes nothing
 
 
-def test_inactive_bid_skipped():
-    ds = _desired(bid_rules=[bidrule(active=False, start_time="09:00", stop_time="20:00")])
-    assert not any(d.job_type == BID_JOB for d in ds)
+def test_paused_bid_skipped():
+    ds = _desired(bid_rules=[bidrule(state="paused", start_time="09:00", stop_time="20:00")])
+    assert not any(d.job_type == BID_JOB for d in ds)   # paused → no control cron
 
 
 # ── DELETE / empty ───────────────────────────────────────────────────────────
@@ -140,9 +140,9 @@ def test_empty_rules_empty_desired():
     assert _desired([], []) == []                       # clean slate → nothing wanted
 
 
-def test_disabled_schedule_yields_nothing():
-    sched = (bsched(enabled=False), [brule(start_time="13:00", end_time="20:00")])
-    assert _desired([sched]) == []                      # disabled → no boundaries, no poll
+def test_stopped_schedule_yields_nothing():
+    sched = (bsched(state="stopped"), [brule(start_time="13:00", end_time="20:00")])
+    assert _desired([sched]) == []                      # stopped → no boundaries, no poll
 
 
 # ── _is_managed: never touch foreign rows ────────────────────────────────────
