@@ -127,6 +127,11 @@ class CmPlatformAccount(SQLModel, table=True):
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
     platform: str = "blinkit"
     advertiser_id: int
+    # Cutover switch (V5): OFF by default — the whole automated loop runs dry until this
+    # is armed. When True, the reconciler stamps `live=true` on the tenant's engine
+    # schedules and the API's set-budget/reset pass live, so scheduled + UI actions
+    # write to Blinkit for real. Reversible: disarm → reconcile → back to dry.
+    live_armed: bool = Field(default=False)
     created_at: datetime = Field(default_factory=now_ist)
     updated_at: datetime = Field(default_factory=now_ist)
 

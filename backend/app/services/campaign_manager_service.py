@@ -94,8 +94,10 @@ async def reset_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int)
     if not s or s.tenant_id != tenant_id:
         return None
     await repo.set_budget_state(schedule_id, "stopped")
-    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id,
-                        params={"campaign": str(s.campaign_id), "budget": str(s.default_budget)})
+    params = {"campaign": str(s.campaign_id), "budget": str(s.default_budget)}
+    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
+        params["live"] = "true"
+    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
     await _reconcile(session, tenant_id)
     return job.id
 
@@ -146,8 +148,10 @@ async def set_bid_state(session, tenant_id: uuid.UUID, rule_id: str, state: str)
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
 async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float) -> uuid.UUID:
-    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id,
-                        params={"campaign": str(campaign_id), "budget": str(budget)})
+    params = {"campaign": str(campaign_id), "budget": str(budget)}
+    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
+        params["live"] = "true"
+    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
     return job.id
 
 

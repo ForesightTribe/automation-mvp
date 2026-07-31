@@ -209,8 +209,13 @@ def _hours_to_cron_field(hours: set[int]) -> str:
 
 
 def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
-                      now: datetime) -> list[Desired]:
-    """The full set of `job_schedules` the current rules imply."""
+                      now: datetime, *, live: bool = False) -> list[Desired]:
+    """The full set of `job_schedules` the current rules imply.
+
+    `live` is the cutover switch: when True (the tenant is armed) every engine schedule
+    carries `params={"live": "true"}`, so the producer enqueues `cm.<engine> --live` and
+    the run writes to Blinkit. Dry (default) leaves params empty → the runs compute + log
+    but write nothing. Every Desired here is an engine job, so it's one blanket stamp."""
     d: list[Desired] = []
 
     for h, m in sorted(budget_boundaries(budget_schedules)):
@@ -233,6 +238,10 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
         cron = f"*/{_BID_STEP_MIN} {_hours_to_cron_field(hours)} * * *"
         d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:opt",
                          BID_JOB, cron, True, initial_next_run(cron)))
+
+    if live:                                        # cutover: arm every engine schedule
+        for x in d:
+            x.params = {"live": "true"}
 
     return d
 
@@ -312,9 +321,11 @@ async def reconcile(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
     budget_schedules = await repo.get_budget_schedules(tenant_id, platform)
     bid_rules = [r for r, _ in await repo.get_bid_rules(tenant_id, platform)]
+    armed = await repo.get_armed(tenant_id, platform)
 
     now = now_ist()
-    desired = desired_schedules(str(tenant_id), platform, budget_schedules, bid_rules, now)
+    desired = desired_schedules(str(tenant_id), platform, budget_schedules, bid_rules,
+                                now, live=armed)
 
     async with AsyncSessionLocal() as db:
         created, updated, deleted = await _apply(db, tenant_id, platform, desired, dry_run, run_id)

@@ -93,9 +93,47 @@ def advertiser(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "-
                           f"Set it: [bold]cm set-advertiser -t {tenant} --id <n>[/bold]")
         else:
             console.print(f"stored (writes will use) = [bold]{stored}[/bold]")
+        armed = await repo.get_armed(uuid.UUID(tenant), platform)
+        console.print("LIVE writes: " + ("[yellow]⚡ ARMED[/yellow]" if armed
+                                          else "[dim]dry (disarmed)[/dim]"))
         if derived is not None:
             flag = "" if derived == stored else "  [yellow]← differs from stored (likely a stale fallback)[/yellow]"
             console.print(f"Blinkit-derived            = {derived}{flag}")
+
+    asyncio.run(_run())
+
+
+@app.command("arm")
+def arm(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platform")):
+    """⚠️ CUTOVER: arm a tenant for LIVE writes. Requires an advertiser set. Reconciles
+    immediately so the tenant's scheduled runs carry --live, and the API's set-budget/reset
+    write for real. Reverse with `cm disarm`."""
+    async def _run():
+        tid = uuid.UUID(tenant)
+        if await repo.get_advertiser(tid, platform) is None:
+            console.print(f"[red]No advertiser set[/red] — set it first: "
+                          f"[bold]cm set-advertiser -t {tenant} --id <n>[/bold]. Not armed.")
+            raise typer.Exit(1)
+        if not await repo.set_armed(tid, True, platform):
+            console.print("[red]Could not arm (no platform account).[/red]"); raise typer.Exit(1)
+        from campaign_manager import reconciler
+        await reconciler.reconcile(tid, dry_run=False, platform=platform)
+        console.print(f"[yellow]⚡ ARMED[/yellow] tenant {tenant} ({platform}) for LIVE writes — "
+                      "scheduled runs + UI actions now write to Blinkit. "
+                      f"Disarm: [bold]cm disarm -t {tenant}[/bold]")
+
+    asyncio.run(_run())
+
+
+@app.command("disarm")
+def disarm(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platform")):
+    """Disarm a tenant → back to DRY. Reconciles so the schedules drop --live."""
+    async def _run():
+        tid = uuid.UUID(tenant)
+        await repo.set_armed(tid, False, platform)
+        from campaign_manager import reconciler
+        await reconciler.reconcile(tid, dry_run=False, platform=platform)
+        console.print(f"[green]Disarmed[/green] tenant {tenant} ({platform}) — back to dry-run.")
 
     asyncio.run(_run())
 

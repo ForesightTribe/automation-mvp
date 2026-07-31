@@ -87,6 +87,39 @@ async def set_advertiser(tenant_id: uuid.UUID, advertiser_id: int, platform: str
         await db.commit()
 
 
+async def get_armed(tenant_id: uuid.UUID, platform: str = "blinkit") -> bool:
+    """Is this tenant armed for LIVE writes (the V5 cutover switch)? False if unset."""
+    from app.models.campaign_manager_v2 import CmPlatformAccount
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(CmPlatformAccount).where(
+                CmPlatformAccount.tenant_id == tenant_id,
+                CmPlatformAccount.platform == platform,
+            )
+        )).scalars().first()
+        return bool(row and row.live_armed)
+
+
+async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str = "blinkit") -> bool:
+    """Arm/disarm a tenant for LIVE writes. Returns False (no-op) if the tenant has no
+    advertiser configured — arming without one is meaningless (live writes would refuse),
+    so the caller should set the advertiser first."""
+    from app.models.campaign_manager_v2 import CmPlatformAccount
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(CmPlatformAccount).where(
+                CmPlatformAccount.tenant_id == tenant_id,
+                CmPlatformAccount.platform == platform,
+            )
+        )).scalars().first()
+        if not row:
+            return False
+        row.live_armed = bool(armed)
+        row.updated_at = now_ist()
+        await db.commit()
+        return True
+
+
 # ── Rules CRUD (service layer — the CLI uses it now, the V4 API will reuse it) ──
 
 async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
