@@ -1,6 +1,7 @@
 import sys
 import asyncio
 import typer
+import app.utils.logger  # noqa: F401 — install the unified logging pipeline before command imports
 from cli.commands import account, ads, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore, jobs, runner, schedules, maint, monitor
 from cli.commands import campaign_manager as cm
 

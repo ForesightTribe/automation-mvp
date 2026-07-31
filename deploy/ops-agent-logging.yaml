@@ -20,6 +20,15 @@
 #                            scrape's thousands of lines never drown a 30-second
 #                            dashboard scrape — each appears as its own log_id in the
 #                            Logs Explorer dropdown.
+#   foresight_jobs_other   — the CATCH-ALL. Every lane without its own receiver above.
+#
+# ⚠️ A per-lane receiver list silently drops any lane you forget. That is not
+# theoretical: when the ad automations moved out of `dashboard`/`live` into their own
+# lanes (2026-07-25), their logs stopped reaching Cloud Logging entirely — the files
+# were being written, nothing was tailing them, and the monitoring dashboard just went
+# quiet. `foresight_jobs_other` exists so that can never happen again: a new lane
+# lands there instead of nowhere. Its `exclude_paths` MUST mirror the explicit
+# receivers — overlapping include globs ingest (and bill for) every line twice.
 #
 # Path shape (set by jobs/runner.py::_log_path_for):
 #   logs/jobs/<date>/<lane>/<job_type>__<job_id>.log
@@ -58,6 +67,48 @@ logging:
         - /home/tech/automation-mvp/backend/logs/jobs/*/live/*.log
       record_log_file_path: true
 
+    # Campaign Manager v2 — its own lanes (see app/models/job.py::Lane). Kept as two
+    # streams because they answer different questions: cm_bid is the latency-critical
+    # loop you page on, cm_ops is budget/sync housekeeping.
+    foresight_cm_bid:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/cm_bid/*.log
+      record_log_file_path: true
+
+    foresight_cm_ops:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/cm_ops/*.log
+      record_log_file_path: true
+
+    # Legacy v1 ad automations (ads.*) — one shared stream, they die at the v2 cutover.
+    foresight_ads_v1:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/budget_scheduler/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/bid_optimizer/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/sync_campaign_data/*.log
+      record_log_file_path: true
+
+    # Catch-all: any lane added later, until it earns its own receiver. Excludes every
+    # path claimed above — keep these two lists in sync or lines ship twice.
+    foresight_jobs_other:
+      type: files
+      include_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/*/*.log
+      exclude_paths:
+        - /home/tech/automation-mvp/backend/logs/jobs/*/batch/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/dashboard/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/interactive/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/live/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/cm_bid/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/cm_ops/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/budget_scheduler/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/bid_optimizer/*.log
+        - /home/tech/automation-mvp/backend/logs/jobs/*/sync_campaign_data/*.log
+      record_log_file_path: true
+
   processors:
     # runner.log lines are JSON objects → promote them to structured fields.
     parse_runner:
@@ -85,6 +136,10 @@ logging:
           - foresight_dashboard
           - foresight_interactive
           - foresight_live
+          - foresight_cm_bid
+          - foresight_cm_ops
+          - foresight_ads_v1
+          - foresight_jobs_other
 
 # ─────────────────────────────────────────────────────────────────────────────
 # QUERIES (Logs Explorer)
@@ -101,8 +156,19 @@ logging:
 #   Scraper output, ONE STREAM PER LANE (pick from the Log name dropdown):
 #     log_id("foresight_batch")        ← public scrapes + log cleanup (the noisy ones)
 #     log_id("foresight_dashboard")    ← marketing / seller / scorecard
-#     log_id("foresight_interactive")  ← heartbeat
-#     log_id("foresight_live")         ← bid optimizer (later)
+#     log_id("foresight_interactive")  ← heartbeat + cm.reconcile
+#     log_id("foresight_live")         ← generic live lane
+#     log_id("foresight_cm_bid")       ← Campaign Manager v2 bid optimizer
+#     log_id("foresight_cm_ops")       ← CM v2 budget scheduler / set-budget / sync
+#     log_id("foresight_ads_v1")       ← legacy ads.* (dies at the v2 cutover)
+#     log_id("foresight_jobs_other")   ← a lane with no receiver yet. NOT EMPTY = go
+#                                        add a receiver above.
+#
+#   Every campaign-manager run, both lanes, in one view:
+#     log_id("foresight_cm_bid") OR log_id("foresight_cm_ops")
+#
+#   One CM run end-to-end (run_id is in every line via campaign_manager/logs.py):
+#     (log_id("foresight_cm_bid") OR log_id("foresight_cm_ops")) AND "cm[a1b2c3]"
 #
 #   One specific job's own output (paste any part of the job id or type):
 #     labels."agent.googleapis.com/log_file_path"=~"04de2709"
@@ -123,3 +189,36 @@ logging:
 #
 # 3. Disk > 80%: metric alert on agent.googleapis.com/disk/percent_used.
 #    (monitor.heartbeat also self-reports this at ERROR as a backstop.)
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# ADDING A LANE — the checklist. Miss a step and the lane runs invisibly.
+#
+#   1. app/models/job.py::Lane        — the enum member (+ a migration adding the
+#                                       value to the PG `lane` type, idempotent —
+#                                       see e3b1f7a9c2d5 / f2a7c4e1d9b3)
+#   2. app/core/config.py::LANE_SLOTS — slots, or the runner never claims it
+#   3. THIS FILE                      — a receiver + the pipeline + `exclude_paths`
+#                                       on foresight_jobs_other
+#   4. sudo service google-cloud-ops-agent restart
+#   5. deploy/monitoring-dashboard.json — a logsPanel filtered on the new log_id,
+#                                       then re-import it (see DASHBOARD below)
+#
+# Steps 1–2 are code review; step 3 is the one that gets forgotten, which is why
+# foresight_jobs_other exists as the safety net.
+#
+# ─────────────────────────────────────────────────────────────────────────────
+# DASHBOARD — deploy/monitoring-dashboard.json
+#
+# One Logs panel per stream (Monitoring → Dashboards). Kept as JSON so the panel
+# set is reviewable and survives a console mis-click; the `filter` of each panel is
+# ordinary Logging query syntax — the same strings as QUERIES above.
+#
+#   Console:  Dashboards → the dashboard → ⋮ → JSON editor → paste → Save
+#   CLI:      gcloud monitoring dashboards create --config-from-file=deploy/monitoring-dashboard.json
+#             gcloud monitoring dashboards list                    # get the .name
+#             gcloud monitoring dashboards update <NAME> --config-from-file=…   # edit in place
+#
+# `resourceNames` is hard-coded to projects/foresight-vm — change it if the project
+# id ever differs. A panel shows only the dashboard's selected time range, so an
+# empty panel means "nothing in that window", not necessarily "not shipping": check
+# the same filter in Logs Explorer over a wider range before debugging the agent.

@@ -124,7 +124,7 @@ class BlinkitClient:
         })
         data = resp.get("data", {})
         if isinstance(data, dict):
-            log.warning("[get_campaigns] data keys=%s advertiser_id=%r",
+            log.debug("[get_campaigns] data keys=%s advertiser_id=%r",
                         list(data.keys()), data.get("advertiser_id"))
         return data.get("campaigns", []) if isinstance(data, dict) else []
 
@@ -201,7 +201,7 @@ class BlinkitClient:
             return result
 
         # Intercept network responses the campaign page fires (finds the catalog lookup call)
-        log.info("[get_campaign_products] intercepting network for campaign page %s", campaign_id)
+        log.debug("[get_campaign_products] intercepting network for campaign page %s", campaign_id)
         captured: list[dict] = []
 
         async def _on_response(response):
@@ -210,7 +210,7 @@ class BlinkitClient:
                 return
             try:
                 data = await response.json()
-                log.info("[get_campaign_products] captured url=%s keys=%s", url, list(data.keys()) if isinstance(data, dict) else type(data))
+                log.debug("[get_campaign_products] captured url=%s keys=%s", url, list(data.keys()) if isinstance(data, dict) else type(data))
                 items = (
                     (data.get("data") or {}).get("products")
                     or (data.get("data") or {}).get("items")
@@ -243,7 +243,7 @@ class BlinkitClient:
             self._page.remove_listener("response", _on_response)
 
         if captured:
-            log.info("[get_campaign_products] captured %d products via network interception", len(captured))
+            log.debug("[get_campaign_products] captured %d products via network interception", len(captured))
             return captured
 
         # Last resort: return PIDs from detail so UI at least shows something
@@ -261,7 +261,7 @@ class BlinkitClient:
 
         fallback_pids = _pids_from_detail(detail)
         if fallback_pids:
-            log.info("[get_campaign_products] returning %d pid-only fallbacks for campaign %s", len(fallback_pids), campaign_id)
+            log.debug("[get_campaign_products] returning %d pid-only fallbacks for campaign %s", len(fallback_pids), campaign_id)
             return [{"pid": pid, "name": f"Product (ID: {pid})", "brand": ""} for pid in fallback_pids]
 
         log.warning("[get_campaign_products] no products found for campaign %s", campaign_id)
@@ -435,7 +435,7 @@ class BlinkitClient:
             "campaign_types": ["PRODUCT_LISTING"],
         })
         adv_id = resp.get("data", {}).get("advertiser_id", ADVERTISER_ID)
-        log.warning("[get_advertiser_id] advertiser_id=%r (hardcoded=%r)", adv_id, ADVERTISER_ID)
+        log.debug("[get_advertiser_id] advertiser_id=%r (hardcoded=%r)", adv_id, ADVERTISER_ID)
         return adv_id
 
     async def update_campaign(self, campaign_id: int, changes: dict, *, empty_pids: bool = False,
@@ -554,13 +554,13 @@ class BlinkitClient:
         }
 
         payload.update(changes)
-        log.warning("[update_campaign] campaign=%d pids=%r empty_pids=%s budget=%s",
+        log.debug("[update_campaign] campaign=%d pids=%r empty_pids=%s budget=%s",
                     campaign_id, "" if empty_pids else pids_str, empty_pids,
                     payload.get("bidding_strategy", {}).get("total_budget"))
         if campaign_type == "BANNER_LISTING":
-            log.warning("[update_campaign] FULL PAYLOAD=%s", json.dumps(payload, default=str))
+            log.debug("[update_campaign] FULL PAYLOAD=%s", json.dumps(payload, default=str))
         resp = await self._fetch("PUT", "/adservice/v3/campaigns", payload)
-        log.warning("[update_campaign] RESP=%r", resp)
+        log.debug("[update_campaign] RESP=%r", resp)
         return resp
 
     async def update_campaign_budget_via_ui(self, campaign_id: int, budget: float) -> dict:

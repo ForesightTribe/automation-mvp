@@ -31,6 +31,9 @@ class Settings(BaseSettings):
     # Absolute log root. MUST be absolute: the runner's CWD under systemd is not
     # backend/, so a relative "logs/" would resolve to /logs and fail silently.
     LOG_DIR: str = str(BASE_DIR / "logs")
+    # Log verbosity. INFO in prod; set DEBUG to surface the per-request/per-scrape
+    # play-by-play (Blinkit client internals, Playwright, httpx) that is otherwise hidden.
+    LOG_LEVEL: str = "INFO"
     # How often the consumer polls the queue for claimable work.
     RUNNER_POLL_SECONDS: float = 5.0
     # Concurrency PER LANE. Lanes run in parallel; each is sequential within its

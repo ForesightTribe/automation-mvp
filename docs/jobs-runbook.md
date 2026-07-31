@@ -254,13 +254,13 @@ cli monitor heartbeat --disk-pct 90   # only complain about disk at 90%+
 
 ### Lanes (why things do/don't wait)
 
-| Lane          | Job types                                      | Character                  |
-| ------------- | ---------------------------------------------- | -------------------------- |
-| `batch`       | `public_keyword`, `public_skus`, `log_cleanup` | hours; nobody waiting      |
-| `dashboard`   | `marketing`, `seller`, `scorecard`             | minutes; scheduled         |
-| `interactive` | `heartbeat`, `cm.reconcile`                    | must fire promptly         |
+| Lane          | Job types                                                       | Character                  |
+| ------------- | --------------------------------------------------------------- | -------------------------- |
+| `batch`       | `public_keyword`, `public_skus`, `log_cleanup`                  | hours; nobody waiting      |
+| `dashboard`   | `marketing`, `seller`, `scorecard`                              | minutes; scheduled         |
+| `interactive` | `heartbeat`, `cm.reconcile`                                     | must fire promptly         |
 | `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.sync_campaign_data` | latency-tolerant CM writes |
-| `cm_bid`      | `cm.bid_optimizer`                             | latency **is** the product |
+| `cm_bid`      | `cm.bid_optimizer`                                              | latency **is** the product |
 
 Lanes run **in parallel**; each is sequential inside itself. So a 5-hour public scrape
 delays the _next public scrape_, but never the dashboard scrapes or the heartbeat.

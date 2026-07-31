@@ -29,7 +29,9 @@ def _prefix(dry_run: bool) -> str:
 
 
 def _emit(level: str, event: str, dry_run: bool, msg: str, **fields: Any) -> None:
-    bound = logger.bind(cm_event=event, dry_run=dry_run, **fields)
+    run_id = fields.get("run_id")
+    tag = f"cm[{run_id}]" if run_id else "cm"
+    bound = logger.bind(tag=tag, cm_event=event, dry_run=dry_run, **fields)
     getattr(bound, level)(f"{_prefix(dry_run)}{event} · {msg}")
 
 

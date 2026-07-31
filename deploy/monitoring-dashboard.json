@@ -1,0 +1,109 @@
+{
+  "displayName": "Foresight — Jobs & Runner",
+  "dashboardFilters": [],
+  "mosaicLayout": {
+    "columns": 12,
+    "tiles": [
+      {
+        "xPos": 0, "yPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Runner — problems only (start here)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_runner\") AND severity>=ERROR",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 0, "width": 6, "height": 4,
+        "widget": {
+          "title": "Runner — full narration (claimed / spawned / reaped)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_runner\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 4, "width": 6, "height": 4,
+        "widget": {
+          "title": "CM v2 — bid optimizer (cm_bid)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_cm_bid\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 4, "width": 6, "height": 4,
+        "widget": {
+          "title": "CM v2 — budget / set-budget / sync (cm_ops)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_cm_ops\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 8, "width": 6, "height": 4,
+        "widget": {
+          "title": "CM v2 — writes & guardrails (both lanes)",
+          "logsPanel": {
+            "filter": "(log_id(\"foresight_cm_bid\") OR log_id(\"foresight_cm_ops\")) AND (\"write.intent\" OR \"write.guardrail\" OR \"write.result\" OR \"live.armed\" OR \"live.refused\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 8, "width": 6, "height": 4,
+        "widget": {
+          "title": "Ads v1 — legacy (dies at cutover)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_ads_v1\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 12, "width": 6, "height": 4,
+        "widget": {
+          "title": "Scrapes — dashboard lane (marketing / seller / scorecard)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_dashboard\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 12, "width": 6, "height": 4,
+        "widget": {
+          "title": "Scrapes — batch lane (public + log cleanup)",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_batch\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 0, "yPos": 16, "width": 6, "height": 4,
+        "widget": {
+          "title": "Interactive — heartbeat + cm.reconcile",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_interactive\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      },
+      {
+        "xPos": 6, "yPos": 16, "width": 6, "height": 4,
+        "widget": {
+          "title": "⚠️ UNROUTED LANES — must stay empty",
+          "logsPanel": {
+            "filter": "log_id(\"foresight_jobs_other\")",
+            "resourceNames": ["projects/foresight-vm"]
+          }
+        }
+      }
+    ]
+  }
+}

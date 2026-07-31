@@ -13,6 +13,8 @@ matching `now_ist()` everywhere else.
 """
 
 import asyncio
+import time
+from collections import Counter
 from datetime import datetime, timedelta
 
 from apscheduler.triggers.cron import CronTrigger
@@ -24,6 +26,9 @@ from app.models.job import JobSchedule
 from app.utils.logger import logger
 from app.utils.time import IST, now_ist
 from jobs.queue import DuplicateActiveJob, enqueue
+
+log = logger.bind(tag="sched")          # every scheduler line carries the "sched" tag
+_HEARTBEAT_SECONDS = 15 * 60            # a quiet "still alive" line when nothing fires
 
 
 def validate_cron(cron_expr: str) -> None:
@@ -43,8 +48,10 @@ def initial_next_run(cron_expr: str) -> datetime:
     return next_fire_after(cron_expr, now_ist())
 
 
-async def _fire(sched: JobSchedule, now: datetime) -> bool:
-    """Enqueue one run of a due schedule. Returns True if a job was queued."""
+async def _fire(sched: JobSchedule, now: datetime) -> str | None:
+    """Enqueue one run of a due schedule. Returns the job's lane on success, or None if
+    skipped (previous run still active) or errored — `tick` aggregates these into one
+    summary line instead of a line per schedule."""
     async with AsyncSessionLocal() as edb:
         try:
             job = await enqueue(
@@ -58,13 +65,13 @@ async def _fire(sched: JobSchedule, now: datetime) -> bool:
         except DuplicateActiveJob:
             # The previous run of this schedule is still pending/running — don't
             # pile up. This is expected for a slow scrape vs a frequent cron.
-            logger.warning(f"schedule '{sched.name}': previous run still active — skipped")
-            return False
+            log.warning(f"'{sched.name}': previous run still active — skipped")
+            return None
         except Exception as e:
-            logger.error(f"schedule '{sched.name}': enqueue failed: {e}")
-            return False
-    logger.info(f"schedule '{sched.name}' → queued job {str(job.id)[:8]} [{job.lane.value}]")
-    return True
+            log.error(f"'{sched.name}': enqueue failed: {e}")
+            return None
+    log.debug(f"'{sched.name}' → job {str(job.id)[:8]} [{job.lane.value}]")
+    return job.lane.value
 
 
 async def tick(now: datetime | None = None, job_type_prefix: str | None = None) -> None:
@@ -77,6 +84,7 @@ async def tick(now: datetime | None = None, job_type_prefix: str | None = None) 
     """
     now = now or now_ist()
     grace = settings.SCHEDULER_MISFIRE_GRACE_SECONDS
+    fired_lanes: Counter[str] = Counter()
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(select(JobSchedule).where(JobSchedule.enabled == True))  # noqa: E712
@@ -89,7 +97,7 @@ async def tick(now: datetime | None = None, job_type_prefix: str | None = None) 
                 if s.cron:                       # recurring: compute the first fire from the cron
                     s.next_run_at = next_fire_after(s.cron, now)
                 else:                            # one-shot with no fire time is malformed — retire it
-                    logger.error(f"schedule '{s.name}': one-shot has no next_run_at — disabling")
+                    log.error(f"'{s.name}': one-shot has no next_run_at — disabling")
                     s.enabled = False
                 continue
             if s.next_run_at > now:              # not due
@@ -97,26 +105,30 @@ async def tick(now: datetime | None = None, job_type_prefix: str | None = None) 
 
             late = (now - s.next_run_at).total_seconds()
             if late > grace and not s.catchup:
-                logger.info(
-                    f"schedule '{s.name}': missed run due {s.next_run_at} skipped (catchup off)"
-                )
+                log.warning(f"'{s.name}': missed run due {s.next_run_at} skipped (catchup off)")
                 retire = True                    # its slot has passed; a one-shot is now done
             else:
-                fired = await _fire(s, now)
-                if fired:
+                lane = await _fire(s, now)
+                if lane:
                     s.last_enqueued_at = now
+                    fired_lanes[lane] += 1
                 # If the enqueue was skipped as a duplicate, keep a one-shot armed so it
                 # retries next tick rather than silently losing its single run.
-                retire = fired
+                retire = bool(lane)
 
             if s.repeat and s.cron:
                 # Advance past the current minute so we never re-fire the same slot.
                 s.next_run_at = next_fire_after(s.cron, now + timedelta(minutes=1))
             elif retire:
                 s.enabled = False                # one-shot: fire once, then disable
-                logger.info(f"schedule '{s.name}': one-shot fired → disabled")
+                log.debug(f"'{s.name}': one-shot fired → disabled")
 
         await db.commit()
+
+    if fired_lanes:                              # one summary line per tick that did something
+        total = sum(fired_lanes.values())
+        breakdown = ", ".join(f"{lane}×{n}" for lane, n in sorted(fired_lanes.items()))
+        log.info(f"fired {total} due → {breakdown}")
 
 
 async def run_producer(
@@ -130,17 +142,35 @@ async def run_producer(
     `--only-cm` local runner, where firing only cm.* schedules is safe by construction.
     """
     if not force and not settings.SCHEDULER_ENABLED:
-        logger.info("scheduler disabled (SCHEDULER_ENABLED=false) — consumer only")
+        log.info("disabled (SCHEDULER_ENABLED=false) — consumer only")
         return
     scope = f" · scope={job_type_prefix}*" if job_type_prefix else ""
-    logger.info(f"scheduler producer started · tick={settings.SCHEDULER_TICK_SECONDS}s{scope}")
+    log.info(f"producer started · tick={settings.SCHEDULER_TICK_SECONDS}s{scope}")
+    last_hb = time.monotonic()
     while not shutdown.is_set():
         try:
             await tick(job_type_prefix=job_type_prefix)
         except Exception as e:
-            logger.error(f"scheduler tick failed: {e}")
+            log.error(f"tick failed: {e}")
+        if time.monotonic() - last_hb >= _HEARTBEAT_SECONDS:
+            last_hb = time.monotonic()
+            await _heartbeat(job_type_prefix)
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=settings.SCHEDULER_TICK_SECONDS)
         except asyncio.TimeoutError:
             pass
-    logger.info("scheduler producer stopped")
+    log.info("producer stopped")
+
+
+async def _heartbeat(job_type_prefix: str | None) -> None:
+    """A quiet 'still alive' line on idle: how many schedules are armed and the next fire.
+    Keeps the log from going silent for hours without drowning it in per-tick chatter."""
+    async with AsyncSessionLocal() as db:
+        rows = (
+            await db.execute(select(JobSchedule).where(JobSchedule.enabled == True))  # noqa: E712
+        ).scalars().all()
+    if job_type_prefix:
+        rows = [r for r in rows if r.job_type.startswith(job_type_prefix)]
+    nexts = [r.next_run_at for r in rows if r.next_run_at]
+    nxt = min(nexts).strftime("%H:%M") if nexts else "—"
+    log.info(f"heartbeat · {len(rows)} enabled, next fire {nxt}")
