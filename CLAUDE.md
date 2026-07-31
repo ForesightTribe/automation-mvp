@@ -128,9 +128,14 @@ python -m cli runner start                   # the daemon (systemd does this on 
   local runner will claim VM jobs and scrape from your home IP.
 - **Alembic is single-head again** (`b6b4f0f7ee83`, merge of the darkstore +
   campaign lines, stamped 2026-07-21) — `alembic upgrade head` works normally.
-- **The campaign manager (`ad_campaigns/`) is off-limits** — coworker-owned. It moves
-  onto the `live` lane later; its in-API APScheduler would break on Render (no
-  Chromium, US IP, and double budget writes if the VM ran it too).
+- **Campaign automation is now v2 (`campaign_manager/`), owned by Deepansh.** The legacy
+  v1 (`ad_campaigns/`) was **disabled 2026-07-30**: VM schedules 24 + 25 set `enabled=false`,
+  and the Playwright-invoking routes removed from `app/routes/ads.py` (so Render can't spawn
+  Chromium). v2 vendored v1's `client.py` + `live_position.py` into
+  `campaign_manager/marketplaces/blinkit/`, so `ad_campaigns/` is now inert stale code (kept
+  on disk, not imported). v2 runs in the `cm_bid`/`cm_ops`/`interactive` lanes. Live writes
+  are still gated behind the cutover (dry by default). See
+  [docs/campaign-manager-v2-implementation.md](docs/campaign-manager-v2-implementation.md).
 
 ## Database Patterns
 

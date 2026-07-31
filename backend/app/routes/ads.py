@@ -1,5 +1,5 @@
 """Client-scoped advertising data. Mounted under /clients/{client_id}/ads."""
-from fastapi import APIRouter, BackgroundTasks, HTTPException, Query
+from fastapi import APIRouter, HTTPException, Query
 
 from app.dependencies import ClientDep, Pagination, PaginationDep, PeriodDep, SessionDep
 from app.schemas.ads import (
@@ -15,12 +15,7 @@ from app.schemas.ads import (
     CampaignRow,
     CollectionRow,
     KeywordRow,
-    ReconnectBlinkitRequest,
-    ReconnectBlinkitResponse,
     SchedulerLogEntry,
-    SchedulerTriggerResponse,
-    SetBudgetRequest,
-    SetBudgetResponse,
     SponsoredSovRow,
     VisibilityPlanRow,
 )
@@ -221,12 +216,6 @@ async def delete_budget_schedule(campaign_id: int, session: SessionDep, client: 
         raise HTTPException(status_code=404, detail="Schedule not found")
 
 
-@router.post("/budget-schedules/run", response_model=SchedulerTriggerResponse)
-async def trigger_scheduler(background_tasks: BackgroundTasks, session: SessionDep, client: ClientDep):
-    background_tasks.add_task(ads_service.run_scheduler_inprocess, client.id)
-    return {"message": "Scheduler started. Check history in ~30 seconds."}
-
-
 # ── Bid Optimizer ────────────────────────────────────────────────────────────
 
 @router.get("/bid-optimizer/rules", response_model=list[BidOptimizerRule])
@@ -258,41 +247,7 @@ async def bid_optimizer_history(session: SessionDep, client: ClientDep):
     return await ads_service.get_bid_optimizer_log(session, client.id)
 
 
-@router.post("/bid-optimizer/run", response_model=SchedulerTriggerResponse)
-async def run_bid_optimizer(background_tasks: BackgroundTasks, session: SessionDep, client: ClientDep):
-    background_tasks.add_task(ads_service.run_bid_optimizer_inprocess, client.id)
-    return {"message": "Bid optimizer started. Check history in ~30 seconds."}
-
-
-# ── Direct budget update ──────────────────────────────────────────────────────
-
-@router.get("/live-position")
-async def live_position(
-    keyword: str,
-    lat: float,
-    lon: float,
-    session: SessionDep,
-    client: ClientDep,
-):
-    import traceback
-    try:
-        results = await ads_service.get_live_positions(keyword, lat=lat, lon=lon)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
-    return results
-
-
-@router.get("/campaigns/{campaign_id}/live-budget")
-async def live_campaign_budget(campaign_id: int, session: SessionDep, client: ClientDep):
-    import traceback
-    try:
-        budget = await ads_service.get_live_campaign_budget(client.id, campaign_id)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"campaign_budget": budget}
-
+# ── Campaign detail (cached, read-only) ───────────────────────────────────────
 
 @router.get("/campaigns/{campaign_id}/products", response_model=list[CampaignProduct])
 async def campaign_products(campaign_id: int, session: SessionDep, client: ClientDep):
@@ -312,23 +267,3 @@ async def campaign_keywords(campaign_id: int, session: SessionDep, client: Clien
     except Exception as e:
         traceback.print_exc()
         raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.post("/campaigns/{campaign_id}/set-budget", response_model=SetBudgetResponse)
-async def set_campaign_budget(campaign_id: int, body: SetBudgetRequest, session: SessionDep, client: ClientDep):
-    import traceback
-    try:
-        await ads_service.set_campaign_budget(client.id, campaign_id, body.budget)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"message": f"Budget updated to ₹{body.budget:,.0f} successfully."}
-
-
-@router.post("/reconnect-blinkit", response_model=ReconnectBlinkitResponse)
-async def reconnect_blinkit(body: ReconnectBlinkitRequest, session: SessionDep, client: ClientDep):
-    try:
-        await ads_service.reconnect_blinkit(session, client.id, body.magic_link)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    return {"message": "Blinkit session reconnected successfully."}

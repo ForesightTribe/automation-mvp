@@ -1,6 +1,6 @@
 """Blinkit marketplace adapter package.
 
-During the v2 build the engine (`ad_campaigns.client`, `ad_campaigns.live_position`)
-is REUSED by import, not forked. At cutover (V6) those two modules move here and the
-rest of `ad_campaigns/` is deleted.
+Self-contained since 2026-07-30: the engine (`client.py` + `live_position.py`) was
+copied out of the legacy `ad_campaigns/` into this package, so v2 no longer imports v1.
+`ad_campaigns/` remains on disk as stale/dead code and can be deleted whenever.
 """

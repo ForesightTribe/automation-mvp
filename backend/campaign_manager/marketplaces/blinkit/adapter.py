@@ -1,18 +1,16 @@
 """Blinkit adapter — the marketplace-specific *mechanism* (docs §5.1 / D17).
 
-Thin wrappers over the reused engine (`ad_campaigns.client` + `ad_campaigns.
-live_position`). `writes.py` owns the dry-run + guardrail *policy* and calls these
-only when a real mutation is due.
+Thin wrappers over the Blinkit engine (`.client` + `.live_position`), which is now
+**vendored into this package** (copied out of the legacy `ad_campaigns/` on 2026-07-30)
+so campaign-manager v2 owns its whole Blinkit stack and no longer imports v1. `writes.py`
+owns the dry-run + guardrail *policy* and calls these only when a real mutation is due.
 
-⚠️ B3 (before live writes land — V1.3 / V5): `client.update_campaign` internally
-derives `advertiser_id` via `client.get_advertiser_id()`, which today falls back to a
-hardcoded `234` (Dobra's account). That fallback must be removed (derive live +
-fail loud), and — for multi-tenant — `writes.py` should assert the session's
-advertiser_id matches the tenant's expected one before any write. Not exercised in
-V0 (dry-run, no writes); wired here so V1 has one place to harden.
+B3: live writes send the tenant's STORED advertiser id (set on the client by
+`writes.arm_live` → `set_advertiser`), overriding the client's own unreliable
+`get_advertiser_id()` derivation (which falls back to a possibly-stale hardcoded id).
 """
-from ad_campaigns.client import setup, setup_with_state  # noqa: F401  (session bootstrap, reused by orchestration)
-from ad_campaigns.live_position import get_live_positions
+from campaign_manager.marketplaces.blinkit.client import setup, setup_with_state  # noqa: F401  (session bootstrap)
+from campaign_manager.marketplaces.blinkit.live_position import get_live_positions
 
 
 async def read_budget(client, campaign_id: int) -> int | None:

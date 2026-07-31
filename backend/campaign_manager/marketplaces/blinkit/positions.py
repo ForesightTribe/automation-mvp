@@ -2,13 +2,14 @@
 
 Scrapes consumer search for a keyword at a dark store, then finds THIS campaign's
 product among the results and returns its sponsored rank. Ported from v1's
-`_find_product_position`; the reused engine is `ad_campaigns.live_position`.
+`_find_product_position`; the scrape engine is `.live_position` (vendored into this
+package on 2026-07-30 — v2 no longer imports `ad_campaigns/`).
 
 **MVP = always-live** (a fresh scrape every run). Tiering (report-API / DB-snapshot
 for at-target keywords) is a deferred scale optimization — see the impl-doc backlog.
 The bid loop (`bid.py`) never imports this; it calls `adapter.resolve_position`.
 """
-from ad_campaigns.live_position import get_live_positions
+from campaign_manager.marketplaces.blinkit.live_position import get_live_positions
 from app.utils.logger import logger
 
 # Generic category words that must NOT be used to match a specific product.

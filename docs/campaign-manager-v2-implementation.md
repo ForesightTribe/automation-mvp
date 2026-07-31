@@ -261,6 +261,23 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
       `cm_bid`/`cm_ops` were missing from the PG `lane` enum (aef972735d57 was *stamped* during a multi-author
       merge, so its `ALTER TYPE` never ran on the shared DB) → corrective idempotent migration **`f2a7c4e1d9b3`**
       (mirrors e3b1f7a9c2d5 for the ad lanes).
+- [x] **V4.8** ✅ **DONE (2026-07-30)** **v1 disabled + v2 made self-contained** (early cutover-prep, not the
+      live-arming V5). Deepansh now owns the whole system, so v1 (`ad_campaigns/`) is being retired.
+      - **v1 disabled so nothing auto-runs it:** VM `job_schedules` **24** (`ads.budget_scheduler`) + **25**
+        (`ads.bid_optimizer`) set `enabled=false` (reversible) → the producer never fires them. The **6
+        Playwright-invoking routes** in `app/routes/ads.py` (`/budget-schedules/run`, `/bid-optimizer/run`,
+        `/live-position`, `/campaigns/{id}/live-budget`, `/campaigns/{id}/set-budget`, `/reconnect-blinkit`) were
+        **removed** (+ their now-dead imports) → **the API has no endpoint that spawns Chromium** (fixes the
+        "Render runs Playwright" risk). Kept all ads **DB reads** (analytics dashboard + the v2 `CampaignPicker`).
+      - **v2 self-contained:** `ad_campaigns/client.py` + `live_position.py` **vendored** into
+        `campaign_manager/marketplaces/blinkit/` (their deps are `scraper.utils` + playwright only — no
+        `ad_campaigns`); `adapter.py` + `positions.py` repointed to the local copies. **`grep ad_campaigns
+        campaign_manager/` = clean**, `app.main` imports OK. `ad_campaigns/` stays on disk as inert stale code.
+      - **`sync_campaign_data` is NOT used by v2** — the engines read campaign keywords/products/CPMs **live**
+        (`adapter.read_bids`/`read_products` → `client.get_campaign_detail`). `CampaignDataCache` (written only by
+        the v1 `ads.sync_campaign_data` job) is read only by the dashboard's cached keyword/product routes, which
+        the bid form's keyword *suggestions* piggyback on (degrades gracefully if stale). `cm.sync_campaign_data`
+        is an **unimplemented stub** — revisit only if v2 ever wants its own cached campaign catalogue.
 
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +
