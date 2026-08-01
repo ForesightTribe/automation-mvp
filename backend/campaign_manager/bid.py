@@ -121,13 +121,16 @@ def _rule_dict(r) -> dict:
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
-              platform: str = "blinkit") -> dict:
+              reset: bool = False, platform: str = "blinkit") -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = logs.new_run_id()
-    logs.run_start(run_id, "bid_optimizer", tenant_id, dry_run=dry_run, platform=platform)
+    logs.run_start(run_id, "bid_reset" if reset else "bid_optimizer", tenant_id,
+                   dry_run=dry_run, platform=platform)
 
     now = now_ist()
     pairs = await repo.get_bid_rules(tenant_id, platform)
+    if reset:                                   # end-of-window de-escalation, not optimization
+        return await _reset_run(tenant_id, platform, pairs, now, run_id, dry_run)
     active = [(r, rt) for r, rt in pairs if r.state == "active" and _in_window(_rule_dict(r), now)]
     if not active:
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run,
@@ -216,13 +219,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                           verdict=(f"bid ₹{new_cpm}" if new_cpm is not None else "no change"),
                           reason=f"{reason} · {source}")
 
-            # No change (target reached or HOLD): record the observed position only.
+            # No change (target reached or HOLD): record the observed position, but do NOT
+            # write a History row — "held / already at target" every 15 min would bury the
+            # real changes (it's narrated to Cloud Logging via logs.decision above; D6).
             if new_cpm is None:
-                action = "target" if reason.startswith("target") else "hold"
                 skipped += 1
                 runtime_rows.append({"rule_id": rule.id, "last_position": position})
-                log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     action, current_cpm, current_cpm, reason, dry_run, True))
                 continue
 
             ok = await writes.apply_bid(
@@ -249,6 +251,93 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     await repo.write_bid_runtime(runtime_rows)
     await repo.write_run_log(log_rows)
     logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run,
+                     processed=processed, applied=applied, skipped=skipped, errors=errors)
+    return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
+
+
+async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
+                     run_id: str, dry_run: bool) -> dict:
+    """End-of-window reset: set each just-closed keyword's bid back to its `min_bid`, so a
+    bid the optimizer pushed up doesn't keep spending high after the window. No position
+    scrape (cheap). Skips a keyword still covered by an in-window rule, and any bid already
+    at/below its floor. Only a real (live) write updates runtime `last_cpm`."""
+    active = [r for r, _ in pairs if r.state == "active"]
+    live_keys = {(r.campaign_id, r.keyword) for r in active if _in_window(_rule_dict(r), now)}
+    to_reset = [r for r in active
+                if not _in_window(_rule_dict(r), now)
+                and (r.campaign_id, r.keyword) not in live_keys]
+    if not to_reset:
+        logs.run_summary(run_id, "bid_reset", dry_run=dry_run,
+                         processed=0, applied=0, skipped=0, errors=0)
+        return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
+
+    adapter = get_adapter(platform)
+    pw = browser = None
+    try:
+        pw, browser, client = await adapter.setup(str(tenant_id))
+    except RuntimeError:
+        logs.session_expired(run_id, dry_run=dry_run)
+        logs.run_summary(run_id, "bid_reset", dry_run=dry_run,
+                         processed=0, applied=0, skipped=0, errors=1)
+        return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
+    logs.session_ok(run_id, dry_run=dry_run)
+
+    if not dry_run:
+        try:
+            await writes.arm_live(adapter, client, run_id,
+                                  await repo.get_advertiser(tenant_id, platform))
+        except RuntimeError as e:
+            logs.live_refused(run_id, reason=str(e))
+            if browser is not None:
+                await browser.close()
+            if pw is not None:
+                await pw.stop()
+            logs.run_summary(run_id, "bid_reset", dry_run=dry_run,
+                             processed=0, applied=0, skipped=0, errors=1)
+            return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
+
+    processed = applied = skipped = errors = 0
+    runtime_rows: list[dict] = []
+    log_rows: list[dict] = []
+    bids_cache: dict[int, dict] = {}
+    try:
+        for r in to_reset:
+            processed += 1
+            cid, kw = r.campaign_id, r.keyword
+            if cid not in bids_cache:
+                try:
+                    bids_cache[cid] = await adapter.read_bids(client, cid)
+                except Exception as e:
+                    bids_cache[cid] = {}
+                    logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                  verdict="warn", reason=f"bid read failed: {e}")
+            current = int(bids_cache[cid].get(kw) or r.min_bid)
+            if current <= r.min_bid:
+                skipped += 1                              # already at the floor — nothing to do
+                continue
+            logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                          verdict=f"reset ₹{r.min_bid}", reason=f"window closed · {current}→{r.min_bid}")
+            ok = await writes.apply_bid(
+                adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
+                new_cpm=r.min_bid, current_cpm=current, min_bid=r.min_bid,
+                max_bid=r.max_bid, match_type=r.match_type, dry_run=dry_run, recent_writes=0,
+            )
+            applied += int(ok)
+            skipped += int(not ok)
+            if ok and not dry_run:
+                runtime_rows.append({"rule_id": r.id, "last_cpm": int(r.min_bid)})
+            log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
+                                 "reset" if ok else "skip", current, r.min_bid,
+                                 "window closed → min", dry_run, ok))
+    finally:
+        if browser is not None:
+            await browser.close()
+        if pw is not None:
+            await pw.stop()
+
+    await repo.write_bid_runtime(runtime_rows)
+    await repo.write_run_log(log_rows)
+    logs.run_summary(run_id, "bid_reset", dry_run=dry_run,
                      processed=processed, applied=applied, skipped=skipped, errors=errors)
     return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
 

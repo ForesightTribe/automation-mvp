@@ -64,7 +64,9 @@ def test_recurring_boundaries_and_poll():
     assert by["auto:cm:budget:T:blinkit:1300"].cron == "0 13 * * *"
     assert by["auto:cm:budget:T:blinkit:2000"].cron == "0 20 * * *"
     assert by["auto:cm:budget:T:blinkit:poll"].cron == "0 * * * *"
-    assert all(d.job_type == BUDGET_JOB and d.repeat for d in ds)
+    assert all(d.repeat for d in ds)                                    # all recurring (+ cleanup)
+    budget = [d for d in ds if ":cleanup:" not in d.name]
+    assert all(d.job_type == BUDGET_JOB for d in budget)               # the budget work is BUDGET_JOB
 
 
 def test_boundaries_deduped_across_campaigns():
@@ -139,6 +141,42 @@ def test_bid_once_expired_dropped():
     live = bidrule(True, "09:00", "12:00", type="once", date=FUTURE)
     dead = bidrule(True, "18:00", "20:00", type="once", date=PAST)
     assert bid_active_hours([live, dead], NOW) == {9, 10, 11}   # expired once contributes nothing
+
+
+def test_bid_once_is_date_bound_not_recurring():
+    # The once-recurs bug: a `once` bid rule must NOT get a daily cron. It gets a date-pinned
+    # cron (day+month), and NO recurring `opt` cron.
+    ds = _desired(bid_rules=[bidrule(True, "16:00", "18:00", type="once", date=FUTURE)])
+    by = _by_name(ds)
+    assert "auto:cm:bid:T:blinkit:opt" not in by
+    assert by["auto:cm:bid:T:blinkit:once:20260815"].cron == "*/15 16-17 15 8 *"
+
+
+def test_bid_reset_fire_recurring():
+    ds = _desired(bid_rules=[bidrule(True, "19:00", "23:00")])
+    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:2300"]
+    assert reset.cron == "0 23 * * *" and reset.repeat and reset.params == {"reset": "true"}
+
+
+def test_bid_reset_fire_once_overnight_is_oneshot():
+    ds = _desired(bid_rules=[bidrule(True, "19:30", "02:00", type="once", date=FUTURE)])
+    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:20260816T0200"]   # overnight → next day
+    assert reset.cron is None and reset.repeat is False and reset.params == {"reset": "true"}
+
+
+def test_armed_merges_live_into_reset_params():
+    ds = desired_schedules(T, MP, [], [bidrule(True, "19:00", "23:00")], NOW, live=True)
+    assert _by_name(ds)["auto:cm:bid:T:blinkit:reset:2300"].params == {"reset": "true", "live": "true"}
+
+
+def test_cleanup_reconcile_present_and_live():
+    ds = _desired(bid_rules=[bidrule(True, "19:00", "23:00")])
+    clean = _by_name(ds)["auto:cm:cleanup:T:blinkit"]
+    assert clean.cron == "0 4 * * *" and clean.params == {"live": "true"}
+
+
+def test_no_active_rules_no_cleanup():
+    assert not any(":cleanup:" in d.name for d in _desired())   # nothing to maintain → no cleanup
 
 
 def test_paused_bid_skipped():

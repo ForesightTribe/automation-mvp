@@ -138,6 +138,7 @@ def _cm_budget_scheduler(tenant_id, p):
 def _cm_bid_optimizer(tenant_id, p):
     a = ["cm", "bid-optimizer", "--tenant", str(tenant_id)]
     _flag(a, "--live", p.get("live"))
+    _flag(a, "--reset", p.get("reset"))     # end-of-window de-escalation, not optimization
     return a
 
 
@@ -212,7 +213,7 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         Lane.cm_ops, 15 * 60, _cm_budget_scheduler, param_keys=("live",),
     ),
     "cm.bid_optimizer": JobTypeSpec(
-        Lane.cm_bid, 15 * 60, _cm_bid_optimizer, param_keys=("live",),
+        Lane.cm_bid, 15 * 60, _cm_bid_optimizer, param_keys=("live", "reset"),
     ),
     "cm.set_budget": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("campaign", "budget", "live"),

@@ -39,10 +39,20 @@ def budget_scheduler(tenant: str = _TENANT, live: bool = _LIVE):
 
 
 @app.command("bid-optimizer")
-def bid_optimizer(tenant: str = _TENANT, live: bool = _LIVE):
-    """Run one bid-optimizer pass (dry-run unless --live)."""
+def bid_optimizer(
+    tenant: str = _TENANT,
+    live: bool = _LIVE,
+    reset: bool = typer.Option(
+        False, "--reset",
+        help="End-of-window mode: de-escalate closed-window keywords to their min_bid "
+        "(no position scrape), instead of optimizing. The reconciler fires this at each "
+        "window's stop time.",
+    ),
+):
+    """Run one bid-optimizer pass (dry-run unless --live). `--reset` runs the end-of-window
+    de-escalation instead of optimization."""
     from campaign_manager import bid
-    asyncio.run(bid.run(uuid.UUID(tenant), dry_run=_dry(live)))
+    asyncio.run(bid.run(uuid.UUID(tenant), dry_run=_dry(live), reset=reset))
 
 
 @app.command("reconcile")
