@@ -81,18 +81,30 @@ def test_once_creates_two_oneshots():
     sched = (bsched(), [brule(id=7, type="once", date=FUTURE, start_time="10:00", end_time="12:00")])
     ds = _desired([sched])
     by = _by_name(ds)
-    on = by["auto:cm:budget:T:blinkit:once:7:on"]
-    off = by["auto:cm:budget:T:blinkit:once:7:off"]
+    on = by["auto:cm:budget:T:blinkit:once:20260815T1000"]        # deduped by fire time, not rule id
+    off = by["auto:cm:budget:T:blinkit:once:20260815T1200"]
     assert on.repeat is False and on.cron is None
     assert on.next_run_at == datetime(2026, 8, 15, 10, 0)
     assert off.next_run_at == datetime(2026, 8, 15, 12, 0)
+    assert "auto:cm:budget:T:blinkit:poll" not in _names(ds)      # once-only → no perpetual poll
+
+
+def test_once_fires_deduped_across_campaigns():
+    # Many campaigns sharing a once window → ONE apply + ONE revert, not one pair per rule
+    # (the 10-campaign 19:30–02:00 bug). Also: no poll for an all-once set.
+    s1 = (bsched(), [brule(id=1, type="once", date=FUTURE, start_time="19:30", end_time="02:00")])
+    s2 = (bsched(), [brule(id=2, type="once", date=FUTURE, start_time="19:30", end_time="02:00")])
+    ds = _desired([s1, s2])
+    once = [d for d in ds if ":once:" in d.name]
+    assert len(once) == 2                                          # one on + one off, NOT four
+    assert "auto:cm:budget:T:blinkit:poll" not in _names(ds)
 
 
 def test_once_past_is_skipped():
     sched = (bsched(), [brule(id=7, type="once", date=PAST, start_time="10:00", end_time="12:00")])
     ds = _desired([sched])
     assert not any(":once:" in d.name for d in ds)   # nothing in the past
-    assert "auto:cm:budget:T:blinkit:poll" in _names(ds)  # but the schedule still gets a poll
+    assert "auto:cm:budget:T:blinkit:poll" not in _names(ds)  # once-only → no perpetual poll
 
 
 def test_expiry_oneshot():

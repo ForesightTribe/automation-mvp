@@ -189,8 +189,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             action = "apply" if ok else ("no-op" if current == target else "skip")
             applied += int(ok)
             skipped += int(not ok)
-            log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                 action, current, target, reason, dry_run, True))
+            # A no-op (budget already correct — the common case for the hourly poll) is
+            # narrated to Cloud Logging via `logs.decision` above, but NOT written to the
+            # History table: hundreds of "nothing changed" rows would bury the real changes
+            # (D6 — verbose narration goes to logs, History holds actual actions only).
+            if action != "no-op":
+                log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
+                                     action, current, target, reason, dry_run, True))
     finally:
         if browser is not None:
             await browser.close()

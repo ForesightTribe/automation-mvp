@@ -109,8 +109,16 @@ def budget_boundaries(schedules) -> set[tuple[int, int]]:
 
 
 def _once_fires(schedules, tenant: str, platform: str, now: datetime) -> list[Desired]:
-    """One-shot apply+revert fires for each `once` budget rule (future only)."""
-    out: list[Desired] = []
+    """One-shot apply/revert fires implied by `once` budget rules — apply at each window
+    start, revert at each window end (future only), **deduped by fire time**.
+
+    The budget engine sets EVERY campaign in a single run, so N once rules that share a
+    start (or end) time need exactly ONE fire, not one per rule. Per-rule fires (the old
+    behaviour) all landed on the same minute; the runner's overlap guard then serialised
+    them one-per-tick, so each redundant copy re-ran the whole update over several minutes.
+    One fire per distinct time fixes that — and a fire that is one rule's end AND another's
+    start is naturally a single run that reverts the first and applies the second."""
+    fires: set[datetime] = set()
     for sched, rules in schedules:
         if sched.state != "active":
             continue
@@ -129,12 +137,12 @@ def _once_fires(schedules, tenant: str, platform: str, now: datetime) -> list[De
                 off_at = (base + timedelta(days=1)).replace(hour=eh[0], minute=eh[1])  # midnight-crossing
             else:
                 off_at = base.replace(hour=eh[0], minute=eh[1])
-            for tag, at in (("on", on_at), ("off", off_at)):
-                if at > now:
-                    out.append(Desired(
-                        f"{_PREFIX}budget:{tenant}:{platform}:once:{r.id}:{tag}",
-                        BUDGET_JOB, None, False, at))
-    return out
+            fires |= {t for t in (on_at, off_at) if t > now}
+    return [
+        Desired(f"{_PREFIX}budget:{tenant}:{platform}:once:{at:%Y%m%dT%H%M}",
+                BUDGET_JOB, None, False, at)
+        for at in sorted(fires)
+    ]
 
 
 def _expiry_fires(schedules, tenant: str, platform: str, now: datetime) -> list[Desired]:
@@ -223,7 +231,11 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
         d.append(Desired(f"{_PREFIX}budget:{tenant}:{platform}:{h:02d}{m:02d}",
                          BUDGET_JOB, cron, True, initial_next_run(cron)))
 
-    if any(s.state == "active" for s, _ in budget_schedules):
+    # The hourly safety poll (drift / missed-boundary catch) is only for RECURRING windows,
+    # which need ongoing enforcement day after day. A once-only automation is self-contained
+    # (apply + revert one-shots) — giving it a poll made it fire hourly FOREVER after its date.
+    if any(s.state == "active" and any(r.type != "once" for r in rules)
+           for s, rules in budget_schedules):
         d.append(Desired(f"{_PREFIX}budget:{tenant}:{platform}:poll",
                          BUDGET_JOB, _SAFETY_POLL_CRON, True, initial_next_run(_SAFETY_POLL_CRON)))
 
