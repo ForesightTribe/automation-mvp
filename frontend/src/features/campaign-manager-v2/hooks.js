@@ -19,6 +19,9 @@ import {
 	setAdvertiser,
 	setBidState,
 	setBudgetNow,
+	updateBidRule,
+	updateBudgetRule,
+	updateBudgetSchedule,
 } from "./api";
 
 const SCHEDULES = "cm2-budget-schedules";
@@ -174,11 +177,38 @@ export const useResetBudgetSchedule = () =>
 		list.map((s) => (s.id === scheduleId ? { ...s, state: "stopped" } : s)),
 	);
 
+export const useUpdateBudgetSchedule = () => {
+	const { activeClientId } = useClient();
+	const invalidate = useInvalidate(SCHEDULES);
+	return useMutation({
+		mutationFn: ({ scheduleId, body }) => updateBudgetSchedule(activeClientId, scheduleId, body),
+		onSuccess: invalidate,
+	});
+};
+
+export const useUpdateBudgetRule = () => {
+	const { activeClientId } = useClient();
+	const invalidate = useInvalidate(SCHEDULES);
+	return useMutation({
+		mutationFn: ({ ruleId, body }) => updateBudgetRule(activeClientId, ruleId, body),
+		onSuccess: invalidate,
+	});
+};
+
 export const useCreateBidRule = () => {
 	const { activeClientId } = useClient();
 	const invalidate = useInvalidate(BID_RULES);
 	return useMutation({
 		mutationFn: (body) => createBidRule(activeClientId, body),
+		onSuccess: invalidate,
+	});
+};
+
+export const useUpdateBidRule = () => {
+	const { activeClientId } = useClient();
+	const invalidate = useInvalidate(BID_RULES);
+	return useMutation({
+		mutationFn: ({ ruleId, body }) => updateBidRule(activeClientId, ruleId, body),
 		onSuccess: invalidate,
 	});
 };

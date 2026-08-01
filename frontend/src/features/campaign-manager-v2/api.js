@@ -19,8 +19,14 @@ export const createBudgetSchedule = (clientId, body) =>
 export const deleteBudgetSchedule = (clientId, scheduleId) =>
 	api.delete(`${base(clientId)}/budget-schedules/${scheduleId}`);
 
+export const updateBudgetSchedule = (clientId, scheduleId, body) =>
+	api.patch(`${base(clientId)}/budget-schedules/${scheduleId}`, body);
+
 export const addBudgetRule = (clientId, scheduleId, body) =>
 	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/rules`, body);
+
+export const updateBudgetRule = (clientId, ruleId, body) =>
+	api.patch(`${base(clientId)}/budget-rules/${ruleId}`, body);
 
 export const deleteBudgetRule = (clientId, ruleId) =>
 	api.delete(`${base(clientId)}/budget-rules/${ruleId}`);
@@ -32,6 +38,9 @@ export const resetBudgetSchedule = (clientId, scheduleId) =>
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
 export const createBidRule = (clientId, body) => api.post(`${base(clientId)}/bid-rules`, body);
+
+export const updateBidRule = (clientId, ruleId, body) =>
+	api.patch(`${base(clientId)}/bid-rules/${ruleId}`, body);
 
 export const deleteBidRule = (clientId, ruleId) =>
 	api.delete(`${base(clientId)}/bid-rules/${ruleId}`);

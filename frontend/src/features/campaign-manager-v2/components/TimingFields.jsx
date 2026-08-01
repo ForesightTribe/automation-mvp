@@ -180,6 +180,18 @@ export const timingPayload = (t, { stop = false } = {}) => {
 	};
 };
 
+/** Pre-fill the timing editor from an existing rule (inverse of `timingPayload`). `stop`
+ *  reads the bid-rule `stop_*` fields instead of budget's `end_*`. */
+export const timingFromRule = (r, { stop = false } = {}) => ({
+	type: r.type || "recurring",
+	days: r.days || [],
+	date: r.date || "",
+	start_time: r.start_time || "",
+	end_time: (stop ? r.stop_time : r.end_time) || "",
+	start_date: r.start_date || "",
+	end_date: (stop ? r.stop_date : r.end_date) || "",
+});
+
 /** Human summary of a rule's timing, for the list rows. */
 export const describeTiming = ({
 	type,

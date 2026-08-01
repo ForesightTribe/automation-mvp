@@ -1,8 +1,8 @@
 import { useState } from "react";
 import { Button } from "../../../components/ui/Button";
-import { useCampaignKeywords, useCreateBidRule } from "../hooks";
+import { useCampaignKeywords, useCreateBidRule, useUpdateBidRule } from "../hooks";
 import { CampaignPicker } from "./CampaignPicker";
-import { TimingFields, emptyTiming, timingPayload } from "./TimingFields";
+import { TimingFields, emptyTiming, timingFromRule, timingPayload } from "./TimingFields";
 
 const FIELD =
 	"rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-content focus:border-primary focus:outline-none";
@@ -17,23 +17,28 @@ const Field = ({ label, hint, className = "", children }) => (
 );
 
 /**
- * Automate a keyword's bid: chase a target search position within a ₹ range, during
- * chosen times. Campaign is picked by name; the keyword field suggests keywords that
- * already exist on the chosen campaign. Position is measured at one store in the given
- * city, but the bid applies campaign-wide.
+ * Create OR edit a keyword bid automation. Pass `editing` (a bid rule) to edit — the form
+ * pre-fills and PATCHes; the campaign is fixed (identity, not editable). Otherwise it creates.
  */
-export const AutomateBidForm = ({ onDone }) => {
-	const [campaign, setCampaign] = useState({ id: "", name: "" });
+export const AutomateBidForm = ({ editing = null, onDone }) => {
+	const isEdit = Boolean(editing);
+	const [campaign, setCampaign] = useState(
+		isEdit ? { id: editing.campaign_id, name: editing.campaign_name } : { id: "", name: "" },
+	);
 	const [f, setF] = useState({
-		keyword: "",
-		target_position: "3",
-		min_bid: "",
-		max_bid: "",
+		keyword: editing?.keyword ?? "",
+		target_position: String(editing?.target_position ?? "3"),
+		min_bid: editing?.min_bid != null ? String(editing.min_bid) : "",
+		max_bid: editing?.max_bid != null ? String(editing.max_bid) : "",
 		city: "",
 		location_id: "",
 	});
-	const [timing, setTiming] = useState(emptyTiming());
-	const mutation = useCreateBidRule();
+	const [timing, setTiming] = useState(
+		isEdit ? timingFromRule(editing, { stop: true }) : emptyTiming(),
+	);
+	const create = useCreateBidRule();
+	const update = useUpdateBidRule();
+	const mutation = isEdit ? update : create;
 	const { data: kwData } = useCampaignKeywords(campaign.id || null);
 	const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
@@ -43,31 +48,42 @@ export const AutomateBidForm = ({ onDone }) => {
 	const submit = (e) => {
 		e.preventDefault();
 		if (!valid) return;
-		mutation.mutate(
-			{
-				campaign_id: Number(campaign.id),
-				campaign_name: campaign.name || null,
-				keyword: f.keyword,
-				target_position: Number(f.target_position),
-				min_bid: Number(f.min_bid),
-				max_bid: Number(f.max_bid),
-				city: f.city || undefined,
-				location_id: f.location_id || undefined,
-				...timingPayload(timing, { stop: true }),
-			},
-			{ onSuccess: () => onDone?.() },
-		);
+		const timed = timingPayload(timing, { stop: true });
+		const common = {
+			keyword: f.keyword,
+			target_position: Number(f.target_position),
+			min_bid: Number(f.min_bid),
+			max_bid: Number(f.max_bid),
+			city: f.city || undefined,
+			location_id: f.location_id || undefined,
+			...timed,
+		};
+		if (isEdit) {
+			update.mutate({ ruleId: editing.id, body: common }, { onSuccess: () => onDone?.() });
+		} else {
+			create.mutate(
+				{ campaign_id: Number(campaign.id), campaign_name: campaign.name || null, ...common },
+				{ onSuccess: () => onDone?.() },
+			);
+		}
 	};
 
 	return (
 		<form onSubmit={submit} className="space-y-4">
 			<div className="grid gap-4 sm:grid-cols-2">
 				<Field label="Campaign" className="sm:col-span-2">
-					<CampaignPicker
-						value={campaign.id}
-						name={campaign.name}
-						onChange={(id, name) => setCampaign({ id, name })}
-					/>
+					{isEdit ? (
+						<div className="rounded-md border border-border bg-muted px-2.5 py-1.5 text-sm text-content">
+							{campaign.name || `campaign ${campaign.id}`}
+							<span className="ml-1.5 text-xs text-content-subtle">#{campaign.id}</span>
+						</div>
+					) : (
+						<CampaignPicker
+							value={campaign.id}
+							name={campaign.name}
+							onChange={(id, name) => setCampaign({ id, name })}
+						/>
+					)}
 				</Field>
 				<Field
 					label="Keyword"
@@ -104,18 +120,17 @@ export const AutomateBidForm = ({ onDone }) => {
 				<Field label="Max bid (₹)">
 					<input type="number" value={f.max_bid} onChange={set("max_bid")} placeholder="120" className={FIELD} />
 				</Field>
-				<Field label="Measure in city" hint="Position is checked at one store here.">
+				<Field
+					label="Measure in city"
+					hint={
+						isEdit
+							? `Currently: ${editing.location_name || "—"}. Enter a new city to change; leave blank to keep.`
+							: "Position is checked at one store here."
+					}
+				>
 					<input value={f.city} onChange={set("city")} placeholder="bengaluru" className={FIELD} />
 				</Field>
 			</div>
-
-			<Field
-				label="Specific store (optional)"
-				hint="A merchant/store id, if you want to measure at one store instead of any in the city."
-				className="max-w-xs"
-			>
-				<input value={f.location_id} onChange={set("location_id")} placeholder="e.g. 31288" className={FIELD} />
-			</Field>
 
 			<div className="space-y-3 border-t border-border pt-4">
 				<div>
@@ -126,12 +141,14 @@ export const AutomateBidForm = ({ onDone }) => {
 			</div>
 
 			{mutation.isError && (
-				<p className="text-xs text-danger">{mutation.error?.message ?? "Failed to create bid automation"}</p>
+				<p className="text-xs text-danger">
+					{mutation.error?.message ?? `Failed to ${isEdit ? "save" : "create"} bid automation`}
+				</p>
 			)}
 
 			<div className="flex gap-2">
 				<Button type="submit" disabled={mutation.isPending || !valid}>
-					{mutation.isPending ? "Creating…" : "Create bid automation"}
+					{mutation.isPending ? "Saving…" : isEdit ? "Save changes" : "Create bid automation"}
 				</Button>
 				<Button type="button" variant="ghost" onClick={onDone}>
 					Cancel

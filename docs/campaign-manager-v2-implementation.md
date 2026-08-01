@@ -278,6 +278,19 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
         the v1 `ads.sync_campaign_data` job) is read only by the dashboard's cached keyword/product routes, which
         the bid form's keyword *suggestions* piggyback on (degrades gracefully if stale). `cm.sync_campaign_data`
         is an **unimplemented stub** — revisit only if v2 ever wants its own cached campaign catalogue.
+- [x] **V4.9** ✅ **DONE (2026-07-31)** **Unified logging pipeline** (`app/utils/logger.py`): an `InterceptHandler`
+      routes ALL stdlib `logging` (vendored Blinkit client, Playwright, httpx, uvicorn) into loguru → one format
+      `HH:MM:SS | LEVEL | tag | message`, one `LOG_LEVEL` env (INFO prod / DEBUG deep), noisy third-party loggers
+      pinned to WARNING. cm engines bind `tag=cm[<run_id>]`; scheduler bind `tag=sched` + fires a per-tick summary
+      (`fired N due → lane×k`) and a 15-min heartbeat instead of a line per schedule. Client-internals demoted
+      INFO/WARNING→DEBUG. See docs/code-standards.md.
+- [x] **V4.10** ✅ **DONE (2026-08-01)** **Scheduling-correctness fixes** (reconciler + engines, no migration, tests
+      green): **budget** — `once` fires deduped by time (10 campaigns/one window → 2 fires not 20), the hourly poll
+      only for RECURRING rules (once-only no longer fires forever after its date), no-op rows kept out of History.
+      **bid** — `once` rules are date-bound (`*/15 h <day> <month> *`, not daily — the once-recurs bug), **end-of-
+      window reset** (`cm bid-optimizer --reset` de-escalates closed keywords to `min_bid`; reconciler fires it at
+      each window stop), no-op/hold rows kept out of History. **Daily 04:00 per-tenant cleanup reconcile**
+      (`auto:cm:cleanup:<t>` → `cm.reconcile --live`) prunes expired schedules automatically.
 
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +
@@ -289,14 +302,25 @@ logs; confirm `grep -r playwright app/` is clean.
 
 Goal: switch the live tenant to v2, reversibly.
 
+> ✅ **The arming MECHANISM is built (2026-07-31)** — the V5.4 "switch" is now a command.
+> Per-tenant `live_armed` on `cm_platform_accounts` (migration **`a4d9f2e6b1c8`**); the reconciler
+> stamps `live=true` on the engine schedules when armed, the API's set-budget/reset pass live when
+> armed, and **`cm arm` / `cm disarm`** flip it (arm requires an advertiser + auto-reconciles).
+> **What remains is the attended live run itself** + the v1→v2 data migration for the live tenant.
+>
+> Two lessons from wiring it up: (a) **deploy ordering** — the arming code shipped before its
+> migration ran, so every cm op on `cm_platform_accounts` failed until the migration was applied
+> (apply migrations before/with the deploy). (b) **pool exhaustion** — default `DB_POOL_SIZE=10`
+> × (runner + subprocesses + Render) blew the Supabase pooler's 25 cap → set `DB_POOL_SIZE=3` on the VM.
+
 - [ ] **V5.1** Pre-cutover checklist: V1–V4 proven in dry-run for the live tenant; guardrail tests green;
       **no-op re-assert write test passes** (a real PUT that sets current→current — proves the write path,
       changes nothing); optional guinea-pig-campaign test if one was designated.
 - [ ] **V5.2** ⚠️ **Migrate live tenant rules v1→v2 tables** (small data — reviewed script, exact command,
       confirmed). Verify parity (same campaigns/budgets/bid targets).
 - [ ] **V5.3** `cli cm reconcile` for the live tenant → creates v2 schedules (leave **disabled**).
-- [ ] **V5.4** ⚠️ **The switch (attended, off-peak):** arm `--live` for this tenant; **enable** v2 schedules;
-      **disable** v1 schedules (`job_schedules` id 24 + 25). One tenant only.
+- [ ] **V5.4** ⚠️ **The switch (attended, off-peak):** `cm arm -t <tenant>` (sets `live_armed` + reconciles so the
+      schedules carry `--live`). v1 schedules 24 + 25 are already disabled (V4.8). One tenant only. Rollback: `cm disarm`.
 - [ ] **V5.5** Watch the first several cycles: logs, `cm_run_log`, and the **actual Blinkit state** (did the
       budget/bid land as intended?). **Rollback** = disable v2 schedules, re-enable v1 — v1 code never left.
 

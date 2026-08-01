@@ -51,13 +51,28 @@ All I/O is async. No `threading.Thread` for scraper logic. No `time.sleep()` —
 ```python
 from app.utils.logger import logger
 
-logger.debug("...")    # verbose trace
+logger.debug("...")    # verbose trace — hidden at INFO, surfaced when LOG_LEVEL=DEBUG
 logger.info("...")     # normal operational flow
 logger.warning("...")  # unexpected but recoverable
 logger.error("...")    # failure
 ```
 
-Never use `print()`. Loguru writes to stdout and `logs/app.log`.
+Never use `print()`. `app/utils/logger.py` configures **one pipeline** for the whole
+process: format `HH:MM:SS | LEVEL | tag | message`, sinks = stdout + `logs/app.log`,
+verbosity = `settings.LOG_LEVEL` (INFO in prod; DEBUG surfaces the Blinkit-client /
+Playwright / httpx play-by-play).
+
+- **Prefer loguru**, but stdlib `logging` (`logging.getLogger(__name__)`) is fine too — an
+  `InterceptHandler` routes it into loguru, so third-party libs share the same format. The
+  record's module short-name becomes the `tag`.
+- **Noisy third-party loggers** (`playwright`, `httpx`, `httpcore`, `asyncio`, `uvicorn.access`)
+  are pinned to WARNING — don't fight that; raise `LOG_LEVEL` instead.
+- **Tag a run** for correlation with `logger.bind(tag="...")` (e.g. the campaign-manager
+  engines bind `tag="cm[<run_id>]"` so every line of one run greps together; the scheduler
+  binds `tag="sched"`).
+- **Keep the History table (`cm_run_log`) for real actions only** — no-op / "nothing changed"
+  narration goes to the log (Cloud Logging), not the DB (D6). High-frequency loops (poll,
+  bid `*/15`) would otherwise bury the real changes.
 
 ---
 

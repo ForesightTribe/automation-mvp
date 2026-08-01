@@ -400,7 +400,7 @@ Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
 | Direct | `python -m cli cm budget-scheduler -t <id>` | dev / manual / dry-run testing |
 | Scheduler | `python -m cli jobs run cm.budget_scheduler -t <id>` | production (queue + lanes, on the VM) |
 
-> ⚠️ **Dry-run is the default; nothing touches Blinkit unless you pass `--live`.** The engines read real budgets/positions in dry-run but write nothing. Live writes are the cutover step (not armed yet). Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing. Never run the *plain* `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
+> ⚠️ **Dry-run is the default; nothing touches Blinkit unless the tenant is armed (`cm arm`) AND the run carries `--live`.** The engines read real budgets/positions in dry-run but write nothing. Going live is a deliberate per-tenant switch — see "Go live — arm the tenant" below. Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing. Never run the *plain* `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
 
 ### Timing model (rules)
 
@@ -477,11 +477,27 @@ Here `--live` means "actually write **`job_schedules`**" (our own table) — rec
 ### Run the engines (dry-run testing)
 
 ```bash
-python -m cli cm budget-scheduler -t <id>     # reads real budget → "would set ₹X" → writes nothing
-python -m cli cm bid-optimizer    -t <id>     # reads live position → "would bid ₹Y" → writes nothing
+python -m cli cm budget-scheduler -t <id>          # reads real budget → "would set ₹X" → writes nothing
+python -m cli cm bid-optimizer    -t <id>          # reads live position → "would bid ₹Y" → writes nothing
+python -m cli cm bid-optimizer    -t <id> --reset  # end-of-window: de-escalate closed keywords → min_bid (no scrape)
 ```
 
-Add `--live` to actually write to Blinkit (cutover only). History lands in `cm_run_log`; bid runtime (last position/CPM) in `cm_bid_runtime`. `cm set-budget` and `cm sync-campaign-data` are V4 stubs.
+Add `--live` to actually write to Blinkit (only takes effect once the tenant is **armed** — see below). History lands in `cm_run_log` (only real changes — no-op/hold rows go to Cloud Logging); bid runtime (last position/CPM) in `cm_bid_runtime`. `cm sync-campaign-data` is a stub.
+
+**`--reset`** is the end-of-window mode: it sets each just-closed keyword's bid back to its `min_bid` (no position scrape), so a bid the optimizer pushed up doesn't keep spending high overnight. The reconciler fires this automatically at each window's stop time — you rarely run it by hand.
+
+### Go live — arm the tenant (the cutover)
+
+The whole automated loop is **dry by default**. Arming is a per-tenant switch (`cm_platform_accounts.live_armed`) that makes the reconciler stamp `--live` onto the engine schedules and the API's set-budget/reset pass live — so scheduled runs and UI actions write to Blinkit for real.
+
+```bash
+python -m cli cm set-advertiser -t <id> --id 19802   # one-time: the Blinkit ad-account id (required to arm)
+python -m cli cm arm            -t <id>              # ⚡ ARM: set live_armed + reconcile → schedules carry --live
+python -m cli cm advertiser     -t <id>              # verify: "LIVE writes: ⚡ ARMED"
+python -m cli cm disarm         -t <id>              # back to dry (reconciles the --live off)
+```
+
+`cm arm` refuses if no advertiser is set (live writes would be rejected anyway). It auto-reconciles, so existing schedules pick up `--live` immediately. Reversible any time with `cm disarm`.
 
 ### Worked example — a solo dry-run pass
 

@@ -274,6 +274,48 @@ async def set_bid_state(rule_id: str, state: str):
         return r
 
 
+async def update_budget_schedule(schedule_id: int, fields: dict):
+    """Patch a budget schedule's editable fields (name, default_budget). Returns row or None."""
+    from app.models.campaign_manager_v2 import CmBudgetSchedule
+    async with AsyncSessionLocal() as db:
+        s = await db.get(CmBudgetSchedule, schedule_id)
+        if not s:
+            return None
+        for k, v in fields.items():
+            setattr(s, k, v)
+        await db.commit()
+        await db.refresh(s)
+        return s
+
+
+async def update_budget_rule(rule_id: int, fields: dict):
+    """Patch a budget rule's editable fields (budget + timing). Returns row or None."""
+    from app.models.campaign_manager_v2 import CmBudgetRule
+    async with AsyncSessionLocal() as db:
+        r = await db.get(CmBudgetRule, rule_id)
+        if not r:
+            return None
+        for k, v in fields.items():
+            setattr(r, k, v)
+        await db.commit()
+        await db.refresh(r)
+        return r
+
+
+async def update_bid_rule(rule_id: str, fields: dict):
+    """Patch a bid rule's editable fields (target/bids/timing/location). Returns row or None."""
+    from app.models.campaign_manager_v2 import CmBidRule
+    async with AsyncSessionLocal() as db:
+        r = await db.get(CmBidRule, rule_id)
+        if not r:
+            return None
+        for k, v in fields.items():
+            setattr(r, k, v)
+        await db.commit()
+        await db.refresh(r)
+        return r
+
+
 async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
                        kind: str | None = None, limit: int = 50, offset: int = 0):
     """Recent cm_run_log rows for a tenant (newest first) + total count."""

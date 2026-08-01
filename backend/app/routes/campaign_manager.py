@@ -10,11 +10,13 @@ from fastapi import APIRouter, HTTPException, status
 
 from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
-    AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BudgetRuleIn, BudgetRuleOut,
-    BudgetScheduleIn, BudgetScheduleOut, CmJobOut, EnqueuedOut, RunLogOut, SetBudgetIn,
+    AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
+    BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
+    BudgetScheduleUpdate, CmJobOut, EnqueuedOut, RunLogOut, SetBudgetIn,
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
+from app.services.campaign_manager_service import EditError
 from jobs.queue import DuplicateActiveJob
 
 router = APIRouter()
@@ -34,6 +36,14 @@ async def create_budget_schedule(client: ClientDep, session: SessionDep, body: B
     return await svc.create_budget_schedule(session, client.id, body)
 
 
+@router.patch("/budget-schedules/{schedule_id}", response_model=BudgetScheduleOut)
+async def update_budget_schedule(client: ClientDep, session: SessionDep, schedule_id: int, body: BudgetScheduleUpdate):
+    out = await svc.update_budget_schedule(session, client.id, schedule_id, body)
+    if out is None:
+        raise _NOT_FOUND
+    return out
+
+
 @router.delete("/budget-schedules/{schedule_id}", status_code=204)
 async def delete_budget_schedule(client: ClientDep, session: SessionDep, schedule_id: int):
     if not await svc.delete_budget_schedule(session, client.id, schedule_id):
@@ -46,6 +56,17 @@ async def add_budget_rule(client: ClientDep, session: SessionDep, schedule_id: i
     if rule is None:
         raise _NOT_FOUND
     return rule
+
+
+@router.patch("/budget-rules/{rule_id}", response_model=BudgetScheduleOut)
+async def update_budget_rule(client: ClientDep, session: SessionDep, rule_id: int, body: BudgetRuleUpdate):
+    try:
+        out = await svc.update_budget_rule(session, client.id, rule_id, body)
+    except EditError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    if out is None:
+        raise _NOT_FOUND
+    return out
 
 
 @router.delete("/budget-rules/{rule_id}", status_code=204)
@@ -75,6 +96,17 @@ async def list_bid_rules(client: ClientDep):
 @router.post("/bid-rules", response_model=BidRuleOut, status_code=201)
 async def create_bid_rule(client: ClientDep, session: SessionDep, body: BidRuleIn):
     return await svc.create_bid_rule(session, client.id, body)
+
+
+@router.patch("/bid-rules/{rule_id}", response_model=BidRuleOut)
+async def update_bid_rule(client: ClientDep, session: SessionDep, rule_id: str, body: BidRuleUpdate):
+    try:
+        rule = await svc.update_bid_rule(session, client.id, rule_id, body)
+    except EditError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
+    if rule is None:
+        raise _NOT_FOUND
+    return rule
 
 
 @router.delete("/bid-rules/{rule_id}", status_code=204)

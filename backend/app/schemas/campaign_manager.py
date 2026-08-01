@@ -31,6 +31,19 @@ class BudgetRuleOut(BaseModel):
     start_date: str | None = None
     end_date: str | None = None
     date: str | None = None
+    status: str = "scheduled"           # running | scheduled | ended (computed per window)
+
+
+class BudgetRuleUpdate(BaseModel):
+    """Partial edit of a budget rule — only the fields sent are changed."""
+    budget: float | None = None
+    type: str | None = None
+    days: list[str] | None = None
+    start_time: str | None = None
+    end_time: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    date: str | None = None
 
 
 class BudgetScheduleIn(BaseModel):
@@ -49,8 +62,15 @@ class BudgetScheduleOut(BaseModel):
     name: str | None = None
     default_budget: float
     state: str
+    status: str = "scheduled"           # running | scheduled | ended | stopped (computed)
     platform: str
     rules: list[BudgetRuleOut] = []
+
+
+class BudgetScheduleUpdate(BaseModel):
+    """Partial edit of a budget schedule (its own fields; rules are edited separately)."""
+    name: str | None = None
+    default_budget: float | None = None
 
 
 # ── Bid rules ───────────────────────────────────────────────────────────────
@@ -99,7 +119,27 @@ class BidRuleOut(BaseModel):
     lon: float | None = None
     location_name: str | None = None
     state: str
+    status: str = "scheduled"           # running | scheduled | ended | paused | stopped (computed)
     platform: str
+
+
+class BidRuleUpdate(BaseModel):
+    """Partial edit of a bid rule — only the fields sent are changed. `city`/`location_id`
+    re-resolve the measurement lat/lon (like create); campaign is NOT editable (identity)."""
+    keyword: str | None = None
+    target_position: int | None = None
+    min_bid: int | None = None
+    max_bid: int | None = None
+    match_type: str | None = None
+    type: str | None = None
+    date: str | None = None
+    days: list[str] | None = None
+    start_time: str | None = None
+    stop_time: str | None = None
+    start_date: str | None = None
+    stop_date: str | None = None
+    city: str | None = None
+    location_id: str | None = None
 
 
 # ── Actions ─────────────────────────────────────────────────────────────────

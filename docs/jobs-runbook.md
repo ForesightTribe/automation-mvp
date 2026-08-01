@@ -139,6 +139,12 @@ cli jobs logs 4795271a -f  # live-tail while it runs (Ctrl+C to stop)
 cli jobs logs 4795271a -n 50   # just the last 50 lines
 ```
 
+Every process logs one clean line format — `HH:MM:SS | LEVEL | tag | message` (see
+docs/code-standards.md). Verbosity is `LOG_LEVEL` (INFO in prod). **Chasing a Blinkit /
+Playwright / connection issue?** Set `LOG_LEVEL=DEBUG` (env or `.env`) and re-run to surface
+the client/network play-by-play that's hidden at INFO; the campaign-manager engines tag every
+line of a run `cm[<run_id>]` so one run greps together.
+
 ### Schedules — run something repeatedly
 
 Same `job_type` / `-t` / trailing params as `jobs run`, plus a `--cron`.
@@ -541,8 +547,11 @@ daily_budget) is a pre-existing coworker-owned divergence — don't merge it uni
 
 `LANE_SLOTS` is **per runner process**, and `--workers` is browsers _inside one scrape_.
 Two concurrent jobs at `--workers 5` = 10 Chromiums (~3–7 GB). Raise slots only with
-`peak_rss_mb` evidence from `cli jobs list`, and keep `DB_POOL_SIZE` small (3–5) on the
-VM — the Supabase pooler caps at 25 across API + runner + every subprocess.
+`peak_rss_mb` evidence from `cli jobs list`, and **set `DB_POOL_SIZE=3` on the VM**
+(`backend/.env`). The default is **10**, which is too big: runner(10) + one subprocess(10)
++ Render(10) = 30 > the Supabase pooler's **25**-client cap → intermittent "can't get a DB
+connection" `exit_1` failures when jobs overlap (bit us 2026-07-31). Scrapers are unaffected
+by the small pool — public scrapes stage to SQLite, and the loader uses a single connection.
 
 ---
 
