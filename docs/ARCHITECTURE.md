@@ -59,9 +59,15 @@ automation-mvp/
 │   │   │   │   │   ├── marketing/     # scraper.py, parser.py, storage.py
 │   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
 │   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py, sku_storage.py
-│   │   │   ├── instamart/             # public_data/ — OUT OF SCOPE (Blinkit-only)
-│   │   │   └── zepto/                 # public_data/ — OUT OF SCOPE (Blinkit-only)
-│   │   ├── public/                    # orchestrator.py (keyword scrape) + targeted.py (own-SKU) + explorer/ — worker pool
+│   │   │   ├── instamart/             # public_data/ — stub, NOT wired (old one-shot interface)
+│   │   │   └── zepto/                 # public_data/ — dead stub; see docs/zepto.md (planned)
+│   │   ├── public/                    # MARKETPLACE-AGNOSTIC scrape engine — nothing here imports a platform
+│   │   │   ├── providers.py           # marketplace registry: slug → open_session/search/close_session/parse + cap floors
+│   │   │   ├── orchestrator.py        # keyword scrape (worker pool), mp_slug-parameterised
+│   │   │   ├── targeted.py            # own-SKU brand scrape, same pool
+│   │   │   ├── staging.py             # local SQLite per run (mp_slug column + filename segment)
+│   │   │   ├── loader.py              # staging → Postgres, one all-or-nothing COPY transaction
+│   │   │   └── explorer/              # ad-hoc scrape → Excel (re-exports providers.py)
 │   │   └── utils/
 │   │       ├── browser.py             # create_browser_context(), write_blocker(), PLAYWRIGHT_ARGS
 │   │       ├── session.py             # save_session(), load_session() → platform_sessions table
@@ -337,21 +343,38 @@ Step 2 must run before any page JavaScript executes. Firebase JS SDK v9+ stores 
 
 ### Public scraper (a new marketplace)
 
-Instamart/Zepto are currently **out of scope** (Blinkit-only). If a marketplace is
-added later, mirror the Blinkit public path:
+Everything under `scraper/public/` is **marketplace-agnostic** — the orchestrators,
+staging, the loader and the Explorer all resolve the engine through
+`scraper/public/providers.py`. Adding a marketplace means writing an engine and
+registering it; you should not need to touch the shared path at all.
+
+**1. Write the engine.** No `storage.py` — the public path stages through
+`scraper/public/staging.py`.
 
 ```
 scraper/platforms/{platform}/public_data/
-├── endpoints.py  — URLs, header keys, request body, RESULT_CAP
-├── scraper.py    — open_session()/search() — reuse one session across stores (lat/lon swap)
+├── endpoints.py  — ALL URLs, header keys, request body, cap floors. Nothing inline elsewhere
+├── scraper.py    — open_context_session()/search()/close_session() — one session reused
+│                   across stores; raw extraction only
 ├── parser.py     — classify_products() → snapshot header + listing rows
-└── storage.py    — save(session, result, tenant_id, job_id) → search_snapshots + search_listings
+└── api.txt       — a captured response, verbatim (documentation, not code)
 ```
 
-Then dispatch to it from `scraper/public/orchestrator.py` (platform-agnostic above
-the platform layer). Locations come from `marketplace_locations`/`tenant_locations`
-(via `cli sync`), not `cities.py`. Check whether the platform's API blocks direct
-httpx — if so, use the in-page fetch technique (as Blinkit does).
+`search()` must return `{products, total_results, merchant_id, ok, error}`, with each
+product using the shared key names (`product_id`, `name`, `brand`, `price`, `mrp`,
+`unit`, `inventory`, `in_stock`, `rating`, `position`, `merchant_id`, `merchant_type`).
+Translating the platform's own vocabulary happens **inside** the engine.
+
+**2. Register it** in `scraper/public/providers.py` with `wired=True`. That is the
+whole integration: `cli scrape public-run -m {platform}` starts working, as does the
+Explorer and the `marketplace=` job param.
+
+**3. Give it its own catalog.** Locations come from `marketplace_locations` /
+`tenant_locations` via `cli sync` (`mp` column), never `cities.py` — and never
+another platform's coordinates. A store's probe point is that platform's catchment.
+
+Check whether the platform's API blocks direct httpx — if so, use the in-page fetch
+technique (as Blinkit does). Worked example + open questions: [zepto.md](zepto.md).
 
 ### Private scraper (Instamart, Zepto seller dashboards)
 

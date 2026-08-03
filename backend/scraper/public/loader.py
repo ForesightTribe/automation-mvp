@@ -94,6 +94,9 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
 
     job_id = uuid.UUID(m["job_id"])
     tid = uuid.UUID(m["tenant_id"])
+    # Files staged before the multi-marketplace refactor have no mp_slug — they are
+    # Blinkit by construction, so the default is what makes them still loadable.
+    mp = m["mp_slug"] or staging.DEFAULT_MP
 
     snaps = [dict(r) for r in conn.execute("SELECT * FROM search_snapshots ORDER BY id")]
     lists = [dict(r) for r in conn.execute("SELECT * FROM search_listings ORDER BY id")]
@@ -106,7 +109,7 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
 
     logger.info(
         f"loader: {path.name} — {len(snaps)} snapshots, {len(lists)} listings, "
-        f"{len(skus)} sku rows (job {m['job_id']})"
+        f"{len(skus)} sku rows ({mp}, job {m['job_id']})"
     )
 
     # Every brand slug referenced by any row — the FKs must resolve before insert.
@@ -115,7 +118,7 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
 
     try:
         for slug in sorted(slugs):
-            await ensure_refs(db, slug, "blinkit")
+            await ensure_refs(db, slug, mp)
 
         # The scrape_jobs row is created HERE, not at scrape time — so a run that is
         # never loaded leaves no phantom `running` job behind. Timestamps come from
@@ -123,7 +126,7 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
         db.add(ScrapeJob(
             id=job_id,
             tenant_id=tid,
-            platform="blinkit",
+            platform=mp,
             dashboard=m["kind"],
             status=JobStatus.success if m["status"] == "success" else JobStatus.failed,
             started_at=_dt(m["started_at"]),
@@ -217,10 +220,10 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
 
     pruned = []
     if prune:
-        pruned = staging.prune(m["tenant_id"], m["kind"])
+        pruned = staging.prune(m["tenant_id"], m["kind"], mp)
 
     return {
-        "file": path.name, "job_id": m["job_id"], "kind": m["kind"],
+        "file": path.name, "job_id": m["job_id"], "kind": m["kind"], "mp_slug": mp,
         "tenant_id": m["tenant_id"], "snapshots": len(snaps),
         "listings": len(lists), "skus": len(skus), "total": total,
         "pruned": len(pruned),

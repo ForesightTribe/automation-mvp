@@ -1,4 +1,4 @@
-"""Public-scraper orchestrator (Blinkit).
+"""Public-scraper orchestrator — the keyword scrape.
 
 Turns a tenant's watchlist + selected locations into scrapes:
   watchlist (own brands → keywords + aliases)  ×  tenant_locations (where)
@@ -10,9 +10,12 @@ snapshot + listing rows under a single scrape_job.
 Locations come entirely from the DB (`marketplace_locations` via
 `tenant_locations`) — never `cities.py`.
 
-v1 is sequential (one location, one keyword at a time). A capped browser pool /
-task queue for concurrency is a later refinement; the unit of work is already a
-(location, keyword) task, so it slots in without reshaping this.
+**Marketplace-agnostic.** The engine is resolved through `scraper/public/providers.py`
+(`open_session` / `search` / `close_session` / `parse`), so nothing below this line
+knows which platform it is driving. Everything platform-specific — endpoints,
+extraction, the store-binding mechanism — lives in that marketplace's
+`public_data/` package. `mp_slug` also selects the locations and stamps the staged
+rows. See docs/zepto.md.
 """
 import asyncio
 import time
@@ -25,13 +28,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.platforms.blinkit.public_data import endpoints as ep
-from scraper.platforms.blinkit.public_data import parser as bl_parser
-from scraper.platforms.blinkit.public_data import scraper as bl_scraper
 from scraper.public import staging
+from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
-
-MP = "blinkit"
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
@@ -78,17 +77,18 @@ async def _competitor_list(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple
     return [(e.brand_slug, e.aliases or []) for e in rows]
 
 
-async def _locations(db: AsyncSession, tenant_id: uuid.UUID) -> list[MarketplaceLocation]:
+async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
+                     mp_slug: str) -> list[MarketplaceLocation]:
     return (await db.execute(
         select(MarketplaceLocation)
         .join(TenantLocation, TenantLocation.location_id == MarketplaceLocation.id)
-        .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == MP)
+        .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == mp_slug)
         .order_by(MarketplaceLocation.city, MarketplaceLocation.merchant_id)
     )).scalars().all()
 
 
 async def _worker(
-    wid, browser, seed, queue, kw_map, competitor_list, done,
+    wid, provider, browser, seed, queue, kw_map, competitor_list, done,
     stg, stats, total, tid, job_id, cap,
 ) -> None:
     """One concurrent worker: its own browser context + session, pulling stores off
@@ -98,7 +98,7 @@ async def _worker(
     pushed to Postgres later by `cli scrape load`. That decoupling is why a Supabase
     blip can no longer kill a multi-hour run. See scraper/public/staging.py.
     """
-    session = await bl_scraper.open_context_session(browser, seed[0], seed[1])
+    session = await provider.open_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
@@ -120,7 +120,7 @@ async def _worker(
                     continue
                 _t = time.monotonic()
                 try:
-                    res = await bl_scraper.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
+                    res = await provider.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
                 except Exception as e:
                     res = {"ok": False, "products": [], "merchant_id": "",
                            "total_results": 0, "error": f"{type(e).__name__}: {e}"}
@@ -135,8 +135,8 @@ async def _worker(
                         f"{res.get('error') or 'no result'}"
                     )
                     if stale >= _REFRESH_AFTER:
-                        await bl_scraper.close_session(session)
-                        session = await bl_scraper.open_context_session(browser, loc.lat, loc.lon)
+                        await provider.close_session(session)
+                        session = await provider.open_session(browser, loc.lat, loc.lon)
                         stale = 0
                         if not session:
                             logger.warning(f"worker {wid}: session refresh failed — exiting")
@@ -159,14 +159,14 @@ async def _worker(
                     )
                 for brand_slug, aliases in brands:
                     raw = {
-                        "platform": MP, "keyword": keyword, "brand_slug": brand_slug,
+                        "platform": provider.slug, "keyword": keyword, "brand_slug": brand_slug,
                         "city": loc.city, "zone": loc.location_name, "pincode": loc.pincode,
                         "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
                         "competitors": competitor_list or None,
                         "merchant_id": res["merchant_id"], "total_results": res["total_results"],
                         "products": res["products"],
                     }
-                    result = bl_parser.parse(raw)
+                    result = provider.parse(raw)
                     _t = time.monotonic()
                     n = await staging.save_search(stg, result, tid, job_id)
                     store_db += time.monotonic() - _t
@@ -185,54 +185,61 @@ async def _worker(
             await asyncio.sleep(_PACING)
     finally:
         if session:
-            await bl_scraper.close_session(session)
+            await provider.close_session(session)
 
 
 async def run_tenant(
     db: AsyncSession, tenant_id, cap: int | None = None,
     keyword: str | None = None, city: str | None = None,
     resume: bool = False, workers: int = 5,
+    mp_slug: str = DEFAULT_MARKETPLACE,
 ) -> dict:
-    """Scrape a tenant's whole Blinkit watchlist across its selected locations.
+    """Scrape a tenant's whole watchlist across its selected locations on `mp_slug`.
     `keyword`/`city` narrow the run to a single keyword or city. `resume` continues
-    the tenant's last incomplete job, skipping already-scraped stores. `workers` is
-    the concurrent pool size — N isolated browser contexts on one browser, each with
-    its own DB session, pulling stores off a shared queue."""
+    the tenant's last incomplete job for THIS marketplace, skipping already-scraped
+    stores. `workers` is the concurrent pool size — N isolated browser contexts on
+    one browser, each pulling stores off a shared queue."""
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
-    # Precedence: CLI --cap > tenant's configured keyword_cap > global default.
-    cap = cap or await _keyword_cap(db, tid) or ep.RESULT_CAP
+    provider = get_provider(mp_slug)
+    # Precedence: CLI --cap > tenant's configured keyword_cap > the platform's floor.
+    cap = cap or await _keyword_cap(db, tid) or provider.result_cap
 
     kw_map = await _own_keyword_map(db, tid)
     if keyword:
         kw_map = {k: v for k, v in kw_map.items() if k == keyword}
-    locations = await _locations(db, tid)
+    locations = await _locations(db, tid, mp_slug)
     if city:
         locations = [l for l in locations if l.city == city]
     competitor_list = await _competitor_list(db, tid)
     summary = {
-        "tenant_id": str(tid), "keywords": len(kw_map), "locations": len(locations),
+        "tenant_id": str(tid), "mp_slug": mp_slug,
+        "keywords": len(kw_map), "locations": len(locations),
         "snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "job_id": None,
     }
     if not kw_map:
         logger.warning(f"orchestrator: tenant {tid} has no own-brand keywords — skipping")
         return summary
     if not locations:
-        logger.warning(f"orchestrator: tenant {tid} has no Blinkit locations — skipping")
+        logger.warning(
+            f"orchestrator: tenant {tid} has no {provider.name} locations — skipping"
+        )
         return summary
 
     # Results are staged to a local SQLite file, NOT written to Postgres here — see
     # scraper/public/staging.py. `cli scrape load` pushes the file afterwards.
     if resume:
-        prev = staging.resumable(staging.KIND_SEARCH, tid)
+        prev = staging.resumable(staging.KIND_SEARCH, tid, mp_slug)
         if not prev:
-            logger.warning(f"orchestrator: no unloaded staging run to resume for tenant {tid}")
+            logger.warning(
+                f"orchestrator: no unloaded {mp_slug} staging run to resume for tenant {tid}"
+            )
             return summary
         stg = staging.open_run(prev["path"])
         done = staging.done_pairs(stg)
         logger.info(f"orchestrator: resuming {prev['path'].name} — "
                     f"{len(done)} (keyword,store) pairs already staged")
     else:
-        stg = staging.new_run(tid, staging.KIND_SEARCH)
+        stg = staging.new_run(tid, staging.KIND_SEARCH, mp_slug)
         done = set()
     job_id = stg["job_id"]
     summary["job_id"] = job_id
@@ -257,11 +264,12 @@ async def run_tenant(
             browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
             try:
                 logger.info(
-                    f"orchestrator: tenant {tid} — {n_workers} workers × {total} stores, cap={cap}"
+                    f"orchestrator: tenant {tid} on {mp_slug} — {n_workers} workers × "
+                    f"{total} stores, cap={cap}"
                 )
                 tasks = [
                     asyncio.create_task(_worker(
-                        w, browser, seed, queue, kw_map, competitor_list, done,
+                        w, provider, browser, seed, queue, kw_map, competitor_list, done,
                         stg, stats, total, tid, job_id, cap,
                     ))
                     for w in range(1, n_workers + 1)
@@ -295,7 +303,7 @@ async def run_tenant(
 async def run_all(
     db: AsyncSession, cap: int | None = None,
     keyword: str | None = None, city: str | None = None, workers: int = 5,
-    on_tenant_done=None,
+    on_tenant_done=None, mp_slug: str = DEFAULT_MARKETPLACE,
 ) -> list[dict]:
     """Run every active tenant, each into its own staging file.
 
@@ -309,7 +317,8 @@ async def run_all(
     )).scalars().all()
     out = []
     for t in tenants:
-        summary = await run_tenant(db, t.id, cap, keyword, city, workers=workers)
+        summary = await run_tenant(db, t.id, cap, keyword, city,
+                                   workers=workers, mp_slug=mp_slug)
         out.append(summary)
         if on_tenant_done:
             await on_tenant_done(summary)

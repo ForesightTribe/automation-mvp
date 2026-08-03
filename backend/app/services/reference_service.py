@@ -52,14 +52,18 @@ def list_cities() -> list[dict]:
     return cities
 
 
-async def list_blinkit_zones(session: AsyncSession) -> list[dict]:
-    """Return active Blinkit dark store locations from marketplace_locations.
-    Falls back to hardcoded CITIES if the table is empty (not yet populated by scraper)."""
+async def list_blinkit_zones(session: AsyncSession, mp_slug: str = "blinkit") -> list[dict]:
+    """Return a marketplace's active dark store locations from marketplace_locations.
+    Falls back to hardcoded CITIES if the table is empty (not yet populated by scraper).
+
+    Defaults to Blinkit for the existing route; catalogs are per-marketplace, so the
+    caller picks. (The `blinkit` in the name is historical — rename with the route.)
+    """
     rows = (
         await session.execute(
             select(MarketplaceLocation)
             .where(
-                MarketplaceLocation.mp_slug == "blinkit",
+                MarketplaceLocation.mp_slug == mp_slug,
                 MarketplaceLocation.is_active == True,
                 MarketplaceLocation.lat.is_not(None),
                 MarketplaceLocation.lon.is_not(None),

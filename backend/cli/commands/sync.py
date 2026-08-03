@@ -6,14 +6,24 @@ is the source of truth; scrapers never read it. Updates are infrequent, so this
 replaces the per-row add/remove CLI verbs.
 
 Sheets
-  locations : the global Blinkit express-darkstore catalog (keyed on merchant_id)
-              cols: merchant_id, city, state, region, pincode, lat, lon, active,
-                    location_name, address
+  locations : the per-marketplace store catalog (keyed on mp + merchant_id)
+              cols: mp, merchant_id, city, state, region, pincode, lat, lon,
+                    active, location_name, address
   brands    : per-tenant keywords/aliases (the watchlist)
               cols: tenant, brand, relationship, keywords, aliases,
                     keyword_cap, brand_cap   (caps optional; own rows only)
   coverage  : which catalog locations each tenant scrapes
-              cols: tenant, city   (one row per city the tenant covers)
+              cols: mp, tenant, city   (one row per marketplace+city covered)
+
+`mp` is optional and defaults to `blinkit`, so a pre-multi-marketplace workbook
+syncs unchanged. **Each marketplace has its own catalog** — a store's coordinate is
+that platform's catchment and is never borrowed from another (see docs/zepto.md).
+
+⚠️ `--prune` only ever deletes within the marketplaces the FILE mentions. A
+workbook with no Zepto rows can never prune Zepto — but a workbook whose `mp`
+column is blank on Zepto rows reads them as Blinkit and will propose deleting the
+real Blinkit catalog. Always `--dry-run` first and treat a non-zero `locations`
+deletion as a stop-and-check.
 """
 import asyncio
 
@@ -29,7 +39,12 @@ from app.models.tenant import Tenant, TenantWatchlist
 from scraper.utils.storage import ensure_refs
 
 console = Console()
-MP = "blinkit"
+DEFAULT_MP = "blinkit"
+
+
+def _mp(v) -> str:
+    """The row's marketplace slug; blank → blinkit (back-compat for older files)."""
+    return _str(v).lower() or DEFAULT_MP
 
 
 # ── cell coercion ────────────────────────────────────────────────────────────
@@ -111,7 +126,7 @@ async def _sync_locations(db, rows, prune) -> dict:
         mid = _str(r.get("merchant_id"))
         if not mid:
             continue
-        desired[mid] = {
+        desired[(_mp(r.get("mp")), mid)] = {
             "city": _str(r.get("city")).lower(),
             "state": _str(r.get("state")),
             "region": _str(r.get("region")),
@@ -122,25 +137,28 @@ async def _sync_locations(db, rows, prune) -> dict:
             "lon": _float(r.get("lon")),
             "is_active": _bool(r.get("active")),
         }
+    # Only load (and therefore only ever prune) the marketplaces this file declares.
+    # A workbook that says nothing about a marketplace must not be able to delete it.
+    mps = {mp for mp, _ in desired}
     existing = {
-        l.merchant_id: l
+        (l.mp_slug, l.merchant_id): l
         for l in (await db.execute(
-            select(MarketplaceLocation).where(MarketplaceLocation.mp_slug == MP)
+            select(MarketplaceLocation).where(MarketplaceLocation.mp_slug.in_(mps or [None]))
         )).scalars().all()
     }
     added = updated = deleted = 0
-    for mid, vals in desired.items():
-        cur = existing.get(mid)
+    for (mp, mid), vals in desired.items():
+        cur = existing.get((mp, mid))
         if cur is None:
-            db.add(MarketplaceLocation(mp_slug=MP, merchant_id=mid, **vals))
+            db.add(MarketplaceLocation(mp_slug=mp, merchant_id=mid, **vals))
             added += 1
         elif any(getattr(cur, f) != vals[f] for f in _LOC_FIELDS):
             for f in _LOC_FIELDS:
                 setattr(cur, f, vals[f])
             updated += 1
     if prune:
-        for mid, cur in existing.items():
-            if mid not in desired:
+        for key, cur in existing.items():
+            if key not in desired:
                 await db.execute(
                     TenantLocation.__table__.delete().where(TenantLocation.location_id == cur.id)
                 )
@@ -150,7 +168,7 @@ async def _sync_locations(db, rows, prune) -> dict:
     return {"added": added, "updated": updated, "deleted": deleted}
 
 
-async def _sync_brands(db, rows, tenants, prune) -> dict:
+async def _sync_brands(db, rows, tenants, prune, tenant_mps: dict | None = None) -> dict:
     desired = {}
     for r in rows:
         tname = _str(r.get("tenant"))
@@ -171,13 +189,19 @@ async def _sync_brands(db, rows, tenants, prune) -> dict:
             select(TenantWatchlist).where(TenantWatchlist.tenant_id.in_(ref_tenants or [None]))
         )).scalars().all()
     }
+    tenant_mps = tenant_mps or {}
     added = updated = deleted = 0
     for (tid, brand), vals in desired.items():
-        await ensure_refs(db, brand, MP)
+        mps = tenant_mps.get(tid) or [DEFAULT_MP]
+        for mp in mps:
+            await ensure_refs(db, brand, mp)
         cur = existing.get((tid, brand))
         if cur is None:
+            # `marketplaces` is descriptive metadata (the scrape path selects the
+            # platform via --marketplace, not from here), so it is seeded on INSERT
+            # only — rewriting it on every sync would churn rows for no effect.
             db.add(TenantWatchlist(
-                tenant_id=tid, brand_slug=brand, cities=[], marketplaces=[MP], **vals
+                tenant_id=tid, brand_slug=brand, cities=[], marketplaces=mps, **vals
             ))
             added += 1
         elif (cur.relationship, cur.keywords, cur.aliases, cur.keyword_cap, cur.brand_cap) != (
@@ -199,32 +223,40 @@ async def _sync_brands(db, rows, tenants, prune) -> dict:
 
 
 async def _sync_coverage(db, rows, tenants, prune) -> dict:
-    # Resolve each (tenant, city) to catalog location ids.
-    desired = set()
+    # Resolve each (marketplace, tenant, city) to catalog location ids.
+    desired: dict[tuple, str] = {}
     covered_tenants = set()
+    mps = set()
     for r in rows:
         tname = _str(r.get("tenant"))
         city = _str(r.get("city")).lower()
         if not tname or not city:
             continue
+        mp = _mp(r.get("mp"))
         tid = tenants[tname]
         covered_tenants.add(tid)
+        mps.add(mp)
         q = select(MarketplaceLocation.id).where(
-            MarketplaceLocation.mp_slug == MP, MarketplaceLocation.city == city
+            MarketplaceLocation.mp_slug == mp, MarketplaceLocation.city == city
         )
         for lid in (await db.execute(q)).scalars().all():
-            desired.add((tid, lid))
+            desired[(tid, lid)] = mp
 
+    # Scoped to the marketplaces the file declares, for the same reason as locations:
+    # silence about a marketplace must never be read as "delete it".
     existing = {
         (t.tenant_id, t.location_id): t
         for t in (await db.execute(
-            select(TenantLocation).where(TenantLocation.tenant_id.in_(covered_tenants or [None]))
+            select(TenantLocation).where(
+                TenantLocation.tenant_id.in_(covered_tenants or [None]),
+                TenantLocation.mp_slug.in_(mps or [None]),
+            )
         )).scalars().all()
     }
     added = deleted = 0
-    for (tid, lid) in desired:
+    for (tid, lid), mp in desired.items():
         if (tid, lid) not in existing:
-            db.add(TenantLocation(tenant_id=tid, mp_slug=MP, location_id=lid))
+            db.add(TenantLocation(tenant_id=tid, mp_slug=mp, location_id=lid))
             added += 1
     if prune:
         for key, cur in existing.items():
@@ -233,6 +265,18 @@ async def _sync_coverage(db, rows, tenants, prune) -> dict:
                 deleted += 1
     await db.flush()
     return {"added": added, "deleted": deleted}
+
+
+def _tenant_marketplaces(rows, tenants) -> dict:
+    """tenant_id -> the marketplaces it covers, from the coverage sheet. Seeds a NEW
+    watchlist row's `marketplaces`; existing rows are never rewritten from here."""
+    out: dict = {}
+    for r in rows:
+        tname = _str(r.get("tenant"))
+        if not tname or tname not in tenants:
+            continue
+        out.setdefault(tenants[tname], set()).add(_mp(r.get("mp")))
+    return {tid: sorted(mps) for tid, mps in out.items()}
 
 
 async def _do_sync(data, dry_run, prune) -> dict:
@@ -245,8 +289,9 @@ async def _do_sync(data, dry_run, prune) -> dict:
                 f"Unknown tenant(s) in file: {unknown}. Create them with `cli tenant create` first."
             )
 
+        tenant_mps = _tenant_marketplaces(data["coverage"], tenants)
         loc = await _sync_locations(db, data["locations"], prune)
-        brands = await _sync_brands(db, data["brands"], tenants, prune)
+        brands = await _sync_brands(db, data["brands"], tenants, prune, tenant_mps)
         cov = await _sync_coverage(db, data["coverage"], tenants, prune)
 
         if dry_run:
@@ -262,10 +307,11 @@ def _write_template(path: str) -> None:
     wb = Workbook()
     ws = wb.active
     ws.title = "locations"
-    ws.append(["merchant_id", "city", "state", "region", "pincode", "lat", "lon", "active",
-               "location_name", "address"])
-    ws.append(["48967", "delhi", "Delhi", "North India", "110001", 28.6315, 77.2167, "yes",
-               "Connaught Place", "Block A, Connaught Place, New Delhi, Delhi 110001, India"])
+    ws.append(["mp", "merchant_id", "city", "state", "region", "pincode", "lat", "lon",
+               "active", "location_name", "address"])
+    ws.append(["blinkit", "48967", "delhi", "Delhi", "North India", "110001", 28.6315,
+               77.2167, "yes", "Connaught Place",
+               "Block A, Connaught Place, New Delhi, Delhi 110001, India"])
 
     b = wb.create_sheet("brands")
     b.append(["tenant", "brand", "relationship", "keywords", "aliases", "keyword_cap", "brand_cap"])
@@ -273,8 +319,8 @@ def _write_template(path: str) -> None:
     b.append(["Dobra", "bisleri", "competitor", "", "bisleri", "", ""])
 
     c = wb.create_sheet("coverage")
-    c.append(["tenant", "city"])
-    c.append(["Dobra", "delhi"])
+    c.append(["mp", "tenant", "city"])
+    c.append(["blinkit", "Dobra", "delhi"])
 
     wb.save(path)
 

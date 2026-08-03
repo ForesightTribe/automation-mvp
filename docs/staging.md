@@ -24,7 +24,7 @@ one. So the scrape and the database write were separated — the E and L of ETL.
 ## How it works
 
 ```
-scrape ──► staging/<kind>_<tenant8>_<timestamp>.sqlite3 ──► cli scrape load ──► Postgres
+scrape ──► staging/<kind>_<mp>_<tenant8>_<timestamp>.sqlite3 ──► cli scrape load ──► Postgres
    (no DB connection at all)                                (one transaction)
 ```
 
@@ -130,13 +130,26 @@ of them.** If file 3 of 5 fails, files 1-2 and 4-5 still commit and file 3 stays
 
 `--resume` now reads the **staging file**, not the database — so resuming works even
 while Supabase is down. It continues the newest unloaded, unfinished run for that
-tenant+kind.
+tenant+kind+**marketplace**. The marketplace is not optional there: without it a
+`--resume` on one platform would pick up the other's abandoned run and stage its
+rows under the wrong `mp_slug`.
+
+## Marketplace
+
+The run carries an `mp_slug` (also in the filename, and on every staged row), so
+two platforms can stage into one directory. `cli scrape staged` shows an **MP**
+column and takes `-m` to filter.
+
+Files staged **before** this existed have no `mp_slug` column; `_add_missing()`
+tops it up as NULL and every reader resolves NULL to `blinkit` — which they are by
+construction. A pre-existing staged run still loads unchanged.
 
 ## Retention
 
-Loaded files are kept — **last 5 per tenant per kind** — then pruned oldest-first on
-the next successful load. **Unloaded files are never pruned**: deleting one would
-destroy an unpushed scrape.
+Loaded files are kept — **last 5 per tenant per kind per marketplace** — then pruned
+oldest-first on the next successful load. Scoped per marketplace so a busy platform
+cannot evict the other's history. **Unloaded files are never pruned**: deleting one
+would destroy an unpushed scrape.
 
 ## The one thing that isn't a straight copy
 

@@ -1,4 +1,4 @@
-"""Targeted own-SKU orchestrator (Blinkit).
+"""Targeted own-SKU orchestrator — the brand-query scrape.
 
 The companion to `orchestrator.py`. Where that runs category keywords for SoV/rank
 + competitors, this runs each tenant's **brand name** as the query and paginates
@@ -8,8 +8,10 @@ writes the flat `sku_snapshots` fact table (price / mrp / discount / stock /
 inventory / rating), keyed on `platform_product_id`.
 
 Same machinery as the keyword orchestrator: one browser, N context-workers pulling
-stores off a shared queue. Results are staged to a local SQLite file (no DB session
-during the scrape — see `staging.py`); `--resume` skips stores already staged.
+stores off a shared queue, and the marketplace engine resolved through
+`scraper/public/providers.py` so nothing here is platform-specific. Results are
+staged to a local SQLite file (no DB session during the scrape — see `staging.py`);
+`--resume` skips stores already staged.
 """
 import asyncio
 import time
@@ -22,13 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.platforms.blinkit.public_data import endpoints as ep
-from scraper.platforms.blinkit.public_data import scraper as bl_scraper
 from scraper.public import staging
+from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.search_result import classify_products
 
-MP = "blinkit"
 DASHBOARD = "public_skus"
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining brands
@@ -44,7 +44,8 @@ def _brand_query(brand_slug: str, aliases: list[str]) -> str:
     return brand_slug.replace("-", " ")
 
 
-async def _own_brands(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple[str, list[str], int]]:
+async def _own_brands(db: AsyncSession, tenant_id: uuid.UUID,
+                      default_cap: int) -> list[tuple[str, list[str], int]]:
     """(brand_slug, aliases, brand_cap) for each own brand the tenant tracks."""
     rows = (await db.execute(
         select(TenantWatchlist).where(
@@ -52,25 +53,26 @@ async def _own_brands(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple[str,
             TenantWatchlist.relationship == "own",
         )
     )).scalars().all()
-    return [(e.brand_slug, e.aliases or [], e.brand_cap or ep.BRAND_RESULT_CAP) for e in rows]
+    return [(e.brand_slug, e.aliases or [], e.brand_cap or default_cap) for e in rows]
 
 
-async def _locations(db: AsyncSession, tenant_id: uuid.UUID) -> list[MarketplaceLocation]:
+async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
+                     mp_slug: str) -> list[MarketplaceLocation]:
     return (await db.execute(
         select(MarketplaceLocation)
         .join(TenantLocation, TenantLocation.location_id == MarketplaceLocation.id)
-        .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == MP)
+        .where(TenantLocation.tenant_id == tenant_id, MarketplaceLocation.mp_slug == mp_slug)
         .order_by(MarketplaceLocation.city, MarketplaceLocation.merchant_id)
     )).scalars().all()
 
 
 async def _worker(
-    wid, browser, seed, queue, brands, done, stg, stats, total, tid, job_id,
+    wid, provider, browser, seed, queue, brands, done, stg, stats, total, tid, job_id,
 ) -> None:
     """One concurrent worker: own browser context + session, pulling stores off the
     shared queue until empty. Per store, runs each own brand's query and stages its
     own-brand listings. Holds no DB session — see scraper/public/staging.py."""
-    session = await bl_scraper.open_context_session(browser, seed[0], seed[1])
+    session = await provider.open_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
@@ -97,8 +99,9 @@ async def _worker(
                 try:
                     # Brand scrape follows the similarity tail — Blinkit returns
                     # only ~18 own products as `basic`, the rest as similarity;
-                    # own-only classification discards non-own padding.
-                    res = await bl_scraper.search(
+                    # own-only classification discards non-own padding. A provider
+                    # without that distinction may ignore the flag.
+                    res = await provider.search(
                         session, query, brand_cap,
                         lat=loc.lat, lon=loc.lon, follow_similarity=True,
                     )
@@ -115,8 +118,8 @@ async def _worker(
                         f"{res.get('error') or 'no result'}"
                     )
                     if stale >= _REFRESH_AFTER:
-                        await bl_scraper.close_session(session)
-                        session = await bl_scraper.open_context_session(browser, loc.lat, loc.lon)
+                        await provider.close_session(session)
+                        session = await provider.open_session(browser, loc.lat, loc.lon)
                         stale = 0
                         if not session:
                             logger.warning(f"worker {wid}: session refresh failed — exiting")
@@ -150,47 +153,52 @@ async def _worker(
             await asyncio.sleep(_PACING)
     finally:
         if session:
-            await bl_scraper.close_session(session)
+            await provider.close_session(session)
 
 
 async def run_targeted(
     db: AsyncSession, tenant_id, cap: int | None = None,
     city: str | None = None, resume: bool = False, workers: int = 5,
+    mp_slug: str = DEFAULT_MARKETPLACE,
 ) -> dict:
-    """Scrape a tenant's own catalog (brand query) across its locations, writing
-    `sku_snapshots`. `cap` overrides every brand's brand_cap for this run. `city`
-    narrows to one city. `resume` continues the last incomplete run, skipping
-    already-scraped stores. `workers` is the concurrent pool size."""
+    """Scrape a tenant's own catalog (brand query) across its `mp_slug` locations,
+    writing `sku_snapshots`. `cap` overrides every brand's brand_cap for this run.
+    `city` narrows to one city. `resume` continues the last incomplete run for THIS
+    marketplace, skipping already-scraped stores. `workers` is the pool size."""
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
+    provider = get_provider(mp_slug)
 
-    brands = await _own_brands(db, tid)
+    brands = await _own_brands(db, tid, provider.brand_cap)
     if cap:  # CLI override wins over each brand's configured cap
         brands = [(slug, aliases, cap) for slug, aliases, _ in brands]
-    locations = await _locations(db, tid)
+    locations = await _locations(db, tid, mp_slug)
     if city:
         locations = [l for l in locations if l.city == city]
     summary = {
-        "tenant_id": str(tid), "brands": len(brands), "locations": len(locations),
+        "tenant_id": str(tid), "mp_slug": mp_slug,
+        "brands": len(brands), "locations": len(locations),
         "rows": 0, "errors": 0, "skipped": 0, "job_id": None,
     }
     if not brands:
         logger.warning(f"targeted: tenant {tid} has no own brands — skipping")
         return summary
     if not locations:
-        logger.warning(f"targeted: tenant {tid} has no Blinkit locations — skipping")
+        logger.warning(f"targeted: tenant {tid} has no {provider.name} locations — skipping")
         return summary
 
     # Staged locally, not written to Postgres here — see scraper/public/staging.py.
     if resume:
-        prev = staging.resumable(staging.KIND_SKUS, tid)
+        prev = staging.resumable(staging.KIND_SKUS, tid, mp_slug)
         if not prev:
-            logger.warning(f"targeted: no unloaded staging run to resume for tenant {tid}")
+            logger.warning(
+                f"targeted: no unloaded {mp_slug} staging run to resume for tenant {tid}"
+            )
             return summary
         stg = staging.open_run(prev["path"])
         done = staging.done_stores(stg)
         logger.info(f"targeted: resuming {prev['path'].name} — {len(done)} stores already staged")
     else:
-        stg = staging.new_run(tid, staging.KIND_SKUS)
+        stg = staging.new_run(tid, staging.KIND_SKUS, mp_slug)
         done = set()
     job_id = stg["job_id"]
     summary["job_id"] = job_id
@@ -213,12 +221,13 @@ async def run_targeted(
             browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
             try:
                 logger.info(
-                    f"targeted: tenant {tid} — {n_workers} workers × {total} stores, "
-                    f"{len(brands)} brand(s)"
+                    f"targeted: tenant {tid} on {mp_slug} — {n_workers} workers × "
+                    f"{total} stores, {len(brands)} brand(s)"
                 )
                 tasks = [
                     asyncio.create_task(_worker(
-                        w, browser, seed, queue, brands, done, stg, stats, total, tid, job_id,
+                        w, provider, browser, seed, queue, brands, done,
+                        stg, stats, total, tid, job_id,
                     ))
                     for w in range(1, n_workers + 1)
                 ]
@@ -250,7 +259,7 @@ async def run_targeted(
 
 async def run_all_targeted(
     db: AsyncSession, cap: int | None = None, city: str | None = None, workers: int = 5,
-    on_tenant_done=None,
+    on_tenant_done=None, mp_slug: str = DEFAULT_MARKETPLACE,
 ) -> list[dict]:
     """Run the targeted own-SKU scrape for every active tenant.
 
@@ -263,7 +272,7 @@ async def run_all_targeted(
     )).scalars().all()
     out = []
     for t in tenants:
-        summary = await run_targeted(db, t.id, cap, city, workers=workers)
+        summary = await run_targeted(db, t.id, cap, city, workers=workers, mp_slug=mp_slug)
         out.append(summary)
         if on_tenant_done:
             await on_tenant_done(summary)

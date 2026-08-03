@@ -98,6 +98,7 @@ def _scorecard(tenant_id, p):
 
 def _public_keyword(tenant_id, p):
     a = ["scrape", "public-run", "--tenant", str(tenant_id)]
+    _opt(a, "--marketplace", p.get("marketplace"))
     _opt(a, "--city", p.get("city"))
     _opt(a, "--keyword", p.get("keyword"))
     _opt(a, "--cap", p.get("cap"))
@@ -108,6 +109,7 @@ def _public_keyword(tenant_id, p):
 
 def _public_skus(tenant_id, p):
     a = ["scrape", "public-skus", "--tenant", str(tenant_id)]
+    _opt(a, "--marketplace", p.get("marketplace"))
     _opt(a, "--city", p.get("city"))
     _opt(a, "--brand-cap", p.get("brand_cap"))
     _opt(a, "--workers", p.get("workers"))
@@ -188,13 +190,17 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         Lane.dashboard, 30 * 60, _scorecard,
         param_keys=("week",),
     ),
+    # Public scrapes take the marketplace as a PARAM rather than having a job type
+    # each: lane and timeout are identical, and sharing the `batch` lane is correct —
+    # two concurrent Chromium worker pools would thrash the VM. Per-marketplace
+    # cadence still comes free, since schedules are rows. See docs/zepto.md.
     "scrape.public_keyword": JobTypeSpec(
         Lane.batch, 12 * 60 * 60, _public_keyword,
-        param_keys=("city", "keyword", "cap", "workers", "resume"),
+        param_keys=("marketplace", "city", "keyword", "cap", "workers", "resume"),
     ),
     "scrape.public_skus": JobTypeSpec(
         Lane.batch, 12 * 60 * 60, _public_skus,
-        param_keys=("city", "brand_cap", "workers", "resume"),
+        param_keys=("marketplace", "city", "brand_cap", "workers", "resume"),
     ),
     # Ad automations — each has its own dedicated lane so they never block each other.
     "ads.budget_scheduler": JobTypeSpec(

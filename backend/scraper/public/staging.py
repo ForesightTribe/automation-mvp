@@ -37,6 +37,10 @@ from scraper.utils.pack import pack_fields, combo_from_pack
 KIND_SEARCH = "public_search"
 KIND_SKUS = "public_skus"
 
+# Files staged before the multi-marketplace refactor carry no `mp_slug`; every
+# reader resolves that NULL to this, so a pre-existing staged run still loads.
+DEFAULT_MP = "blinkit"
+
 STAGING_DIR = Path(__file__).resolve().parents[2] / "staging"
 KEEP_PER_KIND = 5   # loaded files retained per (tenant, kind); older ones pruned
 
@@ -45,6 +49,9 @@ CREATE TABLE IF NOT EXISTS run (
     job_id        TEXT PRIMARY KEY,
     tenant_id     TEXT NOT NULL,
     kind          TEXT NOT NULL,
+    -- Which marketplace this run scraped. NULL in files staged before the
+    -- multi-marketplace refactor — readers default those to 'blinkit'.
+    mp_slug       TEXT,
     started_at    TEXT NOT NULL,
     completed_at  TEXT,
     status        TEXT NOT NULL,      -- running | success | failed
@@ -114,7 +121,8 @@ def _connect(path: Path) -> sqlite3.Connection:
     # (i.e. "not yet parsed"), which the loader then COPYs straight through.
     _add_missing(conn, "run",
                  [("stores_total", "INTEGER"), ("stores_done", "INTEGER"),
-                  ("errors", "INTEGER"), ("skipped", "INTEGER")])
+                  ("errors", "INTEGER"), ("skipped", "INTEGER"),
+                  ("mp_slug", "TEXT")])
     _pack_cols = [("pack_raw", "TEXT"), ("pack_size", "REAL"),
                   ("pack_uom", "TEXT"), ("pack_count", "INTEGER")]
     _add_missing(conn, "search_listings", _pack_cols)
@@ -132,27 +140,32 @@ def _add_missing(conn: sqlite3.Connection, table: str, cols: list[tuple[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
 
-def new_run(tenant_id, kind: str, job_id: str | None = None) -> dict:
+def new_run(tenant_id, kind: str, mp_slug: str = DEFAULT_MP,
+            job_id: str | None = None) -> dict:
     """Create a staging file for a new run and return its handle.
 
     `job_id` is generated LOCALLY (no DB round-trip) and only becomes a
     `scrape_jobs` row when the file is loaded — so an unloaded scrape leaves no
     phantom `running` job behind.
+
+    The marketplace is part of the filename as well as a column: with two platforms
+    staging into one directory, `cli scrape staged` needs to be readable at a glance.
     """
     STAGING_DIR.mkdir(parents=True, exist_ok=True)
     jid = job_id or str(uuid.uuid4())
     tid = str(tenant_id)
     started = now_ist()
-    path = STAGING_DIR / f"{kind}_{tid[:8]}_{started:%Y%m%d-%H%M%S}.sqlite3"
+    path = STAGING_DIR / f"{kind}_{mp_slug}_{tid[:8]}_{started:%Y%m%d-%H%M%S}.sqlite3"
     conn = _connect(path)
     conn.execute(
-        "INSERT INTO run (job_id, tenant_id, kind, started_at, status) VALUES (?,?,?,?,?)",
-        (jid, tid, kind, started.isoformat(), "running"),
+        "INSERT INTO run (job_id, tenant_id, kind, mp_slug, started_at, status) "
+        "VALUES (?,?,?,?,?,?)",
+        (jid, tid, kind, mp_slug, started.isoformat(), "running"),
     )
     conn.commit()
-    logger.info(f"staging: new run {kind} job={jid} -> {path.name}")
+    logger.info(f"staging: new run {kind}/{mp_slug} job={jid} -> {path.name}")
     return {"conn": conn, "path": path, "job_id": jid, "tenant_id": tid,
-            "kind": kind, "lock": asyncio.Lock()}
+            "kind": kind, "mp_slug": mp_slug, "lock": asyncio.Lock()}
 
 
 def open_run(path: Path | str) -> dict:
@@ -164,6 +177,7 @@ def open_run(path: Path | str) -> dict:
         raise ValueError(f"{path.name}: no run row — not a staging file")
     return {"conn": conn, "path": path, "job_id": row["job_id"],
             "tenant_id": row["tenant_id"], "kind": row["kind"],
+            "mp_slug": row["mp_slug"] or DEFAULT_MP,
             "lock": asyncio.Lock()}
 
 
@@ -233,7 +247,7 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
                (tenant_id, job_id, brand_slug, mp_slug, keyword, city, zone, pincode,
                 lat, lon, merchant_id, scraped_at, brand_rank, brand_sov, total_results)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            (tid, jid, result["brand_slug"], "blinkit", result["keyword"],
+            (tid, jid, result["brand_slug"], stg["mp_slug"], result["keyword"],
              result.get("city", ""), result.get("zone", ""), result.get("pincode", ""),
              result.get("lat"), result.get("lon"), result.get("merchant_id", ""),
              scraped_at, result.get("brand_rank"), result.get("brand_sov_pct"),
@@ -248,7 +262,7 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
                 in_stock, inventory, platform_product_id,
                 merchant_id, merchant_type, is_combo, extra)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            [(snap_id, tid, jid, "blinkit", l.get("brand_slug"), result["keyword"],
+            [(snap_id, tid, jid, stg["mp_slug"], l.get("brand_slug"), result["keyword"],
               result.get("city", ""), result.get("zone", ""), result.get("pincode", ""),
               scraped_at, l.get("position"), l.get("name", ""),
               int(bool(l.get("is_brand", False))), l.get("price"), l.get("mrp"),
@@ -284,7 +298,7 @@ async def save_skus(stg: dict, listings: list[dict], brand_slug: str, tenant_id,
                 price, mrp, discount_pct, pack_raw, pack_size, pack_uom, pack_count,
                 in_stock, inventory, rating, is_combo)
                VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
-            [(tid, jid, "blinkit", brand_slug, l.get("product_id") or "",
+            [(tid, jid, stg["mp_slug"], brand_slug, l.get("product_id") or "",
               l.get("name", ""), l.get("merchant_id") or merchant_id,
               l.get("merchant_type") or "", city, lat, lon, scraped_at,
               l.get("price"), l.get("mrp"), l.get("discount_pct"),
@@ -313,7 +327,7 @@ def done_stores(stg: dict) -> set[tuple]:
 
 # ── discovery / retention ────────────────────────────────────────────────────
 
-def _runs(kind: str | None = None, tenant_id=None) -> list[dict]:
+def _runs(kind: str | None = None, tenant_id=None, mp_slug: str | None = None) -> list[dict]:
     """Every staging file on disk, newest first, with its run row."""
     if not STAGING_DIR.exists():
         return []
@@ -335,27 +349,35 @@ def _runs(kind: str | None = None, tenant_id=None) -> list[dict]:
         d["path"] = p
         d["counts"] = cnt
         d["rows"] = sum(cnt.values())
+        d["mp_slug"] = d.get("mp_slug") or DEFAULT_MP
         if kind and d["kind"] != kind:
             continue
         if tenant_id and d["tenant_id"] != str(tenant_id):
+            continue
+        if mp_slug and d["mp_slug"] != mp_slug:
             continue
         out.append(d)
     return sorted(out, key=lambda d: d["started_at"], reverse=True)
 
 
-def list_runs(kind: str | None = None, tenant_id=None) -> list[dict]:
-    return _runs(kind, tenant_id)
+def list_runs(kind: str | None = None, tenant_id=None, mp_slug: str | None = None) -> list[dict]:
+    return _runs(kind, tenant_id, mp_slug)
 
 
-def pending(kind: str | None = None, tenant_id=None) -> list[dict]:
+def pending(kind: str | None = None, tenant_id=None, mp_slug: str | None = None) -> list[dict]:
     """Runs not yet pushed to Postgres, newest first."""
-    return [r for r in _runs(kind, tenant_id) if not r["loaded_at"]]
+    return [r for r in _runs(kind, tenant_id, mp_slug) if not r["loaded_at"]]
 
 
-def resumable(kind: str, tenant_id) -> dict | None:
-    """The newest unloaded, unfinished run for this tenant+kind — what --resume
-    continues. Mirrors the old `_latest_incomplete_job` DB query."""
-    for r in _runs(kind, tenant_id):
+def resumable(kind: str, tenant_id, mp_slug: str = DEFAULT_MP) -> dict | None:
+    """The newest unloaded, unfinished run for this tenant+kind+marketplace — what
+    --resume continues. Mirrors the old `_latest_incomplete_job` DB query.
+
+    The marketplace filter is not optional: without it a `--resume` on one platform
+    would happily pick up the other's abandoned run and stage its rows under the
+    wrong `mp_slug`.
+    """
+    for r in _runs(kind, tenant_id, mp_slug):
         if not r["loaded_at"] and r["status"] != "success":
             return r
     return None
@@ -395,10 +417,16 @@ def mark_loaded(path: Path | str) -> None:
     conn.close()
 
 
-def prune(tenant_id, kind: str, keep: int = KEEP_PER_KIND) -> list[Path]:
-    """Delete the oldest LOADED files beyond `keep`, per (tenant, kind). Unloaded
-    files are never touched — losing one would lose an unpushed scrape."""
-    loaded = [r for r in _runs(kind, tenant_id) if r["loaded_at"]]
+def prune(tenant_id, kind: str, mp_slug: str = DEFAULT_MP,
+          keep: int = KEEP_PER_KIND) -> list[Path]:
+    """Delete the oldest LOADED files beyond `keep`, per (tenant, kind, marketplace).
+    Unloaded files are never touched — losing one would lose an unpushed scrape.
+
+    Scoped per marketplace so retention is `keep` runs of EACH platform, not `keep`
+    runs shared between them (which would let a busy platform evict the other's
+    history).
+    """
+    loaded = [r for r in _runs(kind, tenant_id, mp_slug) if r["loaded_at"]]
     removed = []
     for r in loaded[keep:]:
         try:
@@ -411,7 +439,7 @@ def prune(tenant_id, kind: str, keep: int = KEEP_PER_KIND) -> list[Path]:
         except OSError as e:
             logger.warning(f"staging: could not prune {r['path'].name}: {e}")
     if removed:
-        logger.info(f"staging: pruned {len(removed)} old {kind} file(s), kept {keep}")
+        logger.info(f"staging: pruned {len(removed)} old {kind}/{mp_slug} file(s), kept {keep}")
     return removed
 
 

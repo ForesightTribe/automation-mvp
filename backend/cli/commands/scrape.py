@@ -750,22 +750,41 @@ async def _scrape_public(
             raise
 
 
+def _validate_marketplace(mp: str) -> str:
+    """Normalise + check a --marketplace value against the wired providers.
+
+    Fails fast rather than falling back: a typo'd marketplace silently scraping
+    Blinkit would write real rows under the wrong platform.
+    """
+    from scraper.public import providers
+
+    slug = (mp or "").strip().lower()
+    try:
+        providers.get_provider(slug)
+    except ValueError as e:
+        console.print(f"[red]{escape(str(e))}[/red]")
+        raise typer.Exit(1)
+    return slug
+
+
 @app.command("public-run")
 def public_run(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    cap: int = typer.Option(None, "--cap", help="Max products per search (default: tenant keyword_cap, else RESULT_CAP=48)"),
+    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape (blinkit)"),
+    cap: int = typer.Option(None, "--cap", help="Max products per search (default: tenant keyword_cap, else the platform floor)"),
     keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
-    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip already-scraped stores)"),
+    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run on this marketplace (skip already-scraped stores)"),
     workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). ~5–6 is a good balance."),
     no_load: bool = typer.Option(False, "--no-load", help="Stage only; don't push to the database afterwards"),
 ):
-    """Orchestrate a tenant's full Blinkit watchlist (keywords × locations), all
-    sourced from the DB (watchlist + tenant_locations). Writes per-tenant
-    snapshot+listing rows under one scrape_job per tenant. --keyword/--city narrow
-    a run to a single keyword or city. --resume picks up an interrupted run.
-    --workers sets the concurrent browser pool size.
+    """Orchestrate a tenant's full watchlist (keywords × locations), all sourced
+    from the DB (watchlist + tenant_locations). Writes per-tenant snapshot+listing
+    rows under one scrape_job per tenant. --marketplace selects the platform (its
+    locations, its engine). --keyword/--city narrow a run to a single keyword or
+    city. --resume picks up an interrupted run. --workers sets the concurrent
+    browser pool size.
     """
     if not tenant_id and not all_tenants:
         console.print("[red]Provide --tenant <id> or --all.[/red]")
@@ -773,7 +792,8 @@ def public_run(
     if resume and all_tenants:
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
-    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers, no_load))
+    mp = _validate_marketplace(marketplace)
+    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers, no_load, mp))
 
 
 async def _auto_load(summary: dict, no_load: bool) -> None:
@@ -830,7 +850,7 @@ async def _auto_load(summary: dict, no_load: bool) -> None:
 async def _public_run(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
     keyword: str | None, city: str | None, resume: bool, workers: int,
-    no_load: bool = False,
+    no_load: bool = False, mp_slug: str = "blinkit",
 ) -> None:
     from scraper.public import orchestrator
 
@@ -843,10 +863,12 @@ async def _public_run(
             # sweep — on a weekly scheduled run, tenant 7 failing must not strand the
             # six already scraped.
             summaries = await orchestrator.run_all(
-                db, cap, keyword, city, workers, on_tenant_done=_after
+                db, cap, keyword, city, workers, on_tenant_done=_after, mp_slug=mp_slug
             )
         else:
-            summaries = [await orchestrator.run_tenant(db, tenant_id, cap, keyword, city, resume, workers)]
+            summaries = [await orchestrator.run_tenant(
+                db, tenant_id, cap, keyword, city, resume, workers, mp_slug=mp_slug
+            )]
             await _after(summaries[0])
 
     if not summaries:
@@ -854,6 +876,7 @@ async def _public_run(
         return
     table = Table(show_header=True, header_style="bold")
     table.add_column("Tenant")
+    table.add_column("MP")
     table.add_column("Keywords", justify="right")
     table.add_column("Locations", justify="right")
     table.add_column("Snapshots", justify="right")
@@ -862,7 +885,8 @@ async def _public_run(
     table.add_column("Errors", justify="right")
     for s in summaries:
         table.add_row(
-            s["tenant_id"][:8], str(s["keywords"]), str(s["locations"]),
+            s["tenant_id"][:8], s.get("mp_slug", mp_slug),
+            str(s["keywords"]), str(s["locations"]),
             str(s["snapshots"]), str(s["rows"]), str(s.get("skipped", 0)),
             f"[red]{s['errors']}[/red]" if s["errors"] else "0",
         )
@@ -873,16 +897,18 @@ async def _public_run(
 def public_skus(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    cap: int = typer.Option(None, "--brand-cap", help="Override brand_cap for this run (default: per-tenant / 60)"),
+    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape (blinkit)"),
+    cap: int = typer.Option(None, "--brand-cap", help="Override brand_cap for this run (default: per-tenant, else the platform floor)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
-    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run (skip scraped stores)"),
+    resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run on this marketplace (skip scraped stores)"),
     workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size)."),
     no_load: bool = typer.Option(False, "--no-load", help="Stage only; don't push to the database afterwards"),
 ):
     """Targeted own-SKU scrape: search each tenant's brand name, paginate its whole
     catalog, and write per-product rows to sku_snapshots (price/mrp/discount/stock/
     inventory/rating), keyed on product_id. Complements `public-run` (which covers
-    SoV/rank + competitors). --resume picks up an interrupted run.
+    SoV/rank + competitors). --marketplace selects the platform. --resume picks up
+    an interrupted run.
     """
     if not tenant_id and not all_tenants:
         console.print("[red]Provide --tenant <id> or --all.[/red]")
@@ -890,12 +916,14 @@ def public_skus(
     if resume and all_tenants:
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
-    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers, no_load))
+    mp = _validate_marketplace(marketplace)
+    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers, no_load, mp))
 
 
 async def _public_skus(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
     city: str | None, resume: bool, workers: int, no_load: bool = False,
+    mp_slug: str = "blinkit",
 ) -> None:
     from scraper.public import targeted
 
@@ -905,10 +933,12 @@ async def _public_skus(
     async with AsyncSessionLocal() as db:
         if all_tenants:
             summaries = await targeted.run_all_targeted(
-                db, cap, city, workers, on_tenant_done=_after
+                db, cap, city, workers, on_tenant_done=_after, mp_slug=mp_slug
             )
         else:
-            summaries = [await targeted.run_targeted(db, tenant_id, cap, city, resume, workers)]
+            summaries = [await targeted.run_targeted(
+                db, tenant_id, cap, city, resume, workers, mp_slug=mp_slug
+            )]
             await _after(summaries[0])
 
     if not summaries:
@@ -916,6 +946,7 @@ async def _public_skus(
         return
     table = Table(show_header=True, header_style="bold")
     table.add_column("Tenant")
+    table.add_column("MP")
     table.add_column("Brands", justify="right")
     table.add_column("Locations", justify="right")
     table.add_column("SKU Rows", justify="right")
@@ -923,7 +954,8 @@ async def _public_skus(
     table.add_column("Errors", justify="right")
     for s in summaries:
         table.add_row(
-            s["tenant_id"][:8], str(s["brands"]), str(s["locations"]),
+            s["tenant_id"][:8], s.get("mp_slug", mp_slug),
+            str(s["brands"]), str(s["locations"]),
             str(s["rows"]), str(s.get("skipped", 0)),
             f"[red]{s['errors']}[/red]" if s["errors"] else "0",
         )
@@ -995,6 +1027,7 @@ def _print_soh(rows: list, date: str) -> None:
 @app.command("staged")
 def staged_list(
     pending_only: bool = typer.Option(False, "--pending", help="Only runs not yet loaded"),
+    marketplace: str = typer.Option(None, "--marketplace", "-m", help="Only runs from this marketplace"),
 ):
     """List local staging files from public scrapes (what `scrape load` would push).
 
@@ -1003,7 +1036,8 @@ def staged_list(
     """
     from scraper.public import staging
 
-    runs = staging.pending() if pending_only else staging.list_runs()
+    mp = (marketplace or "").strip().lower() or None
+    runs = staging.pending(mp_slug=mp) if pending_only else staging.list_runs(mp_slug=mp)
     if not runs:
         console.print("[dim]No staging files.[/dim]")
         return
@@ -1012,6 +1046,7 @@ def staged_list(
                   title=f"Staging files — {len(runs)}")
     table.add_column("Date")
     table.add_column("Time")
+    table.add_column("MP")
     table.add_column("Kind")
     table.add_column("Stores", justify="right")
     table.add_column("Rows", justify="right")
@@ -1035,7 +1070,7 @@ def staged_list(
             .get(r["status"], f"[yellow]{r['status']}[/yellow]")
         where = "[green]loaded[/green]" if loaded else "[yellow]pending[/yellow]"
         table.add_row(
-            date, tm[:5],
+            date, tm[:5], r["mp_slug"],
             r["kind"].replace("public_", ""),
             stores, f"{r['rows']:,}", err_txt,
             f"{status} · {where}",
@@ -1059,7 +1094,7 @@ def load_staged(
     file: str = typer.Option(None, "--file", "-f", help="Which file — the Ref from `scrape staged` (default: all pending, oldest first)"),
     all_pending: bool = typer.Option(False, "--all", help="Load every pending file"),
     dry_run: bool = typer.Option(False, "--dry-run", help="Show what would be loaded, write nothing"),
-    keep: int = typer.Option(None, "--keep", help=f"Loaded files to retain per tenant+kind (default {5})"),
+    keep: int = typer.Option(None, "--keep", help=f"Loaded files to retain per tenant+kind+marketplace (default {5})"),
 ):
     """Push staged public-scrape results into Postgres.
 
@@ -1116,13 +1151,14 @@ def load_staged(
     if dry_run:
         table = Table(show_header=True, header_style="bold", title="DRY RUN — nothing written")
         table.add_column("File")
+        table.add_column("MP")
         table.add_column("Kind")
         table.add_column("Snapshots", justify="right")
         table.add_column("Listings", justify="right")
         table.add_column("SKU rows", justify="right")
         for t in targets:
             c = t.get("counts") or {}
-            table.add_row(t["path"].name, t.get("kind", "?"),
+            table.add_row(t["path"].name, t.get("mp_slug", "?"), t.get("kind", "?"),
                           f"{c.get('search_snapshots', 0):,}",
                           f"{c.get('search_listings', 0):,}",
                           f"{c.get('sku_snapshots', 0):,}")
@@ -1172,13 +1208,14 @@ async def _load_staged(paths, keep) -> None:
     if results:
         table = Table(show_header=True, header_style="bold", title="Loaded")
         table.add_column("File")
+        table.add_column("MP")
         table.add_column("Kind")
         table.add_column("Snapshots", justify="right")
         table.add_column("Listings", justify="right")
         table.add_column("SKU rows", justify="right")
         table.add_column("Total", justify="right")
         for r in results:
-            table.add_row(r["file"], r["kind"], f"{r['snapshots']:,}",
+            table.add_row(r["file"], r["mp_slug"], r["kind"], f"{r['snapshots']:,}",
                           f"{r['listings']:,}", f"{r['skus']:,}", f"{r['total']:,}")
         console.print(table)
         pruned = sum(r["pruned"] for r in results)

@@ -187,17 +187,29 @@ The `--week` date must be a Monday (`YYYY-MM-DD`). A non-Monday will return empt
 
 ### Public product search (Blinkit) — no login required
 
-Per-tenant and config-driven (Blinkit only; Instamart/Zepto out of scope). The
-darkstore catalog and each tenant's keywords/coverage live in a workbook
-(`config.xlsx`); the scraper reads them from the DB. `cities.py` is not used.
+Per-tenant and config-driven. The store catalog and each tenant's
+keywords/coverage live in a workbook (`config.xlsx`); the scraper reads them from
+the DB. `cities.py` is not used.
+
+**Marketplace.** Every public command takes `--marketplace/-m`, defaulting to
+`blinkit` — so every command line below works unchanged. **Blinkit is the only
+wired marketplace today**; an unwired or unknown value fails fast and scrapes
+nothing. Each marketplace has its **own** catalog, its own coverage rows, and its
+own engine; coordinates are never shared between platforms. See [zepto.md](zepto.md).
 
 **1. Configure — `cli sync`.** `config.xlsx` has three sheets:
 
 | Sheet | Columns | What it is |
 |---|---|---|
-| `locations` | `merchant_id, city, state, region, pincode, lat, lon, active, location_name, address` | the global **express** darkstore catalog (keyed on `merchant_id`); `lat/lon` is the probe point. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
-| `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional) |
-| `coverage` | `tenant, city` | which cities a tenant scrapes (all stores in each listed city) |
+| `locations` | `mp, merchant_id, city, state, region, pincode, lat, lon, active, location_name, address` | that marketplace's **express** store catalog (keyed on `mp` + `merchant_id`); `lat/lon` is the probe point. `mp` is optional, blank → `blinkit`. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
+| `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional). Shared across marketplaces |
+| `coverage` | `mp, tenant, city` | which cities a tenant scrapes on which marketplace (all that marketplace's stores in each listed city). `mp` blank → `blinkit` |
+
+> ⚠️ **`--prune` only deletes within the marketplaces the file mentions** — a
+> workbook with no Zepto rows can never prune Zepto. But a workbook whose `mp`
+> column is blank on non-Blinkit rows reads them as Blinkit and will propose
+> deleting the real Blinkit catalog. Always `--dry-run` first; a non-zero
+> `locations` deletion is a stop-and-check.
 
 The two caps (own rows only; blank → code default): **`keyword_cap`** bounds the
 keyword scrape (`public-run`, default 48), **`brand_cap`** bounds the targeted
@@ -214,8 +226,8 @@ Edit the workbook, re-sync. Tenants must already exist (`cli tenant create`); th
 workbook references them by name. Inspect what synced:
 
 ```bash
-python -m cli locations list [--city delhi] [--tenant <id>]   # catalog, or a tenant's coverage
-python -m cli watchlist list --tenant <id>                    # a tenant's brands + keywords
+python -m cli locations list [-m blinkit] [--city delhi] [--tenant <id>]   # catalog, or a tenant's coverage
+python -m cli watchlist list --tenant <id>                                # a tenant's brands + keywords
 ```
 
 There are **two complementary scrapes**, run as separate commands (own SoV/rank vs
@@ -233,6 +245,7 @@ store → SoV/rank + declared competitors. Stages rows destined for `search_snap
 
 ```bash
 python -m cli scrape public-run --tenant <id>                  # full run (new staging file)
+python -m cli scrape public-run --tenant <id> -m blinkit       # pick the marketplace (default blinkit)
 python -m cli scrape public-run --tenant <id> --resume         # continue an interrupted run
 python -m cli scrape public-run --tenant <id> --city delhi     # one city
 python -m cli scrape public-run --tenant <id> --keyword "soda" # one keyword
@@ -249,6 +262,7 @@ where an own product doesn't rank in a category-keyword search.
 
 ```bash
 python -m cli scrape public-skus --tenant <id>                 # full run (new scrape_job)
+python -m cli scrape public-skus --tenant <id> -m blinkit      # pick the marketplace (default blinkit)
 python -m cli scrape public-skus --tenant <id> --resume        # continue an interrupted run
 python -m cli scrape public-skus --tenant <id> --city delhi    # one city
 python -m cli scrape public-skus --tenant <id> --brand-cap 48  # override brand_cap

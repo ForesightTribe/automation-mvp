@@ -239,21 +239,25 @@ async def _denominators(
     return int(row[0] or 0), int(row[1] or 0), {k or "unknown": int(v) for k, v in tiers.items()}
 
 
-async def _store_names(session: AsyncSession, merchant_ids: set[str]) -> dict[str, str]:
-    """merchant_id -> human label from the darkstore catalog. Stores discovered by a
+async def _store_names(session: AsyncSession, merchant_ids: set[str],
+                       mp_slug: str | None = None) -> dict[str, str]:
+    """merchant_id -> human label from the store catalog. Stores discovered by a
     scrape but absent from the catalog (longtail hubs, newly opened) have no name —
-    the UI falls back to the id. Cosmetic only; the inventory is exact either way."""
+    the UI falls back to the id. Cosmetic only; the inventory is exact either way.
+
+    Catalogs are per-marketplace and keyed on (mp_slug, merchant_id), so pass the
+    caller's marketplace filter when it has one. Without it, ids are matched across
+    every marketplace — a collision would mislabel a store, never miscount it.
+    """
     if not merchant_ids:
         return {}
-    rows = (
-        await session.execute(
-            select(MarketplaceLocation.merchant_id, MarketplaceLocation.location_name)
-            .where(
-                MarketplaceLocation.mp_slug == "blinkit",
-                MarketplaceLocation.merchant_id.in_(merchant_ids),
-            )
-        )
-    ).all()
+    q = (
+        select(MarketplaceLocation.merchant_id, MarketplaceLocation.location_name)
+        .where(MarketplaceLocation.merchant_id.in_(merchant_ids))
+    )
+    if mp_slug:
+        q = q.where(MarketplaceLocation.mp_slug == mp_slug)
+    rows = (await session.execute(q)).all()
     return {m: n for m, n in rows if n}
 
 
@@ -291,7 +295,7 @@ async def get_availability(
     rows.sort(key=lambda r: (r.in_stock, r.platform_product_id))  # OOS first
     total = len(rows)
     page = rows[pagination.offset : pagination.offset + pagination.limit]
-    names = await _store_names(session, {r.merchant_id for r in page})
+    names = await _store_names(session, {r.merchant_id for r in page}, marketplace)
     out = []
     for r in page:
         item = AvailabilityRow.model_validate(r)
@@ -530,7 +534,7 @@ async def get_stores(
     if not rows:
         return empty
 
-    names = await _store_names(session, {r[0] for r in rows})
+    names = await _store_names(session, {r[0] for r in rows}, marketplace)
     stores = [
         {
             "merchant_id": mid,
@@ -657,7 +661,7 @@ async def get_actions(
         by_store.setdefault(r.merchant_id, {"city": r.city, "type": r.merchant_type, "items": {}})
         by_store[r.merchant_id]["items"][r.pid] = r
 
-    names = await _store_names(session, set(by_store))
+    names = await _store_names(session, set(by_store), marketplace)
     out: list[dict] = []
     if action == "not-listed":
         for mid, s in by_store.items():
@@ -720,7 +724,7 @@ async def get_store_detail(
         return {**empty, "active_range": len(catalogue)}
 
     any_row = next(iter(here.values()))
-    names = await _store_names(session, {merchant_id})
+    names = await _store_names(session, {merchant_id}, marketplace)
     skus = [
         {
             "platform_product_id": pid,
@@ -784,7 +788,7 @@ async def get_product_detail(
     if not here:
         return {**empty, "stores_scraped": len(all_stores)}
 
-    names = await _store_names(session, set(all_stores))
+    names = await _store_names(session, set(all_stores), marketplace)
 
     def rank(mid):
         r = here.get(mid)
