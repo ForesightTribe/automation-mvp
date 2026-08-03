@@ -291,6 +291,18 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
       window reset** (`cm bid-optimizer --reset` de-escalates closed keywords to `min_bid`; reconciler fires it at
       each window stop), no-op/hold rows kept out of History. **Daily 04:00 per-tenant cleanup reconcile**
       (`auto:cm:cleanup:<t>` → `cm.reconcile --live`) prunes expired schedules automatically.
+- [x] **V4.11** ✅ **DONE (2026-08-01)** **Edit + computed status + pane redesign** (no migration). **Edit:** `PATCH`
+      `/budget-schedules/{id}` (name/default), `/budget-rules/{id}` (window), `/bid-rules/{id}` (target/bids/timing/
+      keyword/location) → `repo.update_*` + service `update_*` → reconcile + **immediate re-apply** (enqueue an engine
+      run so the change lands now, but only when armed — budget always, bid only if in-window; dry tenants skip).
+      Editing a **spent `once` rule is rejected** (`EditError`→400) unless the edit moves its date forward; **campaign
+      is not editable** (identity). **Computed `status`** on the Out DTOs — `running`/`scheduled`/`ended`/`paused`/
+      `stopped` — via `_budget_status`/`_bid_status` reusing the engines' `_matches_rule`/`_in_window` (get_adapter is
+      lazy → still no Playwright in `app/`). **Frontend:** `useUpdate*` hooks; `StatusBadge`; edit mode in
+      `AutomateBidForm`/`AddBudgetRuleForm` (+ `timingFromRule` inverse) + `EditBudgetScheduleForm`; **ScheduledPane
+      rebuilt** as compact collapsible rows (status + title + value chip + 1-line summary; expand for windows/details/
+      edit/controls) — fixes the "everything says Active / expired cards linger" confusion (spent `once` now reads
+      **Ended**). Backend imports + reconciler tests green; frontend oxlint + build green.
 
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +

@@ -164,6 +164,40 @@ the marketplace filter is a no-op until more platforms connect.
 | GET | `/visibility-plans` | Visibility/placement plans + budgets. |
 | GET | `/collections` | Curated brand collections. |
 
+### `campaign-manager` — `/api/clients/{id}/campaign-manager` *(private, write)*
+Campaign Manager **v2** — automate Blinkit budgets + keyword bids. Thin routes → a service
+that only **writes DB rows and enqueues jobs** (no Playwright; browser work runs on the VM).
+Every rule mutation enqueues `cm.reconcile` (the VM compiles rules → `job_schedules`).
+The whole loop is **dry** until the tenant is **armed** (`live_armed` on `cm_platform_accounts`,
+flipped by the `cm arm` CLI — see [cli.md](cli.md)); nothing here touches Blinkit on its own.
+
+Budget/bid outputs carry a computed **`status`**: `running` (window open now) · `scheduled`
+(upcoming) · `ended` (a `once` window whose date passed) · `paused` · `stopped` — distinct
+from the raw D19 `state`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/budget-schedules` | List budget automations (schedule + its windows/rules), each with `status`. |
+| POST | `/budget-schedules` | Create a budget automation (`campaign_id`, `default_budget`, optional inline first `rule`). 409 if the campaign already has one. |
+| PATCH | `/budget-schedules/{id}` | Edit the schedule's own fields (`name`, `default_budget`). Reconciles + re-applies if armed. |
+| DELETE | `/budget-schedules/{id}` | Delete the automation + its windows. |
+| POST | `/budget-schedules/{id}/rules` | Add a window (`budget` + timing). |
+| PATCH | `/budget-rules/{id}` | Edit a window (budget + timing). **400** if it's a spent `once` window (unless the edit moves its date forward). |
+| DELETE | `/budget-rules/{id}` | Delete a window (schedule + default remain). |
+| POST | `/budget-schedules/{id}/reset` | **D19 Reset** — stop + enqueue a set-budget→default job. Returns `{job_id}` to poll. |
+| GET | `/bid-rules` | List keyword bid automations, each with `status`. |
+| POST | `/bid-rules` | Create a bid automation (campaign, keyword, target position, min/max, `city`/`location_id`→store, timing). |
+| PATCH | `/bid-rules/{id}` | Edit target/bids/timing/keyword/location. **400** on a spent `once` rule; campaign not editable (identity). |
+| DELETE | `/bid-rules/{id}` | Delete a bid automation (+ its runtime). |
+| POST | `/bid-rules/{id}/pause` · `/resume` · `/stop` | **D19** lifecycle (paused → resume; active → pause/stop). |
+| POST | `/set-budget` | One-off "set this campaign's budget now" → enqueues `cm.set_budget`, returns `{job_id}`. 409 if one's active. |
+| GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. |
+| GET | `/history` | Paginated `cm_run_log` — real actions only (no-ops go to logs, not here). `?kind=budget\|bid`. |
+| GET · PUT | `/advertiser` | Get / set the Blinkit ad-account id (B3) live writes send. Captured once from a dashboard PUT. |
+
+Timing shapes on budget/bid rules match the CLI ([cli.md](cli.md)): recurring daily window
+(± `days`, date range) or a `once` single-date span; end ≤ start = overnight.
+
 ### `inventory` — `/api/clients/{id}/inventory`
 Stock health: private SOH + fill-rate, plus the **public own-SKU** surface from
 `sku_snapshots` (populated by `scrape public-skus`). Public endpoints need an `own`
