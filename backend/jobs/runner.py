@@ -28,6 +28,7 @@ from app.models.job import Job, JobStatus, Lane
 from app.utils.logger import logger
 from jobs import queue as job_queue
 from jobs.types import spec_for
+from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE
 
 try:
     import psutil
@@ -103,6 +104,13 @@ def _classify_failure(returncode: int | None, timed_out: bool, interrupted: bool
     # On Linux the OOM killer sends SIGKILL → asyncio reports returncode -9.
     if returncode == -9:
         return "oom"
+    # Jobs are subprocesses, so a typed exception in the child cannot reach us —
+    # only an exit code can. cli/main.py exits with AUTH_EXPIRED_EXIT_CODE when a
+    # run dies specifically because a platform session could not be established,
+    # which is what makes `auth_expired` a real, filterable value rather than
+    # another anonymous exit_1.
+    if returncode == AUTH_EXPIRED_EXIT_CODE:
+        return "auth_expired"
     return f"exit_{returncode}"
 
 
@@ -180,9 +188,33 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     async with AsyncSessionLocal() as db:
         await job_queue.complete(db, job.id, status, exit_code=returncode,
                                  error=error, peak_rss_mb=peak)
-    level = logger.info if status == JobStatus.success else logger.warning
-    level(f"job {str(job.id)[:8]} {status.value}"
-          + (f" ({error})" if error else "") + f" · peak {peak} MB")
+
+    # Structured fields, not just a formatted string. runner.log is written with
+    # loguru serialize=True, so these land in Cloud Logging as queryable
+    # jsonPayload.record.extra.* — you can filter for every auth failure across
+    # all tenants without substring-matching a sentence.
+    bound = logger.bind(
+        job_id=str(job.id),
+        job_type=job.job_type,
+        lane=job.lane.value,
+        tenant_id=str(job.tenant_id) if job.tenant_id else None,
+        error=error,
+        exit_code=returncode,
+        peak_rss_mb=peak,
+        log_file=log_path.name,
+    )
+    if status == JobStatus.success:
+        bound.info(f"job {str(job.id)[:8]} success · peak {peak} MB")
+    else:
+        # ERROR, not WARNING. The alert that matters is
+        # `log_id("foresight_runner") AND severity>=ERROR` — a failed job logged
+        # at WARNING is invisible to it, which would have made this whole
+        # auth_expired classification pointless: the DB would know, and nobody
+        # would be told. Every job failure is something a human must see.
+        bound.error(
+            f"job {str(job.id)[:8]} FAILED ({error}) · {job.job_type} · peak {peak} MB"
+            + (f" · see {log_path.name}" if error != "spawn_failed" else "")
+        )
 
 
 async def _consume(shutdown: asyncio.Event, lane_slots: dict[str, int] | None = None) -> None:

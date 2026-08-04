@@ -1,93 +1,289 @@
+"""Platform login commands.
+
+Generic over the registry rather than one command per dashboard — adding Zepto
+adds no code here. The old `auth blinkit` / `auth blinkit-seller` commands are
+kept as aliases so existing runbooks and muscle memory still work.
+"""
 import asyncio
+
 import typer
 from rich.console import Console
-from app.core.database import AsyncSessionLocal
-from scraper.utils.session import save_session, session_exists
-from scraper.platforms.blinkit.auth import login
-from scraper.platforms.blinkit.dashboard_data.marketing.endpoints import BASE_URL as BLINKIT_MARKETING_URL
-from scraper.platforms.blinkit.dashboard_data.seller.auth import login as seller_login
+from rich.table import Table
 
-app = typer.Typer(help="Manage platform login sessions.")
+from app.core.database import AsyncSessionLocal
+from platform_auth import mail_rules, service, store
+from platform_auth.registry import AUTHENTICATORS, get as get_authenticator, wired_slugs
+from platform_auth.types import Credentials
+
+app = typer.Typer(help="Manage marketplace platform sessions (not Foresight logins).")
+credentials_app = typer.Typer(help="Per-tenant login credentials.")
+app.add_typer(credentials_app, name="credentials")
 console = Console()
 
 
-@app.command("blinkit")
-def blinkit_login(
+@credentials_app.command("set")
+def credentials_set(
+    platform: str = typer.Argument(..., help=f"One of: {', '.join(AUTHENTICATORS)}"),
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-):
-    """Log in to Blinkit and save the session."""
-    asyncio.run(_blinkit_login(tenant_id))
+    email: str = typer.Option(..., "--email", help="Login address for this platform"),
+    password: bool = typer.Option(
+        False, "--password", help="Prompt for a password (hidden input)"
+    ),
+) -> None:
+    """Store a tenant's login credentials for a platform.
+
+    The password is encrypted at rest with the same Fernet key as sessions, and
+    is never echoed or logged. Platforms that log in by magic link or OTP
+    (both Blinkit dashboards) need no password at all.
+    """
+    secret = typer.prompt("Password", hide_input=True, confirmation_prompt=True) if password else None
+    asyncio.run(_credentials_set(platform, tenant_id, email, secret))
 
 
-async def _blinkit_login(tenant_id: str) -> None:
-    async with AsyncSessionLocal() as session:
+async def _credentials_set(
+    platform: str, tenant_id: str, email: str, password: str | None
+) -> None:
+    auth = AUTHENTICATORS.get(platform)
+    if auth is None:
+        console.print(f"[red]Unknown platform {platform!r}.[/red]")
+        raise typer.Exit(1)
+    if auth.needs_password and not password:
+        console.print(
+            f"[yellow]{auth.name} logs in with a password — re-run with --password.[/yellow]"
+        )
+        raise typer.Exit(1)
+    if password and not auth.needs_password:
+        console.print(
+            f"[yellow]Note: {auth.name} is passwordless "
+            f"({auth.secret_kind.value}); storing it anyway.[/yellow]"
+        )
+
+    async with AsyncSessionLocal() as db:
+        await store.save_credentials(
+            db, tenant_id, platform, Credentials(email=email, password=password)
+        )
+    console.print(f"[green]Credentials saved for {platform}.[/green]")
+
+
+@credentials_app.command("list")
+def credentials_list(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+) -> None:
+    """Show stored credentials for a tenant. Passwords are never displayed."""
+    asyncio.run(_credentials_list(tenant_id))
+
+
+async def _credentials_list(tenant_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        rows = await store.credentials_for_tenant(db, tenant_id)
+    if not rows:
+        console.print(f"[yellow]No credentials stored for tenant {tenant_id}.[/yellow]")
+        return
+    table = Table(title=f"Platform credentials — tenant {tenant_id}")
+    for col in ("platform", "email", "password", "updated"):
+        table.add_column(col)
+    for r in rows:
+        table.add_row(
+            r["platform"],
+            r["login_email"],
+            "[green]stored[/green]" if r["has_password"] else "—",
+            str(r["updated_at"] or "—")[:19],
+        )
+    console.print(table)
+
+
+@credentials_app.command("remove")
+def credentials_remove(
+    platform: str = typer.Argument(...),
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+) -> None:
+    """Delete a tenant's stored credentials for a platform."""
+    if not typer.confirm(f"Delete {platform} credentials for tenant {tenant_id}?"):
+        raise typer.Exit()
+    asyncio.run(_credentials_remove(platform, tenant_id))
+
+
+async def _credentials_remove(platform: str, tenant_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        removed = await store.delete_credentials(db, tenant_id, platform)
+    console.print(
+        "[green]Removed.[/green]" if removed else "[yellow]Nothing stored.[/yellow]"
+    )
+
+
+@app.command("platforms")
+def platforms() -> None:
+    """List every platform the auth registry knows about."""
+    table = Table(title="Platform authenticators")
+    for col in ("slug", "marketplace", "secret", "password", "refresh", "mail rule", "status"):
+        table.add_column(col)
+    for slug, a in sorted(AUTHENTICATORS.items()):
         try:
-            if await session_exists(session, tenant_id, "blinkit"):
-                overwrite = typer.confirm("A session already exists for this tenant. Overwrite?")
-                if not overwrite:
-                    raise typer.Exit()
+            verified = mail_rules.for_platform(slug).verified
+            rule = "[green]verified[/green]" if verified else "[yellow]unverified[/yellow]"
+        except KeyError:
+            rule = "[red]missing[/red]"
+        table.add_row(
+            slug,
+            a.marketplace,
+            a.secret_kind.value,
+            "required" if a.needs_password else "—",
+            "yes" if a.refreshable else "no",
+            rule,
+            "[green]wired[/green]" if a.wired else "[yellow]planned[/yellow]",
+        )
+    console.print(table)
+    unverified = mail_rules.unverified()
+    if unverified:
+        console.print(
+            f"\n[yellow]Mail rules never checked against a real message: "
+            f"{', '.join(unverified)}[/yellow]\n"
+            "[dim]Run `python -m scripts.inbox_scan` to pin them.[/dim]"
+        )
 
-            email = typer.prompt("Blinkit email")
-            console.print("\n[yellow]Browser opening — enter your email, then paste the magic link when prompted.[/yellow]\n")
-            storage_state = await login(email, BLINKIT_MARKETING_URL)
 
-            await save_session(session, tenant_id, "blinkit", storage_state)
-            console.print("[green]Login successful. Session saved.[/green]")
-        except typer.Exit:
-            raise
+@app.command("login")
+def login(
+    platform: str = typer.Argument(..., help=f"One of: {', '.join(wired_slugs())}"),
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    email: str = typer.Option(None, "--email", help="Login address (required on first login)"),
+    auto: bool = typer.Option(
+        True, "--auto/--manual",
+        help="Read the OTP/magic link from the auth inbox, or prompt for it",
+    ),
+) -> None:
+    """Log in to a marketplace dashboard and store the session.
+
+    No browser is launched for either Blinkit dashboard — login is HTTP only.
+    """
+    asyncio.run(_login(platform, tenant_id, email, auto))
+
+
+async def _login(platform: str, tenant_id: str, email: str | None, auto: bool) -> None:
+    async with AsyncSessionLocal() as db:
+        try:
+            auth = get_authenticator(platform)
+            password = None
+            if not email and not await store.login_email(db, tenant_id, platform):
+                email = typer.prompt(f"{auth.name} login email")
+                if auth.needs_password:
+                    password = typer.prompt(
+                        "Password", hide_input=True, confirmation_prompt=True
+                    )
+            if auto:
+                console.print("[cyan]Requesting the secret and reading the auth inbox…[/cyan]")
+            await service.login(
+                db, tenant_id, platform, email=email, password=password, auto=auto
+            )
+            console.print(f"[green]{auth.name}: session saved.[/green]")
         except Exception as e:
             console.print(f"[red]Login failed: {e}[/red]")
             raise typer.Exit(1)
 
 
-@app.command("blinkit-seller")
-def blinkit_seller_login(
+@app.command("refresh")
+def refresh(
+    platform: str = typer.Argument(..., help=f"One of: {', '.join(wired_slugs())}"),
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-):
-    """Log in to Blinkit Seller (partnersbiz.com) via OTP and save the session."""
-    asyncio.run(_blinkit_seller_login(tenant_id))
+) -> None:
+    """Extend a stored session without any email — the normal upkeep path."""
+    asyncio.run(_refresh(platform, tenant_id))
 
 
-async def _blinkit_seller_login(tenant_id: str) -> None:
-    async with AsyncSessionLocal() as session:
+async def _refresh(platform: str, tenant_id: str) -> None:
+    async with AsyncSessionLocal() as db:
         try:
-            if await session_exists(session, tenant_id, "blinkit_seller"):
-                overwrite = typer.confirm("A session already exists for this tenant. Overwrite?")
-                if not overwrite:
-                    raise typer.Exit()
-
-            email = typer.prompt("Seller dashboard email")
-            console.print("\n[yellow]Browser opening — enter your email, then enter the OTP when prompted.[/yellow]\n")
-            storage_state = await seller_login(email)
-
-            await save_session(session, tenant_id, "blinkit_seller", storage_state)
-            console.print("[green]Login successful. Session saved.[/green]")
-        except typer.Exit:
-            raise
+            session = await service.refresh_if_possible(db, tenant_id, platform)
         except Exception as e:
-            console.print(f"[red]Login failed: {e}[/red]")
+            console.print(f"[red]Refresh failed: {e}[/red]")
             raise typer.Exit(1)
+    if session:
+        console.print("[green]Session refreshed — no login needed.[/green]")
+    else:
+        console.print("[yellow]Could not refresh; a full login is required.[/yellow]")
+        raise typer.Exit(1)
+
+
+@app.command("probe")
+def probe(
+    platform: str = typer.Argument(..., help=f"One of: {', '.join(wired_slugs())}"),
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+) -> None:
+    """Check whether a stored session actually still works."""
+    asyncio.run(_probe(platform, tenant_id))
+
+
+async def _probe(platform: str, tenant_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        try:
+            alive = await service.probe(db, tenant_id, platform)
+        except Exception as e:
+            console.print(f"[red]Probe failed: {e}[/red]")
+            raise typer.Exit(1)
+    if alive:
+        console.print(f"[green]{platform}: session is alive.[/green]")
+    else:
+        console.print(f"[red]{platform}: session is dead — run `cli auth login {platform}`.[/red]")
+        raise typer.Exit(1)
 
 
 @app.command("status")
 def auth_status(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-):
-    """Check whether a saved session exists for a tenant."""
+) -> None:
+    """Show stored sessions and how healthy they are."""
     asyncio.run(_auth_status(tenant_id))
 
 
 async def _auth_status(tenant_id: str) -> None:
-    async with AsyncSessionLocal() as session:
-        blinkit = await session_exists(session, tenant_id, "blinkit")
-        seller = await session_exists(session, tenant_id, "blinkit_seller")
+    async with AsyncSessionLocal() as db:
+        rows = await store.all_for_tenant(db, tenant_id)
 
-    if blinkit:
-        console.print(f"[green]Session exists[/green]: tenant={tenant_id} platform=blinkit")
-    else:
-        console.print(f"[yellow]No session[/yellow]: tenant={tenant_id} platform=blinkit")
+    if not rows:
+        console.print(f"[yellow]No sessions stored for tenant {tenant_id}.[/yellow]")
+        return
 
-    if seller:
-        console.print(f"[green]Session exists[/green]: tenant={tenant_id} platform=blinkit_seller")
-    else:
-        console.print(f"[yellow]No session[/yellow]: tenant={tenant_id} platform=blinkit_seller")
+    colours = {"active": "green", "expired": "red", "unknown": "yellow"}
+    table = Table(title=f"Platform sessions — tenant {tenant_id}")
+    for col in ("platform", "email", "status", "last login", "last verified", "fails"):
+        table.add_column(col)
+    for r in rows:
+        colour = colours.get(r["status"], "yellow")
+        table.add_row(
+            r["platform"],
+            r["login_email"] or "—",
+            f"[{colour}]{r['status']}[/{colour}]",
+            str(r["last_login_at"] or "—")[:19],
+            str(r["last_validated_at"] or "—")[:19],
+            str(r["consecutive_failures"]),
+        )
+    console.print(table)
+    for r in rows:
+        if r["last_error"]:
+            console.print(f"[dim]{r['platform']}: {r['last_error']}[/dim]")
+    console.print(
+        "\n[dim]'status' is only as fresh as the last check — run "
+        "`cli auth probe <platform> -t <id>` to verify now.[/dim]"
+    )
+
+
+# ── Aliases for the pre-platform_auth command names ──────────────────────────
+
+@app.command("blinkit")
+def blinkit_login(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    email: str = typer.Option(None, "--email"),
+    auto: bool = typer.Option(True, "--auto/--manual"),
+) -> None:
+    """Alias for `auth login blinkit`."""
+    asyncio.run(_login("blinkit", tenant_id, email, auto))
+
+
+@app.command("blinkit-seller")
+def blinkit_seller_login(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    email: str = typer.Option(None, "--email"),
+    auto: bool = typer.Option(True, "--auto/--manual"),
+) -> None:
+    """Alias for `auth login blinkit_seller`."""
+    asyncio.run(_login("blinkit_seller", tenant_id, email, auto))

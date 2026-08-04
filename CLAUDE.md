@@ -19,6 +19,7 @@
 | [docs/staging.md](docs/staging.md) | **Public scrapes stage to local SQLite**, then `cli scrape load` pushes to Postgres in one all-or-nothing transaction — why, commands, retention, failure modes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
 | [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
+| [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
 | [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth over SSH, cost/capacity model, and the VM gotchas |
