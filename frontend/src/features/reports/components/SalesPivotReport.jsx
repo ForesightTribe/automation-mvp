@@ -25,7 +25,9 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
  *     vs typical day) and are not meant to reconcile.
  * Metric toggle picks revenue (mrp_value) vs units (qty_sold). All numbers come
  * from `blinkit_seller_sales` via the reports/sales-pivot endpoint (Blinkit-only
- * today; other marketplaces arrive as their own blocks once scraped).
+ * today; other marketplaces arrive as their own blocks once scraped). A platform
+ * block only exists when that marketplace has sales in the window, so its
+ * presence is the status — hence no status chip on the header row.
  */
 
 const METRICS = [
@@ -341,15 +343,6 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 					className="sticky left-0 px-3 py-1.5 text-left font-display text-sm font-semibold text-content"
 				>
 					{platform.platform}
-					{platform.live ? (
-						<span className="ml-2 rounded bg-success-soft px-1.5 py-0.5 text-xs font-medium text-success">
-							data available
-						</span>
-					) : (
-						<span className="ml-2 rounded bg-warning-soft px-1.5 py-0.5 text-xs font-medium text-warning">
-							needs scraper
-						</span>
-					)}
 				</td>
 			</tr>
 			{platform.categories.map((cat) => (
