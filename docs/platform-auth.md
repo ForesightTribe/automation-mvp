@@ -261,17 +261,30 @@ a changed subject line is a one-line edit, never a code change.
 
 Filters run strongest-first, and the order matters more than the individual rules:
 
-1. **Arrival time** — only mail newer than the request can answer it. This is the
-   load-bearing filter: without it a stale OTP from an earlier attempt reads as valid
-   and the login fails a minute later for reasons that look unrelated.
-2. **Sender** (`from_contains`) — matched against From, Return-Path, Delivered-To,
-   X-Forwarded-For and Sender, because forwarding rewrites headers. Match on fragments.
-3. **Subject** (`subject_contains`) — **advisory by default.** A stale subject rule must
-   not be able to veto a login; it breaks ties when several candidates arrive together.
-   Set `subject_required=True` only where the subject is genuinely the sole
-   discriminator. A sender-matched, subject-missed message is used with a loud warning.
-4. **Shape** (`body_pattern`) — a message that passes every filter but yields no code is
+1. **Recipient** — the login address must appear in **To/Cc**. The filter that keeps
+   tenants apart, and not optional. See the warning below.
+2. **Arrival time** — only mail newer than the request can answer it: without it a stale
+   OTP from an earlier attempt reads as valid and the login fails a minute later for
+   reasons that look unrelated.
+3. **Sender** (`from_contains`) — From / Return-Path / Sender. Use full addresses where
+   known; a bare domain is too loose when one company runs several products.
+4. **Subject** (`subject_contains`) — **required** for verified platforms. Advisory mode
+   exists only for platforms whose subjects are still guesses, so an out-of-date guess
+   can't veto a login.
+5. **Shape** (`body_pattern`) — a message that passes every filter but yields no code is
    not the message.
+
+> ⚠️ **This mailbox receives other people's login mail.** Verified 2026-08-04: `tech@`
+> holds "Sign in to Blinkit Brand Central" addressed to three different accounts —
+> identical sender, identical subject. Without the recipient check a login consumes
+> another tenant's single-use secret: wrong account, or their code silently burned.
+> Match **To/Cc, never Delivered-To** — forwarding stamps Delivered-To with the shared
+> mailbox on every message, so including it makes the check pass for everything.
+>
+> Two related traps found in the same scan: `blinkit_seller` matched on `"blinkit"`,
+> which caught the *marketing* sender `brands@blinkit.com` (a six-digit pattern would
+> happily find an "OTP" in a report); and `brands@blinkit.com` sends "Dashboard Reports"
+> and "Ad Campaign Alert" many times a day, so advisory subjects were unsafe.
 
 **Timing is per platform**, because mail is not instant — the platform queues it,
 SendGrid relays it, forwarding adds a hop. `initial_delay_seconds` waits before the
@@ -282,10 +295,23 @@ first poll rather than burning IMAP round-trips on an empty mailbox:
 | `blinkit` | 8 s | 120 s | Magic link, SendGrid-relayed |
 | `blinkit_seller` | 12 s | 150 s | OTP has been slower, and a stale OTP is the prime suspect for the one historical login failure |
 
-> ⚠️ **The subject lines are currently UNVERIFIED for every platform** — inferred, not
-> read off a real message. `verified=False` on each rule, and `cli auth platforms` says
-> so. Run `python -m scripts.inbox_scan` (headers only, never bodies — they hold live
-> secrets) to pin them against the real messages, then set `verified=True`.
+**Verified 2026-08-04** against the real mailbox — `verified=True` on both Blinkit rules:
+
+| Platform | From | Subject |
+|---|---|---|
+| `blinkit` | `Blinkit Brand Central <brands@blinkit.com>` | `Sign in to Blinkit Brand Central` |
+| `blinkit_seller` | `Partners Biz <noreply@partnersbiz.com>` | `Your OTP for PartnersBiz login` |
+
+Zepto and Instamart are still guesses (`verified=False`, and `wired=False` in the
+registry so nothing can reach them). To pin a new platform:
+
+```bash
+python -m scripts.inbox_scan --limit 25 --email <tenant login address>
+```
+
+Headers only, never bodies — bodies hold live magic links and OTPs. With `--email` it
+applies the recipient filter exactly as a real login would, so the verdict column shows
+`MATCH`, `OTHER RECIPIENT`, or `rejected, subject` per message.
 
 ## Open / next
 

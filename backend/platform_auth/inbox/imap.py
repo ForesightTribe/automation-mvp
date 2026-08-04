@@ -56,11 +56,20 @@ def _body_text(msg: Message) -> str:
 
 
 def _sender_of(msg: Message) -> str:
-    """Forwarding rewrites headers, so consider every address-bearing one."""
     return " ".join(
-        _decode(msg.get(h))
-        for h in ("From", "Return-Path", "Delivered-To", "X-Forwarded-For", "Sender")
+        _decode(msg.get(h)) for h in ("From", "Return-Path", "Sender")
     ).lower()
+
+
+def _recipients_of(msg: Message) -> str:
+    """To/Cc only — deliberately NOT Delivered-To.
+
+    Forwarding stamps Delivered-To with the shared mailbox on every message, so
+    including it would make this check pass for everything. To/Cc preserve the
+    address the platform actually sent to, which is the only thing distinguishing
+    our tenant's magic link from another company's.
+    """
+    return " ".join(_decode(msg.get(h)) for h in ("To", "Cc")).lower()
 
 
 def _is_recent(msg: Message, challenge: LoginChallenge) -> bool:
@@ -93,8 +102,18 @@ def _extract(msg: Message, rule: MailRule) -> str | None:
     return candidates[0].rstrip(").,")
 
 
+def _addressed_to_us(msg: Message, challenge: LoginChallenge) -> bool:
+    """Is this OUR tenant's mail, or someone else's?
+
+    The single most important check in a shared inbox. This mailbox demonstrably
+    receives the same sender/subject addressed to several different accounts, so
+    without it a login can consume another tenant's single-use secret.
+    """
+    return challenge.email.lower() in _recipients_of(msg)
+
+
 def _score(msg: Message, rule: MailRule) -> tuple[bool, bool]:
-    """(sender matched, subject matched) — the subject is usually advisory."""
+    """(sender matched, subject matched)."""
     sender = _sender_of(msg)
     subject = _decode(msg.get("Subject")).lower()
     sender_ok = not rule.from_contains or any(s in sender for s in rule.from_contains)
@@ -128,6 +147,10 @@ def _search_once(challenge: LoginChallenge, rule: MailRule) -> str | None:
             msg = email.message_from_bytes(raw[0][1])
 
             if not _is_recent(msg, challenge):
+                continue
+            # Hard filter, ahead of sender/subject: another tenant's secret is not
+            # ours to read, and consuming it burns their single-use code.
+            if rule.recipient_required and not _addressed_to_us(msg, challenge):
                 continue
             sender_ok, subject_ok = _score(msg, rule)
             if not sender_ok:

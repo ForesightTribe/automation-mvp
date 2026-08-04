@@ -30,16 +30,24 @@ def _decode(value: str | None) -> str:
 
 
 def _sender_of(msg) -> str:
-    return " ".join(
-        _decode(msg.get(h))
-        for h in ("From", "Return-Path", "Delivered-To", "X-Forwarded-For", "Sender")
-    ).lower()
+    return " ".join(_decode(msg.get(h)) for h in ("From", "Return-Path", "Sender")).lower()
 
 
-def _verdict(msg, platform: str | None) -> str:
-    """Which rules would accept this message, and where the near-misses are."""
+def _recipients_of(msg) -> str:
+    # To/Cc only — Delivered-To is the shared mailbox on every message.
+    return " ".join(_decode(msg.get(h)) for h in ("To", "Cc")).lower()
+
+
+def _verdict(msg, platform: str | None, login_email: str | None) -> str:
+    """Which rules would accept this message, and where the near-misses are.
+
+    Mirrors platform_auth/inbox/imap.py. If --email is given it also applies the
+    recipient filter, which is what actually separates one tenant from another in
+    this shared mailbox.
+    """
     sender = _sender_of(msg)
     subject = _decode(msg.get("Subject")).lower()
+    recipients = _recipients_of(msg)
     out = []
     for slug, rule in mail_rules.RULES.items():
         if platform and slug != platform:
@@ -48,10 +56,18 @@ def _verdict(msg, platform: str | None) -> str:
         subject_ok = not rule.subject_contains or any(
             s in subject for s in rule.subject_contains
         )
-        if sender_ok and subject_ok:
+        if not sender_ok:
+            continue
+        if rule.recipient_required and login_email:
+            if login_email.lower() not in recipients:
+                out.append(f"[{slug}: OTHER RECIPIENT]")
+                continue
+        if subject_ok:
             out.append(f"[MATCH {slug}]")
-        elif sender_ok:
-            out.append(f"[{slug}: sender ok, SUBJECT MISS]")
+        elif rule.subject_required:
+            out.append(f"[{slug}: rejected, subject]")
+        else:
+            out.append(f"[{slug}: subject miss, ADVISORY -> would use]")
     return " ".join(out) or "-"
 
 
@@ -59,6 +75,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--limit", type=int, default=25)
     parser.add_argument("--platform", default=None, help="Only evaluate this rule")
+    parser.add_argument(
+        "--email",
+        default=None,
+        help="Tenant login address — applies the recipient filter, as a real login would",
+    )
     args = parser.parse_args()
 
     if not (settings.AUTH_INBOX_USER and settings.AUTH_INBOX_APP_PASSWORD):
@@ -88,7 +109,7 @@ def main() -> None:
             if delivered:
                 print(f"deliv-to: {delivered}")
             print(f"subject : {_decode(msg.get('Subject'))}")
-            print(f"verdict : {_verdict(msg, args.platform)}")
+            print(f"verdict : {_verdict(msg, args.platform, args.email)}")
             print("-" * 78)
 
     print(
