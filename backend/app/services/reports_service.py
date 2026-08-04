@@ -21,12 +21,16 @@ from app.schemas.reports import (
     MarketingReport,
     MarketingRow,
     MarketingTotals,
+    PivotCategory,
     PivotDay,
     PivotPlatform,
     PivotSku,
+    PivotSplit,
     PivotWeek,
     SalesPivot,
 )
+
+UNCATEGORISED = "Uncategorised"
 
 Sale = BlinkitSellerSale
 AdDaily = BlinkitAdCampaignDaily
@@ -43,17 +47,25 @@ def _num(value: float | None) -> float | None:
     return None if value is None else round(float(value), 2)
 
 
-def _calendar_weeks(start: date, end: date) -> list[tuple[date, date, date]]:
-    """Monday-start calendar weeks intersecting [start, end]. Returns
-    (week_key, visible_start, visible_end) per week, where `week_key` is the
-    week's Monday (its stable identity) and visible_start/end are clamped to the
-    selected range so partial edge weeks sum only the days actually shown."""
-    weeks: list[tuple[date, date, date]] = []
-    cur = start - timedelta(days=start.weekday())  # Monday on/before start
-    while cur <= end:
-        weeks.append((cur, max(cur, start), min(cur + timedelta(days=6), end)))
+def _full_weeks(start: date, end: date) -> list[tuple[date, date]]:
+    """Complete Monday–Sunday weeks inside [start, end], as (monday, sunday).
+
+    Partial weeks at the edges are **dropped, not clamped**. Clamping made a
+    3-day stub sit next to a 7-day week in the same series, so every
+    week-over-week delta crossing an edge was a length artefact rather than a
+    real move. A window with no whole week returns [] and the weekly view says so.
+    """
+    weeks: list[tuple[date, date]] = []
+    cur = start + timedelta(days=(7 - start.weekday()) % 7)  # first Monday on/after start
+    while cur + timedelta(days=6) <= end:
+        weeks.append((cur, cur + timedelta(days=6)))
         cur += timedelta(days=7)
     return weeks
+
+
+def _is_weekend(d: date) -> bool:
+    """Fri/Sat/Sun — the client's trading convention, not the calendar's."""
+    return d.weekday() >= 4
 
 
 def _deltas(series: list[float]) -> list[float | None]:
@@ -65,6 +77,43 @@ def _deltas(series: list[float]) -> list[float | None]:
     return out
 
 
+WEEKDAY_DAYS = 4  # Mon–Thu
+WEEKEND_DAYS = 3  # Fri–Sun
+
+
+def _split(sums: list[float], days_per_week: int) -> PivotSplit:
+    """Turn one half's weekly *sums* into **average sales per day**, with its
+    window average and week-over-week deltas.
+
+    Averaging, not summing, is what makes the two halves comparable at all: a
+    Mon–Thu block spans 4 days and a Fri–Sun block 3, so their sums are not like
+    quantities. Because `weeks` now holds only whole Mon–Sun weeks, the divisor is
+    a constant 4 or 3 — no partial week can distort it.
+
+    `total` is the average day across the whole window (every day weighted
+    equally), not the mean of the weekly averages — identical while weeks are
+    complete, and the honest definition if that ever changes. Deltas are
+    unaffected by the division, since the divisor cancels in a ratio.
+    """
+    cells = [s / days_per_week for s in sums]
+    total = sum(sums) / (days_per_week * len(sums)) if sums else 0.0
+    return PivotSplit(
+        cells=[round(c, 2) for c in cells],
+        total=round(total, 2),
+        deltas=_deltas(cells),
+    )
+
+
+def _week_avg(wd: list[float], we: list[float]) -> float:
+    """Average sales per day across the whole week — all 7 days of every full week.
+
+    This is a *weighted* mean of the two halves (4 weekdays to 3 weekend days), so
+    it deliberately does not equal `weekday.total + weekend.total`, nor their
+    midpoint. It is the "an average day looks like this" number.
+    """
+    return round((sum(wd) + sum(we)) / (7 * len(wd)), 2) if wd else 0.0
+
+
 async def get_sales_pivot(
     session: AsyncSession,
     *,
@@ -74,9 +123,13 @@ async def get_sales_pivot(
     marketplaces: list[str] | None = None,
     metric: str = "value",
 ) -> SalesPivot:
-    """SKU × day pivot grouped by marketplace, with calendar-week rollups and
-    week-over-week deltas. `metric` picks the cell value: revenue (`mrp_value`)
-    or units (`qty_sold`)."""
+    """SKU × day pivot grouped by marketplace → category.
+
+    Two column axes come back: the daily one covers the whole selected window,
+    while the weekly one covers only **complete Mon–Sun weeks** within it and
+    splits each into Mon–Thu and Fri–Sun, compared like-for-like week over week.
+    `metric` picks the cell value: revenue (`mrp_value`) or units (`qty_sold`).
+    """
     metric_col = Sale.qty_sold if metric == "units" else Sale.mrp_value
 
     conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
@@ -89,34 +142,43 @@ async def get_sales_pivot(
                 Sale.platform,
                 Sale.item_id,
                 func.max(Sale.item_name),
+                Sale.category,
                 Sale.date,
                 func.coalesce(func.sum(metric_col), 0.0),
             )
             .where(*conds)
-            .group_by(Sale.platform, Sale.item_id, Sale.date)
+            .group_by(Sale.platform, Sale.item_id, Sale.category, Sale.date)
         )
     ).all()
 
     # ── Column axes ────────────────────────────────────────────────────────
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
     day_index = {d: i for i, d in enumerate(days)}
-    weeks = _calendar_weeks(start, end)
+    # Weekly axis covers only whole Mon–Sun weeks, so days in a partial edge week
+    # are absent from `week_of_day` and contribute to the daily view alone.
+    weeks = _full_weeks(start, end)
     week_of_day: dict[date, int] = {}
-    for wi, (_, vis_start, vis_end) in enumerate(weeks):
-        d = vis_start
-        while d <= vis_end:
+    for wi, (mon, sun) in enumerate(weeks):
+        d = mon
+        while d <= sun:
             week_of_day[d] = wi
             d += timedelta(days=1)
 
-    # ── Pivot rows into platform → item → {name, cells[], weeks[]} ──────────
+    # ── Pivot rows into platform → item → {name, cells[], weeks[], cats{}} ──
+    # A SKU is bucketed under one category, but `category` is stamped per sales
+    # row, so an item whose category was re-tagged mid-window would otherwise
+    # split into two rows. `cats` tallies the metric per category so the item
+    # lands in whichever one it mostly sold under, with its full total intact.
     plats: dict[str, dict[str, dict]] = {}
-    for platform, item_id, name, d, val in rows:
+    for platform, item_id, name, category, d, val in rows:
         sku = plats.setdefault(platform, {}).get(item_id)
         if sku is None:
             sku = {
                 "name": name or item_id,
                 "cells": [0.0] * len(days),
-                "weeks": [0.0] * len(weeks),
+                "wd": [0.0] * len(weeks),   # Mon–Thu of each full week
+                "we": [0.0] * len(weeks),   # Fri–Sun of each full week
+                "cats": {},
             }
             plats[platform][item_id] = sku
         di = day_index.get(d)
@@ -126,39 +188,78 @@ async def get_sales_pivot(
         sku["cells"][di] += v
         wi = week_of_day.get(d)
         if wi is not None:
-            sku["weeks"][wi] += v
+            sku["we" if _is_weekend(d) else "wd"][wi] += v
+        cat = (category or "").strip() or UNCATEGORISED
+        sku["cats"][cat] = sku["cats"].get(cat, 0.0) + v
 
-    # ── Assemble, with the Grand Total row per platform ────────────────────
+    # ── Assemble: category groups + subtotals, then the platform Grand Total ─
     platforms_out: list[PivotPlatform] = []
     for platform, items in plats.items():
-        sku_list: list[PivotSku] = []
+        # category → {skus[], day_totals[], wd[], we[]}
+        cats: dict[str, dict] = {}
         day_totals = [0.0] * len(days)
-        week_totals = [0.0] * len(weeks)
+        wd_totals = [0.0] * len(weeks)
+        we_totals = [0.0] * len(weeks)
         for item_id, sku in items.items():
-            sku_list.append(
-                PivotSku(
-                    item_id=item_id,
-                    name=sku["name"],
-                    cells=[round(c, 2) for c in sku["cells"]],
-                    total=round(sum(sku["cells"]), 2),
-                    weeks=[round(w, 2) for w in sku["weeks"]],
-                    week_deltas=_deltas(sku["weeks"]),
+            row = PivotSku(
+                item_id=item_id,
+                name=sku["name"],
+                cells=[round(c, 2) for c in sku["cells"]],
+                total=round(sum(sku["cells"]), 2),
+                weekday=_split(sku["wd"], WEEKDAY_DAYS),
+                weekend=_split(sku["we"], WEEKEND_DAYS),
+                week_total=_week_avg(sku["wd"], sku["we"]),
+            )
+            cat_name = (
+                max(sku["cats"].items(), key=lambda kv: kv[1])[0]
+                if sku["cats"]
+                else UNCATEGORISED
+            )
+            cat = cats.setdefault(
+                cat_name,
+                {
+                    "skus": [],
+                    "day_totals": [0.0] * len(days),
+                    "wd": [0.0] * len(weeks),
+                    "we": [0.0] * len(weeks),
+                },
+            )
+            cat["skus"].append(row)
+            for i, c in enumerate(sku["cells"]):
+                cat["day_totals"][i] += c
+                day_totals[i] += c
+            for i in range(len(weeks)):
+                cat["wd"][i] += sku["wd"][i]
+                cat["we"][i] += sku["we"][i]
+                wd_totals[i] += sku["wd"][i]
+                we_totals[i] += sku["we"][i]
+
+        cats_out: list[PivotCategory] = []
+        for name, cat in cats.items():
+            cat["skus"].sort(key=lambda s: s.total, reverse=True)
+            cats_out.append(
+                PivotCategory(
+                    name=name,
+                    skus=cat["skus"],
+                    cells=[round(x, 2) for x in cat["day_totals"]],
+                    total=round(sum(cat["day_totals"]), 2),
+                    weekday=_split(cat["wd"], WEEKDAY_DAYS),
+                    weekend=_split(cat["we"], WEEKEND_DAYS),
+                    week_total=_week_avg(cat["wd"], cat["we"]),
                 )
             )
-            for i, c in enumerate(sku["cells"]):
-                day_totals[i] += c
-            for i, w in enumerate(sku["weeks"]):
-                week_totals[i] += w
-        sku_list.sort(key=lambda s: s.total, reverse=True)
+        cats_out.sort(key=lambda c: c.total, reverse=True)
+
         platforms_out.append(
             PivotPlatform(
                 platform=platform,
                 live=True,  # present in the data ⇒ has a pipeline
-                skus=sku_list,
-                day_totals=[round(x, 2) for x in day_totals],
+                categories=cats_out,
+                cells=[round(x, 2) for x in day_totals],
                 total=round(sum(day_totals), 2),
-                week_totals=[round(x, 2) for x in week_totals],
-                week_deltas=_deltas(week_totals),
+                weekday=_split(wd_totals, WEEKDAY_DAYS),
+                weekend=_split(we_totals, WEEKEND_DAYS),
+                week_total=_week_avg(wd_totals, we_totals),
             )
         )
     platforms_out.sort(key=lambda p: p.total, reverse=True)
@@ -168,10 +269,10 @@ async def get_sales_pivot(
         start=start,
         end=end,
         metric="units" if metric == "units" else "value",
-        days=[PivotDay(date=d, weekend=d.weekday() >= 4) for d in days],
+        days=[PivotDay(date=d, weekend=_is_weekend(d)) for d in days],
         weeks=[
-            PivotWeek(label=f"Wk {i + 1}", start=vis_start, end=vis_end)
-            for i, (_, vis_start, vis_end) in enumerate(weeks)
+            PivotWeek(label=f"Wk {i + 1}", start=mon, end=sun)
+            for i, (mon, sun) in enumerate(weeks)
         ],
         platforms=platforms_out,
     )

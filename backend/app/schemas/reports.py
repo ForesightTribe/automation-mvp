@@ -19,44 +19,89 @@ class PivotDay(BaseModel):
 
 
 class PivotWeek(BaseModel):
-    """One calendar-week rollup column (Monday-start), clamped to the selected
-    range at the edges. `label` is sequential ("Wk 1"); `start`/`end` are the
-    visible span summed into it."""
+    """One **complete** Monday–Sunday week inside the selected range. Partial weeks
+    at either edge are excluded outright rather than clamped: a half-week summed
+    against a full one made every week-over-week delta unreadable. `label` is
+    sequential ("Wk 1"); `start` is always a Monday and `end` its Sunday."""
 
     label: str
     start: date
     end: date
 
 
+class PivotSplit(BaseModel):
+    """One half of the weekday/weekend split, as a series aligned to `weeks`.
+
+    The client trades very differently Mon–Thu vs Fri–Sun, so a whole-week rollup
+    averaged the two patterns together and hid both. Every weekly figure is
+    therefore reported twice — once per half — and never blended.
+
+    **Every value here is an average per day, not a sum.** Mon–Thu is 4 days and
+    Fri–Sun is 3, so summed halves are not comparable quantities; per-day averages
+    are. `cells[i]` is the average day in that half of week i, `total` the average
+    day across the whole window, and `deltas[i]` week i vs week i-1 *for the same
+    half* (index 0 is always None, as is any week following a zero).
+    """
+
+    cells: list[float]
+    total: float
+    deltas: list[float | None]
+
+
 class PivotSku(BaseModel):
-    """A single SKU row: daily cells aligned to `days`, the window total, weekly
-    rollups aligned to `weeks`, and week-over-week deltas (`week_deltas[i]` = week
-    i vs i-1; index 0 is always None)."""
+    """A single SKU row. `cells`/`total` are the daily view (aligned to `days`,
+    covering the whole selected window) and are **sums**. `weekday`/`weekend` are
+    the weekly view, cover **only the full weeks** in `weeks`, and are **averages
+    per day**. `week_total` is the average day across all 7 days — a weighted mean
+    of the two halves, so it is neither their sum nor their midpoint. The two
+    views deliberately answer different questions and do not reconcile."""
 
     item_id: str
     name: str
     cells: list[float]
     total: float
-    weeks: list[float]
-    week_deltas: list[float | None]
+    weekday: PivotSplit
+    weekend: PivotSplit
+    week_total: float
+
+
+class PivotCategory(BaseModel):
+    """One category group inside a platform block ("Cold Drinks & Juices",
+    "Munchies", …, from `blinkit_seller_sales.category`) — its SKU rows plus the
+    category subtotal row, in the same column shape as a SKU row."""
+
+    name: str
+    skus: list[PivotSku]
+    # Same field names as PivotSku so a SKU row, a category subtotal and the grand
+    # total all render through one code path on the frontend.
+    cells: list[float]
+    total: float
+    weekday: PivotSplit
+    weekend: PivotSplit
+    week_total: float
 
 
 class PivotPlatform(BaseModel):
-    """One marketplace block: its SKU rows plus the Grand Total row (column sums,
-    weekly rollups, and their week-over-week deltas). `live` = the platform has a
-    data pipeline (Blinkit today); others would arrive as separate blocks once
-    their scrapers exist."""
+    """One marketplace block: its category groups plus the Grand Total row (column
+    sums, the weekday/weekend rollups, and their week-over-week deltas). `live` =
+    the platform has a data pipeline (Blinkit today); others would arrive as
+    separate blocks once their scrapers exist."""
 
     platform: str
     live: bool
-    skus: list[PivotSku]
-    day_totals: list[float]
+    categories: list[PivotCategory]
+    cells: list[float]
     total: float
-    week_totals: list[float]
-    week_deltas: list[float | None]
+    weekday: PivotSplit
+    weekend: PivotSplit
+    week_total: float
 
 
 class SalesPivot(BaseModel):
+    """`weeks` holds only complete Mon–Sun weeks, so it is empty for a window too
+    short or too misaligned to contain one — the weekly view has nothing to show
+    in that case while the daily view is unaffected."""
+
     client_id: uuid.UUID
     start: date
     end: date

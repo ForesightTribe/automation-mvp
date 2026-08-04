@@ -1,5 +1,5 @@
 import { useMarketing } from "../hooks";
-import { formatNumber, formatCompactCurrency } from "../../../lib/format";
+import { formatNumber, formatCurrency } from "../../../lib/format";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 
@@ -14,7 +14,9 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
  * to build yet), so this view is pure read.
  */
 
-const money = (v) => formatCompactCurrency(v);
+// Full rupee figures (₹1,23,456), not the compact ₹1.2L the KPI tiles use — this
+// is a ledger the client reconciles against their own numbers, so every digit shows.
+const money = (v) => formatCurrency(v);
 const ratioX = (v) => (v === null || v === undefined ? "—" : `${v.toFixed(1)}x`);
 const ratio = (v) => (v === null || v === undefined ? "—" : v.toFixed(1));
 
