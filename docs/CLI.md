@@ -44,29 +44,82 @@ python -m cli tenant list                        # show all tenants and their UU
 
 ## Auth
 
-### Blinkit marketing (`brands.blinkit.com`) — magic link
+Platform sessions — logging Foresight **into** Blinkit. (Not app-user auth; that is
+`app/routes/auth.py`.) Full design: [platform-auth.md](platform-auth.md).
+
+**No browser is launched and no human is needed.** Both Blinkit dashboards authenticate
+over plain HTTP, and the magic link / OTP is read from the shared auth inbox.
+
+### First time for a tenant — store the credentials
 
 ```
-python -m cli auth blinkit --tenant <tenant_id>
+python -m cli auth credentials set blinkit        --tenant <tenant_id> --email ops@brand.com
+python -m cli auth credentials set blinkit_seller --tenant <tenant_id> --email ops@brand.com
 ```
 
-Browser opens → fill email → paste magic link from email into terminal.
-
-### Blinkit seller (`partnersbiz.com`) — OTP
-
-```
-python -m cli auth blinkit-seller --tenant <tenant_id>
-```
-
-Browser opens → fills email → enter 6-digit OTP from email into terminal.
-
-Used for all seller commands: `blinkit-seller` (sales + PO + SOH) and `blinkit-scorecard`.
-
-### Check session status
+Blinkit is passwordless (magic link / OTP), so no password is stored. A platform that
+needs one — Zepto will — takes `--password`, which prompts hidden and encrypts at rest:
 
 ```
-python -m cli auth status --tenant <tenant_id>
+python -m cli auth credentials set zepto --tenant <tenant_id> --email ops@brand.com --password
+python -m cli auth credentials list --tenant <tenant_id>      # never shows the password
+python -m cli auth credentials remove zepto --tenant <tenant_id>
 ```
+
+### Log in
+
+```
+python -m cli auth login blinkit        --tenant <tenant_id>
+python -m cli auth login blinkit_seller --tenant <tenant_id>
+```
+
+Unattended by default: it requests the secret, reads it from the auth inbox, and stores
+the session — about 15–20 seconds, no typing. Add `--manual` to paste the link/OTP
+yourself (useful if the mailbox is unavailable, or for a first login you want to watch).
+
+`auth blinkit` and `auth blinkit-seller` still work as aliases for the two commands above.
+
+### Day-to-day
+
+```
+python -m cli auth status  --tenant <tenant_id>          # every platform + health + last error
+python -m cli auth probe   blinkit --tenant <tenant_id>  # is the session ACTUALLY alive
+python -m cli auth refresh blinkit --tenant <tenant_id>  # extend it, no email needed
+python -m cli auth refresh-all      --tenant <tenant_id> # what the auth.refresh job runs
+python -m cli auth reset   blinkit --tenant <tenant_id>  # clear the circuit breaker
+python -m cli auth platforms                            # registry + mail-rule status
+```
+
+**`status` vs `probe`:** `status` reports what was last *recorded*; `probe` checks the
+platform right now (one API call, no browser). A session can read `active` and be dead —
+that gap is what let the seller scrape fail silently for weeks. When in doubt, `probe`.
+
+### You rarely need any of this
+
+Scrapers call `ensure()` internally: load → probe → refresh → re-login, doing the least
+work that yields a working session. **An expired session repairs itself**, so `auth login`
+is for the first login of a new tenant, or after something genuinely broke.
+
+A daily `auth.refresh` job keeps sessions warm so they never reach expiry:
+
+```
+python -m cli schedules add --name "Auth refresh daily" --type auth.refresh     --cron "10 6 * * *" --tenant <tenant_id>
+```
+
+### When a login fails
+
+Auto-login suspends itself after 3 consecutive **login** failures (ordinary expiry does
+not count) — it would otherwise hammer a login endpoint from one datacenter IP and bury a
+broken config in noise. `auth status` shows the count and the last error. After fixing the
+cause:
+
+```
+python -m cli auth reset blinkit --tenant <tenant_id>
+```
+
+A run that dies for auth reasons exits with code **3**, which the job runner records as
+`jobs.error='auth_expired'` — so auth failures are filterable in Cloud Logging rather than
+hiding among anonymous `exit_1`s.
 
 ---
 
@@ -552,7 +605,11 @@ Sheets produced: Ad Performance Summary, Ad Campaigns, Sponsored SOV, Brand Coll
 - `.env` must have `DATABASE_URL` (Supabase Session Pooler URL) and `ENCRYPTION_KEY`
 - Run `alembic upgrade head` once to create all tables before first use
 - Create a tenant with `cli tenant create` before running any auth or private scrape commands
-- Run `auth` before `scrape` for each tenant
+- Store credentials (`auth credentials set`) and run `auth login` **once** per tenant per
+  platform. After that scrapers self-heal via `ensure()` — you do not run `auth` before
+  each `scrape`
+- Unattended login needs `AUTH_INBOX_USER` + `AUTH_INBOX_APP_PASSWORD` in `.env`; without
+  them `auth login` falls back to prompting (`--manual`)
 - `cli sync` and `scrape public --save` auto-create brand + marketplace rows (`ensure_refs`) — no manual seeding
 - Public scraping is config-driven: `cli sync --file config.xlsx` before `cli scrape public-run` / `public-skus`
 - The two public scrapes are independent commands with independent `scrape_job`s — run them on separate cadences (e.g. `public-skus` daily, `public-run` weekly)

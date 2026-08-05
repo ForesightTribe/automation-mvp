@@ -22,7 +22,7 @@
 | [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
-| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, cost/capacity model, and the VM gotchas. ⚠️ Its "re-auth over SSH / `--headless`" section is superseded by [docs/platform-auth.md](docs/platform-auth.md) — logins no longer use a browser |
+| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth on the box, cost/capacity model, and the VM gotchas |
 | [docs/zepto.md](docs/zepto.md) | **Zepto — platform build plan (Public Data first, PLANNED)** — decisions, the Phase 0 API recon questions, provider-abstraction refactor, Zepto's own store catalog, file-by-file spec, CLI/jobs/VM fit, the disk gate, and the post-public roadmap |
 
 ---

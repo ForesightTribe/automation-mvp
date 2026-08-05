@@ -11,10 +11,18 @@ failures are invisible (no terminal, no log surface), and nothing records what r
 > scheduled scrapes fire unattended, crash recovery works, and logs ship to Cloud
 > Logging. See [jobs-runbook.md](jobs-runbook.md) to operate it.
 >
-> **Still open:** the alert policy isn't created yet (so the heartbeat's ERROR reaches
-> a log, not your inbox); the **public** scrapers have never run from the VM (the
+> **Alerting closed 2026-08-05** — the ERROR policy is live and was verified by forcing
+> a real failure, so a failed job now reaches an inbox. See
+> [deploy/alerts/](../deploy/alerts/README.md). ⚠️ It only works because job failures now
+> log at **ERROR**; they used to log at WARNING, which `severity>=ERROR` never matched.
+> **Any new failure path must log at ERROR or it is invisible to the alert.**
+>
+> **Auto-login shipped 2026-08-04** — no longer parked. Sessions self-heal via `ensure()`
+> and a daily `auth.refresh` job keeps them warm. See [platform-auth.md](platform-auth.md).
+>
+> **Still open:** the **public** scrapers have never run from the VM (the
 > Cloudflare/datacenter-ASN question); Phase 4 (API) is unbuilt; `jobs cancel` doesn't
-> exist; auto-login is parked.
+> exist.
 
 ---
 
@@ -241,6 +249,7 @@ ignores it until its `next_run_at` passes.
 | `explore` | `interactive` | `cli explore …` (ExplorerSpec → flags) |
 | `maint.log_cleanup` | `batch` | prune `logs/jobs/**` older than N days |
 | `monitor.heartbeat` | `interactive` | deadman check — see [Monitoring](#monitoring) |
+| `auth.refresh` | `interactive` | `cli auth refresh-all --tenant …` — keeps platform sessions warm so they never expire. Seconds of work, so `interactive`: it must never queue behind a multi-hour scrape. Skips if the tenant has another job active (a seller token rotation kills the previous token). See [platform-auth.md](platform-auth.md) |
 | *reserved* `campaign.budget_scheduler` | `live` | coworker's, later |
 | *reserved* `campaign.bid_optimizer` | `live` | coworker's, later |
 
@@ -341,12 +350,19 @@ marks it `failed`, `error='timeout'`, rather than letting a wedged browser hold 
 
 ### The Blinkit session expired
 
-The subprocess fails to authenticate and exits non-zero. The runner marks the job `failed`
-with `error='auth_expired'` — a *distinct* reason, so it can be alerted on specifically —
-and you re-auth with `cli auth blinkit --headless`.
+*Updated 2026-08-04 — this used to be the most likely cause of a failed unattended run.
+It now normally fixes itself.*
 
-Auto-login is deliberately **out of scope for now**, so this is the failure mode most likely
-to bite an unattended run. It must fail *loudly*.
+The scrape calls `ensure()`, which probes the stored session and — if it is dead —
+refreshes it, or logs in again (no browser, secret read from the auth inbox). The run
+continues. Nothing is recorded as a failure because nothing failed.
+
+It only reaches the runner when recovery itself fails: no credentials stored, the login
+mail never arrived, or auto-login has suspended itself after repeated failures. Then the
+CLI exits with code **3**, and the runner marks the job `failed` with
+`error='auth_expired'` — a distinct, alertable reason. Diagnose with
+`cli auth status -t <tenant>`; the run's own log carries an `AUTH FAILURE` banner naming
+the cause and the fix. See [platform-auth.md](platform-auth.md).
 
 ### Something is enqueued twice
 
@@ -466,6 +482,15 @@ But the alert that matters is not CPU. It is **"the 3am scrape silently didn't r
   has succeeded within its window (26h for a daily, 8d for a weekly). If not → ERROR log →
   Cloud Logging alert → email. This catches the failure mode no resource graph ever will.
 - **Disk > 80%** and **VM down** alert policies in GCP.
+- **The alert policies themselves live in [deploy/alerts/](../deploy/alerts/)** as
+  reviewable JSON plus the `gcloud` commands. Two of them, and the second is not
+  redundant: `runner-errors` fires on any ERROR, `runner-silent` fires when the runner
+  says *nothing* for two hours — because **a dead runner cannot report its own death**,
+  and silence is otherwise indistinguishable from health. (That is exactly how Cloud
+  Logging going dark on 2026-07-23 went unnoticed.)
+- **Test a policy by forcing a failure**, once, after creating it:
+  `cli jobs run monitor.heartbeat disk_pct=0` (threshold 0 always trips). A policy whose
+  filter silently matches nothing looks identical to a working one.
 
 ---
 
@@ -574,8 +599,9 @@ When they are needed:
 
 ## Known risks
 
-- **Platform-session expiry** — the most likely cause of a failed unattended run while auto-login is
-  out of scope. Must fail loudly with a distinct `auth_expired` reason.
+- ~~**Platform-session expiry**~~ — largely retired 2026-08-04: `ensure()` repairs an expired session
+  in-run and a daily `auth.refresh` keeps it from expiring at all. What remains is a *login* failing
+  (mail not arriving, credentials missing), which still fails loudly as `auth_expired`.
 - **Connection pools are per-process and lazy** — they look fine until real concurrent load. Keep
   `DB_POOL_SIZE` small (3–5) on the runner and CLI, and re-do the arithmetic above before adding a
   lane slot.
@@ -611,7 +637,7 @@ that, once moved, the bid optimizer is never starved by a batch scrape.
 |---|---|---|
 | **1 — Queue + runner** ✅ | `jobs` table (with `lane`), migration `a7f3c2e9d4b1`, `cli runner`, per-lane claim + slots, subprocess dispatch, per-run log files, stale-lock reaper, systemd unit, `cli jobs run/list/logs`. Lives in the top-level `jobs/` package. | No more typing scrapes over SSH; every run is recorded |
 | **2 — Scheduler** ✅ | `job_schedules` table, migration `b8e5d1a3f9c2`, cron producer (`jobs/scheduler.py`, runs alongside the consumer), catchup/misfire logic, `cli schedules add/list/enable/disable/remove`. Next-fire computed via APScheduler's CronTrigger against fixed-offset IST. | Scrapes run on time, unattended |
-| **3 — Observability** ✅ | absolute `LOG_DIR` (P1), structured JSON `runner.log` (`cli runner start` sink), per-lane log paths, `maint.log_cleanup` + `cli maint log-cleanup`, `monitor.heartbeat` (deadman + disk) + `cli monitor heartbeat`, `cli jobs logs --follow`, Ops Agent config (`deploy/ops-agent-logging.yaml`) shipping to Cloud Logging | Failures are visible from a browser — **alert policy still to create** |
+| **3 — Observability** ✅ | absolute `LOG_DIR` (P1), structured JSON `runner.log` (`cli runner start` sink), per-lane log paths, `maint.log_cleanup` + `cli maint log-cleanup`, `monitor.heartbeat` (deadman + disk) + `cli monitor heartbeat`, `cli jobs logs --follow`, Ops Agent config (`deploy/ops-agent-logging.yaml`) shipping to Cloud Logging | Failures are visible from a browser, and **the ERROR alert policy is live + verified** (`deploy/alerts/`, 2026-08-05) |
 | **4 — API** | `GET /api/jobs`, `/jobs/{id}/log`, `POST /api/jobs`, `GET/POST/PATCH /api/job-schedules` | UI-ready |
 
 ### Validated on the VM, 2026-07-17

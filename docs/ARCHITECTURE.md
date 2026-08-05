@@ -305,25 +305,44 @@ Reference: `backend/scraper/platforms/blinkit/public_data/{scraper,storage,sku_s
 
 ### Blinkit marketing — magic link auth
 
+*Rewritten 2026-08-04: no browser is involved in logging in. See
+[platform-auth.md](platform-auth.md).*
+
 ```
-1. cli auth blinkit --tenant <uuid>
-2. Browser opens (headless=False), navigates to brands.blinkit.com
-3. User enters email → receives magic link by email
-4. User pastes magic link URL into terminal
-5. Browser navigates to magic link, waits for session on /diy/
-6. Three-layer session captured: cookies + localStorage + Firebase IndexedDB
-7. Encrypted with Fernet → saved to platform_sessions table
+1. cli auth login blinkit --tenant <uuid>
+2. POST brands.blinkit.com/adservice/v1/users/request-magic-link  (X-User-Email header)
+3. Blinkit emails a SendGrid-wrapped Firebase action link
+4. The auth inbox is polled over IMAP; the link is matched on recipient +
+   arrival time + sender + subject, and the redirect resolved to get its oobCode
+5. POST identitytoolkit accounts:signInWithEmailLink → idToken + refreshToken
+6. A three-layer storage_state is SYNTHESIZED from those tokens
+   (cookies empty + localStorage + Firebase IndexedDB)
+7. Encrypted with Fernet → saved to platform_sessions
 ```
+
+There is no backend session exchange — the Firebase ID token *is* the credential
+(`firebase_user_token`). Cookies are deliberately empty: Chromium earns its own
+Cloudflare cookies on first navigation.
 
 ### Blinkit seller — OTP auth
 
 ```
-1. cli auth blinkit-seller --tenant <uuid>
-2. Browser opens, navigates to partnersbiz.com
-3. User enters email → receives 6-digit OTP by email
-4. User enters OTP into terminal
-5. Session captured and stored (same three-layer approach)
+1. cli auth login blinkit_seller --tenant <uuid>
+2. POST partnersbiz.com/auth/api/v1/email/send_otp     → 6-digit code by email
+3. The auth inbox is polled; the OTP is read from the message's VISIBLE text
+   (raw HTML is full of six-digit hex colours)
+4. POST .../email/verify_otp                           → access + refresh token
+5. GET  /v1/get-user-entities/                         → the entity
+6. Session stored: tokens + entity, plus a browser projection and ready API headers
 ```
+
+The entity is **part of the credential** — `/v1/*` returns 403 without
+`X-Entity-Id`/`X-Entity-Type`. The old "account selection screen" was pure client
+state (`localStorage.myEntity`), so it is resolvable over HTTP.
+
+Both platforms refresh indefinitely (`securetoken` / `tokens/rotate`), so a warm
+session never needs a second secret. Consumers call `platform_auth.service.ensure()`
+rather than loading a session directly, so expiry self-heals.
 
 ### Session restore — critical ordering
 

@@ -103,7 +103,9 @@ tools** (set-budget now, live-position check, live-budget, cached keywords/produ
 - **Auth token.** API calls send a `firebase_user_token` header, grabbed three ways (intercept, localStorage,
   live SDK) and refreshed at call time in `_fetch`.
 - **Expiry.** Session dies → redirect off `/dashboard` → "reconnect" error. Today reconnection is a manual
-  magic-link paste; **D5 replaces this with the standard `cli auth blinkit`.** Auto-login is not built.
+  magic-link paste. ⚠️ *Resolved 2026-08-04:* the CM's own reconnect is **deleted**, `setup()` now
+  calls `platform_auth.service.ensure()`, and auto-login IS built — a dead session refreshes or
+  re-logs-in in-run, with no browser. See [platform-auth.md](platform-auth.md).
 
 ### 3.2 The Blinkit API surface
 

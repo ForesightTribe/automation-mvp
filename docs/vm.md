@@ -116,27 +116,33 @@ just runs.
 A wrong `ENCRYPTION_KEY` doesn't fail loudly — the box reads the row and can't
 unlock it.
 
-**Re-authenticating on the box.** `cli auth blinkit` / `blinkit-seller` take a
-`--headless` flag (default off, so local behaviour is unchanged). The human's only
-step in both flows is an `input()` **at the terminal** — pasting a magic link or
-typing an OTP. Nobody ever touches the browser window, so `headless=False` was only
-ever there so a human could watch. With `--headless` you can re-auth over SSH.
+**Re-authenticating on the box.** ⚠️ *Superseded 2026-08-04 — this section used to
+describe a `--headless` browser login and an "open question" about whether headless
+OTP entry works. Both are gone: **logging in no longer uses a browser at all.***
 
-> **Open question (2026-07-13):** `blinkit-seller --headless` failed once with a
-> timeout after OTP submit — but the OTP was entered 5½ minutes after it was
-> requested, so an expired code is the likelier cause than bot detection. Not yet
-> retested. `seller/auth.py` now screenshots failures to `logs/auth-failures/`
-> (headless otherwise leaves you blind). The magic-link flow (`auth blinkit`) is a
-> different mechanism and is the one most likely to work — `reconnect_blinkit()` in
-> `ads_service.py` already does headless magic-link capture today.
+Both Blinkit dashboards authenticate over plain HTTP (the "Cloudflare blocks httpx"
+rule applies to the **data** endpoints, not the **login** ones), and the magic link /
+OTP is read from the shared auth inbox. So re-auth over SSH is just:
 
-⚠️ **A headless login can "succeed" while capturing 0 Firebase IndexedDB items — and
-it still saves.** That session dies after ~1h. Always check the log line
-`IndexedDB: N Firebase items`; **N = 0 means re-login headful immediately.**
+```bash
+cd ~/automation-mvp/backend
+venv/bin/python -m cli auth status -t <tenant>            # health of every platform
+venv/bin/python -m cli auth probe blinkit -t <tenant>     # is it ACTUALLY alive
+venv/bin/python -m cli auth login blinkit -t <tenant>     # unattended, ~15s
+```
 
-Full unattended operation still needs an **inbox reader** (Gmail API / IMAP) to
-extract the link/OTP. Design note: re-auth **lazily**, only when a session is
-actually dead — repeated logins from a datacenter IP look like a bot.
+Needs `AUTH_INBOX_USER` + `AUTH_INBOX_APP_PASSWORD` in the box's `.env` (systemd reads
+it via `EnvironmentFile`, so **restart the runner after editing** — `sudo systemctl
+restart foresight-runner`). Strip the spaces Google shows in the app password.
+
+You rarely run any of this: scrapers call `ensure()` and repair an expired session
+themselves, and a daily `auth.refresh` job keeps sessions warm so they never expire.
+Logins stay **lazy and never scheduled** — repeated logins from one datacenter IP look
+like a bot. See [platform-auth.md](platform-auth.md).
+
+`AUTH_ALLOW_LOGIN` should stay **true** here and be set **false on Render**: Blinkit is
+India-geo, and a login from a US IP minutes before the same account is used from Mumbai
+is exactly what fraud heuristics watch for.
 
 ## Cost
 

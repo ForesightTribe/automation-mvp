@@ -83,6 +83,18 @@ ENCRYPTION_KEY=...
 # JWT signing secret
 # Generate: python -c "import secrets; print(secrets.token_hex(32))"
 SECRET_KEY=...
+
+# --- Optional: unattended platform login (see docs/platform-auth.md) ---
+# The mailbox every marketplace's magic links / OTPs are auto-forwarded to.
+# Without these, `cli auth login` still works but prompts you to paste the secret.
+# The app password is a Gmail App Password (needs 2FA), spaces stripped.
+AUTH_INBOX_USER=
+AUTH_INBOX_APP_PASSWORD=
+
+# Whether THIS process may perform a platform login. Leave true locally and on the
+# scraper VM; set false on Render — Blinkit is India-geo, and logging in from a US IP
+# is exactly what fraud heuristics watch for.
+AUTH_ALLOW_LOGIN=true
 ```
 
 ---
@@ -181,9 +193,13 @@ Brand and marketplace rows are created automatically (`ensure_refs`). No manual 
 python -m cli tenant create --name "My Brand" --account <account-id>
 #    Prints a client UUID — copy it for the commands below.
 
-# 2. Authenticate (browser opens)
-python -m cli auth blinkit --tenant <client-uuid>           # marketing dashboard
-python -m cli auth blinkit-seller --tenant <client-uuid>    # seller dashboard
+# 2. Store the login address, then authenticate (no browser, no typing)
+python -m cli auth credentials set blinkit        -t <client-uuid> --email ops@brand.com
+python -m cli auth credentials set blinkit_seller -t <client-uuid> --email ops@brand.com
+python -m cli auth login blinkit        --tenant <client-uuid>    # marketing dashboard
+python -m cli auth login blinkit_seller --tenant <client-uuid>    # seller dashboard
+#    Unattended if AUTH_INBOX_* is set in .env; otherwise add --manual to paste
+#    the link/OTP yourself. You only do this ONCE — scrapes self-heal after that.
 
 # 3. Scrape
 python -m cli scrape blinkit --tenant <client-uuid>

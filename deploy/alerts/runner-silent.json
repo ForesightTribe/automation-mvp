@@ -25,9 +25,7 @@
   "combiner": "OR",
   "enabled": true,
   "alertStrategy": {
-    "notificationRateLimit": {
-      "period": "3600s"
-    }
+    "autoClose": "604800s"
   },
   "notificationChannels": [
     "REPLACE_WITH_CHANNEL_ID"

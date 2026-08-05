@@ -71,6 +71,13 @@ done
 gcloud alpha monitoring policies list --format="table(displayName,enabled)"
 ```
 
+> **`notificationRateLimit` is only legal on log-based policies** (`conditionMatchedLog`).
+> The silence policy uses `conditionAbsent`, which is a *metric* condition, and the API
+> rejects the field outright:
+> `INVALID_ARGUMENT: only log-based alert policies may specify a notification rate limit`.
+> It uses `autoClose` alone instead — a silence alert firing repeatedly is not the problem
+> a rate limit solves anyway, since the condition stays true until the runner speaks again.
+
 To edit later, change the JSON here and update in place (keeps it reviewable in git):
 
 ```bash
