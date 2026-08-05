@@ -38,3 +38,7 @@ dist-ssr
 # CLAUDE.md
 
 backend/staging
+
+# v1 ad_campaigns file-based state (retired; only the disabled v1 engine writes these —
+# ignored so a stray local run can't re-commit them). See docs — v1 is superseded by v2.
+backend/ad_campaigns/*.json
