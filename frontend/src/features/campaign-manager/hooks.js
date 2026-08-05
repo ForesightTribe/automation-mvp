@@ -15,7 +15,6 @@ import {
     getLiveBudget,
     getLivePositions,
     getSchedulerHistory,
-    reconnectBlinkit,
     runBidOptimizer,
     runScheduler,
     setCampaignBudget,
@@ -99,13 +98,6 @@ export const useLiveBudget = () => {
     return useMutation({
         mutationFn: (campaignId) => getLiveBudget(activeClientId, campaignId),
         onSuccess: () => queryClient.invalidateQueries({ queryKey: ["cm-campaigns", activeClientId] }),
-    });
-};
-
-export const useReconnectBlinkit = () => {
-    const { activeClientId } = useClient();
-    return useMutation({
-        mutationFn: (magicLink) => reconnectBlinkit(activeClientId, magicLink),
     });
 };
 

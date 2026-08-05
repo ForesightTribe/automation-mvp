@@ -66,6 +66,26 @@ class Settings(BaseSettings):
     # the schedule's `catchup` flag decides run-once-on-recovery vs skip.
     SCHEDULER_MISFIRE_GRACE_SECONDS: int = 300
 
+    # --- Platform auto-login (see docs/platform-auth.md) ---
+    # The mailbox every marketplace's magic links and OTPs are auto-forwarded to.
+    # Unset = auto-login is unavailable and `cli auth login` falls back to
+    # prompting a human; nothing else breaks.
+    AUTH_INBOX_HOST: str = "imap.gmail.com"
+    AUTH_INBOX_USER: str = ""
+    AUTH_INBOX_APP_PASSWORD: str = ""   # Gmail App Password, not the account password
+    AUTH_INBOX_FOLDER: str = "INBOX"
+    # How long to wait for the login mail to arrive before giving up. Generous,
+    # because forwarding adds a hop: observed arrival is a few seconds.
+    AUTH_INBOX_TIMEOUT_SECONDS: float = 120.0
+    # Whether THIS process may perform a platform login. True on the scraper VM;
+    # set false on Render. Blinkit is India-geo, so a login from Render's US IP
+    # minutes before the same account is used from Mumbai is exactly the pattern
+    # fraud heuristics look for. With this false, ensure() raises SessionExpired
+    # instead of quietly logging in from the wrong country — a loud failure beats
+    # a silent account flag. Refresh and probe are unaffected (no login, no IP
+    # sensitivity); the API should ENQUEUE an auth.refresh job, never log in.
+    AUTH_ALLOW_LOGIN: bool = True
+
     # Marketplaces with real, trusted data today. Everything else is shown but
     # gated as "not connected" in the UI (no real scrapers yet). Stopgap until
     # connectivity is derived from successful scrape_jobs per platform.

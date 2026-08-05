@@ -1,9 +1,11 @@
 import asyncio
+import json
 from datetime import datetime, timezone, timedelta
 
 import httpx
 from playwright.async_api import async_playwright
 
+from platform_auth.marketplaces.blinkit import seller as seller_auth
 from scraper.platforms.blinkit.dashboard_data.seller import endpoints as ep
 from scraper.utils.browser import create_browser_context
 from scraper.utils.retry import retry
@@ -30,7 +32,52 @@ def _yesterday() -> str:
 
 # ── Browser header capture ────────────────────────────────────────────────────
 
+def _headers_from_state(storage_state: dict) -> dict | None:
+    """Build the /v1/* auth headers straight from a stored session — no browser.
+
+    The browser below was only ever a header-harvesting device: it opened the SPA
+    and copied `access_token` + `x-api-key` off the app's own requests. Both are
+    recoverable from the session itself — the token is a cookie, the entity is
+    `myEntity` in localStorage — so the whole Chromium launch (~1 GB RSS, ~13 s)
+    is avoidable.
+
+    Returns None if either piece is missing, so anything unexpected falls back to
+    the browser path rather than failing.
+    """
+    token = next(
+        (
+            c.get("value")
+            for c in storage_state.get("cookies", [])
+            if c.get("name") == "access_token" and "partnersbiz" in c.get("domain", "")
+        ),
+        None,
+    )
+    if not token:
+        return None
+
+    entity = None
+    for origin in storage_state.get("origins", []):
+        for item in origin.get("localStorage", []):
+            if item.get("name") == "myEntity":
+                try:
+                    entity = json.loads(item["value"])
+                except (ValueError, KeyError):
+                    return None
+    # The entity is not optional: /v1/* returns 403 ERROR_CODE:11 without the
+    # X-Entity-Id / X-Entity-Type headers derived from it.
+    if not entity or "id" not in entity or "type" not in entity:
+        return None
+
+    return seller_auth.data_headers(token, entity)
+
+
 async def _capture_headers(storage_state: dict, page_path: str, label: str) -> dict:
+    headers = _headers_from_state(storage_state)
+    if headers:
+        logger.info(f"{label} session ready (no browser)")
+        return headers
+
+    logger.info(f"{label}: session lacks token/entity — falling back to a browser capture")
     captured: dict = {}
 
     async with async_playwright() as p:

@@ -153,6 +153,27 @@ logging:
 #   Fallback if severity mapping isn't working:
 #     log_id("foresight_runner") AND jsonPayload.record.level.name="ERROR"
 #
+#   ── AUTH (see docs/platform-auth.md) ──────────────────────────────────────
+#   Every job that died because a platform session could not be established.
+#   `auth_expired` is set by jobs/runner.py::_classify_failure from the CLI's
+#   exit code 3 — jobs are subprocesses, so an exit code is the only channel a
+#   typed exception has to reach the runner:
+#     log_id("foresight_runner") AND jsonPayload.record.extra.error="auth_expired"
+#
+#   Auth failures for one client only:
+#     log_id("foresight_runner") AND jsonPayload.record.extra.error="auth_expired"
+#       AND jsonPayload.record.extra.tenant_id="<uuid>"
+#
+#   Any job failure, grouped by cause (auth_expired / oom / timeout / exit_N):
+#     log_id("foresight_runner") AND jsonPayload.record.extra.error!=""
+#
+#   The auth failure's actual REASON (which mail never arrived, which code was
+#   expired) is in the run's own log, not the runner's — the runner only sees an
+#   exit code. Jump to it with the log_file field from the same entry:
+#     labels."agent.googleapis.com/log_file_path"=~"<log_file from above>"
+#   or search the lane stream directly:
+#     log_id("foresight_dashboard") AND "AUTH FAILURE"
+#
 #   Scraper output, ONE STREAM PER LANE (pick from the Log name dropdown):
 #     log_id("foresight_batch")        ← public scrapes + log cleanup (the noisy ones)
 #     log_id("foresight_dashboard")    ← marketing / seller / scorecard
@@ -179,9 +200,21 @@ logging:
 # ─────────────────────────────────────────────────────────────────────────────
 # ALERTS (Monitoring → Alerting → Create policy → Log-based)
 #
-# 1. THE ONE THAT MATTERS — any runner error, incl. "HEARTBEAT: … didn't run":
+# 1. THE ONE THAT MATTERS — any runner error, incl. "HEARTBEAT: … didn't run"
+#    and EVERY failed job:
 #      log_id("foresight_runner") AND severity>=ERROR
 #    → notification channel: your email.
+#
+#    ⚠️ Until 2026-08-04 a failed job was logged at WARNING, so this policy — the
+#    one alert that is supposed to matter — would NOT have fired for a failed
+#    scrape. The DB recorded the failure and nobody was told. Job failures now log
+#    at ERROR. If you ever add a new failure path, log it at ERROR or it is
+#    invisible here.
+#
+# 1b. Auth specifically (optional, narrower than #1 — useful as a separate
+#     channel because the fix is a human running `cli auth login`):
+#      log_id("foresight_runner")
+#        AND jsonPayload.record.extra.error="auth_expired"
 #
 # 2. Who watches the watchman — the heartbeat cannot report its own death, so alert
 #    on ABSENCE: a metric-absence policy on the VM's uptime, or a log-absence policy

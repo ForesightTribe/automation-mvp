@@ -19,9 +19,10 @@
 | [docs/staging.md](docs/staging.md) | **Public scrapes stage to local SQLite**, then `cli scrape load` pushes to Postgres in one all-or-nothing transaction — why, commands, retention, failure modes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
 | [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
+| [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
-| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth over SSH, cost/capacity model, and the VM gotchas |
+| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, cost/capacity model, and the VM gotchas. ⚠️ Its "re-auth over SSH / `--headless`" section is superseded by [docs/platform-auth.md](docs/platform-auth.md) — logins no longer use a browser |
 | [docs/zepto.md](docs/zepto.md) | **Zepto — platform build plan (Public Data first, PLANNED)** — decisions, the Phase 0 API recon questions, provider-abstraction refactor, Zepto's own store catalog, file-by-file spec, CLI/jobs/VM fit, the disk gate, and the post-public roadmap |
 
 ---
@@ -82,10 +83,10 @@ The things that bite:
 - **Sessions are not files** — they live encrypted in Supabase, so there is nothing
   to copy to the VM. Same `DATABASE_URL` + `ENCRYPTION_KEY` = it just works. A wrong
   `ENCRYPTION_KEY` fails quietly.
-- **Re-auth over SSH** with `cli auth blinkit [--headless]`. The human only ever
-  types into the *terminal* (magic link / OTP), never the browser — so headless is
-  viable. But a headless login can "succeed" with **0 Firebase IndexedDB items** and
-  still save a session that dies in an hour: check the `IndexedDB: N` log line.
+- **Logins need no browser and no human** — both Blinkit dashboards authenticate over
+  plain HTTP, and the OTP/magic link is read from the auth inbox. `cli auth login
+  <platform> -t <uuid>`. Scrapers call `ensure()` and get a working session, so an
+  expired one self-heals. See [docs/platform-auth.md](docs/platform-auth.md).
 - **Anything scheduled needs the full interpreter path** and an explicit output
   redirect — cron/systemd never run `activate` and have no terminal, so a bare
   `python` fails with `ModuleNotFoundError` and unredirected output vanishes.
@@ -319,9 +320,15 @@ python -m cli account list
 python -m cli tenant create --name "Brand" --account <account-id>
 python -m cli tenant list
 
-python -m cli auth blinkit --tenant <uuid>
-python -m cli auth blinkit-seller --tenant <uuid>
-python -m cli auth status --tenant <uuid>
+# Platform auth — no browser, no human (see docs/platform-auth.md)
+python -m cli auth platforms                                  # registry + mail-rule status
+python -m cli auth credentials set blinkit -t <uuid> --email ops@brand.com [--password]
+python -m cli auth login blinkit -t <uuid> [--manual]         # unattended by default
+python -m cli auth probe   blinkit -t <uuid>                  # is the session ACTUALLY alive
+python -m cli auth refresh blinkit -t <uuid>                  # extend, no email
+python -m cli auth refresh-all -t <uuid>                      # what the auth.refresh job runs
+python -m cli auth reset   blinkit -t <uuid>                  # clear the circuit breaker
+python -m cli auth status  --tenant <uuid>
 
 python -m cli scrape blinkit --tenant <uuid>
 python -m cli scrape blinkit-seller --tenant <uuid> [--sales] [--po] [--soh]
