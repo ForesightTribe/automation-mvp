@@ -204,6 +204,35 @@ async def _refresh(platform: str, tenant_id: str) -> None:
         raise typer.Exit(1)
 
 
+@app.command("refresh-all")
+def refresh_all(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+) -> None:
+    """Refresh every stored session for a tenant — the scheduled upkeep path.
+
+    Costs one API call per platform, consumes no secret and sends no email, so
+    sessions never reach their expiry and full logins stay rare. Skips entirely
+    if any other job is active for this tenant: a seller token rotation kills the
+    previous token and would break a scrape already using it.
+    """
+    asyncio.run(_refresh_all(tenant_id))
+
+
+async def _refresh_all(tenant_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        results = await service.refresh_all(db, tenant_id)
+    for platform, outcome in sorted(results.items()):
+        colour = {
+            "refreshed": "green",
+            "skipped_busy": "yellow",
+            "failed": "red",
+        }.get(outcome, "dim")
+        console.print(f"  {platform:16} [{colour}]{outcome}[/{colour}]")
+    # Deliberately exits 0 even on failure: a session that could not be refreshed
+    # is usually still valid, and ensure() repairs it on next use. Failing here
+    # would page a human for something that self-heals.
+
+
 @app.command("probe")
 def probe(
     platform: str = typer.Argument(..., help=f"One of: {', '.join(wired_slugs())}"),
@@ -225,6 +254,29 @@ async def _probe(platform: str, tenant_id: str) -> None:
     else:
         console.print(f"[red]{platform}: session is dead — run `cli auth login {platform}`.[/red]")
         raise typer.Exit(1)
+
+
+@app.command("reset")
+def reset(
+    platform: str = typer.Argument(..., help=f"One of: {', '.join(wired_slugs())}"),
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+) -> None:
+    """Clear the failure count after fixing whatever broke auto-login.
+
+    Auto-login suspends itself after repeated failures. Once the cause is fixed,
+    this re-arms it without needing a successful manual login first.
+    """
+    asyncio.run(_reset(platform, tenant_id))
+
+
+async def _reset(platform: str, tenant_id: str) -> None:
+    async with AsyncSessionLocal() as db:
+        cleared = await store.clear_failures(db, tenant_id, platform)
+    console.print(
+        f"[green]{platform}: failure count reset — auto-login re-armed.[/green]"
+        if cleared
+        else f"[yellow]No session stored for {platform}.[/yellow]"
+    )
 
 
 @app.command("status")

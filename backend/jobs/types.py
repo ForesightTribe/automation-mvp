@@ -174,6 +174,10 @@ def _heartbeat(tenant_id, p):
     return a
 
 
+def _auth_refresh(tenant_id, p):
+    return ["auth", "refresh-all", "--tenant", str(tenant_id)]
+
+
 # Timeouts are SAFETY CEILINGS (~2–3× expected), not expectations — a healthy run
 # should never hit one. They exist so a hung (not crashed) Chromium can't hold a lane
 # forever. Override per type via settings.JOB_TIMEOUT_OVERRIDES.
@@ -239,6 +243,15 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "monitor.heartbeat": JobTypeSpec(
         Lane.interactive, 5 * 60, _heartbeat, needs_tenant=False,
         param_keys=("disk_pct",),
+    ),
+    # Platform session upkeep (see docs/platform-auth.md). Interactive lane for the
+    # same reason as the heartbeat: it is seconds of work and must never queue
+    # behind a multi-hour scrape — a session it was meant to keep alive could
+    # expire while it waits. Refresh consumes no secret and sends no email, so it
+    # is cheap to run daily; the command itself skips if the tenant has other jobs
+    # active, because a seller token rotation invalidates the previous token.
+    "auth.refresh": JobTypeSpec(
+        Lane.interactive, 3 * 60, _auth_refresh,
     ),
 }
 

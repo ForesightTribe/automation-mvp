@@ -210,21 +210,51 @@ async def mark_validated(db: AsyncSession, tenant_id: str, platform: str) -> Non
     await db.commit()
 
 
-async def mark_failed(db: AsyncSession, tenant_id: str, platform: str, error: str) -> None:
+async def mark_failed(
+    db: AsyncSession,
+    tenant_id: str,
+    platform: str,
+    error: str,
+    *,
+    login_attempt: bool = True,
+) -> None:
     """Record a failure without destroying the session.
 
     The credential is kept: most failures are transient, and throwing away a
     session that might still work turns a blip into a mandatory re-login.
+
+    ⚠️ `login_attempt=False` for anything that is NOT a failed login — a probe
+    finding an expired session, or `ensure(auto_login=False)` declining to fix
+    one. Those are **normal**: sessions expire on a timer by design. Counting
+    them toward `consecutive_failures` makes the circuit breaker measure session
+    lifetime instead of auto-login health, and three ordinary expiries over three
+    weeks would then disable auto-login permanently. The counter must answer only
+    "is logging in broken?".
     """
     row = await _row(db, tenant_id, platform)
     if not row:
         return
     row.status = STATUS_EXPIRED
-    row.consecutive_failures = (row.consecutive_failures or 0) + 1
+    if login_attempt:
+        row.consecutive_failures = (row.consecutive_failures or 0) + 1
     row.last_error = error[:500]
     row.updated_at = now_ist()
     db.add(row)
     await db.commit()
+
+
+async def clear_failures(db: AsyncSession, tenant_id: str, platform: str) -> bool:
+    """Reset the circuit breaker after a human has fixed the cause."""
+    row = await _row(db, tenant_id, platform)
+    if not row:
+        return False
+    row.consecutive_failures = 0
+    row.last_error = None
+    row.updated_at = now_ist()
+    db.add(row)
+    await db.commit()
+    logger.info(f"Failure count reset: tenant={tenant_id} platform={platform}")
+    return True
 
 
 async def all_for_tenant(db: AsyncSession, tenant_id: str) -> list[dict]:

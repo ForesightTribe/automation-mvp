@@ -77,6 +77,14 @@ class Settings(BaseSettings):
     # How long to wait for the login mail to arrive before giving up. Generous,
     # because forwarding adds a hop: observed arrival is a few seconds.
     AUTH_INBOX_TIMEOUT_SECONDS: float = 120.0
+    # Whether THIS process may perform a platform login. True on the scraper VM;
+    # set false on Render. Blinkit is India-geo, so a login from Render's US IP
+    # minutes before the same account is used from Mumbai is exactly the pattern
+    # fraud heuristics look for. With this false, ensure() raises SessionExpired
+    # instead of quietly logging in from the wrong country — a loud failure beats
+    # a silent account flag. Refresh and probe are unaffected (no login, no IP
+    # sensitivity); the API should ENQUEUE an auth.refresh job, never log in.
+    AUTH_ALLOW_LOGIN: bool = True
 
     # Marketplaces with real, trusted data today. Everything else is shown but
     # gated as "not connected" in the UI (no real scrapers yet). Stopgap until

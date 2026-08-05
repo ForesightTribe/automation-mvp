@@ -108,7 +108,7 @@ RULES: dict[str, MailRule] = {
         # Magic links are single-use: if anything opens it before we do, the
         # exchange fails. It is why we resolve redirects manually rather than
         # loading the /auth/action page (whose JS is what consumes the code).
-        initial_delay_seconds=8.0,
+        initial_delay_seconds=12.0,
         timeout_seconds=120.0,
         notes=(
             "brands.blinkit.com. Firebase action link, SendGrid-wrapped, single-use. "

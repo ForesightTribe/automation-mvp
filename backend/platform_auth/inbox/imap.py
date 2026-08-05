@@ -16,6 +16,7 @@ from datetime import timedelta
 from email.header import decode_header, make_header
 from email.message import Message
 from email.utils import parsedate_to_datetime
+from html import unescape
 
 from app.core.config import settings
 from app.utils.logger import logger
@@ -39,8 +40,16 @@ def _decode(value: str | None) -> str:
         return value
 
 
+_SCRIPT_STYLE_RE = re.compile(r"<(script|style)[^>]*>.*?</\1>", re.S | re.I)
+_TAG_RE = re.compile(r"<[^>]+>")
+
+
 def _body_text(msg: Message) -> str:
-    """Flatten a message to searchable text (plain text and HTML alike)."""
+    """Flatten a message to searchable text (plain text and HTML alike).
+
+    RAW — tags intact. Magic links live in `href="…"` attributes, so link
+    extraction needs this. OTP extraction must NOT use it: see _visible_text.
+    """
     parts: list[str] = []
     targets = msg.walk() if msg.is_multipart() else [msg]
     for part in targets:
@@ -53,6 +62,24 @@ def _body_text(msg: Message) -> str:
         except Exception:
             continue
     return "\n".join(parts)
+
+
+def _visible_text(msg: Message) -> str:
+    """What a human would actually read — markup and CSS stripped.
+
+    ⚠️ Scanning raw HTML for an OTP is a trap. The PartnersBiz mail is HTML-only
+    and styles everything with `color:#333333`; `\\d{6}` matches `333333`
+    thirteen times before reaching the real code, because `#` is not a digit. The
+    first match was therefore always the wrong one — verify_otp returned
+    "Verification failed" and looked like a platform problem.
+
+    Hex colours, tracking pixels and CDN ids all live inside tags, so stripping
+    tags removes the whole class of false positive rather than blocklisting one.
+    """
+    text = _body_text(msg)
+    text = _SCRIPT_STYLE_RE.sub(" ", text)
+    text = _TAG_RE.sub(" ", text)
+    return unescape(text)
 
 
 def _sender_of(msg: Message) -> str:
@@ -87,13 +114,13 @@ def _is_recent(msg: Message, challenge: LoginChallenge) -> bool:
 
 
 def _extract(msg: Message, rule: MailRule) -> str | None:
-    text = _body_text(msg)
-
     if rule.secret_kind is SecretKind.OTP:
-        m = re.search(rule.body_pattern, text)
+        # Visible text only — raw HTML is full of six-digit hex colours.
+        m = re.search(rule.body_pattern, _visible_text(msg))
         return (m.group(1) if m.groups() else m.group(0)) if m else None
 
-    candidates = re.findall(rule.body_pattern, text)
+    # Links live in href attributes, so this one needs the markup.
+    candidates = re.findall(rule.body_pattern, _body_text(msg))
     if not candidates:
         return None
     for url in candidates:

@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 from playwright.async_api import async_playwright, Page
 
 from app.core.database import AsyncSessionLocal
-from scraper.utils.session import load_session
+from platform_auth import service as auth_service
 from scraper.utils.browser import create_browser_context
 
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -927,14 +927,18 @@ async def setup_with_state(storage_state: dict):
 
 
 async def setup(tenant_id: str):
-    """Load session from DB, open browser, return (playwright, browser, BlinkitClient)."""
+    """Get a WORKING session, open browser, return (playwright, browser, BlinkitClient).
+
+    `ensure()` probes the stored session and refreshes or re-logs-in if it is
+    dead, so the campaign manager no longer opens Chromium against a session that
+    expired days ago just to discover the redirect. It raises a typed AuthError,
+    which cli/main.py maps to exit 3 → `jobs.error='auth_expired'`.
+
+    This matters more here than in the scrapers: this path WRITES budgets and bids
+    to Blinkit, so failing halfway through on a dead session is a money-adjacent
+    failure, not just a missing row.
+    """
     async with AsyncSessionLocal() as db:
-        storage_state = await load_session(db, tenant_id, "blinkit")
+        session = await auth_service.ensure(db, tenant_id, "blinkit")
 
-    if not storage_state:
-        raise RuntimeError(
-            f"No saved session for tenant {tenant_id}.\n"
-            "Run: python -m cli auth blinkit --tenant <uuid>"
-        )
-
-    return await setup_with_state(storage_state)
+    return await setup_with_state(session.storage_state)

@@ -17,10 +17,12 @@ a fresh session already stored.
 """
 import asyncio
 import hashlib
+import uuid
 
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.core.database import engine
 from app.utils.logger import logger
 from platform_auth import store
@@ -33,7 +35,7 @@ from platform_auth.errors import (
 )
 from platform_auth.inbox import imap as imap_inbox
 from platform_auth.inbox import manual as manual_inbox
-from platform_auth.registry import get as get_authenticator
+from platform_auth.registry import get as get_authenticator, wired_slugs
 from platform_auth.types import AuthSession, Credentials
 
 # How many times to attempt a full login before giving up. Each attempt requests
@@ -158,6 +160,14 @@ async def login(
     credentials so every later login can run unattended.
     """
     auth = get_authenticator(platform)
+
+    if not settings.AUTH_ALLOW_LOGIN:
+        raise LoginFailed(
+            f"{platform}: logins are disabled in this process (AUTH_ALLOW_LOGIN=false). "
+            "Platform logins must run on the scraper VM — enqueue an auth.refresh job "
+            "or run `cli auth login` there."
+        )
+
     credentials = await resolve_credentials(
         db, tenant_id, platform, email=email, password=password
     )
@@ -253,6 +263,57 @@ async def _check_circuit_breaker(db: AsyncSession, tenant_id: str, platform: str
         )
 
 
+async def refresh_all(db: AsyncSession, tenant_id: str) -> dict[str, str]:
+    """Refresh every stored session for a tenant. The scheduled upkeep path.
+
+    ⚠️ **Skips any platform whose tenant has a job running.** Seller rotation
+    ISSUES A NEW TOKEN AND KILLS THE OLD ONE (verified 2026-08-04: the previous
+    access token returns 401 "Access token not authenticated" immediately after
+    rotate). Lanes run in parallel, so a refresh firing while a seller scrape is
+    mid-flight would break that scrape — and scheduling this at a quiet hour is
+    not a guarantee, it is a hope that nobody adds a conflicting schedule later.
+
+    Skipping is safe: refresh is preventive and runs daily, so missing one day
+    costs nothing. The session still has days of life, and `ensure()` would
+    recover it regardless.
+    """
+    from sqlalchemy import func, select as sa_select
+
+    from app.models.job import Job, JobStatus
+
+    results: dict[str, str] = {}
+
+    busy = await db.execute(
+        sa_select(func.count())
+        .select_from(Job)
+        .where(
+            Job.tenant_id == uuid.UUID(tenant_id),
+            Job.status.in_([JobStatus.running, JobStatus.pending]),
+            Job.job_type != "auth.refresh",
+        )
+    )
+    if busy.scalar_one() > 0:
+        logger.warning(
+            f"tenant {tenant_id}: other jobs are active — skipping refresh so a "
+            "token rotation cannot invalidate a running scrape's session"
+        )
+        return {p: "skipped_busy" for p in wired_slugs()}
+
+    for platform in wired_slugs():
+        if await store.load(db, tenant_id, platform) is None:
+            results[platform] = "no_session"
+            continue
+        try:
+            session = await refresh_if_possible(db, tenant_id, platform)
+            results[platform] = "refreshed" if session else "not_refreshable"
+        except AuthError as e:
+            # Never fatal: the session may still be fine, and ensure() will fix it
+            # on next use. A failed refresh must not fail the job and page someone.
+            logger.warning(f"{platform}: refresh failed ({e})")
+            results[platform] = "failed"
+    return results
+
+
 async def refresh_if_possible(
     db: AsyncSession, tenant_id: str, platform: str
 ) -> AuthSession | None:
@@ -313,7 +374,10 @@ async def ensure(
     if not auto_login:
         if session is None:
             raise NoSession(platform, tenant_id)
-        await store.mark_failed(db, tenant_id, platform, "expired, auto-login disabled")
+        # Not a login failure — no login was attempted. Must not feed the breaker.
+        await store.mark_failed(
+            db, tenant_id, platform, "expired, auto-login disabled", login_attempt=False
+        )
         raise SessionExpired(platform, "auto-login disabled")
 
     return await login(db, tenant_id, platform, auto=True)
@@ -330,5 +394,9 @@ async def probe(db: AsyncSession, tenant_id: str, platform: str) -> bool:
     if alive:
         await store.mark_validated(db, tenant_id, platform)
     else:
-        await store.mark_failed(db, tenant_id, platform, "probe failed")
+        # A session reaching its expiry is normal, not a sign auto-login is
+        # broken — record the state, leave the breaker alone.
+        await store.mark_failed(
+            db, tenant_id, platform, "probe failed", login_attempt=False
+        )
     return alive

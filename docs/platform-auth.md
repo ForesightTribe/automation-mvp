@@ -4,8 +4,10 @@
 > This is Foresight logging into Blinkit, Zepto and friends. See the glossary in
 > [jobs.md](jobs.md) for the other overloaded terms.
 
-**Status:** module built 2026-08-04. Both Blinkit dashboards log in and refresh over
-plain HTTP with **no browser**. Migration `f3c8d1a5e7b2` written, **not yet applied**.
+**Status: built, wired and tested locally 2026-08-04** (branch `feature/auto-auth`).
+Both Blinkit dashboards log in, probe and refresh over plain HTTP with **no browser**;
+unattended login and self-healing are proven end to end. Migration `f3c8d1a5e7b2` applied.
+**Not yet on the VM** — see [Open / next](#open--next).
 
 ---
 
@@ -134,6 +136,47 @@ full login. Probing is cheap on both platforms (one API call, no browser).
   repeated logins from one datacenter IP look like a bot.
 - **Serialized** per `(tenant, platform)` with a Postgres advisory lock. Two concurrent
   OTP requests genuinely cross wires — the second invalidates the first's code.
+
+## Where logins run, and when
+
+Two mechanisms, complementary rather than alternative:
+
+- **On demand — `ensure()`.** Whatever needs a session calls it and gets a working one.
+  This is the mechanism; it recovers from expiry.
+- **Scheduled — `auth.refresh`.** A daily job that *prevents* expiry. It costs one API
+  call per platform, consumes no secret and sends no email, so it cannot lose to a mail
+  scanner or forwarding lag the way a full login can.
+
+**Logins themselves are never scheduled** — repeated logins from one datacenter IP are
+what looks like a bot. The schedule only refreshes.
+
+**Everything runs on the VM.** Both logins are now plain HTTP that Render *could* make,
+but shouldn't: Blinkit is India-geo, so a login from Render's US IP shortly before the
+same account is used from Mumbai is exactly what fraud heuristics watch for — and it
+would put the mailbox app password into Render's environment too. `AUTH_ALLOW_LOGIN=false`
+on Render makes `ensure()` raise `SessionExpired` there instead of silently logging in
+from the wrong country. A UI "Reconnect" button should **enqueue** `auth.refresh`.
+
+```bash
+python -m cli auth refresh-all -t <tenant>            # what the job runs
+python -m cli schedules add auth.refresh -t <tenant> --cron "0 5 * * *"
+```
+
+> ⚠️ **`refresh-all` skips entirely if the tenant has any other job active.** Seller
+> rotation issues a new token pair and **kills the old one** — verified 2026-08-04: the
+> previous access token returns `401 Access token not authenticated` immediately after a
+> rotate. Lanes run in parallel, so a refresh firing during a seller scrape would break
+> that scrape. Scheduling it at a quiet hour is a hope, not a guarantee; the guard is what
+> keeps it correct when someone adds a schedule a year from now.
+>
+> The guard deliberately ignores `auth.refresh` jobs when counting — otherwise the job
+> would see itself and skip forever, the same self-blocking loop that broke
+> `monitor.heartbeat` in July.
+>
+> Skipping is safe: refresh is preventive, sessions still have days left, and `ensure()`
+> recovers regardless. For the same reason `refresh-all` exits 0 even when a platform
+> fails — a session that could not be refreshed is usually still valid, and failing here
+> would page a human for something that self-heals.
 
 ## Failure handling
 
@@ -313,22 +356,39 @@ Headers only, never bodies — bodies hold live magic links and OTPs. With `--em
 applies the recipient filter exactly as a real login would, so the verdict column shows
 `MATCH`, `OTHER RECIPIENT`, or `rejected, subject` per message.
 
+## Done
+
+- [x] Migration `f3c8d1a5e7b2` — `platform_credentials` + session health columns.
+- [x] Mail rules pinned to real messages and marked `verified`.
+- [x] Unattended login proven for both platforms (~17 s each, zero human input).
+- [x] `ensure()` wired into all three scrape entry points + `campaign_manager` `setup()`.
+- [x] Seller scraping is browserless — works on legacy sessions too.
+- [x] `auth.refresh` job type + `cli auth refresh-all`, with the busy-skip guard.
+- [x] `AUTH_ALLOW_LOGIN` guardrail.
+- [x] **Superseded code deleted** — `scraper/platforms/blinkit/auth.py`,
+      `.../seller/auth.py`, `ads_service.reconnect_blinkit`, its two schemas,
+      `scripts/reconnect_blinkit.py`, and the frontend `ReconnectBlinkit` component /
+      hook / api function. The seller `selectors.py` login block went with them.
+      `scraper/utils/session.py` **stays** as a re-export — `ads_service` and the inert
+      `ad_campaigns/` still import it.
+
 ## Open / next
 
-- [ ] **Apply migration `f3c8d1a5e7b2`** — `platform_credentials` + session health columns.
-- [ ] Set `AUTH_INBOX_*`, run `scripts/inbox_scan.py`, pin the mail rules, then prove an
-      end-to-end unattended login.
-- [ ] **Make the seller scraper browserless.** `_capture_headers` launches Chromium purely
-      to harvest headers `platform_auth` can now mint directly — ~1 GB RAM and ~13 s per
-      run in the `dashboard` lane, for a small change. Biggest remaining win.
-- [ ] Wire `ensure()` into the scrape + campaign-manager entry points (self-healing).
-- [ ] An `auth.refresh` job type + schedule, so sessions are kept warm rather than
-      revived. Refresh is cheap and secret-free; logins stay rare.
-- [ ] Alert on `consecutive_failures` — auto-login that quietly fails forever is worse
-      than today's loud manual state.
-- [ ] Delete the superseded browser logins in `scraper/platforms/blinkit/**/auth.py`,
-      `ads_service.reconnect_blinkit`, and the orphaned `ReconnectBlinkit.jsx`
-      (its route was already removed on 2026-07-30, so it is dead).
+- [ ] **Create the refresh schedule:**
+      `cli schedules add auth.refresh -t <tenant> --cron "0 5 * * *"` (before the 9am
+      dashboard scrapes).
+- [ ] **VM deploy** — merge to `main` (the VM only runs `main`), add `AUTH_INBOX_*` to its
+      `.env`, restart the runner.
+- [ ] **Set `AUTH_ALLOW_LOGIN=false` in Render's environment.**
+- [ ] **Create the GCP alert policy** (`log_id("foresight_runner") AND severity>=ERROR`).
+      Open since July: job failures now log at ERROR with structured fields, so the policy
+      would finally fire — but it still does not exist, so an auth failure reaches a log,
+      not an inbox.
+- [ ] The busy-skip path in `refresh_all` is logic-verified but never exercised against a
+      real running job (creating a fake pending job risks the VM runner claiming it).
+      Worth watching the first time a schedule overlaps a scrape.
+- [ ] Zepto / Instamart authenticators — registered `wired=False`; their mail rules are
+      still guesses (`subject_required=False` so they cannot veto).
 
 ## Verified 2026-08-04
 
