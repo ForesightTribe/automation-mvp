@@ -73,11 +73,206 @@ not fit the box. **Phase 0 answers this before any code is written.**
 
 ---
 
-## What we don't know yet — Phase 0 recon
+## Zepto API facts — Phase 0 answers (2026-08-03)
 
-Everything below is an **open question, not a fact**. The Blinkit answer is given as
-the contrast, because the *shape* of the difference is what drives the design. Do
-not write engine code until this table is filled in.
+**Q1–Q11 answered from live traffic; Q12 remains open.** Captured in
+`scraper/platforms/zepto/public_data/api.txt`. The original question table is kept
+below the answers, because the Blinkit contrast is what explains each design choice.
+
+### The three endpoints
+
+All on `https://bff-gateway.zepto.com`.
+
+| Endpoint | Direction | Returns |
+|---|---|---|
+| `GET /api/v1/maps/place/autocomplete/?place_name=` | text → places | area suggestions, `place_id` |
+| `GET /api/v1/maps/place/details/?place_id=` | place → point | `lat`, `lng`, city, state |
+| `GET /lms/api/v2/get_page?latitude=&longitude=` | point → store | `storeId`, `storeDetailsResponse.name` |
+| `POST /user-search-service/api/v3/search` | keyword + store → products | the public data |
+
+There is **no reverse endpoint** — nothing maps a store back to a pincode. That
+asymmetry is why a grid sweep was needed at all (Q9), and why a pincode derived by
+reverse-geocoding a store will not lead back to that store.
+
+### A1 — Search endpoint
+
+```
+POST https://bff-gateway.zepto.com/user-search-service/api/v3/search
+{ "query": "sourdough", "pageNumber": 0, "mode": "SHOW_ALL_RESULTS",
+  "userSessionId": "..." }
+```
+
+Note `/search/filters` fires alongside with `mode: "AUTOSUGGEST"` and returns the
+dropdown suggestions, **not products** (`totalProductCount: 0`). Filter on
+`user-search-service` and take the request fired on Enter, not on keypress.
+
+### A2 — Store binding: headers, swappable per request ✅
+
+**This is the answer the plan hinged on, and it matches Blinkit.**
+
+```
+store_id / storeid / store_ids : <uuid>
+store_etas                     : {"<uuid>": -1}
+```
+
+One session serves every store by swapping those headers. Verified: four stores
+probed on one session each returned their own catalog, and `productResponse.storeId`
+in the response echoed the requested store every time.
+
+`request-signature` covers the **body**, not the store headers — which is why
+rewriting them does not invalidate it.
+
+**lat/lon do NOT bind the search.** Injecting coordinates the way `get_page` accepts
+them leaves every store resolving to the same result — the exact silent failure the
+recon plan warned about. Coordinates reach the search only indirectly:
+`lat/lng → get_page → storeId → search headers`.
+
+### A3 — Transport: browser session required, but not per request
+
+Raw `httpx` and a bare `ctx.request` both get **429**. What works is capturing the
+session headers from the page's own request (31 for `get_page`, 33 for search) and
+replaying them through `ctx.request` — **~0.33 s/call versus ~4 s** for driving the
+browser per store.
+
+The headers must be captured *after* `domcontentloaded`: both requests fire later,
+so a listener removed when navigation returns captures nothing.
+
+So the engine is browser-backed for the session, request-driven for the work.
+
+### A4 — Per-product store id ✅ → Zepto is store-grain
+
+`productResponse.storeId` on every product. **Reach and Distribution are safe** —
+D8's location-grain fallback is not needed.
+
+### A5 — Explicit brand field ✅
+
+`productResponse.product.brand` (e.g. `"Brik Oven"`). Own-vs-competitor is exact;
+no alias tuning.
+
+### A6 — Pagination: `pageNumber`, no relevance switch
+
+`pageNumber` in the body; `hasReachedEnd` terminates. **No `basic`→`similarity`
+equivalent**, so no `follow_similarity` is needed. `meta.query_matching_bucket`
+(`"Span"`, `"Partial"`) describes match quality but does not gate paging.
+
+### A7 — Fields: typed, and **in paise**
+
+```json
+"product":        { "name": "...", "brand": "Brik Oven" },
+"productVariant": { "mrp": 11000, "formattedPacksize": "1 pack (400 g)",
+                    "weightInGms": 400,
+                    "ratingSummary": { "averageRating": 4.3, "totalRatings": 1014 } },
+"discountedSellingPrice": 10300,
+"discountPercent": 6,
+"outOfStock": false,
+"availableQuantity": 8,
+"primaryCategoryName": "Dairy, Bread & Eggs",
+"storeId": "b1403534-..."
+```
+
+**Prices are paise — divide by 100.** `11000` is ₹110.00. Rank is
+`items[].position` (0-based) one level *above* `productResponse`.
+
+### A8 — Pack strings
+
+`formattedPacksize`: `"1 pack (400 g)"`, `"1 pc (200 g)"`, `"1 pack (250 g)"`.
+Parenthesised, unlike Blinkit's bare `"225 ml"`. `pack.py` needs a
+parenthesis-stripping rule before its existing grammar applies (D7 — extend, and
+re-validate against the Blinkit corpus).
+
+### A9 — Store catalog: **built, not sourced** ✅
+
+The blocking question. There is no store-list endpoint and no export, so the catalog
+was **derived by probing**, using a Zepto-native coordinate source — never Blinkit's
+rows (D4).
+
+Two passes per city, because neither alone is sufficient:
+
+1. **Pincode** — `pincode → autocomplete → place/details → get_page`. Cheap, and it
+   yields the pincode and area name for free. But it can only reach places
+   autocomplete returns: pincode 560035 holds **four** stores, and seven suggestions
+   never reach the fourth.
+2. **Grid** — every node of a lattice at **0.006° (~666 m)** across the city box.
+   Exhaustive. At 1 km spacing `BLR-Bellandur 6` was never the nearest store at any
+   node and was missed entirely; at 666 m every previously known store was re-found
+   in all 58 cities.
+
+Which pass wins varies: Mumbai's grid added **+21** (Kalyan, Panvel, Virar — outside
+the pincode list); Coimbatore's added **0** (137 pincodes for 9 stores, already
+saturated). Bengaluru showed the split is not even stable across days — the same 118
+pincodes returned 134 stores one day and 144 two days later, with the grid's
+contribution falling by exactly the same amount and **the total identical both
+times**. Run both.
+
+**Deduplication is global, on `store_id`, across all cities** — not per city. Hosur's
+box overlaps Bengaluru so heavily that its scan hit 140 stores, **139 of them
+Bengaluru's**; all returned `is_new = False`. Per-city dedup would have inflated the
+total by 139 from that one scan.
+
+**Attribution** uses Zepto's own store name prefix (`BLR-`, `GGN-`, `HBL-`), falling
+back to nearest city centroid. That corrected nine misfiled stores — e.g.
+`HBL-Vidhya Nagar` sat in Belagavi's list but is a Hubballi store 83 km away.
+
+**Phantom stores:** some coordinates return a `storeId` with `serviceable: false` and
+**no `storeDetailsResponse` at all**. Not operational stores. Reading only `storeId`
+counted 5 of them as discoveries. Require the store record.
+
+### A10 — Rate limits: a **volume** cap, per IP
+
+`get_page` and search have **separate budgets**. 256,000 grid probes ran with zero
+failures while search was blocked at the same moment.
+
+Search allows roughly **300–350 requests per window**, and it is enforced on the
+**IP**. Four mitigations were measured:
+
+| Approach | Loss |
+|---|---|
+| Rotate captured session headers | 22.0% |
+| New browser context (fresh device_id + cookies) | 22.5% |
+| Pace at 1.4 s | 2.9% |
+| Pace at 3.0 s, cold IP | **0%** |
+
+Both rotations fail because the limit tracks the IP, not the session or client
+identity — failures resumed on the very first store after every rotation. Pacing
+helps (12 s spacing bought 34 stores per window versus 5 at 5 s) but **cannot beat a
+volume cap**; it only postpones the wall.
+
+**Zepto signals throttling with HTTP `299`** — non-standard, so it reads as a normal
+response. Treating it as an empty result meant retrying three times into an active
+block, which prolonged it. Treat 299 as 429.
+
+Consequence for the engine: a full sweep needs **checkpointing and resume**, not just
+retry. `--workers 5` is untested for Zepto; the volume cap, not concurrency, is the
+binding constraint.
+
+### A11 — Scale
+
+**1,229 stores across 58 cities** (Blinkit: 2,059 / 238). Started from 1,129 known;
+the two-pass sweep added 100. Delhi NCR 214→266 and Mumbai 115→140 supplied most of
+it — both large, never grid-swept, with suburban belts outside their pincode lists.
+
+Tier 1 938 · Tier 2 224 · Tier 3 67.
+
+### A12 — Datacenter IP: **still open** ▢
+
+All recon ran from a home IP. Untested from the Mumbai VM. Given A10's per-IP
+enforcement, the VM's rate-limit behaviour must be measured before scheduling.
+
+### What this means for the plan
+
+| Assumption | Verdict |
+|---|---|
+| Header-swap store binding (Q2) — *"the one thing that can invalidate this plan"* | ✅ **Holds.** Cost model survives |
+| Store-grain data (D8) | ✅ Confirmed — Reach/Distribution are safe |
+| Explicit brand field | ✅ No alias tuning needed |
+| No catalog available (Q9) — the Phase 3 blocker | ✅ **Resolved** — built by probing |
+| httpx-only engine (Q3) | ❌ Browser needed for the session |
+| Rate limiting is a tuning problem (Q10) | ❌ **Volume cap.** Needs resume, not just retry |
+| `pack.py` works unchanged (Q8) | ⚠️ Needs a parenthesis rule |
+
+---
+
+## The original open questions (kept for the Blinkit contrast)
 
 | # | Question | Blinkit's answer | Why it matters |
 |---|---|---|---|

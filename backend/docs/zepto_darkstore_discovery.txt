@@ -1,0 +1,321 @@
+ZEPTO DARK STORE DISCOVERY — HOW IT WORKS
+=========================================
+
+How 1,129 known stores became 1,229 verified ones across 58 cities, and why each
+design decision was made. Written from what the runs actually showed, including
+the approaches that failed.
+
+1. The problem
+--------------
+
+Zepto never publishes a store directory. The only way to learn a store exists is
+to ask "which store serves this point?" and read the answer.
+
+That single fact drives everything below.
+
+2. The three APIs
+-----------------
+
+All are https://bff-gateway.zepto.com.
+
+  Endpoint                                          Direction      Returns
+  ------------------------------------------------  -------------  ----------------------------------
+  GET /api/v1/maps/place/autocomplete/?place_name=  text → places  area suggestions, place_id
+  GET /api/v1/maps/place/details/?place_id=         place → point  lat, lng, city, state
+  GET /lms/api/v2/get_page?latitude=&longitude=     point → store  storeId, storeDetailsResponse.name
+
+There is no reverse endpoint — nothing maps a store back to a pincode. That
+asymmetry explains most of the awkwardness later on.
+
+get_page response, trimmed:
+
+{
+  "storeServiceableResponse": {
+      "storeId": "ac3f4c36-1bc5-4305-b093-f3100f7877ed",
+      "serviceable": true,
+      "secondaryStoreIds": ["..."]
+  },
+  "storeDetailsResponse": {
+      "name": "BEL-Khanapur Road",
+      "city": { "name": "Belgavi", "state": "Karnataka" }
+  }
+}
+
+storeDetailsResponse.name is Zepto's own label and carries a city prefix
+(BLR-, GGN-, HBL-). That prefix becomes the attribution key in §7.
+
+3. Phase 1 — the pincode method
+-------------------------------
+
+pincode
+  └─ autocomplete("560035")        -> ~7 area suggestions
+  └─ autocomplete("Kodathi 560035")   (label variant, more coverage)
+        └─ for each place_id:
+             place/details          -> lat, lng
+             reject if outside the city box
+             get_page(lat, lng)     -> storeId
+
+Records the pincode and the autosuggested area text alongside the store, so
+those columns come free.
+
+Its weakness: it can only reach places autocomplete chooses to return.
+Pincode 560035 holds four dark stores (Bellandur-2, Carmelaram,
+Doddakannelli, Junnasandra). Seven suggestions land on three of them; the fourth
+is unreachable by any pincode search.
+
+Measured: 4,279 pincodes across 58 cities found ~1,100 stores and missed ~130.
+
+4. Phase 2 — the grid
+---------------------
+
+for every lat/lng node in the city box, spaced 0.006° (~666 m):
+    get_page(lat, lng) -> storeId
+
+Exhaustive rather than suggestion-dependent. Nothing can hide between samples.
+
+Why 666 m. A store serves a ~2–3 km radius, so each store is hit 9–20 times
+(visible in hit_count: Karnal's two stores were hit 36 and 40 times). That is
+deliberate oversampling. At 1 km spacing BLR-Bellandur 6 was never the
+primary store at any node and was missed entirely; at 666 m every previously
+known store was re-found (Known stores not hit by grid = 0 in all 58 cities).
+
+Halving again quadruples cost for no observed gain.
+
+Dedup within a scan — found is keyed on store_id; repeat hits only
+increment hit_count.
+
+5. Why both phases
+------------------
+
+Neither is sufficient, and which one wins varies by city:
+
+  City        Phase 1 found  Phase 2 added
+  ----------  -------------  ----------------------------------------------------------------
+  Mumbai      119            +21 (Kalyan, Badlapur, Panvel, Virar — outside the pincode list)
+  Lucknow     26             +6 (Gomti Nagar, IIM — only 24 pincodes configured)
+  Delhi NCR   224            +44
+  Belagavi    3              +2
+  Coimbatore  9              +0 (137 pincodes for 9 stores — already saturated)
+
+Rule of thumb: **the grid pays off where the pincode list under-covers the
+city's footprint.** Cities with more pincodes than stores gain nothing.
+
+Bengaluru showed the split is not even stable over time — the same 118 pincodes
+returned 134 stores one day and 144 two days later, with the grid's contribution
+falling by exactly the same amount. The total was identical both times.
+Neither method is reliable alone; together they converge.
+
+6. Deduplication — three layers
+-------------------------------
+
+The central worry: does re-finding a store inflate the count? No, at three levels.
+
+Layer 1 — within one scan. found[store_id]; a store hit 40 times is one row.
+
+Layer 2 — across cities. is_new compares against all 1,129 known IDs,
+not just the city being scanned:
+
+is_new = store_id not in known      # every city, not one
+
+Hosur's box overlaps Bengaluru so heavily that its scan hit **140 stores, 139 of
+them Bengaluru's**. All came back is_new = False with already_in = Bengaluru,
+adding nothing. Per-city dedup would have inflated the total by 139 from that one
+scan.
+
+Layer 3 — the merge. Each city file lists everything that scan saw, so
+BLR-Nagdevanahalli appears in both Bengaluru's and Hosur's file. The merge keys
+on store_id and keeps one row, filed under its own city:
+
+1,442 rows across 58 files
+      ↓ key on store_id
+1,234 unique store_ids
+
+    A store is discovered as often as the grid hits it.
+    A store is counted exactly once.
+
+7. City attribution
+-------------------
+
+A store found in a shared region must belong to exactly one city.
+
+1. Name prefix wins — BLR- → Bengaluru, KUR- → Ambala, GGN- → Delhi NCR.
+   64 mappings derived from the data itself (a prefix is trusted at ≥80%
+   agreement). This is Zepto's own label, and it already encodes the client's
+   "covered in" taxonomy.
+2. Nearest city centroid only when the prefix is unknown.
+
+An assigned_by column records which rule fired on every row.
+
+Two prefixes needed an explicit override. In the Chandigarh cluster the
+cities sit 9–15 km apart, so the original pincode scrapes cross-contaminated each
+other and SAS/PNK ended up split across four cities — below the 80%
+threshold, so they fell through to nearest-centroid, which sent four SAS-
+stores to Panchkula:
+
+PREFIX_OVERRIDE = {"SAS": "Mohali",     # SAS Nagar IS Mohali
+                   "PNK": "Panchkula"}
+
+Nine misfiled stores were corrected this way, each predicted from the prefix
+analysis before its scan ran, and each confirmed by it:
+
+  Store                      Was filed           Belongs to
+  -------------------------  ------------------  ----------
+  HBL-Vidhya Nagar           Belagavi            Hubballi
+  BLR-Mico layout network-2  Hosur               Bengaluru
+  LKO-Aminabad               Kanpur              Lucknow
+  LDH-Hargobind Nagar        Jalandhar           Ludhiana
+  MRT-Mangal Pandey Nagar    Delhi NCR           Meerut
+  GGN-Daruherra              Rewari              Delhi NCR
+  VAD-Panchvati              Surat               Vadodara
+  KTU-Dadabari               Jaipur              Kota
+  SAS × 4                    Ambala / Panchkula  Mohali
+
+These are re-attributions, not deletions — the national total is unaffected;
+only per-city composition changes.
+
+8. Sizing each city's box
+-------------------------
+
+box = span of that city's stores + 13 km padding, minimum ±14 km
+
+Outliers excluded first. A store more than 45 km from its city's median is
+misfiled and must not stretch the box. Jaipur held one store in Kota and one in
+Mathura (199 km away), which inflated its box to 260 km across:
+
+Jaipur  158,608 grid points (109 min)  →  4,891 points (3.4 min)
+Surat    34,299                        →  6,111
+
+Almost all of the excluded area was empty countryside.
+
+Minimum ±14 km so single-store cities (Bhiwadi, Hisar, Mehsana, Sonipat,
+Tumkuru, CSN) still get a real search area — their span is zero.
+
+Boxes are deliberately generous, and overlap is allowed. Shrinking a box to
+avoid re-scanning a neighbour risks missing stores, and Layer 2 makes the overlap
+harmless. Only a box ~100% covered by a completed scan can be skipped safely;
+partial overlap is not grounds to skip.
+
+Edge check. After each scan, report how far the outermost store sits from
+each edge. Under 5 km means that edge probably cut something off. Chennai's
+original box left only 4.4 km below its southernmost store; widening it
+produced all 6 of its new stores, every one in the strip that would have been cut.
+
+9. Phantom stores
+-----------------
+
+Some coordinates return a storeId with no storeDetailsResponse at all:
+
+"storeServiceableResponse": { "storeId": "ce0f9850…", "serviceable": false }
+                             ← storeDetailsResponse ABSENT
+
+Not operational stores. Reading only storeId counted them as discoveries —
+Dehradun reported 2 new stores with blank names before this was caught.
+
+Fix: capture both signals, flag rather than delete.
+
+TOTAL unique storeIds hit             13
+  real stores (have a store record)   11
+  no store record (serviceable=False)  2
+NEW real stores (count these)          0
+
+5 phantoms nationally, listed in an Excluded sheet so the exclusion is
+visible rather than silent.
+
+10. Pincodes for grid-discovered stores
+---------------------------------------
+
+Grid stores have no pincode — a coordinate probe never involves one. Those 128
+were filled by reverse geocoding (OpenStreetMap Nominatim, 1 req/s), and a
+pincode_source column records provenance.
+
+The two values answer different questions:
+
+  Source                 Question                                Round-trips?
+  ---------------------  --------------------------------------  --------------------
+  scraper (1,101)        Which pincode search found this store?  Yes, by construction
+  reverse_geocode (127)  Which pincode does this store sit in?   No
+
+A geocoded pincode is correct as a location label but will not lead back to its
+store, because one pincode holds many stores — 271 of 807 pincodes hold more than
+one, and 560037 holds eight. Both statements are true at once; that is why the
+column exists rather than blending them.
+
+11. Rate limits
+---------------
+
+get_page and search have separate budgets. 256,000 grid probes ran with
+zero failures, while search was blocked at the same moment.
+
+Search enforces a volume limit — roughly 300–350 per window — not merely a
+rate limit. Four approaches were measured against it:
+
+  Approach                                                 Result
+  -------------------------------------------------------  ----------
+  Rotate captured session headers                          22.0% loss
+  Tear down browser context for a new device_id + cookies  22.5% loss
+  Pace at 1.4 s                                            2.9% loss
+  Pace at 3.0 s (cold IP)                                  0%
+
+Rotation fails because the limit tracks the IP, not the session or the client
+identity — failures resumed on the very first store after every rotation.
+
+Zepto signals throttling with HTTP 299, a non-standard code. Treating it as
+an empty result meant retrying three times into an active block, which prolonged
+it.
+
+Pacing helps but cannot eliminate a volume cap: 12 s spacing got 34 stores per
+window versus 5 at 5 s — 6.5× more — but the wall still arrives.
+
+12. Results
+-----------
+
+1,129  →  1,229 unique dark stores   (+100, +8.9%)
+
+  City       Before  After
+  ---------  ------  -----
+  Delhi NCR  214     266
+  Bengaluru  168     169
+  Mumbai     115     140
+  Hyderabad  130     130
+  Chennai    93      94
+  Pune       59      59
+  Kolkata    53      53
+  Lucknow    25      32
+  Mohali     5       14
+  Ambala     7       2
+
+Ambala's fall and Mohali's rise are the same event: SAS- and KUR- stores
+moving to their correct cities.
+
+Where the gains came from. Delhi NCR and Mumbai supplied 78 of the first 101
+new stores. Both are large and had never been grid-scanned, with big suburban
+belts outside their pincode lists. Small cities where the pincode list already
+covers the footprint returned 0–2 each.
+
+13. Scripts
+-----------
+
+  Script                          Purpose
+  ------------------------------  ---------------------------------------------------------------------------
+  zepto_discover_city_full.py     Both phases, per city. --only "Delhi NCR"
+  zepto_discovery_progress.py     Fresh per-city counts; deliberately no national total until all 58 are done
+  zepto_merge_final.py            Layer-3 merge → zepto_FINAL_master_*.xlsx
+  zepto_fill_missing_pincodes.py  Reverse-geocode grid stores
+  zepto_export_darkstores.py      Blinkit-schema export
+  zepto_verify_city_file.py       Round-trip every coordinate through the API
+
+14. Verification
+----------------
+
+Every coordinate in a city file can be sent back to get_page to confirm it
+returns the store the file claims. Kolkata: 51/53 exact (96.2%).
+
+Both exceptions were catchment-boundary cases — the two stores sat 0.85 km and
+3.35 km apart in dense New Town, and Zepto reassigned the boundary in the ~30
+minutes between scrape and check. Not bad data.
+
+Coordinates are not store addresses. Zepto never publishes those. Every
+coordinate here means "a point this store serves". That is why a store's
+coordinate can differ by a few km between runs, and why 32 of Kolkata's 53
+differed from the master by up to 3.87 km — both values are valid points inside
+the same catchment.
