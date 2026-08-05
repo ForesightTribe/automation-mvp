@@ -1,0 +1,35 @@
+{
+  "displayName": "Foresight — runner SILENT (who watches the watchman)",
+  "documentation": {
+    "content": "The runner has logged nothing for over two hours.\n\nWhy this exists separately from the ERROR policy: **a dead runner cannot report its own death.** The heartbeat, the job failures, the auth alerts — all of them are things the runner SAYS. If the VM is off, the daemon crashed into a restart loop, or the Ops Agent's log shipper wedged, every one of those alerts goes quiet and the silence looks exactly like 'nothing is wrong'.\n\nThis is the July 2026 failure mode: Cloud Logging went dark on 07-23 and nobody noticed, because the only signal was the ABSENCE of logs.\n\nExpected traffic: the hourly monitor.heartbeat alone guarantees a line every hour, so two hours of silence is genuinely abnormal.\n\nTriage:\n  gcloud compute instances list                       # is the VM even up?\n  systemctl status foresight-runner                   # is the daemon alive?\n  journalctl -u foresight-runner -n 50\n  sudo service google-cloud-ops-agent restart         # shipper wedged (does NOT self-heal)\n  df -h                                               # a full disk fails in odd, silent ways\n",
+    "mimeType": "text/markdown"
+  },
+  "conditions": [
+    {
+      "displayName": "No runner log lines for 2 hours",
+      "conditionAbsent": {
+        "filter": "metric.type=\"logging.googleapis.com/user/foresight_runner_lines\" AND resource.type=\"gce_instance\"",
+        "duration": "7200s",
+        "aggregations": [
+          {
+            "alignmentPeriod": "600s",
+            "perSeriesAligner": "ALIGN_COUNT"
+          }
+        ],
+        "trigger": {
+          "count": 1
+        }
+      }
+    }
+  ],
+  "combiner": "OR",
+  "enabled": true,
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "3600s"
+    }
+  },
+  "notificationChannels": [
+    "REPLACE_WITH_CHANNEL_ID"
+  ]
+}

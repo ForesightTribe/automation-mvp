@@ -198,7 +198,9 @@ logging:
 #     labels."agent.googleapis.com/log_file_path"=~"blinkit_marketing"
 #
 # ─────────────────────────────────────────────────────────────────────────────
-# ALERTS (Monitoring → Alerting → Create policy → Log-based)
+# ALERTS — the policies now live as reviewable JSON in deploy/alerts/ with the
+# gcloud commands to apply and TEST them. See deploy/alerts/README.md.
+# What follows is the rationale, kept here next to the queries it depends on.
 #
 # 1. THE ONE THAT MATTERS — any runner error, incl. "HEARTBEAT: … didn't run"
 #    and EVERY failed job:

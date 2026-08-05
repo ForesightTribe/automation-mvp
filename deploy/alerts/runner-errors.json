@@ -1,0 +1,26 @@
+{
+  "displayName": "Foresight — runner ERROR (any failed job)",
+  "documentation": {
+    "content": "A job failed, or the heartbeat reported a problem.\n\nWhat fired this: jobs/runner.py logs every job failure at ERROR with structured fields. The `error` field says which kind:\n  auth_expired  - could not authenticate to the platform (see docs/platform-auth.md)\n  oom           - the OOM killer took the subprocess (SIGKILL / returncode -9)\n  timeout       - exceeded the job type's ceiling in jobs/types.py\n  runner_died   - reaped on startup after the runner was killed mid-run\n  exit_N        - the CLI exited non-zero for some other reason\n\nTriage:\n  1. Logs Explorer: log_id(\"foresight_runner\") AND severity>=ERROR\n  2. The entry's jsonPayload.record.extra.log_file names the run's OWN log,\n     which holds the reason. The runner only ever sees an exit code.\n  3. Open it: labels.\"agent.googleapis.com/log_file_path\"=~\"<log_file>\"\n\nFor auth_expired specifically:\n  python -m cli auth status -t <tenant>\n  python -m cli auth probe <platform> -t <tenant>\n",
+    "mimeType": "text/markdown"
+  },
+  "conditions": [
+    {
+      "displayName": "Any ERROR from the job runner",
+      "conditionMatchedLog": {
+        "filter": "log_id(\"foresight_runner\") AND severity>=ERROR"
+      }
+    }
+  ],
+  "combiner": "OR",
+  "enabled": true,
+  "alertStrategy": {
+    "notificationRateLimit": {
+      "period": "300s"
+    },
+    "autoClose": "604800s"
+  },
+  "notificationChannels": [
+    "REPLACE_WITH_CHANNEL_ID"
+  ]
+}

@@ -380,10 +380,11 @@ applies the recipient filter exactly as a real login would, so the verdict colum
 - [ ] **VM deploy** — merge to `main` (the VM only runs `main`), add `AUTH_INBOX_*` to its
       `.env`, restart the runner.
 - [ ] **Set `AUTH_ALLOW_LOGIN=false` in Render's environment.**
-- [ ] **Create the GCP alert policy** (`log_id("foresight_runner") AND severity>=ERROR`).
-      Open since July: job failures now log at ERROR with structured fields, so the policy
-      would finally fire — but it still does not exist, so an auth failure reaches a log,
-      not an inbox.
+- [ ] **Apply the alert policies** — they are written up as reviewable JSON in
+      [deploy/alerts/](../deploy/alerts/README.md) with the `gcloud` commands, but have
+      **not been created in GCP yet**. Until they are, an auth failure reaches a log and
+      not an inbox. The README includes a forced-failure test, because a policy with a
+      filter that silently matches nothing is the exact state to avoid.
 - [ ] The busy-skip path in `refresh_all` is logic-verified but never exercised against a
       real running job (creating a fake pending job risks the VM runner claiming it).
       Worth watching the first time a schedule overlaps a scrape.
