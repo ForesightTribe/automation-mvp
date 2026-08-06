@@ -31,12 +31,13 @@ import typer
 from openpyxl import Workbook, load_workbook
 from rich.console import Console
 from rich.table import Table
+from sqlalchemy import text
 from sqlmodel import select
 
 from app.core.database import AsyncSessionLocal
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
-from scraper.utils.storage import ensure_refs
+from scraper.utils.storage import _MP_NAMES, ensure_refs
 
 console = Console()
 DEFAULT_MP = "blinkit"
@@ -290,6 +291,20 @@ async def _do_sync(data, dry_run, prune) -> dict:
             )
 
         tenant_mps = _tenant_marketplaces(data["coverage"], tenants)
+
+        # `marketplace_locations.mp_slug` is an FK to `marketplaces.slug`. That row
+        # is created by ensure_refs() — but only on the scrape path and inside
+        # _sync_brands, which runs AFTER locations. So a marketplace that has never
+        # been scraped could not have its catalog synced: the locations insert died
+        # on the foreign key. Blinkit never hit it because a scrape had seeded its
+        # row long ago. Seed every marketplace the file declares, first.
+        for mp in sorted({_mp(r.get("mp")) for r in data["locations"]}):
+            await db.execute(
+                text("INSERT INTO marketplaces (slug, name) VALUES (:slug, :name) "
+                     "ON CONFLICT (slug) DO NOTHING"),
+                {"slug": mp, "name": _MP_NAMES.get(mp, mp.title())},
+            )
+
         loc = await _sync_locations(db, data["locations"], prune)
         brands = await _sync_brands(db, data["brands"], tenants, prune, tenant_mps)
         cov = await _sync_coverage(db, data["coverage"], tenants, prune)

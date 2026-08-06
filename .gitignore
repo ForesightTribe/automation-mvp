@@ -38,3 +38,12 @@ dist-ssr
 # CLAUDE.md
 
 backend/staging
+
+# Scrape output — regenerable from the database or a re-run, and large.
+# The catalog files (zepto_FINAL_master_*, zepto_darkstores_export) are NOT
+# ignored: those are source data, not output.
+backend/zepto_from_db_*.xlsx
+backend/zepto_keyword_scan_*.xlsx
+backend/keyword_scan_checkpoint*.csv
+backend/dark_stores_zepto/
+~$*.xlsx

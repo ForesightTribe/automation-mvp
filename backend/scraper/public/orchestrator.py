@@ -34,7 +34,9 @@ from scraper.utils.browser import PLAYWRIGHT_ARGS
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
-_PACING = 0.05          # polite gap between stores (seconds)
+# Pacing moved onto Provider — it is per-marketplace, not global. Blinkit has no
+# volume cap and runs 5 workers at 0.05 s between stores; Zepto enforces one and
+# dies after a single search at that rate. See scraper/public/providers.py.
 
 
 async def _own_keyword_map(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, list[tuple[str, list[str]]]]:
@@ -103,6 +105,7 @@ async def _worker(
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
     stale = 0
+    searches = 0        # since this worker's last rest, for provider.pause_every
     try:
         while True:
             try:
@@ -118,13 +121,73 @@ async def _worker(
                 if (keyword, loc.lat, loc.lon) in done:
                     stats["skipped"] += 1
                     continue
+
+                # Scheduled rest, for a marketplace with a volume cap. Resting
+                # BEFORE the wall is cheaper than crashing into it: recovery from a
+                # hard block yields ~3 searches per 5-minute cycle, while a clean
+                # pause resets the window. No-op when pause_every is None (Blinkit).
+                if provider.pause_every and searches >= provider.pause_every:
+                    logger.info(f"w{wid} scheduled rest {provider.pause_s // 60} min "
+                                f"after {searches} searches")
+                    await asyncio.sleep(provider.pause_s)
+                    searches = 0
+                    await provider.close_session(session)
+                    session = await provider.open_session(browser, loc.lat, loc.lon)
+                    if not session:
+                        logger.warning(f"worker {wid}: session refresh failed after "
+                                       f"rest — exiting")
+                        return
+
                 _t = time.monotonic()
                 try:
-                    res = await provider.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
+                    # merchant_id as well as the coordinate: marketplaces bind in
+                    # opposite directions (D8). Blinkit ignores it; Zepto needs it,
+                    # or it spends a second rate-limited endpoint resolving a store
+                    # this loop already has in hand.
+                    res = await provider.search(session, keyword, cap,
+                                                lat=loc.lat, lon=loc.lon,
+                                                merchant_id=loc.merchant_id)
                 except Exception as e:
                     res = {"ok": False, "products": [], "merchant_id": "",
                            "total_results": 0, "error": f"{type(e).__name__}: {e}"}
                 store_fetch += time.monotonic() - _t
+                searches += 1
+
+                # Pace HERE, not at the end of the loop. Every branch below can
+                # `continue`, and an empty result is the commonest of them — on
+                # Zepto 'sourdough bread loaf' returns 0-6 products at most stores.
+                # Pacing after those branches means the thinnest keywords fire back
+                # to back with no gap at all, which is what blocked five workers in
+                # 37 seconds.
+                if provider.search_gap_s:
+                    await asyncio.sleep(provider.search_gap_s)
+
+                # A BLOCK is not a failure to retry — it is the marketplace saying
+                # stop, and retrying into it prolongs it. Wait, rebuild the session,
+                # and let the next search act as the probe. Blinkit never sets
+                # probe_every_s, so this whole branch is dead code for it.
+                if res.get("blocked") and provider.probe_every_s:
+                    waits = 0
+                    while waits < provider.max_block_waits:
+                        waits += 1
+                        logger.warning(
+                            f"w{wid} {loc.city} '{keyword}' BLOCKED — waiting "
+                            f"{provider.probe_every_s // 60} min "
+                            f"({waits}/{provider.max_block_waits})"
+                        )
+                        await asyncio.sleep(provider.probe_every_s)
+                        await provider.close_session(session)
+                        session = await provider.open_session(browser, loc.lat, loc.lon)
+                        if session:
+                            break
+                    if not session:
+                        logger.warning(f"worker {wid}: still blocked after "
+                                       f"{waits} waits — exiting")
+                        return
+                    searches = 0
+                    store_fail += 1
+                    stats["errors"] += 1
+                    continue
 
                 if not res.get("ok"):
                     store_fail += 1
@@ -182,7 +245,7 @@ async def _worker(
                 f"[fetch {store_fetch:5.1f}s stage {store_db:4.1f}s]  "
                 f"| {stats['snapshots']} snap, {stats['rows']} rows, {stats['errors']} err"
             )
-            await asyncio.sleep(_PACING)
+            await asyncio.sleep(provider.store_gap_s)
     finally:
         if session:
             await provider.close_session(session)
