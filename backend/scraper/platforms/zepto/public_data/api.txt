@@ -1,0 +1,970 @@
+Zepto public search — captured API traffic (Phase 0 recon)
+Captured verbatim so field extraction can be read, not guessed.
+Mirrors blinkit/public_data/api.txt.
+
+==============================================================================
+1. get_page — coordinate -> store  (the catalog primitive)
+==============================================================================
+GET https://bff-gateway.zepto.com/lms/api/v2/get_page?latitude=12.9765944&longitude=77.5992708&page_type=HOME&version=v2&show_new_eta_banner=true&page_size=3&enforce_platform_type=WEB
+
+REQUEST HEADERS
+  accept: application/json, text/plain, */*
+  app_sub_platform: WEB
+  app_version: 16.23.1
+  appversion: 16.23.1
+  auth_from_cookie: true
+  auth_revamp_flow: v2
+  compatible_components: EXTERNAL_COUPONS,BUNDLE,MULTI_SELLER_ENABLED,ROLLUPS,SCHEDULED_DELIVERY,HOMEPAGE_V2,NEW_ETA_BANNER,VERTICAL_FEED_PRODUCT_GRID,AUTOSUGGESTION_PAGE_ENABLED,AUTOSUGGESTION_PIP,AUTOSUGGESTION_AD_PIP,BOTTOM_NAV_FULL_ICON,COUPON_WIDGET_CART_REVAMP,DELIVERY_UPSELLING_WIDGET,MARKETPLACE_CATEGORY_GRID,NO_PLATFORM_CHECK_ENABLED_V2,SUPER_SAVER:1,SUPERSTORE_V1,PROMO_CASH:0,24X7_ENABLED_V1,TABBED_CAROUSEL_V2,HP_V4_FEED,WIDGET_BASED_ETA,PC_REVAMP_1,NO_COST_EMI_V1,PRE_SEARCH,ITEMISATION_ENABLED,ZEPTO_PASS:5,BACHAT_FOR_ALL,SAMPLING_UPSELL_CAMPAIGN,DISCOUNTED_ADDONS_ENABLED,UPSELL_COUPON_SS:0,ENABLE_FLOATING_CART_BUTTON,FASHION_REVAMP,WIDGET_RESTRUCTURE,MULTITAB_V2,NEW_BILL_INFO,RE_PROMISE_ETA_ORDER_SCREEN_ENABLED,SUPERSTORE_V1,MANUALLY_APPLIED_DELIVERY_FEE_RECEIVABLE,MARKETPLACE_REPLACEMENT,ZEPTO_PASS:5,CART_REDESIGN_ENABLED,SHIPMENT_WIDGETIZATION_ENABLED,TABBED_CAROUSEL_V2,24X7_ENABLED_V1,PROMO_CASH:0,HOMEPAGE_V2,SUPER_SAVER:1,NO_PLATFORM_CHECK_ENABLED_V2,HP_V4_FEED,GIFT_CARD,SCLP_ADD_MONEY,GIFTING_ENABLED,OFSE,WIDGET_BASED_ETA,PC_REVAMP_1,NEW_ETA_BANNER,NO_COST_EMI_V1,ITEMISATION_ENABLED,SWAP_AND_SAVE_ON_CART,WIDGET_RESTRUCTURE,PRICING_CAMPAIGN_ID,BACHAT_FOR_ALL,TABBED_CAROUSEL_V3,MULTITAB_V2,VERTICAL_FEED_PRODUCT_GRID,CART_LMS:2,SAMPLING_UPSELL_CAMPAIGN,DISCOUNTED_ADDONS_ENABLED,UPSELL_COUPON_SS:0,SIZE_EXCHANGE_ENABLED,ENABLE_FLOATING_CART_BUTTON,SAMPLING_V3,HYBRID_CAMPAIGN,
+  device_id: 77b1d99f-7cbd-4563-b2e8-855163344097
+  deviceid: 77b1d99f-7cbd-4563-b2e8-855163344097
+  marketplace_type: SUPER_SAVER
+  platform: WEB
+  referer: https://www.zepto.com/
+  request-signature: 9df3ad55504193497a1aaa02a5441f074f23c0802f9c591df776ab3202f7c96c
+  request_id: 2212459f-d500-4149-97e4-91f761c893b4
+  requestid: 2212459f-d500-4149-97e4-91f761c893b4
+  sec-ch-ua: "Chromium";v="148", "HeadlessChrome";v="148", "Not/A)Brand";v="99"
+  sec-ch-ua-mobile: ?0
+  sec-ch-ua-platform: "Windows"
+  session_id: dc5fa4c7-54eb-481f-9e83-7895530a8f93
+  sessionid: dc5fa4c7-54eb-481f-9e83-7895530a8f93
+  source: DIRECT
+  store_etas: {"b4dc8d65-ed2e-4142-81b6-373982b13500":-1,"0059ff6a-7eb0-477a-a7f5-69256f2c444b":-1}
+  store_id: b4dc8d65-ed2e-4142-81b6-373982b13500
+  store_ids: b4dc8d65-ed2e-4142-81b6-373982b13500,0059ff6a-7eb0-477a-a7f5-69256f2c444b
+  storeid: b4dc8d65-ed2e-4142-81b6-373982b13500
+  tenant: ZEPTO
+  user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36
+  x-csrf-secret: -B_ZPp3S0_s
+  x-timezone: 7d272ae7dc38dbb701264dcd2769d641b13772801f0c3e713595a4f94b721a27
+  x-widget-id: 019f0925-0b55-7826-873c-24f0e9704be0
+  x-xsrf-token: 8sOfn2wYGyJgLBVFQ84wD:59dDMG6rbehIn1csSyyKRg2bhas.bHMzho7q931u73Madca8EBh+JsHCZe9DAXyhJ5EmAMc
+
+RESPONSE
+{"endOfPage":false, "storeServiceableResponse":{"isNightlyStore":false, "secondaryStoreIds":["843e630a-7896-462d-b7cf-712140483ed3"], "serviceable":true, "storeId":"b1403534-cd6b-49d0-a7cd-ce20e6497768"}, "pageLayout":{"bottomNav":{"default":"HOME", "items":[{"activeIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/2ff6905e-f04c-41c3-8295-3df72bfff080.svg", "activeIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/2ff6905e-f04c-41c3-8295-3df72bfff080.svg", "deeplinkUrl":"https://shop.zeptonow.com/Home", "icon":"https://ik.imagekit.io/jupdt2k6txi/app/bottom-nav/home-2.png", "id":"HOME", "inactiveIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/df6c8f66-c05c-407c-9ad9-7181bc9d91e3.svg", "inactiveIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/df6c8f66-c05c-407c-9ad9-7181bc9d91e3.svg", "label":"Home"}, {"activeIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/814b164e-5472-445b-b676-b73292c0c325.svg", "activeIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/814b164e-5472-445b-b676-b73292c0c325.svg", "deeplinkUrl":"https://shop.zeptonow.com/CategoryList?pageId=PAGE_IN_PAGE&title=All%20Categories&disableBackButton=true&layoutId=9277", "icon":"https://ik.imagekit.io/jupdt2k6txi/app/bottom-nav/categories-2.png", "id":"CATEGORIES", "inactiveIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/95264952-fe88-4210-96fb-069fc3d18706.svg", "inactiveIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/95264952-fe88-4210-96fb-069fc3d18706.svg", "label":"Categories"}, {"activeIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/4c0c261f-70c5-4a66-b3e4-9870c0f96ded.png", "activeIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/4c0c261f-70c5-4a66-b3e4-9870c0f96ded.png", "deeplinkUrl":"https://www.zeptonow.com/LayoutEngine?pageId=PAGE_IN_PAGE&layoutId=20679&title=Buy%20Again", "extraParams":"", "icon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/4c0c261f-70c5-4a66-b3e4-9870c0f96ded.png", "id":"Trending", "inactiveIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/4c0c261f-70c5-4a66-b3e4-9870c0f96ded.png", "inactiveIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/4c0c261f-70c5-4a66-b3e4-9870c0f96ded.png", "label":"Trending"}, {"activeIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/15552fb2-114b-4a3c-8728-3576cf5067bb.png", "activeIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/15552fb2-114b-4a3c-8728-3576cf5067bb.png", "activeLottie":"", "activeLottieInLoop":true, "deeplinkUrl":"https://www.zepto.com/LayoutEngine?pageId=PAGE_IN_PAGE&layoutId=35185&isLMSPIPEnabled=true&isHeaderWidgetized=true", "extraParams":"", "icon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/15552fb2-114b-4a3c-8728-3576cf5067bb.png", "id":"Cafe_17_12", "inactiveIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/15552fb2-114b-4a3c-8728-3576cf5067bb.png", "inactiveIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/15552fb2-114b-4a3c-8728-3576cf5067bb.png", "inactiveLottie":"", "inactiveLottieInLoop":true, "label":"Cafe", "navIconType":"", "thirdPartyTags":[[{"Key":"script_dcm_impression", "Value":"<SCRIPT language='JavaScript1.1' SRC='https://ad.doubleclick.net/ddm/trackimpj/N1010308.5243223ZEPTONOW.COM/B32287271.399651707;dc_trk_aid=591482540;dc_trk_cid=219461988;ord=[timestamp];dc_lat=;dc_rdid=;tag_for_child_directed_treatment=;tfua=;gdpr=${GDPR};gdpr_consent=${GDPR_CONSENT_755};ltd=;dc_tdv=1?' attributionsrc ></SCRIPT>"}]]}, {"activeIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/7735201e-446e-4486-8111-ce816204a03e.png", "activeIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/7735201e-446e-4486-8111-ce816204a03e.png", "activeLottie":"", "activeLottieInLoop":false, "deeplinkUrl":"https://zepto.com/DeepLink?id=b05de342-954c-4e90-812c-bd90ca37e33d", "icon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/7735201e-446e-4486-8111-ce816204a03e.png", "id":"Zepto", "inactiveIcon":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/7735201e-446e-4486-8111-ce816204a03e.png", "inactiveIconV2":"https://ik.imagekit.io/jupdt2k6txi/inventory/banner/7735201e-446e-4486-8111-ce816204a03e.png", "inactiveLottie":"", "inactiveLottieInLoop":false, "isAdsBotd":true, "label":"Zepto", "navIconType":"FULL_ICON", "thirdPartyTags":[{"img_dcm_impression":"", "script_dcm_click":"", "script_dcm_impression":""}], "uclId":"101|4026d18e94ff4f9c8fad54071154bb82|50000000|1785759916143|0b4532a8-bc21-435f-851f-9ed880dcf426|2418788_30363_4578221||CPD|1418b9a6-b299-47a8-bb32-7b26b0ebd760|1418b9a6-b299-47a8-bb32-7b26b0ebd760||2418788|2418788|b1403534-cd6b-49d0-a7cd-ce20e6497768|77b1d99f-7cbd-4563-b2e8-855163344097|30363|P_INFO|||||||K_INFO|||0|0|0|0"}]}, "endOfPage":false, "experienceVariant":"SS_UNIFIED", "fnvIrlVariant":"control", "footerV2":{"widget":{"action":null, "campaignName":"", "data":{"resolver":{"params":{"dataResolver":"upsell_strip_v2"}, "subscriptions":["cart_change"], "type":"cfs_upsell_resolver", "url":"cfs/api/v1/bulk-widget-data", "useLocal":false}}, "order":2, "widgetId":100003339, "widgetName":"Upsell_strip_cfs_homepage_v2", "widgetType":"UPSELL_STRIP_WIDGET"}}, "header":{"widget":{"action":null, "campaignName":"ETA", "data":{"etaInfo":{"background":{"linearGradient":{"firstColor":"#FFD6D0", "secondColor":"#FFFFFF"}}, "categoryConfigLoopTimeInMillisecond":3000, "categoryPrimaryText":"Delivering {categoryName} in", "deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "etaIconType":{"height":20, "id":"clock_bold", "mediaType":"IMAGE", "name":"clock_bold.svg", "path":"app/svg/clock_icon.svg", "videoPath":"", "width":20}, "etaServiceableInfo":[{"deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "isDeliverable":false, "storeId":"b1403534-cd6b-49d0-a7cd-ce20e6497768"}, {"cost":12841, "deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "isDeliverable":false, "storeId":"843e630a-7896-462d-b7cf-712140483ed3"}, {"deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "isDeliverable":false, "storeId":"83aac9aa-1afa-4758-a0a4-948e3720d4fc"}], "hideIcon":true, "isDeliverable":false, "isScheduledDeliveryApplicable":true, "secondaryBackground":{"linearGradient":{"firstColor":"#FFFFFF", "secondColor":"#FFFFFF"}}, "secondaryText":"High Demand, Schedule Order  ", "showMarketplaceTabs":true, "storeCloseTime":"2 AM", "storeOpenTime":"6 AM", "styles":{"addressLabelColor":"#000000", "addressTextColor":"#707685", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "experiments":{}, "order":1, "viewMeta":{"background":{}, "border":{"bottomLeftRadius":0, "bottomRightRadius":0, "color":"#FFFFFF", "radius":0, "topLeftRadius":0, "topRightRadius":0, "width":0}, "divider":{}, "isDefaultHeaderWidget":true, "numberOfColumns":null, "padding":[0, 0, 0, 0], "spacerHeight":0, "timer":{}}, "widgetId":35, "widgetName":"ETA_BANNER", "widgetType":"TOP_COMMS_WIDGET"}}, "headerV2":{"defaultBackground":{"gradientColors":["#FFD6D0", "#FFFFFF"]}, "primaryWidgets":[{"action":null, "campaignName":"ETA", "data":{"etaInfo":{"background":{"linearGradient":{"firstColor":"#FFD6D0", "secondColor":"#FFFFFF"}}, "categoryConfigLoopTimeInMillisecond":3000, "categoryPrimaryText":"Delivering {categoryName} in", "deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "etaIconType":{"height":20, "id":"clock_bold", "mediaType":"IMAGE", "name":"clock_bold.svg", "path":"app/svg/clock_icon.svg", "videoPath":"", "width":20}, "etaServiceableInfo":[{"deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "isDeliverable":false, "storeId":"b1403534-cd6b-49d0-a7cd-ce20e6497768"}, {"cost":12841, "deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "isDeliverable":false, "storeId":"843e630a-7896-462d-b7cf-712140483ed3"}, {"deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "deliverableType":"CLOSED", "isDeliverable":false, "storeId":"83aac9aa-1afa-4758-a0a4-948e3720d4fc"}], "hideIcon":true, "isDeliverable":false, "isScheduledDeliveryApplicable":true, "secondaryBackground":{"linearGradient":{"firstColor":"#FFFFFF", "secondColor":"#FFFFFF"}}, "secondaryText":"High Demand, Schedule Order  ", "showMarketplaceTabs":true, "storeCloseTime":"2 AM", "storeOpenTime":"6 AM", "styles":{"addressLabelColor":"#000000", "addressTextColor":"#707685", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "experiments":{}, "order":1, "viewMeta":{"background":{}, "border":{"bottomLeftRadius":0, "bottomRightRadius":0, "color":"#FFFFFF", "radius":0, "topLeftRadius":0, "topRightRadius":0, "width":0}, "divider":{}, "isDefaultHeaderWidget":true, "numberOfColumns":null, "padding":[0, 0, 0, 0], "spacerHeight":0, "timer":{}}, "widgetId":35, "widgetName":"ETA_BANNER", "widgetType":"TOP_COMMS_WIDGET"}, {"action":null, "campaignName":"Search_Bar_Widget", "data":{"items":[{"type":"SEARCH_BAR_TYPE"}, {"data":[{"action":{}, "clickable":true, "deeplink":null, "deeplinkType":null, "deeplinkUrl":"https://www.zepto.com/LayoutEngine?pageId=PAGE_IN_PAGE&layoutId=100000526&isLMSPIPEnabled=true&isHeaderWidgetized=true", "footer":{}, "id":"2c7a4719-7711-4930-90da-844276869a5d", "image":{"height":176, "id":"a90fd3e9-cb69-4ee6-8607-91024d71e896", "mediaType":"IMAGE", "path":"inventory/banner/b88f5dc1-0a7b-4c50-a8d7-52ebe4178111.png", "width":456}, "isActive":true, "isUnserviceable":null, "metaData":{"ctaTitle":"", "imageText":"", "loadType":""}, "name":"Protein Fest", "priority":10, "secondaryImage":null, "tabDescriptionImage":null, "thirdPartyTags":{}, "uclId":"", "unserviceableImage":null}], "type":"BANNER_TYPE"}]}, "experiments":{}, "order":2, "viewMeta":{"background":{}, "border":{"bottomLeftRadius":0, "bottomRightRadius":0, "color":"#FFFFFF", "radius":0, "topLeftRadius":0, "topRightRadius":0, "width":0}, "divider":{}, "isDefaultHeaderWidget":true, "isSticky":true, "numberOfColumns":null, "padding":[0, 0, 0, 0], "spacerHeight":0, "timer":{}, "zIndex":3}, "widgetFooter":{"ctaButton":{}, "viewMeta":{"numberOfColumns":null, "padding":[0, 0, 0, 0]}}, "widgetHeader":{"actionButton":{"positionMeta":{}}, "infoText":"", "rightCta":{"actionId":"a6c8ee98-9331-4eb6-9122-f331a2313dd4", "actionType":"DEEPLINK_NAVIGATION"}, "subTitle":"", "title":"", "viewMeta":{"background":{}, "infoTextProps":{}, "padding":[0, 0, 0, 0], "subTitleColor":"#2B1E35", "subtitleProps":{"color":"#2B1E35"}, "titleColor":"#2B1E35", "titleProps":{"color":"#2B1E35"}}}, "widgetId":59310, "widgetMeta":{"aspectRatio":2.52, "background":{}, "border":{"bottomLeftRadius":0, "bottomRightRadius":0, "color":"#FFFFFF", "radius":0, "topLeftRadius":0, "topRightRadius":0, "width":0}, "padding":[0, 0, 0, 0], "spacerHeight":0, "timer":{}}, "widgetName":"SEARCH_INFO_WIDGET", "widgetType":"SEARCH_INFO_WIDGET"}, {"action":null, "data":{"items":[{"action":{"actionMeta":{"header":{}, "params":{"layout_id":32704, "tab_id":4526}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#000000", "height":100, "path":"inventory/banner/2f467735-001b-4808-b50c-6811284542d4.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":4526, "images":{"active":{"height":128, "hidePadding":false, "id":"2ad54b4b-9c4f-4cd3-be16-d6a4c8dc85d0", "lottiePath":null, "mediaType":"IMAGE", "name":"Icon.png", "path":"inventory/banner/2f467735-001b-4808-b50c-6811284542d4.png", "relativePath":null, "videoPath":"", "width":128}}, "inactiveIcon":{"color":"#000000", "height":100, "path":"inventory/banner/2f467735-001b-4808-b50c-6811284542d4.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":null, "layoutId":32704, "pageType":"HOME", "tabMeta":{"viewMeta":{"backgroundColor":"#FFF280", "theme":"DARK"}}, "title":"All", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 0, 10, 0], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5.5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#FFFFFF", "#FFFFFF"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":100000701, "tab_id":4530}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/5638e92a-e018-4915-b77d-dbafa9b5c923.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":4530, "images":{"active":{"height":128, "hidePadding":false, "id":"0d0e4356-5d5a-4cbe-bb02-1140049d773a", "lottiePath":null, "mediaType":"IMAGE", "name":"Icon-5.png", "path":"inventory/banner/5638e92a-e018-4915-b77d-dbafa9b5c923.png", "relativePath":null, "videoPath":"", "width":128}}, "inactiveIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/5638e92a-e018-4915-b77d-dbafa9b5c923.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#076B4F", "secondColor":"#076B4F"}, "layoutId":100000701, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Home", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 10, 10, 10], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#FFFFFF", "#FFFFFF"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":100000575, "tab_id":4528}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/2addde3c-ecbf-4780-bd07-31e8789ed285.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":4528, "images":{"active":{"height":129, "hidePadding":false, "id":"f2521d8d-b8e3-49a3-a637-c5f09bbdaa70", "lottiePath":null, "mediaType":"IMAGE", "name":"Group 2147226996.png", "path":"inventory/banner/2addde3c-ecbf-4780-bd07-31e8789ed285.png", "relativePath":null, "videoPath":"", "width":129}}, "inactiveIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/2addde3c-ecbf-4780-bd07-31e8789ed285.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#FFFFFF", "secondColor":"#FFFFFF"}, "layoutId":100000575, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Electronics", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 0, 10, 0], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5.5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#F9ECD0", "#F9ECD0"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":35185, "tab_id":4527}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#000000", "height":100, "path":"inventory/banner/b9420a91-96ab-4299-8ff8-a002cb6d8061.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{"storeSegment":["78abe2c3-a94d-40d8-b06d-5a54997e0019"]}, "header":{}, "id":4527, "images":{"active":{"height":128, "hidePadding":false, "id":"7452076d-19d6-457b-8614-0aec3579cb9e", "lottiePath":null, "mediaType":"IMAGE", "name":"Icon-1.png", "path":"inventory/banner/b359ad03-9b0a-4cad-970d-b28ea0481640.png", "relativePath":null, "videoPath":"", "width":128}}, "inactiveIcon":{"color":"#000000", "height":100, "path":"inventory/banner/b9420a91-96ab-4299-8ff8-a002cb6d8061.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#FCDFB5", "secondColor":"#FCDFB5"}, "layoutId":35185, "pageType":"PAGE_IN_PAGE", "tabMeta":{"context":{"category":{"id":"dfe16918-81b1-49c3-941b-acd557f7c277", "name":"", "type":"primary"}}, "images":{"active":{"height":112, "hidePadding":false, "id":"617ea3ab-720d-432f-9559-8f98f29d5437", "lottiePath":null, "mediaType":"IMAGE", "name":"Frame 1686556403(2)(1).png", "path":"inventory/banner/2fd705a5-5e79-4b6a-a711-e4fb861e174c.png", "relativePath":null, "videoPath":"", "width":112}}}, "title":"Cafe", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 0, 10, 0], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":6, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#FEE086", "#FEE086"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":18118, "tab_id":4532}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#F3F5F7", "height":100, "path":"inventory/banner/af281063-eb48-4b13-a49f-624c7a135423.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":4532, "images":{"active":{"createdAt":"2026-05-06T09:09:34.505Z", "height":128, "id":"2300fdaa-309f-4cb5-9914-37a464dffa03", "mediaType":"IMAGE", "name":"Icon (10).png", "path":"inventory/banner/0049a393-af1d-40ea-8ea9-bd9814f2ec7c.png", "sizeInBytes":0, "width":128}}, "inactiveIcon":{"color":"#F3F5F7", "height":100, "path":"inventory/banner/af281063-eb48-4b13-a49f-624c7a135423.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#03669D", "secondColor":"#03669D"}, "layoutId":18118, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Fresh", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 10, 10, 10], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#FFFFFF", "#FFFFFF"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":100000087, "tab_id":4529}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/91666bb6-27f2-4d7e-92d5-c71e4102462a.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{"storeSegment":["b14b7706-59f7-4c9a-9042-4107b7575d72"]}, "header":{}, "id":4529, "images":{"active":{"height":129, "hidePadding":false, "id":"89a61782-5ca8-4e45-8212-1f65726ae1b1", "lottiePath":null, "mediaType":"IMAGE", "name":"Group 2147226997.png", "path":"inventory/banner/f00e4dcb-29bd-4e2d-b56b-2fceac7cbedd.png", "relativePath":null, "videoPath":"", "width":129}}, "inactiveIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/91666bb6-27f2-4d7e-92d5-c71e4102462a.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#1089F3", "secondColor":"#1089F3"}, "layoutId":100000087, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Fashion", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 16, 10, 16], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#B497FE", "#B497FE"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":35204, "tab_id":4531}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#F3F5F7", "height":100, "path":"inventory/banner/af281063-eb48-4b13-a49f-624c7a135423.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":4531, "images":{"active":{"height":128, "hidePadding":false, "id":"694869a3-c6a2-43b8-9eae-44415391c83e", "lottiePath":null, "mediaType":"IMAGE", "name":"Icon-4.png", "path":"inventory/banner/490abe44-0dc0-4646-a18d-20683da51de2.png", "relativePath":null, "videoPath":"", "width":128}}, "inactiveIcon":{"color":"#F3F5F7", "height":100, "path":"inventory/banner/af281063-eb48-4b13-a49f-624c7a135423.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#FB5C88", "secondColor":"#FB5C88"}, "layoutId":35204, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Beauty", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 10, 10, 10], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#E7FAFE", "#E7FAFE"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":35166, "tab_id":5376}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/d55371fb-3d47-4aaf-8ac0-228a81fd2398.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":5376, "images":{"active":{"height":128, "hidePadding":false, "id":"c67bb15b-1b41-4e18-bbab-2b7c150d55e7", "lottiePath":null, "mediaType":"IMAGE", "name":"pharmacy icon.png", "path":"inventory/banner/38b988c3-71b3-45a7-bbe4-bf45d93944d1.png", "relativePath":null, "videoPath":"", "width":128}}, "inactiveIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/d55371fb-3d47-4aaf-8ac0-228a81fd2398.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#7BD1E3", "secondColor":"#7BD1E3"}, "layoutId":35166, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Pharmacy", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 10, 10, 10], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#B5DB9B", "#B5DB9B"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":17535, "tab_id":5731}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/d55371fb-3d47-4aaf-8ac0-228a81fd2398.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{}, "header":{}, "id":5731, "images":{"active":{"height":96, "hidePadding":false, "id":"0f598992-6212-495c-92cb-931772b44b09", "lottiePath":null, "mediaType":"IMAGE", "name":"Property 1=Price Drop.png", "path":"inventory/banner/921b4996-bad1-4634-b3c7-71b95bb0d386.png", "relativePath":null, "videoPath":"", "width":96}}, "inactiveIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/d55371fb-3d47-4aaf-8ac0-228a81fd2398.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#076B4F", "secondColor":"#076B4F"}, "layoutId":17535, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Price Drop", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 10, 10, 10], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}, {"action":{"actionMeta":{"header":{"viewMeta":{"background":{"gradientColors":["#9FC4E3", "#9FC4E3"]}, "styles":{"addressLabelColor":"#000000", "addressTextColor":"#000000", "etaPrimaryTextColor":"#000000", "etaSecondaryTextColor":"#000000", "iconColor":"#000000", "theme":"DARK"}}}, "params":{"layout_id":32087, "tab_id":5733}}, "actionType":"UPDATE_PAGE_LAYOUT"}, "activeIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/d55371fb-3d47-4aaf-8ac0-228a81fd2398.png", "width":100}, "activeTitleColor":"#000000", "barColor":"#000000", "eligibility":{"storeSegment":["fa6a3ee8-3936-4663-81cc-821ccd80007c"]}, "header":{}, "id":5733, "images":{"active":{"height":96, "hidePadding":false, "id":"86c4ac36-af76-4795-abc8-0f52eedc13cd", "lottiePath":null, "mediaType":"IMAGE", "name":"Property 1=Gourmet.png", "path":"inventory/banner/29ca7e12-8741-4b05-9b57-4044248ae34f.png", "relativePath":null, "videoPath":"", "width":96}}, "inactiveIcon":{"color":"#FFFFFF", "height":100, "path":"inventory/banner/d55371fb-3d47-4aaf-8ac0-228a81fd2398.png", "width":100}, "inactiveTitleColor":"#000000", "isUnserviceable":false, "itemGradient":{"firstColor":"#076B4F", "secondColor":"#076B4F"}, "layoutId":32087, "pageType":"PAGE_IN_PAGE", "tabMeta":null, "title":"Gourmet", "viewMeta":{"border":{"radius":12}, "containerPadding":[10, 10, 10, 10], "enableTabIconAnimation":false, "imageSize":28, "noOfTabs":5, "padding":[0, 0, 0, 0], "tabSelectedColor":"", "tabUnselectedColor":"", "textAlign":"center", "titleMarginTop":4, "titleNumberOfLines":2}}]}, "experiments":null, "order":1, "viewMeta":{"background":{}, "border":{"bottomLeftRadius":0, "bottomRightRadius":0, "color":"#FFFFFF", "radius":0, "topLeftRadius":0, "topRightRadius":0, "width":0}, "divider":{}, "isSticky":true, "numberOfColumns":null, "padding":[0, 0, 0, 0], "timer":{}}, "widgetId":59198, "widgetMeta":{}, "widgetName":"Multitab_V1_Widget", "widgetType":"MULTITAB_V1_WIDGET"}], "secondaryWidgets":{"widgets":[]}, "topNavBarWidget":{}}, "isE2EAdsEnabled":false, "isEmiEnabled":true, "isListsEnabled":true, "isScheduleDeliveryEnabled":true, "isYfpEnabled":true, "isZeptoThreeEnabled":true, "lastWidgetId":74804, "nextPageParams":{"check_for_fallback_layout":true, "eta_raining":false, "is_continuous_feed":false, "last_widget_id":74804, "page_number":1}, "pageID":"HOME", "pageMeta":{"actions":{}, "floatingAction":{"actionType":"DEEPLINK_NAVIGATION", "deeplinkUrl":"https://shop.zeptonow.com/Checkout", "id":"CART", "isShowCartValue":false, "widgetMeta":{"bachatItemCount":{"style":{"color":"#ffffffbf"}, "text":"", "variant":"Body_B12_Medium"}, "bachatLeftIcon":{"height":18, "hidePadding":false, "id":"3376652d-d16d-4327-a916-9723ebc6c0c3", "lottiePath":null, "mediaType":"IMAGE", "name":"cart-icon.svg", "path":"app/svg/d5658371-64a9-413e-a870-ac358b88f10a.svg", "relativePath":null, "videoPath":"", "width":18}, "bachatTitle":{"style":{"color":"#FFFFFF"}, "text":"Cart", "variant":"Body_B14_Bold"}, "bgColor":{"BACHAT":"#F9105E", "SUPER_SAVER":"#067031", "ZEPTO_NOW":"#F9105E"}, "cartBgColor":{"SUPER_SAVER":"#1A7B41", "ZEPTO_NOW":"#DB0E53"}, "itemCount":{"style":{"color":"#FFFFFF"}, "text":"", "variant":"body4"}, "leftIcon":{"height":36, "hidePadding":false, "id":"3376652d-d16d-4327-a916-9723ebc6c0c3", "lottiePath":null, "mediaType":"IMAGE", "name":"CartIcon (1).svg", "path":"inventory/banner/94822682-8804-489c-8310-c259de97a222.svg", "relativePath":null, "videoPath":"", "width":36}, "price":{"style":{"color":"#FFFFFF"}, "text":"", "variant":"body4"}, "rightIcon":{"height":24, "hidePadding":false, "id":"fb84df67-1ee7-4fcb-a57b-0b3c480482fe", "lottiePath":null, "mediaType":"IMAGE", "name":"chevron-right (1).svg", "path":"inventory/banner/4b5b80ab-e3d0-49a1-8101-86d57ce79003.svg", "relativePath":null, "videoPath":"", "width":24}, "title":{"style":{"color":"#FFFFFF"}, "text":"View Cart", "variant":"cta2"}}}, "layoutActions":["5a8b8b96-7f33-4a48-bedb-4778e6393255", "eb665c53-4bed-47fe-a0b9-0755bf4fc6ac", "fb3d6848-a9e8-4d66-938a-01ea26a3fc9a", "b2c5667b-53d2-43df-a78a-06fe3abc8725", "ce5e23ed-bc24-426e-a835-0df45301ba7e", "511e1736-2914-4a75-859f-efa77d293020", "32307182-8cb1-4c41-9270-4db0cdf5694c", "1fd0cc36-42a4-4e2c-a9c1-8f6f8dd2b737", "90644e25-c6a5-465b-98ac-3350291dd406", "a0b59421-7581-4a82-91b4-2dce4b67b53d", "9d3a2360-8469-41d5-b773-e0b899a87b30", "e6ef7ae3-e4b2-48b8-b272-188cac6672d4", "cdc53b47-e801-4611-83d8-a610c08efc93", "e2b45e7b-81ff-46c5-a6aa-106cad5cfaa7", "c7f0a7bd-a52e-4e80-9ef1-655dba34a9bc", "0ec684fc-5bc4-48fb-af8c-bb2fe9e494f7", "b0ac9d09-39f1-4f6f-a3ee-29cfb3e35546", "148dad8f-9ff8-482e-9f30-ddb8454a8672", "b2b79eee-50b6-43d5-8efd-046ae05cb5d5", "9140c86f-c531-4cc9-ad2d-3a1084b8226e", "93b256da-f537-4a1f-8027-bbf4a0af6796", "2d687e2f-3bed-4b23-bbc8-15da02221ac3", "50681e2e-65ec-4a25-b591-b709a05f1ff2", "aa6a2466-89ea-4fd6-916e-cd5f0b83a825", "385194c7-231e-45a4-a633-77bc6f090765", "75899adb-904c-42f8-a4ab-e0672f60a11c", "15c7dbd8-445a-4f74-b32d-16f64f62d39e", "186fd390-723c-41ec-9466-20e15da4721c", "58671c86-c906-4ef0-9fc3-05120f392417", "6f3b6dc2-2321-4d5e-b803-d935c33cb392", "bed29991-deed-41f5-966e-f79e1f5b94e7", "033349a8-c32a-4f8e-b9fe-ee1f74ee42cd", "d3684a12-71fd-4c91-b1fe-fcf256e5d36e", "05005f86-7f2e-4464-8827-8c95c70100a9", "8260ffd1-dd4f-47a3-a9cc-284f1dd6d94b", "66b46ccd-adb3-4c9e-bc4d-859c6b34e777"], "onPageLoadActions":null, "searchPromptValues":{"data":["Rakhi", "Milk", "Face Wash", "GRWM", "Earrings", "Toys", "Earphones", "Chocolate", "Ice Cream", "Chicken", "Medicines", "Multivitamins"]}, "widgets":{"actionButton":{"action":null, "campaignName":"Fab Button", "data":{"action":{"actionMeta":{"layoutId":100000532, "preloaded":true}, "actionType":"SHOW_WIDGET_MODAL"}, "icon":{"height":284, "id":"ef45a5da-2d4c-460d-a761-87b16d483ac4", "mediaType":"IMAGE", "path":"inventory/banner/98c3be7f-1c62-4a94-acc6-fe2a108a36f2.png", "width":284}, "items":null, "title":""}, "experiments":{}, "order":3, "viewMeta":{"background":{}, "border":{"bottomLeftRadius":0, "bottomRightRadius":0, "color":"#FFFFFF", "radius":0, "topLeftRadius":0, "topRightRadius":0, "width":0}, "divider":{}, "numberOfColumns":null, "padding":[0, 0, 2, 0], "spacerHeight":10, "timer":{}}, "widgetFooter":{"ctaButton":{}, "viewMeta":{"numberOfColumns":null, "padding":[0, 0, 0, 0]}}, "widgetId":74804, "widgetMeta":{"containerHorizontalPadding":8, "iconWidth":55, "width":60}, "widgetName":"FLOATING_ACTION_BUTTON_EDLP", "widgetType":"FLOATING_ACTION_BUTTON"}}}, "pageReloadTime":900000, "selectedLayoutId":32704, "selectedTabId":4526, "smartBasketAvailable":true, "widgets":[{"action":null, "data":{}, "viewMeta":{"numberOfColumns":null, "padding":[0, 0, 0, 0], "spacerHeight":1}, "widgetId":0, "widgetKey":"3c533069-be99-4b98-b9f2-adc5a09322db", "widgetName":"SPACER_BOTTOM_EMPTY", "widgetType":"SPACER"}]}, "unserviceableDetails":null, "externalVendorServiceabilityInfo":null, "festivalUITheme":"NOTHEME", "datasource":"LS", "passDetails":{}, "showWalletIconOnHeader":true, "nextPageParams":null, "storeServiceableResponseV2":[{"serviceable":true, "storeId":"b1403534-cd6b-49d0-a7cd-ce20e6497768", "storeConstruct":"PRIMARY_STORE", "isNightlyStore":false}, {"serviceable":true, "storeId":"843e630a-7896-462d-b7cf-712140483ed3", "storeConstruct":"SECONDARY_STORE", "isNightlyStore":false}], "isEntryPageEnabled":false, "marketplaceType":"SUPER_SAVER", "lmsEnabled":true, "topNavBadge":null, "isPdpV2Enabled":true, "showBacchatInAppNudges":true, "storeDetailsResponse":{"city":{"country":"India", "name":"Bengaluru", "state":"Karnataka"}, "cityId":"8ed26cb7-eb7d-4b7b-8d8c-3e93d5855bdd", "closeTime":"20:30:00", "id":"b1403534-cd6b-49d0-a7cd-ce20e6497768", "initiateSdkNewFlow":true, "isActive":true, "isFullNightDeliveryEnabled":false, "isLive":true, "isOnline":true, "issueAtStore":false, "name":"BLR-RICHMOND TOWN", "openTime":"00:30:00", "phase":"LIVE", "raining":false, "servicableGeofence":[], "standStillMode":false, "takingOrders":true, "type":"RETAIL_STORE"}, "isCafeLive":false, "preloadDeeplinks":[], "compressedDebugInfo":"AgR7fQ==", "storeServiceableInfo":{"storeServiceability":{"data":{"843e630a-7896-462d-b7cf-712140483ed3":{"cost":12841, "type":"SECONDARY_STORE"}, "b1403534-cd6b-49d0-a7cd-ce20e6497768":{"type":"PRIMARY_STORE"}}, "version":"v1"}, "storeServiceabilityView":{"843e630a-7896-462d-b7cf-712140483ed3":{"deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "etaInMinutes":0, "isDeliverable":false, "isNightlyStore":false, "serviceable":true, "storeConstruct":"SECONDARY_STORE"}, "b1403534-cd6b-49d0-a7cd-ce20e6497768":{"deliverableSubtype":"CLOSED_SURGE_IN_DEMAND", "etaInMinutes":0, "isDeliverable":false, "isNightlyStore":false, "serviceable":true, "storeConstruct":"PRIMARY_STORE"}}}, "eligibleMarketplaces":[{"name":"SUPER_SAVER"}], "defaultMarketplace":"ZEPTO_NOW", "appConfig":{"categoryIdsForPdpFallback":["f6e7553c-7720-40b2-8de3-9a6a10f285dc", "27b4b613-108e-4c77-91e6-b839d542385b"], "featureToCategoryIdForPdpFallback":{"aspectRatio3x4":["adab2f81-7140-4fe9-b8cf-3d809f40e38a"]}, "eligibleFeatures":[]}, "isZcoinEnabled":false, "mismatchTriggers":{"checkMovMismatch":false}}
+
+==============================================================================
+2. search — keyword at a store  (the public data)
+==============================================================================
+POST https://bff-gateway.zepto.com/user-search-service/api/v3/search
+
+REQUEST HEADERS
+  accept: application/json, text/plain, */*
+  app_sub_platform: WEB
+  app_version: 16.23.1
+  appversion: 16.23.1
+  auth_from_cookie: true
+  auth_revamp_flow: v2
+  compatible_components: EXTERNAL_COUPONS,BUNDLE,MULTI_SELLER_ENABLED,ROLLUPS,SCHEDULED_DELIVERY,HOMEPAGE_V2,NEW_ETA_BANNER,VERTICAL_FEED_PRODUCT_GRID,AUTOSUGGESTION_PAGE_ENABLED,AUTOSUGGESTION_PIP,AUTOSUGGESTION_AD_PIP,BOTTOM_NAV_FULL_ICON,COUPON_WIDGET_CART_REVAMP,DELIVERY_UPSELLING_WIDGET,MARKETPLACE_CATEGORY_GRID,NO_PLATFORM_CHECK_ENABLED_V2,SUPER_SAVER:1,SUPERSTORE_V1,PROMO_CASH:0,24X7_ENABLED_V1,TABBED_CAROUSEL_V2,HP_V4_FEED,WIDGET_BASED_ETA,PC_REVAMP_1,NO_COST_EMI_V1,PRE_SEARCH,ITEMISATION_ENABLED,ZEPTO_PASS:5,BACHAT_FOR_ALL,SAMPLING_UPSELL_CAMPAIGN,DISCOUNTED_ADDONS_ENABLED,UPSELL_COUPON_SS:0,ENABLE_FLOATING_CART_BUTTON,FASHION_REVAMP,WIDGET_RESTRUCTURE,MULTITAB_V2,NEW_ROLLUPS_ENABLED,RERANKING_QCL_RELATED_PRODUCTS,PLP_ON_SEARCH,PAAN_BANNER_WIDGETIZED,ROLLUPS_UOM,DYNAMIC_FILTERS,PHARMA_ENABLED,AUTOSUGGESTION_RECIPE_PIP,SEARCH_FILTERS_V1,QUERY_DESCRIPTION_WIDGET,MEDS_WITH_SIMILAR_SALT_WIDGET,SEARCH_RELOOK,FILTER_ATTRIBUTES,LMS_BROWSE,SEARCH_PRODUCT_GRID_V2,FASHION_REVAMP,L3_UNDERSTANDING_LAYOUT,NEW_BILL_INFO,RE_PROMISE_ETA_ORDER_SCREEN_ENABLED,SUPERSTORE_V1,MANUALLY_APPLIED_DELIVERY_FEE_RECEIVABLE,MARKETPLACE_REPLACEMENT,ZEPTO_PASS:5,CART_REDESIGN_ENABLED,SHIPMENT_WIDGETIZATION_ENABLED,TABBED_CAROUSEL_V2,24X7_ENABLED_V1,PROMO_CASH:0,HOMEPAGE_V2,SUPER_SAVER:1,NO_PLATFORM_CHECK_ENABLED_V2,HP_V4_FEED,GIFT_CARD,SCLP_ADD_MONEY,GIFTING_ENABLED,OFSE,WIDGET_BASED_ETA,PC_REVAMP_1,NEW_ETA_BANNER,NO_COST_EMI_V1,ITEMISATION_ENABLED,SWAP_AND_SAVE_ON_CART,WIDGET_RESTRUCTURE,PRICING_CAMPAIGN_ID,BACHAT_FOR_ALL,TABBED_CAROUSEL_V3,MULTITAB_V2,VERTICAL_FEED_PRODUCT_GRID,CART_LMS:2,SAMPLING_UPSELL_CAMPAIGN,DISCOUNTED_ADDONS_ENABLED,UPSELL_COUPON_SS:0,SIZE_EXCHANGE_ENABLED,ENABLE_FLOATING_CART_BUTTON,SAMPLING_V3,HYBRID_CAMPAIGN,
+  content-type: application/json
+  device_id: 77b1d99f-7cbd-4563-b2e8-855163344097
+  deviceid: 77b1d99f-7cbd-4563-b2e8-855163344097
+  marketplace_type: SUPER_SAVER
+  platform: WEB
+  referer: https://www.zepto.com/
+  request-signature: 8f081d77302aa636a33f2607bf9cd785bfe9daf696914fb6dd4d0c3dc54f8aeb
+  request_id: 8c2d4789-3333-4e7b-95f7-4b555c8885e2
+  requestid: 8c2d4789-3333-4e7b-95f7-4b555c8885e2
+  sec-ch-ua: "Chromium";v="148", "HeadlessChrome";v="148", "Not/A)Brand";v="99"
+  sec-ch-ua-mobile: ?0
+  sec-ch-ua-platform: "Windows"
+  session_id: dc5fa4c7-54eb-481f-9e83-7895530a8f93
+  sessionid: dc5fa4c7-54eb-481f-9e83-7895530a8f93
+  source: DIRECT
+  store_etas: {"b1403534-cd6b-49d0-a7cd-ce20e6497768": -1}
+  store_id: b1403534-cd6b-49d0-a7cd-ce20e6497768
+  store_ids: b1403534-cd6b-49d0-a7cd-ce20e6497768
+  storeid: b1403534-cd6b-49d0-a7cd-ce20e6497768
+  tenant: ZEPTO
+  user-agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36
+  x-csrf-secret: 3osBAHiHkiA
+  x-timezone: 42c451934ed70e34beacec7268dbacec9bbbc3a9ccd325f317e57412977a31dd
+  x-widget-id: 019f0925-0b55-7bed-8633-b0aa475bbf5a
+  x-without-bearer: true
+  x-xsrf-token: JK0h1YH7dUleAHQuX2TY4:OTEmMdD6tM_aKxSGRm0PGWWKN-c.jao5MC/qYJwz8QbUmy/aq3qqGotBpKEDnLTHR2Bitlg
+
+REQUEST BODY
+  {"query": "sourdough", "pageNumber": 0, "mode": "SHOW_ALL_RESULTS", "userSessionId": "dc5fa4c7-54eb-481f-9e83-7895530a8f93"}
+
+RESPONSE
+--------
+Captured 2026-08-05. HTTP 200. 256 KB, 12 widgets, 24 products.
+
+ENVELOPE (PRODUCT_GRID items replaced by a marker for readability)
+{
+ "layout": [
+  {
+   "widgetId": "TITLE_WIDGET",
+   "widgetName": "SEARCH_TITLE_WIDGET",
+   "data": {
+    "fetchMode": "local",
+    "resolver": {
+     "useLocal": false,
+     "type": "title",
+     "data": {
+      "items": [],
+      "title": "Showing results for \"sourdough\"",
+      "queryTitle": "",
+      "searchQuery": "sourdough",
+      "replacingTerm": "",
+      "searchKeyInTitle": "sourdough",
+      "queryId": null,
+      "tabIdStoreProductMap": {},
+      "subTitle": null
+     }
+    },
+    "endOfList": false
+   },
+   "viewMeta": {
+    "aspectRatio": 3.33,
+    "paddingTop": 1,
+    "paddingBottom": 1,
+    "paddingLeft": 12,
+    "paddingRight": 12,
+    "backgroundColor": "#FFFFFF",
+    "adContainer": {
+     "marginHorizontal": 0,
+     "overflow": "",
+     "borderRadius": 0,
+     "backgroundColor": "",
+     "paddingBottom": 0
+    },
+    "productsList": {
+     "paddingHorizontal": 0,
+     "marginBottom": 0,
+     "separator": 0
+    },
+    "adAsset": {},
+    "backgroundGradient": {
+     "start": {
+      "x": 0,
+      "y": 0
+     },
+     "end": {
+      "x": 0,
+      "y": 0
+     }
+    },
+    "borderWidth": 0,
+    "borderColor": "",
+    "highlightColor": "",
+    "titleStyle": null,
+    "itemSpacing": 0,
+    "cardStyle": null,
+    "curveIcon": null,
+    "curveIconV2": null,
+    "headerStyle": null,
+    "listStyle": null,
+    "padding": null,
+    "itemPadding": null,
+    "imagePadding": null,
+    "titleIconImage": null,
+    "bodyStyle": null,
+    "subTitleLeadingIconImage": {
+     "id": "",
+     "name": "",
+     "path": "",
+     "lottiePath": "",
+     "videoPath": "",
+     "mediaType": "",
+     "width": 0,
+     "height": 0,
+     "hidePadding": false
+    },
+    "titleLeadingIconImage": {
+     "id": "",
+     "name": "",
+     "path": "",
+     "lottiePath": "",
+     "videoPath": "",
+     "mediaType": "",
+     "width": 0,
+     "height": 0,
+     "hidePadding": false
+    },
+    "tag": {
+     "text": "",
+     "variant": "",
+     "style": {
+      "color": "",
+      "paddingHorizontal": 0,
+      "paddingVertical": 0,
+      "borderWidth": 0,
+      "borderRadius": 0,
+      "borderColor": "",
+      "backgroundColor": "",
+      "lineHeight": 0
+     }
+    },
+    "card": {
+     "borderWidth": 0,
+     "borderRadius": 0,
+     "borderColor": "",
+     "backgroundColor": "",
+     "backgroundMode": "",
+     "firstColor": "",
+     "secondColor": "",
+     "padding": null
+    },
+    "overlayIconStyles": {},
+    "imageContainerStyle": {},
+    "productIconStyles": {},
+    "text": {
+     "unselectedColor": "",
+     "selectedColor": "",
+     "selectedVariant": "",
+     "unselectedVariant": "",
+     "selectedBackgroundColor": "",
+     "unselectedBackgroundColor": "",
+     "textSize": 0
+    }
+   },
+   "actions": null,
+   "analyticsMeta": {
+    "meta": {}
+   },
+   "widgetType": ""
+  },
+  {
+   "widgetId": "PRODUCT_GRID",
+   "widgetName": "SEARCHED_PRODUCTS_0",
+   "data": {
+    "fetchMode": "local",
+    "resolver": {
+     "useLocal": false,
+     "type": "product_grid",
+     "data": {
+      "items": [
+       "<<ITEMS \u2014 see below>>"
+      ],
+      "title": null,
+      "queryId": null,
+      "tabIdStoreProductMap": {},
+      "subTitle": null
+     }
+    },
+    "endOfList": false
+   },
+   "productGridViewMeta": {
+    "productCardVariant": "V3_SMALL_ABS_DISCOUNT",
+    "productCardVariantV2": "BASIC__S",
+    "numberOfColumns": 3,
+    "border": {
+     "width": 1,
+     "backgroundColor": "#F3F8FF"
+    },
+    "addButtonVariant": "variant_3",
+    "padding": [
+     12,
+     12,
+     4,
+     12
+    ],
+    "columnGap": 6,
+    "tagsScaleFactor": {
+     "P1": 0.83
+    },
+    "background": {}
+   },
+   "actions": null,
+   "analyticsMeta": {
+    "meta": {}
+   },
+   "widgetType": ""
+  },
+  {
+   "widgetId": "PRODUCT_GRID",
+   "widgetName": "SEARCHED_PRODUCTS_3",
+   "data": {
+    "fetchMode": "local",
+    "resolver": {
+     "useLocal": false,
+     "type": "product_grid",
+     "data": {
+      "items": [
+       "<<ITEMS \u2014 see below>>"
+      ],
+      "title": null,
+      "queryId": null,
+      "tabIdStoreProductMap": {},
+      "subTitle": null
+     }
+    },
+    "endOfList": false
+   },
+   "productGridViewMeta": {
+    "productCardVariant": "V3_SMALL_ABS_DISCOUNT",
+    "productCardVariantV2": "BASIC__S",
+    "numberOfColumns": 3,
+    "border": {
+     "width": 1,
+     "backgroundColor": "#F3F8FF"
+    },
+    "addButtonVariant": "variant_3",
+    "padding": [
+     12,
+     12,
+     4,
+     12
+    ],
+    "columnGap": 6,
+    "tagsScaleFactor": {
+     "P1": 0.83
+    },
+    "background": {}
+   },
+   "actions": null,
+   "analyticsMeta": {
+    "meta": {}
+   },
+   "widgetType": ""
+  },
+  {
+   "widgetId": "PRODUCT_GRID",
+   "widgetName": "SEARCHED_PRODUCTS_6",
+   "data": {
+    "fetchMode": "local",
+    "resolver": {
+     "useLocal": false,
+     "type": "product_grid",
+     "data": {
+      "items": [
+       "<<ITEMS \u2014 see below>>"
+      ],
+      "title": null,
+      "queryId": null,
+      "tabIdStoreProductMap": {},
+      "subTitle": null
+     }
+    },
+    "endOfList": false
+   },
+   "productGridViewMeta": {
+    "productCardVariant": "V3_SMALL_ABS_DISCOUNT",
+    "productCardVariantV2": "BASIC__S",
+    "numberOfColumns": 3,
+    "border": {
+     "width": 1,
+     "backgroundColor": "#F3F8FF"
+    },
+    "addButtonVariant": "variant_3",
+    "padding": [
+     12,
+     12,
+     4,
+     12
+    ],
+    "columnGap": 6,
+    "tagsScaleFactor": {
+     "P1": 0.83
+    },
+    "background": {}
+   },
+   "actions": null,
+   "analyticsMeta": {
+    "meta": {}
+   },
+   "widgetType": ""
+  },
+  {
+   "widgetId": "PRODUCT_GRID",
+   "widgetName": "SEARCHED_PRODUCTS_9",
+   "data": {
+    "fetchMode": "local",
+    "resolver": {
+     "useLocal": false,
+     "type": "product_grid",
+     "data": {
+      "items": [
+       "<<ITEMS \u2014 see below>>"
+      ],
+      "title": null,
+      "queryId": null,
+      "tabIdStoreProductMap": {},
+      "subTitle": null
+     }
+    },
+    "endOfList": false
+   },
+   "productGridViewMeta": {
+    "productCardVariant": "V3_SMALL_ABS_DISCOUNT",
+    "pr
+
+------------------------------------------------------------------------------
+TWO COMPLETE ITEMS from layout[].data.resolver.data.items[]
+------------------------------------------------------------------------------
+{
+ "productResponse": {
+  "recommendationId": "",
+  "objectId": "a3d258b5-ef1c-487b-bec5-949ca9089f08",
+  "id": "a3d258b5-ef1c-487b-bec5-949ca9089f08",
+  "storeId": "b1403534-cd6b-49d0-a7cd-ce20e6497768",
+  "product": {
+   "brand": "Brik Oven",
+   "brandId": "b9cea5fc-da5f-4045-9b67-c07831733746",
+   "countryOfOrigin": "India",
+   "description": [
+    "Brik Oven Artisinal Sourdough Bread"
+   ],
+   "discountApplicable": true,
+   "howToUse": null,
+   "id": "06d0fc37-fa97-430c-8d3f-07a808bb5920",
+   "imported": false,
+   "ingredients": null,
+   "l3CategoryIds": [
+    "33e2036f-99a5-4799-8c1c-4787aa5f0443"
+   ],
+   "manufacturerAddress": null,
+   "manufacturerName": null,
+   "minimumRequiredAge": 0,
+   "name": "Brik Oven Artisinal Sourdough Bread",
+   "pharmaceuticalInfo": {
+    "isLicensed": false,
+    "composition": "",
+    "allergy": "",
+    "usage": "",
+    "disclaimer": ""
+   },
+   "prioritisedSearchKeywords": null,
+   "searchKeywords": null,
+   "primarySubcategory": "30566884-bbd7-49fa-8c3f-43c90a571c9e",
+   "productType": "\u0000"
+  },
+  "productVariant": {
+   "formattedPacksize": "1 pack (400 g)",
+   "fssaiLicense": "",
+   "id": "5e4a9b9b-26b1-4f21-883b-43fa72837ba1",
+   "images": [
+    {
+     "height": 1200,
+     "hidePadding": true,
+     "id": "9543d730-5467-4123-8018-d1d93e8279e1",
+     "lottiePath": null,
+     "mediaType": "IMAGE",
+     "name": "023faf2a-45d1-4a82-a2f0-2de45b29b408.jpeg",
+     "path": "cms/product_variant/023faf2a-45d1-4a82-a2f0-2de45b29b408.jpeg",
+     "videoPath": null,
+     "width": 1200,
+     "sizeInBytes": 0,
+     "metaData": {
+      "aspectRatio": null,
+      "resizeMode": "contain"
+     }
+    }
+   ],
+   "maxAllowedQuantity": 50,
+   "meta": {
+    "query_matching_bucket": "",
+    "searchFeedBucket": null,
+    "isSemantic": false,
+    "vip_deal_product_tile_state": 0,
+    "is_vip_deal_product": false,
+    "ads_deboosting_old_position": 0,
+    "ads_deboosting_new_position": 0,
+    "ads_flywheel_old_position": 0,
+    "ads_flywheel_new_position": 0,
+    "is_fly_wheel_ad": false,
+    "source_tag": ""
+   },
+   "mrp": 11000,
+   "packagingType": null,
+   "packsize": 400,
+   "pharmaceuticalInfo": null,
+   "quantity": 6,
+   "shelfLifeInHours": "120",
+   "showOnlyInBundles": false,
+   "storageInstructions": null,
+   "unitOfMeasure": "GRAM",
+   "unlisted": false,
+   "weightInGms": 400,
+   "productId": "06d0fc37-fa97-430c-8d3f-07a808bb5920",
+   "isActive": true,
+   "priceSegmentType": "",
+   "widthInMm": 400,
+   "cuisineType": "",
+   "productTheme": "",
+   "l4Attributes": {
+    "drugType": null,
+    "prescriptionRequired": null
+   },
+   "ratingSummary": {
+    "averageRating": 4.4,
+    "totalRatings": 686
+   }
+  },
+  "discountedSellingPrice": 10300,
+  "discountPercent": 6,
+  "discountAmount": 700,
+  "storeProductDiscountId": "",
+  "availableQuantity": 6,
+  "quantity": 6,
+  "allocatedQuantity": 0,
+  "stockoutThresholdQuantity": 0,
+  "outOfStock": false,
+  "mrp": 11000,
+  "productType": "SELLABLESKU",
+  "priority": 0,
+  "cached": false,
+  "isNewProduct": false,
+  "sellingPrice": 10300,
+  "isActive": true,
+  "isBestOffer": false,
+  "isPrimary": true,
+  "rollUpIds": null,
+  "meta": {
+   "tags": [
+    {
+     "type": ""
+    }
+   ],
+   "tagsV2": {
+    "P0": {
+     "attachment": {
+      "height": 36,
+      "hidePadding": false,
+      "id": "7f9897d0-a247-4079-af59-da82a6ae7592",
+      "lottiePath": "",
+      "mediaType": "IMAGE",
+      "name": "P0 - Discount.png",
+      "path": "inventory/product/a61dd64f-be76-4ef6-8df8-802e086ecf56-P0_-_Discount.png",
+      "videoPath": "",
+      "width": 88,
+      "sizeInBytes": 0,
+      "metaData": null
+     },
+     "id": "479ac2d1-b3e0-494c-bda4-300d124c4b88",
+     "pdpAttachment": {
+      "height": 36,
+      "hidePadding": false,
+      "id": "7f9897d0-a247-4079-af59-da82a6ae7592",
+      "lottiePath": "",
+      "mediaType": "IMAGE",
+      "name": "P0 - Discount.png",
+      "path": "inventory/product/a61dd64f-be76-4ef6-8df8-802e086ecf56-P0_-_Discount.png",
+      "videoPath": "",
+      "width": 88,
+      "sizeInBytes": 0,
+      "metaData": null
+     },
+     "position": "P0",
+     "tagName": "Product Discount",
+     "tagText": "",
+     "tagType": "DISCOUNT"
+    }
+   },
+   "query_matching_bucket": "Span",
+   "debug_platform_query_matching_bucket": "span",
+   "searchFeedBucket": null,
+   "isSemantic": false,
+   "vip_deal_product_tile_state": 0,
+   "is_vip_deal_product": false,
+   "ads_deboosting_old_position": 0,
+   "ads_deboosting_new_position": 0,
+   "ads_flywheel_old_position": 0,
+   "ads_flywheel_new_position": 0,
+   "is_fly_wheel_ad": false,
+   "atlasScore": 999,
+   "semanticScore": 999,
+   "source_tag": ""
+  },
+  "pricingCampaigns": null,
+  "primaryCategoryName": "Dairy, Bread & Eggs",
+  "primaryCategoryId": "4b938e02-7bde-4479-bc0a-2b54cb6bd5f5",
+  "zeptoPassPrice": 0,
+  "zeptoPassPriceDiscountPercent": 0,
+  "zeptoPassPricingCampaigns": [],
+  "zeptoPassPriceDiscountPercentDifference": 0,
+  "uclId": "",
+  "valueBasedDiscount": {
+   "passDiscountTier": null,
+   "nonPassDiscountTier": "TIER_2",
+   "passTotalDiscount": null,
+   "nonPassTotalDiscount": 700
+  },
+  "l3CategoriesDetail": null,
+  "itemVariant": null,
+  "properties": null,
+  "rankingParams": {
+   "l30RPI": 0,
+   "l30ORD": 0
+  },
+  "searchFeedBucket": "",
+  "searchFeedOrder": 0,
+  "superSaverSellingPrice": 10300,
+  "productCardTags": {
+   "slot3": [
+    {
+     "id": "b77b07cb-73ee-4050-a7b2-5484c9e7966b",
+     "tagType": "DISCOUNT",
+     "tagName": "Product Discount",
+     "position": "P0",
+     "attachment": {
+      "height": 36,
+      "hidePadding": false,
+      "id": "e85a9963-d784-4e71-aeb2-184808f18ba7",
+      "lottiePath": "",
+      "mediaType": "IMAGE",
+      "name": "P0 - Discount.png",
+      "path": "inventory/product/1f09407a-3f51-4772-9860-197d23fbd8cd-P0_-_Discount.png",
+      "videoPath": "",
+      "width": 88,
+      "sizeInBytes": 0,
+      "metaData": null
+     }
+    },
+    {
+     "id": "b07c7a37-fe4c-419b-b464-ccfe9b3a3433",
+     "tagType": "ATTRIBUTE",
+     "tagName": "Premium",
+     "position": "P2"
+    }
+   ]
+  },
+  "zeptoPassPricePerUom": null,
+  "showSuperSaverPrice": false,
+  "categories": null,
+  "subCategories": null,
+  "brands": null,
+  "showDailyBogoStrip": null,
+  "isWishlistEnabled": true,
+  "addOnInfo": null,
+  "action": null,
+  "itemisationStockInfo": null,
+  "bottomsheetType": "v1",
+  "isCafe": false,
+  "pricingData": {
+   "pricingEntityPrices": [
+    {
+     "pricingEntity": "SUPER_SAVER",
+     "discountedSellingPrice": 10300
+    }
+   ]
+  },
+  "atcActions": null,
+  "greyStripEnabled": false,
+  "colour": "",
+  "material_type": "",
+  "design_type": "",
+  "size": "",
+  "capacity": "",
+  "bundleItems": null,
+  "rollUpVariantsDetails": null,
+  "brandDeliveryOfferDetails": null,
+  "primarySubcategoryName": "",
+  "consumerL3CategoryNames": null,
+  "primarySubcategoryId": "",
+  "l4Attributes": null,
+  "price": {
+   "percentageDifference": 0,
+   "mrp": 0,
+   "sp": 0
+  },
+  "cachedReRankingParams": {
+   "AtlasRecallRank": 0,
+   "Rank25Variant": 0,
+   "ATCPI": 0,
+   "IsOrganicBucket": false,
+   "OrganicScore": 0
+  },
+  "promos": null,
+  "greyStripOverridden": false
+ },
+ "info": null,
+ "position": 0,
+ "index": 0
+}
+
+{
+ "productResponse": {
+  "recommendationId": "",
+  "objectId": "049e6628-0e64-49e7-99ea-ff50b3b7406a",
+  "id": "049e6628-0e64-49e7-99ea-ff50b3b7406a",
+  "storeId": "b1403534-cd6b-49d0-a7cd-ce20e6497768",
+  "product": {
+   "brand": "Brik Oven",
+   "brandId": "b9cea5fc-da5f-4045-9b67-c07831733746",
+   "countryOfOrigin": "India",
+   "description": [
+    "Brik Oven Whole Wheat Sourdough Bread"
+   ],
+   "discountApplicable": true,
+   "howToUse": null,
+   "id": "0e8e3c72-a70e-44c5-8987-1f16520b41ed",
+   "imported": false,
+   "ingredients": null,
+   "l3CategoryIds": [
+    "33e2036f-99a5-4799-8c1c-4787aa5f0443"
+   ],
+   "manufacturerAddress": null,
+   "manufacturerName": null,
+   "minimumRequiredAge": 0,
+   "name": "Brik Oven Whole Wheat Sourdough Bread",
+   "pharmaceuticalInfo": {
+    "isLicensed": false,
+    "composition": "",
+    "allergy": "",
+    "usage": "",
+    "disclaimer": ""
+   },
+   "prioritisedSearchKeywords": null,
+   "searchKeywords": null,
+   "primarySubcategory": "30566884-bbd7-49fa-8c3f-43c90a571c9e",
+   "productType": "\u0000"
+  },
+  "productVariant": {
+   "formattedPacksize": "1 pack (400 g)",
+   "fssaiLicense": "",
+   "id": "49665e03-a09c-4a51-b5e0-cda18d152544",
+   "images": [
+    {
+     "height": 1200,
+     "hidePadding": true,
+     "id": "d76b25c5-7df4-4e41-ad11-50b1247de1f5",
+     "lottiePath": null,
+     "mediaType": "IMAGE",
+     "name": "fd2c3957-e567-4eba-a4db-41175bff3599.jpeg",
+     "path": "cms/product_variant/fd2c3957-e567-4eba-a4db-41175bff3599.jpeg",
+     "videoPath": null,
+     "width": 1200,
+     "sizeInBytes": 0,
+     "metaData": {
+      "aspectRatio": null,
+      "resizeMode": "contain"
+     }
+    }
+   ],
+   "maxAllowedQuantity": 50,
+   "meta": {
+    "query_matching_bucket": "",
+    "searchFeedBucket": null,
+    "isSemantic": false,
+    "vip_deal_product_tile_state": 0,
+    "is_vip_deal_product": false,
+    "ads_deboosting_old_position": 0,
+    "ads_deboosting_new_position": 0,
+    "ads_flywheel_old_position": 0,
+    "ads_flywheel_new_position": 0,
+    "is_fly_wheel_ad": false,
+    "source_tag": ""
+   },
+   "mrp": 11000,
+   "packagingType": null,
+   "packsize": 400,
+   "pharmaceuticalInfo": null,
+   "quantity": 6,
+   "shelfLifeInHours": "120",
+   "showOnlyInBundles": false,
+   "storageInstructions": null,
+   "unitOfMeasure": "GRAM",
+   "unlisted": false,
+   "weightInGms": 400,
+   "productId": "0e8e3c72-a70e-44c5-8987-1f16520b41ed",
+   "isActive": true,
+   "priceSegmentType": "",
+   "widthInMm": 400,
+   "cuisineType": "",
+   "productTheme": "",
+   "l4Attributes": {
+    "drugType": null,
+    "prescriptionRequired": null
+   },
+   "ratingSummary": {
+    "averageRating": 4.3,
+    "totalRatings": 1028
+   }
+  },
+  "discountedSellingPrice": 10300,
+  "discountPercent": 6,
+  "discountAmount": 700,
+  "storeProductDiscountId": "",
+  "availableQuantity": 6,
+  "quantity": 6,
+  "allocatedQuantity": 0,
+  "stockoutThresholdQuantity": 0,
+  "outOfStock": false,
+  "mrp": 11000,
+  "productType": "SELLABLESKU",
+  "priority": 0,
+  "cached": false,
+  "isNewProduct": false,
+  "sellingPrice": 10300,
+  "isActive": true,
+  "isBestOffer": false,
+  "isPrimary": true,
+  "rollUpIds": null,
+  "meta": {
+   "tags": [
+    {
+     "type": ""
+    }
+   ],
+   "tagsV2": {
+    "P0": {
+     "attachment": {
+      "height": 36,
+      "hidePadding": false,
+      "id": "7f9897d0-a247-4079-af59-da82a6ae7592",
+      "lottiePath": "",
+      "mediaType": "IMAGE",
+      "name": "P0 - Discount.png",
+      "path": "inventory/product/a61dd64f-be76-4ef6-8df8-802e086ecf56-P0_-_Discount.png",
+      "videoPath": "",
+      "width": 88,
+      "sizeInBytes": 0,
+      "metaData": null
+     },
+     "id": "479ac2d1-b3e0-494c-bda4-300d124c4b88",
+     "pdpAttachment": {
+      "height": 36,
+      "hidePadding": false,
+      "id": "7f9897d0-a247-4079-af59-da82a6ae7592",
+      "lottiePath": "",
+      "mediaType": "IMAGE",
+      "name": "P0 - Discount.png",
+      "path": "inventory/product/a61dd64f-be76-4ef6-8df8-802e086ecf56-P0_-_Discount.png",
+      "videoPath": "",
+      "width": 88,
+      "sizeInBytes": 0,
+      "metaData": null
+     },
+     "position": "P0",
+     "tagName": "Product Discount",
+     "tagText": "",
+     "tagType": "DISCOUNT"
+    }
+   },
+   "query_matching_bucket": "Span",
+   "debug_platform_query_matching_bucket": "span",
+   "searchFeedBucket": null,
+   "isSemantic": false,
+   "vip_deal_product_tile_state": 0,
+   "is_vip_deal_product": false,
+   "ads_deboosting_old_position": 0,
+   "ads_deboosting_new_position": 0,
+   "ads_flywheel_old_position": 0,
+   "ads_flywheel_new_position": 0,
+   "is_fly_wheel_ad": false,
+   "atlasScore": 998,
+   "semanticScore": 998,
+   "source_tag": ""
+  },
+  "pricingCampaigns": null,
+  "primaryCategoryName": "Dairy, Bread & Eggs",
+  "primaryCategoryId": "4b938e02-7bde-4479-bc0a-2b54cb6bd5f5",
+  "zeptoPassPrice": 0,
+  "zeptoPassPriceDiscountPercent": 0,
+  "zeptoPassPricingCampaigns": [],
+  "zeptoPassPriceDiscountPercentDifference": 0,
+  "uclId": "",
+  "valueBasedDiscount": {
+   "passDiscountTier": null,
+   "nonPassDiscountTier": "TIER_2",
+   "passTotalDiscount": null,
+   "nonPassTotalDiscount": 700
+  },
+  "l3CategoriesDetail": null,
+  "itemVariant": null,
+  "properties": null,
+  "rankingParams": {
+   "l30RPI": 0,
+   "l30ORD": 0
+  },
+  "searchFeedBucket": "",
+  "searchFeedOrder": 0,
+  "superSaverSellingPrice": 10300,
+  "productCardTags": {
+   "slot3": [
+    {
+     "id": "b77b07cb-73ee-4050-a7b2-5484c9e7966b",
+     "tagType": "DISCOUNT",
+     "tagName": "Product Discount",
+     "position": "P0",
+     "attachment": {
+      "height": 36,
+      "hidePadding": false,
+      "id": "e85a9963-d784-4e71-aeb2-184808f18ba7",
+      "lottiePath": "",
+      "mediaType": "IMAGE",
+      "name": "P0 - Discount.png",
+      "path": "inventory/product/1f09407a-3f51-4772-9860-197d23fbd8cd-P0_-_Discount.png",
+      "videoPath": "",
+      "width": 88,
+      "sizeInBytes": 0,
+      "metaData": null
+     }
+    },
+    {
+     "id": "15b78794-5d30-4668-8ec6-b706654cc59c",
+     "tagType": "ATTRIBUTE",
+     "tagName": "Premium",
+     "position": "P2"
+    }
+   ]
+  },
+  "zeptoPassPricePerUom": null,
+  "showSuperSaverPrice": false,
+  "categories": null,
+  "subCategories": null,
+  "brands": null,
+  "showDailyBogoStrip": null,
+  "isWishlistEnabled": true,
+  "addOnInfo": null,
+  "action": null,
+  "itemisationStockInfo": null,
+  "bottomsheetType": "v1",
+  "isCafe": false,
+  "pricingData": {
+   "pricingEntityPrices": [
+    {
+     "pricingEntity": "SUPER_SAVER",
+     "discountedSellingPrice": 10300
+    }
+   ]
+  },
+  "atcActions": null,
+  "greyStripEnabled": false,
+  "colour": "",
+  "material_type": "",
+  "design_type": "",
+  "size": "",
+  "capacity": "",
+  "bundleItems": null,
+  "rollUpVariantsDetails": null,
+  "brandDeliveryOfferDetails": null,
+  "primarySubcategoryName": "",
+  "consumerL3CategoryNames": null,
+  "primarySubcategoryId": "",
+  "l4Attributes": null,
+  "price": {
+   "percentageDifference": 0,
+   "mrp": 0,
+   "sp": 0
+  },
+  "cachedReRankingParams": {
+   "AtlasRecallRank": 0,
+   "Rank25Variant": 0,
+   "ATCPI": 0,
+   "IsOrganicBucket": false,
+   "OrganicScore": 0
+  },
+  "promos": null,
+  "greyStripOverridden": false
+ },
+ "info": null,
+ "position": 1,
+ "index": 1
+}
+
+------------------------------------------------------------------------------
+NOTES
+------------------------------------------------------------------------------
+  position                 rank, 0-BASED (the scraper adds 1)
+  productVariant.mrp       PAISE. 11000 = Rs 110.00
+  discountedSellingPrice   PAISE
+  product.brand            explicit — own-vs-competitor is exact
+  formattedPacksize        '1 pack (400 g)' — parses with pack.py
+
+  layout is NULL, not [], on a page past the end of the results.
+  data.get('layout', []) therefore returns None and iterating it
+  raises. Use (data.get('layout') or []). This bug was reported as
+  a rate-limit block for two days — see docs/zepto_phase0_handover.md.
