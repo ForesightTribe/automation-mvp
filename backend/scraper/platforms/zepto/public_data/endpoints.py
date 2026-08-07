@@ -121,7 +121,12 @@ MAX_PAGES = 3
 #
 # HTTP 299 is Zepto's non-standard throttle signal. Treat it as a block, never as
 # an empty result — retrying into it prolongs the block.
-BLOCK_STATUSES = frozenset({299, 401, 403, 429})
+# 299 is Zepto's own non-standard throttle code. 202 is the subtler one: an
+# "Accepted" with no results, returned in clusters once the IP is tired. Treated
+# as a plain failure it is worse than a block — the worker does NOT back off, so
+# five workers hammer a throttled endpoint, fail in milliseconds, and burn through
+# the store list recording nothing. Observed doing exactly that across 14 stores.
+BLOCK_STATUSES = frozenset({202, 299, 401, 403, 429})
 
 SEARCH_GAP_S = 12.0        # between searches, per worker. 6s was tested and is
                            # SLOWER end to end: a hard block costs more than a
