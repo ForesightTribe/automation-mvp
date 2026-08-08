@@ -5,6 +5,7 @@ import { RankHeatmapCard } from "./components/RankHeatmapCard";
 import { TopCompetitorsCard } from "./components/TopCompetitorsCard";
 import { PricePositionCard } from "./components/PricePositionCard";
 import { FreshnessBadge } from "../../components/ui/FreshnessBadge";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * Competition — "how do I look on the shelf vs competitors?" The home for the
@@ -20,17 +21,11 @@ export const CompetitionPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div className="flex items-start justify-between gap-3">
-				<div>
-					<h1 className="font-display text-xl font-bold text-content">
-						Competition
-					</h1>
-					<p className="text-sm text-content-muted">
-						How often shoppers see you when they search, versus rival brands.
-					</p>
-				</div>
-				<FreshnessBadge at={matrix?.as_of} />
-			</div>
+			<PageHeader
+				title="Competition"
+				subtitle="How often shoppers see you when they search, versus rival brands."
+				actions={<FreshnessBadge at={matrix?.as_of} />}
+			/>
 
 			<SovKpis />
 

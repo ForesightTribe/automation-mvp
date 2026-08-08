@@ -1,7 +1,12 @@
 import { useState } from "react";
 import { ViewToggle } from "../../components/ui/ViewToggle";
 import { Button } from "../../components/ui/Button";
-import { SalesPivotReport } from "./components/SalesPivotReport";
+import { PageHeader } from "../../components/ui/PageHeader";
+import {
+	SalesPivotReport,
+	METRICS,
+	GRANULARITY,
+} from "./components/SalesPivotReport";
 import { MarketingReport } from "./components/MarketingReport";
 import { CompetitionReport } from "./components/CompetitionReport";
 
@@ -30,35 +35,55 @@ const SUBTITLES = {
 
 export const ReportsPage = () => {
 	const [report, setReport] = useState("sales");
+	// Owned here so all three toggle groups render as one control row.
+	const [metric, setMetric] = useState("value");
+	const [granularity, setGranularity] = useState("daily");
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div className="flex flex-wrap items-start justify-between gap-3">
-				<div>
-					<h1 className="font-display text-xl font-bold text-content">
-						Reports
-					</h1>
-					<p className="text-sm text-content-muted">{SUBTITLES[report]}</p>
-				</div>
-				<div className="flex items-center gap-2">
-					<ViewToggle
-						options={REPORTS}
-						value={report}
-						onChange={setReport}
-					/>
-					{/* Stub — export lands in a later phase. */}
-					<Button
-						variant="secondary"
-						size="sm"
-						disabled
-						title="Excel export — coming soon"
-					>
-						⭳ Export to Excel
-					</Button>
-				</div>
+			<PageHeader
+				title="Reports"
+				subtitle={SUBTITLES[report]}
+				actions={
+					<div className="flex flex-wrap items-center justify-end gap-2">
+						<ViewToggle
+							options={REPORTS}
+							value={report}
+							onChange={setReport}
+						/>
+						{report === "sales" && (
+							<>
+								<ViewToggle
+									options={METRICS}
+									value={metric}
+									onChange={setMetric}
+								/>
+								<ViewToggle
+									options={GRANULARITY}
+									value={granularity}
+									onChange={setGranularity}
+								/>
+							</>
+						)}
+					</div>
+				}
+			/>
+
+			<div className="flex justify-end">
+				{/* Stub — export lands in a later phase. */}
+				<Button
+					variant="secondary"
+					size="sm"
+					disabled
+					title="Excel export — coming soon"
+				>
+					⭳ Export to Excel
+				</Button>
 			</div>
 
-			{report === "sales" && <SalesPivotReport />}
+			{report === "sales" && (
+				<SalesPivotReport metric={metric} granularity={granularity} />
+			)}
 			{report === "marketing" && <MarketingReport />}
 			{report === "competition" && <CompetitionReport />}
 		</div>

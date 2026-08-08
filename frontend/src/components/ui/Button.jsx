@@ -5,11 +5,15 @@
 const VARIANTS = {
 	primary: "bg-primary text-on-primary hover:bg-primary-hover",
 	secondary: "border border-border bg-card text-content hover:bg-muted",
+	/* Brand-led action (outlined MIRA red) — the shell's Log out, not a general
+	   primary action. Use `primary` for those. */
+	brand: "border border-brand bg-card text-brand hover:bg-brand-soft",
 	danger: "bg-danger text-on-primary hover:opacity-90",
 	ghost: "text-content hover:bg-muted",
 };
 
 const SIZES = {
+	xs: "px-2.5 py-1 text-[10px]",
 	sm: "px-2.5 py-1 text-xs",
 	md: "px-3.5 py-2 text-sm",
 	lg: "px-5 py-2.5 text-base",

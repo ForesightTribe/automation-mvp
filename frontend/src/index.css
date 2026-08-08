@@ -10,6 +10,14 @@
 */
 @theme {
 	/* ---- Brand ---- */
+	/* Brand red. The brand mark and brand-led controls only — not a blanket
+	   replacement for --color-primary, which stays the UI action colour. */
+	--color-brand: #f42a34;
+	--color-brand-hover: #d31f28; /* pressed / hover */
+	--color-brand-deep: #b01219; /* the far end of brand gradients */
+	--color-brand-soft: #fac9cb; /* tinted backgrounds — ~28% brand on white */
+	--color-on-brand: #ffffff; /* text/icons on a brand fill */
+
 	--color-primary: #4f46e5; /* indigo-600 — primary actions, active nav */
 	--color-primary-hover: #4338ca; /* indigo-700 */
 	--color-primary-soft: #eef2ff; /* indigo-50  — tinted backgrounds */
@@ -26,20 +34,26 @@
 	--color-info-soft: #e0f2fe;
 
 	/* ---- Surfaces ---- */
-	--color-surface: #f8fafc; /* app/page background (slate-50) */
-	--color-card: #ffffff; /* cards, panels, table backgrounds */
-	--color-border: #e2e8f0; /* hairlines, dividers (slate-200) */
-	--color-muted: #f1f5f9; /* subtle fills, hover rows (slate-100) */
+	/* Warm neutrals from the brand palette. Do not swap these back to slate —
+	   the cool greys clash with the brand red. */
+	--color-surface: #f9f7f4; /* Background Primary — app/page background */
+	--color-card: #ffffff; /* Background Secondary — cards, panels, tables */
+	--color-border: #e0ddd8; /* hairlines, dividers (from the Figma) */
+	--color-muted: #f2f0ec; /* subtle fills, hover rows */
+	--color-inverse: #3f3b39; /* dark fill — grand-total rows, tooltips */
+	--color-on-inverse: #ffffff; /* text on --color-inverse */
 
 	/* ---- Text / content ---- */
-	--color-content: #0f172a; /* default body text (slate-900) */
-	--color-content-muted: #475569; /* secondary text, labels (slate-600) */
-	--color-content-subtle: #94a3b8; /* hints, disabled, placeholders (slate-400) */
+	--color-content: #000000; /* Text Primary — default body text */
+	--color-content-muted: #646160; /* Text Secondary — labels, secondary copy */
+	--color-content-subtle: #939190; /* Text Tertiary — hints, disabled, placeholders */
 
 	/* ---- Typography ---- */
+	/* Inter is the primary/body face; Bricolage Grotesque is the brand face used
+	   for the logo, headings and KPI numbers. Both are loaded in index.html. */
 	--font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
 	--font-display:
-		"Inter", ui-sans-serif, system-ui, sans-serif; /* headings, KPI numbers */
+		"Bricolage Grotesque", "Inter", ui-sans-serif, system-ui, sans-serif;
 	--font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
 }
 

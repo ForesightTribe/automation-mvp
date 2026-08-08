@@ -13,11 +13,13 @@ export const DateRangePicker = () => {
 	const onFrom = (e) => setCustomRange(e.target.value, range.to);
 	const onTo = (e) => setCustomRange(range.from, e.target.value);
 
+	// The active preset is a brand-led control in the shell — hence `brand`
+	// rather than `primary`. See --color-brand in index.css.
 	const chipClass = (active) =>
-		`rounded-md px-2.5 py-1 text-sm font-medium transition-colors ${
+		`rounded-md px-2.5 py-1 text-sm transition-colors ${
 			active
-				? "bg-primary text-on-primary"
-				: "text-content-muted hover:bg-muted"
+				? "bg-brand font-semibold text-on-brand"
+				: "font-normal text-content-muted hover:bg-muted"
 		}`;
 
 	return (
@@ -41,7 +43,7 @@ export const DateRangePicker = () => {
 					value={range.from}
 					max={range.to}
 					onChange={onFrom}
-					className={`rounded-md border bg-card px-2 py-1 text-sm text-content ${
+					className={`rounded-md border bg-card px-2 py-1 text-sm font-normal text-content-muted ${
 						activePreset === CUSTOM_RANGE_KEY
 							? "border-primary"
 							: "border-border"
@@ -53,7 +55,7 @@ export const DateRangePicker = () => {
 					value={range.to}
 					min={range.from}
 					onChange={onTo}
-					className={`rounded-md border bg-card px-2 py-1 text-sm text-content ${
+					className={`rounded-md border bg-card px-2 py-1 text-sm font-normal text-content-muted ${
 						activePreset === CUSTOM_RANGE_KEY
 							? "border-primary"
 							: "border-border"

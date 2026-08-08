@@ -6,7 +6,7 @@
 const STYLES = {
 	out_of_stock: { label: "Out of stock", cls: "bg-danger-soft text-danger" },
 	low_cover: { label: "Low cover", cls: "bg-warning-soft text-warning" },
-	no_sales: { label: "No sales", cls: "bg-muted text-content-muted" },
+	no_sales: { label: "No sales", cls: "bg-warning-soft text-warning" },
 	healthy: { label: "Healthy", cls: "bg-success-soft text-success" },
 };
 

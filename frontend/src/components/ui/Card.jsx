@@ -10,7 +10,7 @@ export const Card = ({ title, actions, className = "", children }) => {
 			{(title || actions) && (
 				<header className="mb-4 flex items-center justify-between gap-3">
 					{title && (
-						<h2 className="font-display text-sm font-semibold text-content">
+						<h2 className="font-display text-base font-semibold text-content">
 							{title}
 						</h2>
 					)}

@@ -1,7 +1,7 @@
 import { Fragment, useState } from "react";
+import { ChevronDown, ChevronUp } from "lucide-react";
 import { useSalesPivot } from "../hooks";
 import { formatNumber } from "../../../lib/format";
-import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 
@@ -30,11 +30,12 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
  * presence is the status — hence no status chip on the header row.
  */
 
-const METRICS = [
+/** Toggle options — exported so ReportsPage can render the controls. */
+export const METRICS = [
 	{ value: "value", label: "Revenue" },
 	{ value: "units", label: "Units" },
 ];
-const GRANULARITY = [
+export const GRANULARITY = [
 	{ value: "daily", label: "Daily" },
 	{ value: "weekly", label: "Weekly" },
 ];
@@ -42,7 +43,7 @@ const GRANULARITY = [
 const WEEKDAY = "Mon–Thu";
 const WEEKEND = "Fri–Sun";
 /** Tint carried by every Fri–Sun column, matching the daily view's weekend tint. */
-const WEEKEND_BG = "bg-info-soft/40";
+const WEEKEND_BG = "bg-muted/70";
 
 /** "2026-07-01" -> "01-07". */
 const dayLabel = (iso) => {
@@ -78,22 +79,16 @@ const DeltaCell = ({ delta }) => {
 	);
 };
 
-export const SalesPivotReport = () => {
-	const [metric, setMetric] = useState("value");
-	const [granularity, setGranularity] = useState("daily");
+/**
+ * `metric` and `granularity` are owned by ReportsPage so its toggle row can sit
+ * beside the report switcher, as one control group. This component renders the
+ * table only.
+ */
+export const SalesPivotReport = ({ metric, granularity }) => {
 	const { data, isLoading, error, refetch } = useSalesPivot(metric);
 
 	return (
 		<div className="flex flex-col gap-4">
-			<div className="flex flex-wrap items-center justify-end gap-2">
-				<ViewToggle options={METRICS} value={metric} onChange={setMetric} />
-				<ViewToggle
-					options={GRANULARITY}
-					value={granularity}
-					onChange={setGranularity}
-				/>
-			</div>
-
 			{isLoading && <Loading label="Loading sales report…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading && !error && data && (
@@ -264,22 +259,26 @@ const WeeklyHead = ({ weeks }) => {
  * platform — they all carry cells/total (daily) and weekday/weekend/week_total
  * (weekly), so the three row types render through the same code.
  */
-const ValueCells = ({ row, days, daily, muted }) => {
+const ValueCells = ({ row, days, daily, muted, inverse }) => {
 	const tone = muted ? "text-content-muted" : "";
+	// On the inverse fill the row supplies its own colour, and the light weekend
+	// tint would paint over it — so skip both and inherit.
+	const total = inverse ? "text-inherit" : "text-content";
+	const weekend = (i) => (!inverse && days[i].weekend ? WEEKEND_BG : "");
 	if (daily)
 		return (
 			<>
 				{row.cells.map((v, i) => (
 					<td
 						key={i}
-						className={`px-2 py-1.5 text-right tabular-nums ${tone} ${
-							days[i].weekend ? WEEKEND_BG : ""
-						}`}
+						className={`px-2 py-1.5 text-right tabular-nums ${tone} ${weekend(i)}`}
 					>
 						{formatNumber(v)}
 					</td>
 				))}
-				<td className="px-3 py-1.5 text-right font-semibold tabular-nums text-content">
+				<td
+					className={`px-3 py-1.5 text-right font-semibold tabular-nums ${total}`}
+				>
 					{formatNumber(row.total)}
 				</td>
 			</>
@@ -349,23 +348,35 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 				<Fragment key={cat.name}>
 					{/* Category heading — a label only; its numbers live on the
 					    subtotal row that closes the group, Excel-pivot style. */}
-					<tr className="border-b border-border/60 bg-muted/30">
+					<tr className="border-b border-border/60 bg-muted">
 						<td
 							colSpan={colCount}
-							className="sticky left-0 px-3 py-1.5 text-left font-medium text-content"
+							className="sticky left-0 px-3 py-2 text-left font-medium text-content"
 						>
 							<button
 								type="button"
 								onClick={() => toggle(cat.name)}
 								className="flex items-center gap-1.5 text-left"
 							>
-								<span className="text-xs text-content-subtle">
-									{collapsed.has(cat.name) ? "▸" : "▾"}
-								</span>
 								{cat.name}
 								<span className="font-normal text-content-subtle">
 									({cat.skus.length})
 								</span>
+								{collapsed.has(cat.name) ? (
+									<ChevronDown
+										size={16}
+										strokeWidth={1.5}
+										aria-hidden="true"
+										className="ml-1 text-content-subtle"
+									/>
+								) : (
+									<ChevronUp
+										size={16}
+										strokeWidth={1.5}
+										aria-hidden="true"
+										className="ml-1 text-content-subtle"
+									/>
+								)}
 							</button>
 						</td>
 					</tr>
@@ -387,18 +398,21 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 						row={cat}
 						days={days}
 						daily={daily}
-						className="border-b border-border bg-muted/40 text-content"
-						cellBg="bg-muted/40"
-						label={`Total — ${cat.name}`}
+						className="border-b border-border bg-muted text-content"
+						cellBg="bg-muted"
+						label={`Total - ${cat.name}`}
 					/>
 				</Fragment>
 			))}
+			{/* Grand Total closes the block on the inverse fill, so it reads as
+			    the end of the report rather than one more subtotal. */}
 			<TotalsRow
 				row={platform}
 				days={days}
 				daily={daily}
-				className="border-b-2 border-border bg-muted/70 text-content"
-				cellBg="bg-muted/70"
+				inverse
+				className="bg-inverse text-on-inverse"
+				cellBg="bg-inverse"
 				label="Grand Total"
 			/>
 		</>
@@ -409,11 +423,11 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
  * A bold summary row — used for both the per-category subtotal and the
  * marketplace Grand Total, which share the exact column shape of a SKU row.
  */
-const TotalsRow = ({ row, days, daily, className, cellBg, label }) => (
+const TotalsRow = ({ row, days, daily, className, cellBg, label, inverse }) => (
 	<tr className={`font-semibold ${className}`}>
-		<td className={`sticky left-0 z-10 px-3 py-1.5 text-left ${cellBg}`}>
+		<td className={`sticky left-0 z-10 px-3 py-2 text-left ${cellBg}`}>
 			{label}
 		</td>
-		<ValueCells row={row} days={days} daily={daily} />
+		<ValueCells row={row} days={days} daily={daily} inverse={inverse} />
 	</tr>
 );

@@ -485,7 +485,7 @@ export const rankHeatmapOption = (keywords, cities, data, maxRank) => ({
 			type: "heatmap",
 			data,
 			label: { show: false },
-			emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "#0f172a55" } },
+			emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "#00000055" } },
 		},
 	],
 });
