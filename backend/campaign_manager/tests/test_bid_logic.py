@@ -151,6 +151,40 @@ def test_match_empty_results():
     assert match_position([], product_names=["Dobra"], product_pids=["1"]) == (None, False, False)
 
 
+# ── End-of-window reset timing (A4) ─────────────────────────────────────
+#
+# The reconciler fires the reset one minute EARLY so it beats the budget engine (a
+# parallel lane) to the campaign. That only works because `_reset_run` evaluates windows
+# with a LOOK-AHEAD: at 22:59 the window is still open, so without it the run would find
+# nothing to reset and the early fire would be a silent no-op.
+
+def test_window_is_still_open_at_the_early_fire_time():
+    rule = {"type": "recurring", "start_time": "19:00", "stop_time": "23:00", "days": []}
+    assert _in_window(rule, datetime(2026, 8, 7, 22, 59)) is True
+
+
+def test_lookahead_makes_the_early_fire_see_the_window_as_closed():
+    from datetime import timedelta
+
+    from campaign_manager.bid import RESET_LOOKAHEAD_MINUTES
+
+    rule = {"type": "recurring", "start_time": "19:00", "stop_time": "23:00", "days": []}
+    fired_at = datetime(2026, 8, 7, 22, 59)
+    assert _in_window(rule, fired_at + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)) is False
+    # ...and the lookahead must exceed the reconciler's lead, or setup drift lands the run
+    # back inside the window.
+    from campaign_manager.reconciler import _RESET_LEAD_MINUTES
+    assert RESET_LOOKAHEAD_MINUTES > _RESET_LEAD_MINUTES
+
+
+def test_overnight_window_is_closed_AT_its_stop_time():
+    """Same inclusive/exclusive fix as budget: an 18:00–02:00 rule must NOT still be
+    'in window' at 02:00, or the reset would skip the keyword it fired for."""
+    rule = {"type": "recurring", "start_time": "18:00", "stop_time": "02:00", "days": []}
+    assert _in_window(rule, datetime(2026, 8, 8, 1, 59)) is True
+    assert _in_window(rule, datetime(2026, 8, 8, 2, 0)) is False
+
+
 def _run() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

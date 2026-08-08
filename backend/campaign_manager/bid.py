@@ -21,6 +21,13 @@ from campaign_manager.marketplaces import get_adapter
 HOLD_MINUTES = 10                       # after a bid change, wait this long before nudging again
 _DEFAULT_LAT, _DEFAULT_LON = 12.9767, 77.5713   # Bengaluru fallback when a rule has no location
 
+# The end-of-window reset is FIRED a minute early (see reconciler._bid_reset_fires) so the
+# bid drops back before the budget engine — a parallel lane — can stop the campaign, after
+# which Blinkit refuses bid writes. This look-ahead is what makes the early fire see the
+# window as closed; it must exceed the reconciler's lead so a few seconds of browser-setup
+# drift can't land it back inside the window.
+RESET_LOOKAHEAD_MINUTES = 2
+
 
 # ── Pure decision logic (unit-tested) ────────────────────────────────────────
 
@@ -41,7 +48,12 @@ def _time_ok(current_time: str, st: str | None, et: str | None) -> bool:
     if not (st or et):
         return True
     if st and et and et <= st:                   # crosses midnight (e.g. 18:00–02:00)
-        if current_time < st and current_time > et:
+        # `et` is EXCLUSIVE, matching the non-overnight branch below. It used to be
+        # `> et`, so an 18:00–02:00 rule was still "in window" AT 02:00 — which would make
+        # the end-of-window reset skip the very keyword it fires for. Same inconsistency
+        # found and fixed in budget._matches_rule on 2026-08-07; the two must stay
+        # symmetric, so it is fixed here too.
+        if current_time < st and current_time >= et:
             return False
     else:
         if st and current_time < st:
@@ -168,6 +180,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     log_rows: list[dict] = []
     bids_cache: dict[int, dict] = {}       # campaign_id → {keyword: cpm}  (one detail fetch/campaign)
     products_cache: dict[int, list] = {}   # campaign_id → [products]
+    status_cache: dict[int, str | None] = {}   # campaign_id → canonical status (same fetch)
 
     try:
         for rule, runtime in active:
@@ -176,12 +189,28 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
             if cid not in bids_cache:
                 try:
-                    bids_cache[cid] = await adapter.read_bids(client, cid)
+                    # ONE detail read gives status AND bids (docs/campaign-activation.md §6).
+                    status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
+                    bids_cache[cid] = adapter.bids_from_detail(detail)
                     products_cache[cid] = await adapter.read_products(client, cid)
                 except Exception as e:
+                    status_cache[cid] = None
                     bids_cache[cid], products_cache[cid] = {}, []
                     logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   verdict="warn", reason=f"campaign fetch failed: {e}")
+
+            # A stopped campaign isn't serving, so there is no position to chase — and
+            # Blinkit rejects bid writes on one anyway. Skipping here saves the expensive
+            # part of a bid run: a live consumer search per keyword, in a browser. Matters
+            # most for a campaign that `stop_after_window` keeps dark half the day.
+            # A status we couldn't read (None) is NOT treated as stopped — a read blip
+            # must not silently pause optimization.
+            if status_cache[cid] is not None and status_cache[cid] != "running":
+                logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              verdict="skip", reason=f"campaign is {status_cache[cid]} — not serving")
+                skipped += 1
+                continue
+
             products = products_cache[cid]
             names = [p.get("name", "") for p in products if p.get("name")]
             pids = [str(p["pid"]) for p in products if p.get("pid")]
@@ -261,10 +290,16 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
     bid the optimizer pushed up doesn't keep spending high after the window. No position
     scrape (cheap). Skips a keyword still covered by an in-window rule, and any bid already
     at/below its floor. Only a real (live) write updates runtime `last_cpm`."""
+    # Windows are evaluated slightly AHEAD of now, because the reconciler fires this run a
+    # minute BEFORE the window's stop time — so the bid drops back before the budget engine
+    # (a parallel lane) can stop the campaign, after which Blinkit refuses bid writes. At
+    # the nominal stop time the look-ahead changes nothing, so a reset fired exactly on the
+    # boundary, or by hand mid-window, behaves as it always did.
+    at = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
     active = [r for r, _ in pairs if r.state == "active"]
-    live_keys = {(r.campaign_id, r.keyword) for r in active if _in_window(_rule_dict(r), now)}
+    live_keys = {(r.campaign_id, r.keyword) for r in active if _in_window(_rule_dict(r), at)}
     to_reset = [r for r in active
-                if not _in_window(_rule_dict(r), now)
+                if not _in_window(_rule_dict(r), at)
                 and (r.campaign_id, r.keyword) not in live_keys]
     if not to_reset:
         logs.run_summary(run_id, "bid_reset", dry_run=dry_run,
@@ -300,28 +335,49 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
     runtime_rows: list[dict] = []
     log_rows: list[dict] = []
     bids_cache: dict[int, dict] = {}
+    status_cache: dict[int, str | None] = {}
     try:
         for r in to_reset:
             processed += 1
             cid, kw = r.campaign_id, r.keyword
             if cid not in bids_cache:
                 try:
-                    bids_cache[cid] = await adapter.read_bids(client, cid)
+                    status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
+                    bids_cache[cid] = adapter.bids_from_detail(detail)
                 except Exception as e:
-                    bids_cache[cid] = {}
+                    status_cache[cid], bids_cache[cid] = None, {}
                     logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   verdict="warn", reason=f"bid read failed: {e}")
+
+            # A stopped campaign can't take a bid write and doesn't need one — it isn't
+            # serving, so a bid left high costs nothing while it's off. This is the
+            # expected case when the budget engine won the race to stop it.
+            if status_cache[cid] is not None and status_cache[cid] != "running":
+                logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              verdict="skip", reason=f"campaign is {status_cache[cid]} — no bid write")
+                skipped += 1
+                continue
+
             current = int(bids_cache[cid].get(kw) or r.min_bid)
             if current <= r.min_bid:
                 skipped += 1                              # already at the floor — nothing to do
                 continue
             logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                           verdict=f"reset ₹{r.min_bid}", reason=f"window closed · {current}→{r.min_bid}")
-            ok = await writes.apply_bid(
-                adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
-                new_cpm=r.min_bid, current_cpm=current, min_bid=r.min_bid,
-                max_bid=r.max_bid, match_type=r.match_type, dry_run=dry_run, recent_writes=0,
-            )
+            # A rejected write must not abort the whole reset: one keyword on a campaign
+            # that just went dark shouldn't cost every other keyword its de-escalation, or
+            # fail the job and page someone at 2am.
+            try:
+                ok = await writes.apply_bid(
+                    adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
+                    new_cpm=r.min_bid, current_cpm=current, min_bid=r.min_bid,
+                    max_bid=r.max_bid, match_type=r.match_type, dry_run=dry_run, recent_writes=0,
+                )
+            except Exception as e:
+                logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              verdict="skip", reason=f"reset rejected: {e}")
+                skipped += 1
+                continue
             applied += int(ok)
             skipped += int(not ok)
             if ok and not dry_run:

@@ -152,21 +152,32 @@ def test_bid_once_is_date_bound_not_recurring():
     assert by["auto:cm:bid:T:blinkit:once:20260815"].cron == "*/15 16-17 15 8 *"
 
 
-def test_bid_reset_fire_recurring():
+def test_bid_reset_fires_one_minute_BEFORE_the_stop():
+    """The reset must beat the budget engine to the campaign: `cm_bid` and `cm_ops` run in
+    PARALLEL lanes, and once the budget engine stops a campaign Blinkit refuses bid writes.
+    So a 23:00 window's reset fires at 22:59, not 23:00."""
     ds = _desired(bid_rules=[bidrule(True, "19:00", "23:00")])
-    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:2300"]
-    assert reset.cron == "0 23 * * *" and reset.repeat and reset.params == {"reset": "true"}
+    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:2259"]
+    assert reset.cron == "59 22 * * *" and reset.repeat and reset.params == {"reset": "true"}
+    assert "auto:cm:bid:T:blinkit:reset:2300" not in _by_name(ds)
+
+
+def test_bid_reset_lead_wraps_past_midnight():
+    """A window stopping at 00:00 leads back to 23:59 the previous day, not to -1 minutes."""
+    reset = _by_name(_desired(bid_rules=[bidrule(True, "18:00", "00:00")]))
+    assert "auto:cm:bid:T:blinkit:reset:2359" in reset
+    assert reset["auto:cm:bid:T:blinkit:reset:2359"].cron == "59 23 * * *"
 
 
 def test_bid_reset_fire_once_overnight_is_oneshot():
     ds = _desired(bid_rules=[bidrule(True, "19:30", "02:00", type="once", date=FUTURE)])
-    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:20260816T0200"]   # overnight → next day
+    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:20260816T0159"]   # overnight → next day, less the lead
     assert reset.cron is None and reset.repeat is False and reset.params == {"reset": "true"}
 
 
 def test_armed_merges_live_into_reset_params():
     ds = desired_schedules(T, MP, [], [bidrule(True, "19:00", "23:00")], NOW, live=True)
-    assert _by_name(ds)["auto:cm:bid:T:blinkit:reset:2300"].params == {"reset": "true", "live": "true"}
+    assert _by_name(ds)["auto:cm:bid:T:blinkit:reset:2259"].params == {"reset": "true", "live": "true"}
 
 
 def test_cleanup_reconcile_present_and_live():

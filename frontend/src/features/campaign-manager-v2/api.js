@@ -51,6 +51,12 @@ export const setBidState = (clientId, ruleId, action) =>
 // ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 export const setBudgetNow = (clientId, body) => api.post(`${base(clientId)}/set-budget`, body);
 
+// Start / stop a campaign. body = { status: "running" | "paused", budget? }.
+// `budget` is for a resume only — Blinkit's restart re-submits the campaign and sets its
+// budget; omitting it lets the VM reuse the campaign's current one from a fresh read.
+export const setActivationNow = (clientId, campaignId, body) =>
+	api.post(`${base(clientId)}/campaigns/${campaignId}/activation`, body);
+
 export const runEngine = (clientId, which) =>
 	api.post(`${base(clientId)}/run/${which}`); // budget-scheduler | bid-optimizer
 

@@ -12,7 +12,7 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, CmJobOut, EnqueuedOut, RunLogOut, SetBudgetIn,
+    BudgetScheduleUpdate, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn, SetBudgetIn,
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
@@ -145,6 +145,23 @@ async def set_budget_now(client: ClientDep, session: SessionDep, body: SetBudget
         job_id = await svc.set_budget_now(session, client.id, body.campaign_id, body.budget)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A set-budget job is already active")
+    return EnqueuedOut(job_id=job_id)
+
+
+@router.post("/campaigns/{campaign_id}/activation", response_model=EnqueuedOut)
+async def set_activation_now(client: ClientDep, session: SessionDep, campaign_id: int,
+                             body: SetActivationIn):
+    """Start or stop a campaign now. Enqueues a VM job and returns its id to poll.
+
+    The transition guardrails (terminal states, budget bounds, rate limit) run on the VM
+    against the campaign's live status — not here — so this endpoint accepts any pair and
+    the job reports the refusal.
+    """
+    try:
+        job_id = await svc.set_activation_now(session, client.id, campaign_id,
+                                              body.status, body.budget)
+    except DuplicateActiveJob:
+        raise HTTPException(status.HTTP_409_CONFLICT, "An activation job is already active")
     return EnqueuedOut(job_id=job_id)
 
 

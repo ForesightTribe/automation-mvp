@@ -26,8 +26,15 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
         )).scalars().all()
         out = []
         for s in schedules:
+            # ORDER BY id is load-bearing, not cosmetic: `budget.target_for_now` takes the
+            # FIRST matching rule, so with two overlapping windows the winner is decided
+            # here. Without an explicit order Postgres may return them differently between
+            # runs, and the same campaign would flip between two budgets for no visible
+            # reason. Oldest rule wins — stable, and explainable to a user ("the one you
+            # made first takes precedence").
             rules = (await db.execute(
                 select(CmBudgetRule).where(CmBudgetRule.schedule_id == s.id)
+                .order_by(CmBudgetRule.id)
             )).scalars().all()
             out.append((s, list(rules)))
         return out
@@ -123,13 +130,15 @@ async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str = "blinkit"
 # ── Rules CRUD (service layer — the CLI uses it now, the V4 API will reuse it) ──
 
 async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
-                                 campaign_name: str, default_budget: float, name: str | None = None):
+                                 campaign_name: str, default_budget: float, name: str | None = None,
+                                 stop_after_window: bool = False):
     """Create a budget-schedule container for a campaign. Raises on the unique
     (tenant, platform, campaign_id) conflict."""
     from app.models.campaign_manager_v2 import CmBudgetSchedule
     async with AsyncSessionLocal() as db:
         s = CmBudgetSchedule(tenant_id=tenant_id, platform=platform, campaign_id=campaign_id,
                              campaign_name=campaign_name, name=name, default_budget=default_budget,
+                             stop_after_window=stop_after_window,
                              enabled=True)
         db.add(s)
         await db.commit()

@@ -162,6 +162,15 @@ def _cm_set_budget(tenant_id, p):
     return a
 
 
+def _cm_set_activation(tenant_id, p):
+    a = ["cm", "set-activation", "--tenant", str(tenant_id)]
+    _opt(a, "--campaign", p.get("campaign"))
+    _opt(a, "--status", p.get("status"))
+    _opt(a, "--budget", p.get("budget"))     # resume only — a RESTART sets the budget
+    _flag(a, "--live", p.get("live"))
+    return a
+
+
 def _log_cleanup(tenant_id, p):
     a = ["maint", "log-cleanup"]
     _opt(a, "--days", p.get("days"))
@@ -227,6 +236,13 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     ),
     "cm.set_budget": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("campaign", "budget", "live"),
+    ),
+    # On-demand campaign start/stop (the dashboard's Start/Pause buttons). Shares the
+    # cm_ops lane with the other latency-tolerant campaign writes, so it can never run
+    # concurrently with the budget scheduler against the same account.
+    "cm.set_activation": JobTypeSpec(
+        Lane.cm_ops, 10 * 60, _cm_set_activation,
+        param_keys=("campaign", "status", "budget", "live"),
     ),
     "cm.sync_campaign_data": JobTypeSpec(
         Lane.cm_ops, 2 * 60 * 60, _cm_sync_campaign_data,

@@ -102,6 +102,7 @@ def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
     return BudgetScheduleOut(
         id=schedule.id, campaign_id=schedule.campaign_id, campaign_name=schedule.campaign_name,
         name=schedule.name, default_budget=schedule.default_budget, state=schedule.state,
+        stop_after_window=schedule.stop_after_window,
         status=_budget_status(schedule, rules, now), platform=schedule.platform, rules=rule_outs,
     )
 
@@ -123,6 +124,7 @@ async def create_budget_schedule(session, tenant_id: uuid.UUID, body: BudgetSche
     s = await repo.create_budget_schedule(
         tenant_id, PLATFORM, body.campaign_id,
         body.campaign_name or f"campaign {body.campaign_id}", body.default_budget, body.name,
+        stop_after_window=body.stop_after_window,
     )
     rules = [await repo.add_budget_rule(s.id, **body.rule.model_dump())] if body.rule else []
     await _reconcile(session, tenant_id)
@@ -206,10 +208,25 @@ async def reset_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int)
     if not s or s.tenant_id != tenant_id:
         return None
     await repo.set_budget_state(schedule_id, "stopped")
-    params = {"campaign": str(s.campaign_id), "budget": str(s.default_budget)}
-    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
-        params["live"] = "true"
-    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
+    armed = await repo.get_armed(tenant_id, PLATFORM)      # cutover: write live when armed
+
+    # AD10 — on a stop-after-window schedule, Reset must also bring the campaign BACK.
+    # We may have stopped it at the last window end, and "undo the automation" that
+    # silently leaves the campaign dark is the opposite of what anyone expects. The
+    # restart carries the default budget, so it replaces the set-budget job rather than
+    # running alongside it.
+    if s.stop_after_window:
+        params = {"campaign": str(s.campaign_id), "status": "running",
+                  "budget": str(s.default_budget)}
+        if armed:
+            params["live"] = "true"
+        job = await enqueue(session, job_type="cm.set_activation",
+                            tenant_id=tenant_id, params=params)
+    else:
+        params = {"campaign": str(s.campaign_id), "budget": str(s.default_budget)}
+        if armed:
+            params["live"] = "true"
+        job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
     await _reconcile(session, tenant_id)
     return job.id
 
@@ -290,6 +307,24 @@ async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
         params["live"] = "true"
     job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
+    return job.id
+
+
+async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, status: str,
+                             budget: float | None = None) -> uuid.UUID:
+    """Enqueue a start/stop of one campaign. Like set_budget_now, the API only queues —
+    the VM opens the browser, reads the campaign's real state and runs the guardrails.
+
+    `budget` is passed through only for a resume; leaving it out lets the engine reuse the
+    campaign's current budget from a fresh read, which is better than anything the API
+    could guess from stale scraped data.
+    """
+    params = {"campaign": str(campaign_id), "status": status}
+    if status == "running" and budget is not None:
+        params["budget"] = str(budget)
+    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
+        params["live"] = "true"
+    job = await enqueue(session, job_type="cm.set_activation", tenant_id=tenant_id, params=params)
     return job.id
 
 

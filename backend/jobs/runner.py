@@ -144,9 +144,27 @@ async def _supervise(proc, timeout_s: int, shutdown: asyncio.Event) -> tuple[int
 
 async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     """Execute one claimed job as a subprocess and record its outcome."""
-    spec = spec_for(job.job_type)
-    timeout_s = settings.JOB_TIMEOUT_OVERRIDES.get(job.job_type, spec.timeout_s)
-    args = spec.build_args(job.tenant_id, job.params or {})
+    # Resolving the type and building the argv happen AFTER the claim, so a failure here
+    # must fail the job explicitly. Letting it raise strands the row in `running` with no
+    # argv and no log — and the partial unique index then wedges that (job_type, tenant)
+    # pair until a runner restart happens to reap it.
+    #
+    # The live case is a DEPLOY SKEW: the API and the runner ship separately, so a newly
+    # added job type can be enqueued by the API minutes (or days) before this box has the
+    # code for it. `spec_for` raises "unknown job_type" and every such enqueue is stranded.
+    # Failing loudly instead makes it a visible, alerting error and frees the guard.
+    try:
+        spec = spec_for(job.job_type)
+        timeout_s = settings.JOB_TIMEOUT_OVERRIDES.get(job.job_type, spec.timeout_s)
+        args = spec.build_args(job.tenant_id, job.params or {})
+    except Exception as e:
+        async with AsyncSessionLocal() as db:
+            await job_queue.complete(db, job.id, JobStatus.failed, error=f"unresolvable: {e}")
+        logger.bind(job_type=job.job_type, tenant_id=str(job.tenant_id),
+                    lane=job.lane.value, error=str(e)).error(
+            f"job {str(job.id)[:8]} {job.job_type} could not be resolved: {e} "
+            "— is this runner running older code than whatever enqueued it?")
+        return
     # shlex.join so a value containing spaces (e.g. --city "delhi ncr") is recorded
     # unambiguously and stays copy-pasteable. The subprocess itself gets an argv
     # LIST, so spaces are safe there regardless — this is for the record/display.
