@@ -277,6 +277,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # default, so a manual restart from Blinkit's dashboard — which pre-fills
             # from the stored budget — doesn't bring it back hot.
             if want_state == "paused":
+                # The stop is attempted even if the revert above failed: a campaign left
+                # RUNNING at an elevated budget is strictly worse than one stopped while
+                # still storing it (a stopped campaign spends nothing). AD6 is about the
+                # ORDER, not about making the stop conditional.
                 stopped_ok = await writes.apply_status(
                     adapter, client, run_id=run_id, campaign_id=cid, target="paused",
                     current=current_state, dry_run=dry_run,
@@ -284,10 +288,16 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                         tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
                         kind="activation"),
                 )
-                if stopped_ok:
-                    log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                         "apply", None, None, f"stop · {reason}",
-                                         dry_run, True, kind="activation"))
+                # Log BOTH outcomes and count them. A stop that was refused or failed used
+                # to write nothing and move no counter, so the run summary read clean while
+                # the campaign kept serving all night — the one failure that most needs to
+                # be visible was the one that was invisible.
+                applied += int(stopped_ok)
+                skipped += int(not stopped_ok)
+                log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
+                                     "apply" if stopped_ok else "skip", None, None,
+                                     f"stop · {reason}", dry_run, stopped_ok,
+                                     kind="activation"))
             # A no-op (budget already correct — the common case for the hourly poll) is
             # narrated to Cloud Logging via `logs.decision` above, but NOT written to the
             # History table: hundreds of "nothing changed" rows would bury the real changes

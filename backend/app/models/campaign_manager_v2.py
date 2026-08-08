@@ -39,9 +39,10 @@ class CmBudgetSchedule(SQLModel, table=True):
     # schedules only while active; Reset → "stopped" + a set-budget→default job.
     state: str = "active"
     # Campaign activation (docs/campaign-activation.md AD1/AD2): stop the campaign when
-    # a rule's window ENDS — not whenever it happens to be idle. Starting is unconditional
-    # (AD7); this toggle only governs the stop. Default False = today's exact behaviour,
-    # which also makes the RESTART write path unreachable for every existing schedule.
+    # a rule's window ENDS — not whenever it happens to be idle. This toggle governs ONLY
+    # the stop; starting is unconditional (AD7), so a schedule with the toggle OFF still
+    # restarts a campaign found stopped at a window start. Default False therefore means
+    # "never stopped by us", NOT "never written to".
     stop_after_window: bool = Field(default=False)
     created_at: datetime = Field(default_factory=now_ist)
 
@@ -151,7 +152,7 @@ class CmRunLog(SQLModel, table=True):
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
     platform: str = "blinkit"
     run_id: str | None = None
-    kind: str                               # "budget" | "bid"
+    kind: str                               # "budget" | "bid" | "activation"
     campaign_id: int | None = None
     campaign_name: str | None = None
     keyword: str | None = None

@@ -10,8 +10,10 @@ Additive and safe:
 
 - one column, `NOT NULL DEFAULT false`, so every existing row keeps today's exact
   behaviour and no data is rewritten;
-- `false` also makes the RESTART write path **unreachable** for every schedule that
-  exists today — the isolation is enforced by data, not by hoping the code is right;
+- `false` means "we never STOP this campaign". It does not mean "we never write to it":
+  starting is unconditional (AD7), so an existing schedule will restart a campaign it
+  finds stopped at a window start. That is the intended behaviour change of this feature
+  and it applies to existing schedules on deploy — see docs/campaign-activation.md §5.2;
 - nothing else is altered or dropped.
 
 Hand-written, NOT `--autogenerate`: autogenerate on this shared DB repeatedly sweeps in

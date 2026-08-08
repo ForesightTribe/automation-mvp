@@ -26,8 +26,15 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
         )).scalars().all()
         out = []
         for s in schedules:
+            # ORDER BY id is load-bearing, not cosmetic: `budget.target_for_now` takes the
+            # FIRST matching rule, so with two overlapping windows the winner is decided
+            # here. Without an explicit order Postgres may return them differently between
+            # runs, and the same campaign would flip between two budgets for no visible
+            # reason. Oldest rule wins — stable, and explainable to a user ("the one you
+            # made first takes precedence").
             rules = (await db.execute(
                 select(CmBudgetRule).where(CmBudgetRule.schedule_id == s.id)
+                .order_by(CmBudgetRule.id)
             )).scalars().all()
             out.append((s, list(rules)))
         return out

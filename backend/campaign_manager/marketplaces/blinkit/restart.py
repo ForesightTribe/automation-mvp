@@ -19,7 +19,9 @@ them on a restart (docs/campaign-activation.md AD4):
   - `brand_name` is empty.
 
 And two are deliberately ours:
-  - `campaign_start` is **today** — Blinkit resets it on every restart; we cannot avoid it.
+  - `campaign_start` is **today**, because that is what the dashboard sends. Blinkit then
+    IGNORES it — the campaign keeps its original start date (verified across two restarts
+    of 574687, 2026-08-07). We send it for fidelity to the capture, not for effect.
   - `campaign_end` is always the `12/31/9999` infinite sentinel (AD5), so a restarted
     campaign never carries an end date that could expire under a nightly automation.
 """
@@ -34,6 +36,13 @@ NO_END_DATE = "12/31/9999"         # AD5 — Blinkit's "no end date" sentinel
 def _fmt_date(d: datetime) -> str:
     """Blinkit wants M/D/YYYY with no zero padding."""
     return f"{d.month}/{d.day}/{d.year}"
+
+
+def _str(value) -> str:
+    """Blinkit returns these ids as a string on some campaigns and a list on others."""
+    if isinstance(value, list):
+        return ",".join(str(v) for v in value if v)
+    return str(value) if value else ""
 
 
 def _num(value) -> int | float:
@@ -135,8 +144,15 @@ def build(detail: dict, *, campaign_id: int, budget: float, requested_by: str,
         "campaign_end": NO_END_DATE,
         "cpm": detail.get("cpm", 0),
         "campaign_data": {
-            "brand_ids": campaign_data.get("brand_ids", ""),
-            "category_ids": campaign_data.get("category_ids") or "",
+            # Blinkit reports these in two places and the two existing builders disagree
+            # about which (`update_campaign` reads top level, `update_keyword_bids` reads
+            # campaign_data). Verified empty at BOTH on every Dobra campaign checked
+            # (2026-08-07, PRODUCT_LISTING + PRODUCT_RECOMMENDATION, campaign_data itself
+            # null), so today either is correct — but a restart re-submits the campaign
+            # whole, so falling back to the top level costs nothing and avoids silently
+            # clearing targeting on a campaign type that does populate it.
+            "brand_ids": campaign_data.get("brand_ids") or _str(detail.get("brand_ids")),
+            "category_ids": campaign_data.get("category_ids") or _str(detail.get("category_ids")),
             "pids": pids,
             "products": [],
             "ro_details": ro,

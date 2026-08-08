@@ -153,6 +153,47 @@ def test_completed_campaign_is_never_written_to():
     assert _run(status="ended", toggle=True, now=NOW_IN_WINDOW) == []
 
 
+# ── set_activation: "start at ₹X" on a campaign that is already running ──────
+#
+# Guards a real bug: Budget Reset on a stop-after-window schedule enqueues a
+# start-at-default (the campaign may have been stopped by the automation, and Reset has to
+# undo that too). When the campaign happened to be RUNNING the status write was a no-op,
+# the budget was silently dropped, and — because Reset also marks the schedule stopped —
+# no later run would ever bring the elevated window budget back down.
+
+def _run_activation(*, target: str, status: str, budget, current_budget: float = 1500.0) -> list:
+    import campaign_manager.set_activation as sa
+
+    fake = FakeAdapter(status, current_budget)
+    orig = (sa.get_adapter, repo.get_advertiser, repo.recent_write_count, repo.write_run_log)
+    sa.get_adapter = lambda platform: fake
+    repo.get_advertiser = _async_const(19802)
+    repo.recent_write_count = _async_const(0)
+    repo.write_run_log = _async_noop
+    try:
+        asyncio.run(sa.run(_TENANT, CAMPAIGN, target, budget=budget, dry_run=False))
+    finally:
+        (sa.get_adapter, repo.get_advertiser,
+         repo.recent_write_count, repo.write_run_log) = orig
+    return fake.calls
+
+
+def test_start_on_an_already_running_campaign_still_applies_the_budget():
+    calls = _run_activation(target="running", status="running", budget=500.0, current_budget=1500.0)
+    assert calls == [("budget", 500.0)], calls
+
+
+def test_start_on_a_stopped_campaign_restarts_and_writes_no_separate_budget():
+    calls = _run_activation(target="running", status="paused", budget=500.0)
+    assert calls == [("status", "running", 500.0)], calls
+
+
+def test_stop_passes_no_budget_at_all():
+    """A stop is a bodiless DELETE — it must not carry a budget that looks meaningful."""
+    calls = _run_activation(target="paused", status="running", budget=None)
+    assert calls == [("status", "paused", None)], calls
+
+
 def _run_all() -> int:
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

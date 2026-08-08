@@ -63,7 +63,10 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         # A restart writes a budget; fall back to what the campaign already had rather than
         # inventing one. `writes.apply_status` rejects the write outright if this is still
         # unusable, so an unknown budget fails loudly instead of guessing.
-        target_budget = budget if budget is not None else current_budget
+        # Only a restart carries a budget — a stop is a bodiless DELETE, so passing one
+        # there would be a meaningless argument that reads as if it did something.
+        target_budget = ((budget if budget is not None else current_budget)
+                         if status == "running" else None)
         overwrites = None
         if status == "running":
             from campaign_manager.marketplaces.blinkit import restart
@@ -83,18 +86,41 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
                 window_minutes=config.RATE_WINDOW_MINUTES, kind="activation"),
         )
         applied, skipped = int(ok), int(not ok)
-        row = _row(tenant_id, platform, run_id, campaign_id, name,
-                   "apply" if ok else "skip", current, status, dry_run)
+        rows = [_row(tenant_id, platform, run_id, campaign_id, name,
+                     "apply" if ok else "skip", current, status, dry_run)]
+
+        # "Start at ₹X" on a campaign that is ALREADY running must still honour the budget.
+        # Normally the restart carries it — but there is no restart to make, so the status
+        # write is a no-op and the number would be silently dropped.
+        #
+        # Budget Reset depends on this: on a `stop_after_window` schedule Reset enqueues a
+        # start-at-default (the campaign may be stopped, and Reset must undo that too). If
+        # the campaign happens to be running, without this the elevated window budget would
+        # never come back down — and since Reset also marks the schedule stopped, no later
+        # run would ever fix it.
+        if status == "running" and not ok and current == "running" and target_budget is not None:
+            budget_ok = await writes.apply_budget(
+                adapter, client, run_id=run_id, campaign_id=campaign_id,
+                target=target_budget, current=current_budget, dry_run=dry_run,
+                recent_writes=0 if dry_run else await repo.recent_write_count(
+                    tenant_id, campaign_id,
+                    window_minutes=config.RATE_WINDOW_MINUTES, kind="budget"),
+            )
+            applied, skipped = int(budget_ok), int(not budget_ok)
+            rows.append(_row(tenant_id, platform, run_id, campaign_id, name,
+                             "apply" if budget_ok else "no-op", current, status, dry_run,
+                             reason=f"already running · budget {current_budget}→{target_budget:g}",
+                             kind="budget"))
     except Exception as e:
         logs.decision(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       verdict="error", reason=str(e))
         errors = 1
-        row = _row(tenant_id, platform, run_id, campaign_id, None, "error", None, status,
-                   dry_run, success=False, reason=str(e))
+        rows = [_row(tenant_id, platform, run_id, campaign_id, None, "error", None, status,
+                     dry_run, success=False, reason=str(e))]
     finally:
         await _close(pw, browser)
 
-    await repo.write_run_log([row])
+    await repo.write_run_log(rows)
     logs.run_summary(run_id, "set_activation", dry_run=dry_run,
                      processed=1, applied=applied, skipped=skipped, errors=errors)
     return {"processed": 1, "applied": applied, "skipped": skipped, "errors": errors}
@@ -108,10 +134,11 @@ async def _close(pw, browser) -> None:
 
 
 def _row(tenant_id, platform, run_id, cid, cname, action, old, new, dry_run, *,
-         success=True, reason="set-activation") -> dict:
+         success=True, reason="set-activation", kind="activation") -> dict:
     """cm_run_log row. `kind="activation"` keeps status changes filterable in History and
-    separate from the budget rows the same campaign produces."""
+    separate from the budget rows the same campaign produces; a follow-up budget write from
+    the already-running path is logged as `budget`, because that is what it is."""
     return {"tenant_id": tenant_id, "platform": platform, "run_id": run_id,
-            "kind": "activation", "campaign_id": cid, "campaign_name": cname,
+            "kind": kind, "campaign_id": cid, "campaign_name": cname,
             "keyword": None, "action": action, "old_value": None, "new_value": None,
             "reason": f"{reason}: {old}→{new}", "dry_run": dry_run, "success": success}
