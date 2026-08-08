@@ -13,6 +13,23 @@ from app.core.database import AsyncSessionLocal
 from app.utils.time import now_ist
 
 
+class DuplicateSchedule(Exception):
+    """A budget automation already exists for this campaign.
+
+    One schedule per (tenant, platform, campaign) is a DB constraint — a campaign has one
+    everyday budget, and several automations for it could only contradict each other.
+    Extra windows go on the existing schedule as rules. Raised as a domain error so the
+    API can answer 409 and the CLI can point at the schedule you actually want, instead of
+    either surfacing a raw UniqueViolationError."""
+
+    def __init__(self, campaign_id: int, schedule_id: int | None):
+        self.campaign_id, self.schedule_id = campaign_id, schedule_id
+        where = f"schedule #{schedule_id}" if schedule_id else "an existing schedule"
+        super().__init__(
+            f"campaign {campaign_id} already has a budget automation ({where}) — "
+            "add a window to it instead of creating a second one")
+
+
 async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
     """Return [(schedule, [rules])] for a tenant. Empty until rules are created."""
     from app.models.campaign_manager_v2 import CmBudgetSchedule, CmBudgetRule
@@ -134,6 +151,8 @@ async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_i
                                  stop_after_window: bool = False):
     """Create a budget-schedule container for a campaign. Raises on the unique
     (tenant, platform, campaign_id) conflict."""
+    from sqlalchemy.exc import IntegrityError
+
     from app.models.campaign_manager_v2 import CmBudgetSchedule
     async with AsyncSessionLocal() as db:
         s = CmBudgetSchedule(tenant_id=tenant_id, platform=platform, campaign_id=campaign_id,
@@ -141,7 +160,18 @@ async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_i
                              stop_after_window=stop_after_window,
                              enabled=True)
         db.add(s)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            existing = (await db.execute(
+                select(CmBudgetSchedule).where(
+                    CmBudgetSchedule.tenant_id == tenant_id,
+                    CmBudgetSchedule.platform == platform,
+                    CmBudgetSchedule.campaign_id == campaign_id,
+                )
+            )).scalars().first()
+            raise DuplicateSchedule(campaign_id, existing.id if existing else None) from None
         await db.refresh(s)
         return s
 

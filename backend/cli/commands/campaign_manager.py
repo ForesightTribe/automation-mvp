@@ -306,10 +306,18 @@ def add_budget_schedule(
         console.print("[red]--once needs --date[/red]"); raise typer.Exit(1)
 
     async def _run():
-        s = await repo.create_budget_schedule(
-            uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
-            default_budget, name, stop_after_window=stop_after_window,
-        )
+        try:
+            s = await repo.create_budget_schedule(
+                uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
+                default_budget, name, stop_after_window=stop_after_window,
+            )
+        except repo.DuplicateSchedule as e:
+            console.print(f"[red]{e}[/red]")
+            if e.schedule_id:
+                console.print(f"  [bold]cm rules add-budget-rule --schedule {e.schedule_id} "
+                              f"--budget <₹> --start-time HH:MM --end-time HH:MM[/bold]")
+                console.print(f"  [dim]or replace it: cm rules remove-budget --schedule {e.schedule_id}[/dim]")
+            raise typer.Exit(1)
         console.print(f"[green]Budget schedule #{s.id} created[/green] (campaign {campaign}, "
                       f"default ₹{default_budget:g}"
                       + (", stops after each window" if stop_after_window else "") + ")")
