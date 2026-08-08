@@ -69,7 +69,9 @@ export const ReportsPage = () => {
 				}
 			/>
 
-			<div className="flex justify-end">
+			{/* -mb pulls the table up: the page's gap-6 is right everywhere else,
+			    but the export button belongs to the table below it. */}
+			<div className="mt-10 -mb-4 flex justify-end">
 				{/* Stub — export lands in a later phase. */}
 				<Button
 					variant="secondary"

@@ -13,6 +13,11 @@ const DIRECTION = {
 
 const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v}d`);
 
+/** Every column except Product is right-aligned, header and cell together. */
+const CELL =
+	"px-1.5 py-2 text-right lg:px-3 lg:py-3 2xl:px-4 2xl:py-4";
+const HEAD = `${CELL} font-medium text-content-subtle`;
+
 /**
  * The SKU table: window sales joined with current stock + days-of-cover + a
  * health badge. Money/unit/price/cover headers are click-to-sort (single key,
@@ -26,18 +31,26 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 		const active = sort === sortKey;
 		const arrow = active ? (DIRECTION[sortKey] === "asc" ? "▲" : "▼") : "";
 		return (
-			<th className="px-3 py-2 text-right">
+			<th className={CELL}>
+				{/* The arrow is absolutely positioned so it takes no width: the
+				    label keeps the same right edge as the numbers below it whether
+				    or not this column is the active sort. */}
 				<button
 					type="button"
 					onClick={() => onSort(sortKey)}
-					className={`inline-flex items-center gap-1 font-medium hover:text-content ${
+					className={`relative inline-flex items-center font-medium hover:text-content ${
 						active ? "text-content" : "text-content-subtle"
 					}`}
 				>
 					{label}
-					<span className="text-[10px]" aria-hidden>
-						{arrow}
-					</span>
+					{arrow && (
+						<span
+							className="absolute top-1/2 -right-3 -translate-y-1/2 text-[10px]"
+							aria-hidden
+						>
+							{arrow}
+						</span>
+					)}
 				</button>
 			</th>
 		);
@@ -45,25 +58,33 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 
 	return (
 		<div className="overflow-auto">
-			<table className="w-full border-collapse text-sm">
+			<table className="w-full min-w-225 table-fixed border-collapse text-xs lg:text-[13px] 2xl:text-sm">
+				{/* Widths are declared once here rather than left to the content,
+				    so a long SKU name or a six-figure number can't shift every
+				    column. Percentages keep it fluid; `min-w` on the table makes it
+				    scroll instead of crushing on narrow screens. */}
+				<colgroup>
+					<col className="w-[26%]" />
+					<col className="w-[16%]" />
+					<col className="w-[9%]" />
+					<col className="w-[10%]" />
+					<col className="w-[9%]" />
+					<col className="w-[14%]" />
+					<col className="w-[8%]" />
+					<col className="w-[8%]" />
+				</colgroup>
 				<thead className="sticky top-0 z-10 bg-card">
 					<tr className="border-b border-border">
-						<th className="px-3 py-2 text-left font-medium text-content-subtle">
+						<th className="px-1.5 py-2 text-left font-medium text-content-subtle lg:px-3 lg:py-3 2xl:px-4 2xl:py-4">
 							Product
 						</th>
-						<th className="px-3 py-2 text-left font-medium text-content-subtle">
-							Category
-						</th>
+						<th className={HEAD}>Category</th>
 						<SortHead label="Units" sortKey="units" />
 						<SortHead label="Revenue" sortKey="revenue" />
-						<SortHead label="Avg price" sortKey="price" />
-						<th className="px-3 py-2 text-right font-medium text-content-subtle">
-							Stock (FE/BE)
-						</th>
+						<SortHead label="Avg. Price" sortKey="price" />
+						<th className={HEAD}>Stock (FE/BE)</th>
 						<SortHead label="Cover" sortKey="cover" />
-						<th className="px-3 py-2 text-left font-medium text-content-subtle">
-							Status
-						</th>
+						<th className={HEAD}>Status</th>
 					</tr>
 				</thead>
 				<tbody>
@@ -73,37 +94,37 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 							onClick={() => navigate(`/products/${r.item_id}`)}
 							className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
 						>
-							<td className="px-3 py-2">
-								<div className="font-medium text-content">
+							<td className="px-1.5 py-2 text-left lg:px-3 lg:py-3 2xl:px-4 2xl:py-4">
+								<div className="truncate font-medium text-content">
 									{r.item_name || r.item_id}
 								</div>
-								<div className="text-xs text-content-subtle">
+								<div className="truncate text-xs text-content-subtle">
 									{r.item_id}
 								</div>
 							</td>
-							<td className="px-3 py-2 text-content-muted">
+							<td className={`${CELL} text-content-muted`}>
 								{r.category || "—"}
 							</td>
-							<td className="px-3 py-2 text-right tabular-nums text-content">
+							<td className={`${CELL} tabular-nums text-content`}>
 								{formatNumber(r.units_sold)}
 							</td>
-							<td className="px-3 py-2 text-right tabular-nums text-content">
+							<td className={`${CELL} tabular-nums text-content`}>
 								{formatCompactCurrency(r.revenue)}
 							</td>
-							<td className="px-3 py-2 text-right tabular-nums text-content">
+							<td className={`${CELL} tabular-nums text-content`}>
 								{formatCompactCurrency(r.avg_price)}
 							</td>
-							<td className="px-3 py-2 text-right tabular-nums text-content">
+							<td className={`${CELL} tabular-nums text-content`}>
 								{formatNumber(r.frontend_qty)}
 								<span className="text-content-subtle">
 									{" "}
 									/ {formatNumber(r.backend_qty)}
 								</span>
 							</td>
-							<td className="px-3 py-2 text-right tabular-nums text-content">
+							<td className={`${CELL} tabular-nums text-content`}>
 								{coverLabel(r.days_of_cover)}
 							</td>
-							<td className="px-3 py-2">
+							<td className={CELL}>
 								<StatusBadge status={r.status} />
 							</td>
 						</tr>

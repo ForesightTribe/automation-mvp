@@ -42,8 +42,25 @@ export const GRANULARITY = [
 
 const WEEKDAY = "Mon–Thu";
 const WEEKEND = "Fri–Sun";
+/** The table's one tinted surface: weekend columns, category headers and
+ *  subtotal rows all share it. */
+const TINT = "bg-[#f0ede8]";
+/** Same tint, but painted on the CELLS. A row-level background sits behind its
+ *  cells' borders, so BAND_GAP's transparent border would be filled in by it —
+ *  the tint has to be on the cells for the gap to show. */
+const TINT_CELLS = "[&>td]:bg-[#f0ede8]";
+/** Rounds a full-width band row at both ends, so it reads as a band rather
+ *  than a full-bleed stripe. */
+const ROUNDED =
+	"[&>td:first-child]:rounded-l-lg [&>td:last-child]:rounded-r-lg";
+/** Clear space above a band row. A <tr> can't take margin, so this is a
+ *  transparent top border; `bg-clip-padding` keeps the band's tint out of it,
+ *  which is what makes it read as a gap rather than a taller band. */
+const BAND_GAP =
+	"[&>td]:border-t-[10px] [&>td]:border-transparent [&>td]:bg-clip-padding";
+
 /** Tint carried by every Fri–Sun column, matching the daily view's weekend tint. */
-const WEEKEND_BG = "bg-muted/70";
+const WEEKEND_BG = "bg-[#faf8f5]";
 
 /** "2026-07-01" -> "01-07". */
 const dayLabel = (iso) => {
@@ -65,11 +82,11 @@ const avgNumber = (v) =>
 /** Excel-like tinted delta cell from a growth fraction (null -> em dash). */
 const DeltaCell = ({ delta }) => {
 	if (delta === null || delta === undefined)
-		return <td className="px-2 py-1.5 text-right text-content-subtle">—</td>;
+		return <td className="px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right text-content-subtle">—</td>;
 	const up = delta >= 0;
 	return (
 		<td
-			className={`px-2 py-1.5 text-right text-xs font-medium tabular-nums ${
+			className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right text-xs font-medium tabular-nums ${
 				up ? "bg-success-soft text-success" : "bg-danger-soft text-danger"
 			}`}
 		>
@@ -141,8 +158,8 @@ const PivotTable = ({ data, granularity }) => {
 					weeks are counted ({weeks[0].start} → {weeks[weeks.length - 1].end}).
 				</p>
 			)}
-			<div className="overflow-x-auto rounded-xl border border-border bg-card">
-				<table className="w-full border-collapse text-sm">
+			<div className="overflow-x-auto rounded-xl border border-border bg-card p-2 lg:p-3 2xl:p-4">
+				<table className="w-full border-separate border-spacing-0 text-xs lg:text-[13px] 2xl:text-sm">
 					{daily ? <DailyHead days={days} /> : <WeeklyHead weeks={weeks} />}
 					<tbody>
 						{platforms.map((p) => (
@@ -153,6 +170,7 @@ const PivotTable = ({ data, granularity }) => {
 								weeks={weeks}
 								daily={daily}
 								colCount={colCount}
+								showPlatform={platforms.length > 1}
 							/>
 						))}
 					</tbody>
@@ -162,13 +180,14 @@ const PivotTable = ({ data, granularity }) => {
 	);
 };
 
-const HEAD_ROW = "border-b border-border bg-muted/60 text-content-subtle";
-const HEAD_CELL = "px-2 py-2 text-right font-medium";
+const HEAD_ROW =
+	"bg-card text-content-subtle [&>th]:border-b [&>th]:border-border";
+const HEAD_CELL = "px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-right font-medium";
 
 const DailyHead = ({ days }) => (
 	<thead>
 		<tr className={HEAD_ROW}>
-			<th className="sticky left-0 z-10 bg-muted/60 px-3 py-2 text-left font-medium">
+			<th className="sticky left-0 z-10 bg-card px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-left font-medium">
 				SKU
 			</th>
 			{days.map((d) => (
@@ -180,7 +199,7 @@ const DailyHead = ({ days }) => (
 					{dayLabel(d.date)}
 				</th>
 			))}
-			<th className="px-3 py-2 text-right font-medium">Total</th>
+			<th className="px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-right font-medium">Total</th>
 		</tr>
 	</thead>
 );
@@ -197,7 +216,7 @@ const WeeklyHead = ({ weeks }) => {
 			<tr className={HEAD_ROW}>
 				<th
 					rowSpan={2}
-					className="sticky left-0 z-10 bg-muted/60 px-3 py-2 text-left font-medium"
+					className="sticky left-0 z-10 bg-card px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-left font-medium"
 				>
 					SKU
 				</th>
@@ -271,13 +290,13 @@ const ValueCells = ({ row, days, daily, muted, inverse }) => {
 				{row.cells.map((v, i) => (
 					<td
 						key={i}
-						className={`px-2 py-1.5 text-right tabular-nums ${tone} ${weekend(i)}`}
+						className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right tabular-nums ${tone} ${weekend(i)}`}
 					>
 						{formatNumber(v)}
 					</td>
 				))}
 				<td
-					className={`px-3 py-1.5 text-right font-semibold tabular-nums ${total}`}
+					className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums ${total}`}
 				>
 					{formatNumber(row.total)}
 				</td>
@@ -289,26 +308,26 @@ const ValueCells = ({ row, days, daily, muted, inverse }) => {
 			{row.weekday.cells.map((v, i) => (
 				<Fragment key={i}>
 					<td
-						className={`border-l border-border px-2 py-1.5 text-right tabular-nums ${tone}`}
+						className={`border-l border-border px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right tabular-nums ${tone}`}
 					>
 						{avgNumber(v)}
 					</td>
 					<td
-						className={`px-2 py-1.5 text-right tabular-nums ${tone} ${WEEKEND_BG}`}
+						className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right tabular-nums ${tone} ${WEEKEND_BG}`}
 					>
 						{avgNumber(row.weekend.cells[i])}
 					</td>
 				</Fragment>
 			))}
-			<td className="border-l border-border px-2 py-1.5 text-right font-semibold tabular-nums text-content">
+			<td className="border-l border-border px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums text-content">
 				{avgNumber(row.weekday.total)}
 			</td>
 			<td
-				className={`px-2 py-1.5 text-right font-semibold tabular-nums text-content ${WEEKEND_BG}`}
+				className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums text-content ${WEEKEND_BG}`}
 			>
 				{avgNumber(row.weekend.total)}
 			</td>
-			<td className="px-3 py-1.5 text-right font-semibold tabular-nums text-content">
+			<td className="px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums text-content">
 				{avgNumber(row.week_total)}
 			</td>
 			{/* Deltas compare like with like — this week's Mon–Thu against last
@@ -323,7 +342,7 @@ const ValueCells = ({ row, days, daily, muted, inverse }) => {
 	);
 };
 
-const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
+const PlatformBlock = ({ platform, days, weeks, daily, colCount, showPlatform }) => {
 	// Categories collapsed by name — expanded by default, so the report opens
 	// looking exactly as it did before categories existed.
 	const [collapsed, setCollapsed] = useState(() => new Set());
@@ -336,22 +355,27 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 
 	return (
 		<>
-			<tr className="border-b border-border bg-primary-soft/70">
-				<td
-					colSpan={colCount}
-					className="sticky left-0 px-3 py-1.5 text-left font-display text-sm font-semibold text-content"
-				>
-					{platform.platform}
-				</td>
-			</tr>
+			{/* The marketplace name only earns a row when there is more than one
+			    block to tell apart — with a single marketplace it is noise above
+			    the first category. */}
+			{showPlatform && (
+				<tr className={`${TINT} ${ROUNDED}`}>
+					<td
+						colSpan={colCount}
+						className="sticky left-0 px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-left font-display text-sm font-semibold text-content"
+					>
+						{platform.platform}
+					</td>
+				</tr>
+			)}
 			{platform.categories.map((cat) => (
 				<Fragment key={cat.name}>
 					{/* Category heading — a label only; its numbers live on the
 					    subtotal row that closes the group, Excel-pivot style. */}
-					<tr className="border-b border-border/60 bg-muted">
+					<tr className={`${TINT_CELLS} ${ROUNDED} ${BAND_GAP}`}>
 						<td
 							colSpan={colCount}
-							className="sticky left-0 px-3 py-2 text-left font-medium text-content"
+							className="sticky left-0 py-1.5 pr-1.5 pl-6 text-left font-medium text-content lg:py-2.5 lg:pr-3 lg:pl-10 2xl:py-3 2xl:pr-4 2xl:pl-12"
 						>
 							<button
 								type="button"
@@ -384,9 +408,9 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 						cat.skus.map((sku) => (
 							<tr
 								key={sku.item_id}
-								className="border-b border-border/60 hover:bg-muted/40"
+								className="hover:bg-muted/40 [&>td]:border-b [&>td]:border-border/60"
 							>
-								<td className="sticky left-0 z-10 max-w-60 truncate bg-card py-1.5 pl-7 pr-3 text-left text-content">
+								<td className="sticky left-0 z-10 max-w-40 truncate lg:max-w-52 2xl:max-w-60 bg-card py-2.5 pr-2 pl-4 lg:py-3 lg:pr-3 lg:pl-5 2xl:py-4 2xl:pr-4 2xl:pl-6 text-left text-content">
 									{sku.name}
 								</td>
 								<ValueCells row={sku} days={days} daily={daily} muted />
@@ -398,8 +422,8 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 						row={cat}
 						days={days}
 						daily={daily}
-						className="border-b border-border bg-muted text-content"
-						cellBg="bg-muted"
+						className={`${TINT} ${ROUNDED} text-content`}
+						cellBg={TINT}
 						label={`Total - ${cat.name}`}
 					/>
 				</Fragment>
@@ -411,7 +435,7 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
 				days={days}
 				daily={daily}
 				inverse
-				className="bg-inverse text-on-inverse"
+				className={`text-on-inverse ${ROUNDED} ${BAND_GAP} [&>td]:bg-inverse`}
 				cellBg="bg-inverse"
 				label="Grand Total"
 			/>
@@ -425,7 +449,7 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount }) => {
  */
 const TotalsRow = ({ row, days, daily, className, cellBg, label, inverse }) => (
 	<tr className={`font-semibold ${className}`}>
-		<td className={`sticky left-0 z-10 px-3 py-2 text-left ${cellBg}`}>
+		<td className={`sticky left-0 z-10 px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-left ${cellBg}`}>
 			{label}
 		</td>
 		<ValueCells row={row} days={days} daily={daily} inverse={inverse} />
