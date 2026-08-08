@@ -18,17 +18,20 @@ const STATE = {
 	ACTIVE: { tone: "bg-success-soft text-success", label: "Running" },
 	STOPPED: { tone: "bg-muted text-content-muted", label: "Stopped" },
 	DRAFT: { tone: "bg-info-soft text-info", label: "Draft" },
+	// ON_HOLD = Blinkit paused delivery because the campaign's budget ran out. It is a
+	// LIVE campaign, so Stop applies; Start does not, because it was never stopped —
+	// raising its budget is what revives it.
 	ON_HOLD: {
 		tone: "bg-warning-soft text-warning",
 		label: "On hold",
-		blocked:
-			"Blinkit put this campaign on hold — it can't be started or stopped from here.",
+		noStart:
+			"Its daily budget is used up, so Blinkit has paused delivery. Raise the budget to revive it — there's nothing to restart.",
 	},
 	COMPLETED: {
 		tone: "bg-muted text-content-subtle",
 		label: "Completed",
 		blocked:
-			"This campaign has ended. Completed campaigns can't be restarted.",
+			"This campaign has ended. Completed campaigns can't be started or stopped.",
 	},
 };
 
@@ -58,7 +61,8 @@ export const ActivateNowCard = () => {
 		(c) => c.campaign_id === Number(campaign.id),
 	);
 	const state = STATE[selected?.status] ?? null;
-	const blocked = state?.blocked ?? null;
+	const blocked = state?.blocked ?? null; // neither direction is possible
+	const noStart = state?.noStart ?? null; // stoppable, but not startable
 
 	const refreshHistory = () =>
 		qc.invalidateQueries({ queryKey: ["cm2-history", activeClientId] });
@@ -127,7 +131,9 @@ export const ActivateNowCard = () => {
 							Stop
 						</Button>
 						<Button
-							disabled={busy || Boolean(blocked)}
+							disabled={
+								busy || Boolean(blocked) || Boolean(noStart)
+							}
 							onClick={startConfirm}
 						>
 							Start
@@ -147,7 +153,11 @@ export const ActivateNowCard = () => {
 				</p>
 			)}
 
-			{blocked && <p className="mt-2 text-xs text-warning">{blocked}</p>}
+			{(blocked || noStart) && (
+				<p className="mt-2 text-xs text-warning">
+					{blocked ?? noStart}
+				</p>
+			)}
 
 			{confirming && (
 				<div className="mt-4 rounded-lg border border-border bg-muted/40 p-3">

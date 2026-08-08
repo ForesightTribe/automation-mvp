@@ -77,7 +77,14 @@ def status_transition_denied(current: str | None, target: str, *,
             return None
         return f"campaign is a draft — {'not startable by a rule' if target == 'running' else 'nothing to pause'}"
     if current == "held":
-        return "campaign is ON_HOLD (Blinkit-imposed) — not ours to change"
+        # ON_HOLD = Blinkit paused delivery because the campaign's budget ran out. It is
+        # still a LIVE campaign, not a stopped one — so it can be stopped, and raising its
+        # budget is what revives it. What it CANNOT be is "restarted": there is nothing to
+        # restart, which is why Blinkit offers `['UPDATE']` and never `['RESTART']` for it.
+        if target == "paused":
+            return None
+        return ("campaign is ON_HOLD (its budget is exhausted) — raise the budget to revive "
+                "it; there is nothing to restart")
     if current == "ended":
         return "campaign is COMPLETED — terminal, cannot be restarted"
     # An unmapped marketplace string. Refuse rather than guess: a new Blinkit status

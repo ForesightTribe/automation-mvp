@@ -262,10 +262,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                      f"restart · {reason}", dry_run, True, kind="activation"))
                 continue
 
-            # Blinkit rejects a budget UPDATE on a campaign that isn't running (a stopped
-            # one reports `allowed_transitions: ['RESTART']`), so the budget write is gated
-            # on the status. The STOP is NOT — see below.
-            can_write_budget = current_state in (None, "running")
+            # Blinkit rejects a budget UPDATE on a STOPPED campaign (it reports
+            # `allowed_transitions: ['RESTART']`), so the budget write is gated on status.
+            # `held` (ON_HOLD) explicitly DOES accept one and reports `['UPDATE']`: it means
+            # Blinkit paused delivery because the budget ran out, so the campaign is live
+            # and raising its budget is precisely what revives it. Skipping those was
+            # backwards — it withheld the one write that would have helped.
+            # The STOP is not gated at all — see below.
+            can_write_budget = current_state in (None, "running", "held")
 
             if not can_write_budget and want_state != "paused":
                 # Stopped (and not due to start), on hold, completed, draft… nothing useful

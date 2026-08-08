@@ -20,13 +20,20 @@ def test_normal_transitions_allowed():
     assert denied("running", "paused") is None      # stop — the DELETE path
 
 
-def test_terminal_states_refused_both_ways():
-    # COMPLETED is terminal: Blinkit is done with the campaign.
+def test_completed_is_refused_both_ways():
+    """COMPLETED is genuinely terminal: Blinkit is done with the campaign."""
     assert denied("ended", "running") is not None
     assert denied("ended", "paused") is not None
-    # ON_HOLD is Blinkit-imposed — clearing it is not ours to do.
+
+
+def test_on_hold_can_be_stopped_but_never_restarted():
+    """ON_HOLD means the budget ran out and Blinkit paused delivery — the campaign is
+    LIVE, so "off outside the window" still applies to it. What it can't be is restarted:
+    it was never stopped, which is why Blinkit reports `['UPDATE']` and never `['RESTART']`
+    for it. Raising its budget is the thing that revives it, and that is a budget write,
+    not a status one."""
+    assert denied("held", "paused") is None
     assert denied("held", "running") is not None
-    assert denied("held", "paused") is not None
 
 
 def test_draft_only_startable_on_demand():

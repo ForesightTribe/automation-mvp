@@ -143,10 +143,19 @@ def test_window_end_with_toggle_off_reverts_but_never_stops():
     assert calls == [("budget", 500.0)], calls
 
 
-def test_held_campaign_is_never_written_to():
-    """ON_HOLD is Blinkit-imposed. Blinkit reports `allowed_transitions: ['UPDATE']` for
-    it, but the campaign isn't serving and the hold isn't ours to work around."""
-    assert _run(status="held", toggle=True, now=NOW_IN_WINDOW) == []
+def test_held_campaign_still_gets_its_budget():
+    """ON_HOLD means Blinkit paused delivery because the budget ran out — the campaign is
+    LIVE, and raising its budget is exactly what revives it. Skipping the write withheld
+    the one thing that would have helped, on 5 of the client's 11 automated campaigns."""
+    calls = _run(status="held", toggle=True, now=NOW_IN_WINDOW)
+    assert calls == [("budget", 1500.0)], calls
+
+
+def test_held_campaign_is_never_restarted():
+    """There is nothing to restart — which is why Blinkit offers `['UPDATE']` and never
+    `['RESTART']` for a held campaign. The budget write is what matters."""
+    from campaign_manager.writes import status_transition_denied
+    assert status_transition_denied("held", "running") is not None
 
 
 def test_completed_campaign_is_never_written_to():
@@ -218,10 +227,10 @@ def test_a_stop_is_attempted_even_for_an_unrecognised_status():
     # as a guardrail trip, which is visible, instead of vanishing into a bare "skip".
 
 
-def test_held_campaign_at_a_window_end_is_still_offered_to_the_guardrail():
-    """ON_HOLD reaches the transition table and is refused there — deliberately, so the
-    reason is logged rather than inferred from silence."""
-    assert _run(status="held", toggle=True, now=NOW_AT_END, current_budget=1500.0) == []
+def test_held_campaign_at_a_window_end_reverts_AND_stops():
+    """A held campaign is live, so "off outside the window" applies to it too."""
+    calls = _run(status="held", toggle=True, now=NOW_AT_END, current_budget=1500.0)
+    assert calls == [("budget", 500.0), ("status", "paused", None)], calls
 
 
 def _run_all() -> int:

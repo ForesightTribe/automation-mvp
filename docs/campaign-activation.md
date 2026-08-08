@@ -137,7 +137,7 @@ Captured from a real stop + restart of campaign 574687 on 2026-08-06, trimmed:
 | ----------- | --------- | -------------------------------------------------------- |
 | `ACTIVE`    | `running` |                                                          |
 | `STOPPED`   | `paused`  | user-stopped — resumable                                 |
-| `ON_HOLD`   | `held`    | Blinkit-imposed. Never written by us, never overwritten. |
+| `ON_HOLD`   | `held`    | **Blinkit paused delivery because the daily budget ran out.** LIVE, not stopped: accepts a budget write (which is what revives it) and can be stopped. Never *restarted* — hence `['UPDATE']`, never `['RESTART']`. |
 | `COMPLETED` | `ended`   | terminal                                                 |
 | `DRAFT`     | `draft`   | never launched                                           |
 | `SCHEDULED` | `running` | **transient** — Blinkit reports this for a minute or two after a RESTART, before settling to `ACTIVE`. Too short-lived to appear in the scraped status table, which is why the first five values looked like the whole vocabulary. |
@@ -335,7 +335,7 @@ In `writes.py`, alongside the existing pure guardrails. The transition table:
 | `running`            | no-op (skip)                                                | **apply** — revert budget, then DELETE |
 | `paused`             | **apply** — RESTART                                         | no-op (skip)                           |
 | `draft`              | on-demand only (AD8)                                        | refuse                                 |
-| `held`               | **refuse** — Blinkit-imposed, not ours to clear             | refuse                                 |
+| `held`  | **refuse** — nothing to restart; raise the budget instead | **apply** — it is live, so "off outside the window" applies to it |
 | `ended`              | **refuse** — terminal                                       | refuse                                 |
 | unknown              | **refuse** — an unmapped string means read again, not guess | refuse                                 |
 
@@ -633,7 +633,7 @@ than by structure.
 | ~~R2~~ | ~~Every resume re-dates the campaign (`campaign_start` → today).~~                                                                          | **Closed 2026-08-07 (A1)** — Blinkit ignores the `campaign_start` we send; the campaign keeps its original start date. No client conversation needed. §2.2.                 |
 | **R3** | `advertiser_id: 0` is undocumented behaviour copied from one capture. On a multi-account login it might mean "default account".             | AD4 keeps the arm gate; verify on the first attended live resume that advertiser 19802's campaign is what actually changed                                                  |
 | ~~R4~~ | ~~Success detection — response bodies not captured~~                                                                                        | **resolved 2026-08-06** — §2.4, both shapes work unchanged                                                                                                                  |
-| **R5** | `ON_HOLD` semantics unconfirmed — budget-exhausted (self-clearing) or a review hold?                                                        | The guardrail refuses either way, so it is safe but possibly over-cautious. Ask the client.                                                                                 |
+| ~~R5~~ | ~~`ON_HOLD` semantics unconfirmed.~~ | **Resolved 2026-08-08 (Deepansh): Blinkit puts a campaign ON_HOLD when its budget exhausts — it is effectively running, so treat it normally.** The over-cautious guardrail was actively harmful: it skipped the budget write on 5 of the client's 11 automated campaigns, withholding the one write that would have revived them. `held` is now budget-writable and stoppable; only the *restart* is refused, because there is nothing to restart. |
 | **R6** | Blinkit may rate-limit or reject rapid status flips.                                                                                        | The rate-limit guardrail caps it; needs one real observation to tune                                                                                                        |
 | **R7** | A campaign carrying a _finite_ end date is silently converted to no-end-date by a restart (AD5).                                            | Rare — nearly all Dobra campaigns are already infinite. Log at WARNING when a restart changes a finite end date.                                                            |
 | **R11** | The window-end stop can also be lost to the **duplicate-job guard**, not just to a runner outage: the hourly safety poll and the boundary fire are the SAME job type on the same lane, so if a `cm.budget_scheduler` run is still active when the boundary fires, the producer drops that fire. The budget half self-heals at the next poll; the stop half does not (by 03:00 the window no longer counts as *just ended*). | Widens R8's accepted trade rather than adding a new one. Visible as a missing stop row in History. Revisit with the R8 recovery item in the backlog. |
