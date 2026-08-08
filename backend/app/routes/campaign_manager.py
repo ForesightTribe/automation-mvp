@@ -17,6 +17,7 @@ from app.schemas.campaign_manager import (
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
 from app.services.campaign_manager_service import EditError
+from campaign_manager.repo import DuplicateSchedule
 from jobs.queue import DuplicateActiveJob
 
 router = APIRouter()
@@ -33,7 +34,12 @@ async def list_budget_schedules(client: ClientDep):
 
 @router.post("/budget-schedules", response_model=BudgetScheduleOut, status_code=201)
 async def create_budget_schedule(client: ClientDep, session: SessionDep, body: BudgetScheduleIn):
-    return await svc.create_budget_schedule(session, client.id, body)
+    try:
+        return await svc.create_budget_schedule(session, client.id, body)
+    except DuplicateSchedule as e:
+        # The UI has always had a message for this; without the mapping it never saw the
+        # 409 and showed a generic failure instead.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
 
 
 @router.patch("/budget-schedules/{schedule_id}", response_model=BudgetScheduleOut)
