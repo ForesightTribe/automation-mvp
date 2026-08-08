@@ -129,6 +129,13 @@ _STATUS_FROM_BLINKIT = {
     "ON_HOLD": "held",          # Blinkit-imposed — never ours to clear
     "COMPLETED": "ended",       # terminal
     "DRAFT": "draft",           # never launched
+    # TRANSIENT, and it bit us in production on 2026-08-08: for a minute or two after a
+    # RESTART, Blinkit reports the campaign as SCHEDULED before settling to ACTIVE. It is
+    # live (or imminently so), not stopped — so it maps to `running`: we may set its budget
+    # and we may stop it. Treating it as unknown made the engine skip a window-end stop and
+    # leave the campaign spending. Too short-lived to appear in the scraped status table,
+    # which is why the first five values looked like the whole vocabulary.
+    "SCHEDULED": "running",
 }
 
 

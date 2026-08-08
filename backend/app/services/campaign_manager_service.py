@@ -8,6 +8,7 @@ Convention: functions return schema DTOs (or None for not-found / access-denied,
 route maps to 404); a `DuplicateActiveJob` from the queue propagates for the route to 409.
 """
 import uuid
+from datetime import datetime, timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
@@ -56,17 +57,49 @@ async def _reapply(session, tenant_id: uuid.UUID, job_type: str) -> None:
 
 # ── Status (computed, so the UI shows Running / Scheduled / Ended, not raw state) ──
 
-def _expired(*, type_: str, date: str | None, end_date: str | None) -> bool:
-    today = now_ist().strftime("%Y-%m-%d")
+def _hhmm(value: str | None) -> tuple[int, int] | None:
+    try:
+        h, m = value.split(":")[:2]
+        return int(h), int(m)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _once_window_end(date_: str, start_time: str | None, end_time: str | None) -> datetime:
+    """When a one-time rule's window actually closes (overnight-aware)."""
+    base = datetime.strptime(date_, "%Y-%m-%d")
+    eh, sh = _hhmm(end_time), _hhmm(start_time) or (0, 0)
+    if eh is None:
+        return base + timedelta(days=1)          # no end time → runs to midnight
+    end = base.replace(hour=eh[0], minute=eh[1])
+    return end + timedelta(days=1) if eh <= sh else end   # overnight tail
+
+
+def _expired(*, type_: str, date: str | None, end_date: str | None,
+             start_time: str | None = None, end_time: str | None = None) -> bool:
+    """Has this rule finished for good?
+
+    For a `once` rule that means its WINDOW has closed, not merely that its date has
+    passed. Checking only `date < today` left a one-time automation reading "Scheduled"
+    for the rest of the day after it had already run and reverted — which is exactly how
+    a spent rule looked like an upcoming one in the Scheduled pane.
+    """
+    now = now_ist()
     if type_ == "once":
-        return bool(date and date < today)
-    return bool(end_date and end_date < today)
+        if not date:
+            return False
+        try:
+            return _once_window_end(date, start_time, end_time) <= now
+        except ValueError:                       # unparseable date — don't claim it ended
+            return False
+    return bool(end_date and end_date < now.strftime("%Y-%m-%d"))
 
 
 def _budget_rule_status(r, now) -> str:
     if _matches_rule(_rule_to_dict(r), now):
         return "running"
-    if _expired(type_=r.type, date=r.date, end_date=r.end_date):
+    if _expired(type_=r.type, date=r.date, end_date=r.end_date,
+                start_time=r.start_time, end_time=r.end_time):
         return "ended"
     return "scheduled"
 
@@ -87,7 +120,8 @@ def _bid_status(r, now) -> str:
         return r.state                            # paused / stopped
     if _in_window(_bid_dict(r), now):
         return "running"
-    if _expired(type_=r.type, date=r.date, end_date=r.stop_date):
+    if _expired(type_=r.type, date=r.date, end_date=r.stop_date,
+                start_time=r.start_time, end_time=r.stop_time):
         return "ended"
     return "scheduled"
 
@@ -180,6 +214,9 @@ async def update_budget_rule(session, tenant_id: uuid.UUID, rule_id: int,
     if not s or s.tenant_id != tenant_id:
         return None
     fields = body.model_dump(exclude_unset=True)
+    # Deliberately WITHOUT start/end times: this guard is about the DATE. Passing the
+    # times would block rescheduling a spent one-time rule to later the SAME day, which is
+    # the most natural correction to make.
     if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
                 end_date=fields.get("end_date", r.end_date)):
         raise EditError("This one-time window has already ended — change its date to reschedule it.")
@@ -264,6 +301,7 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
         return None
     fields = body.model_dump(exclude_unset=True)
     # Reject editing a spent one-time rule unless the edit moves its date into the future.
+    # Date-only on purpose — see the note in update_budget_rule.
     if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
                 end_date=fields.get("stop_date", r.stop_date)):
         raise EditError("This one-time window has already ended — change its date to reschedule it.")

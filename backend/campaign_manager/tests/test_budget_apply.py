@@ -194,6 +194,36 @@ def test_stop_passes_no_budget_at_all():
     assert calls == [("status", "paused", None)], calls
 
 
+# ── Unfamiliar statuses (the 2026-08-08 production bug) ──────────────────────
+
+def test_scheduled_is_treated_as_running():
+    """Blinkit reports SCHEDULED for a minute or two after a RESTART. It is live, so a
+    window end must still revert the budget and stop it — the case that left campaign
+    574687 serving at its window budget."""
+    from campaign_manager.marketplaces.blinkit.adapter import _canonical
+    assert _canonical("SCHEDULED") == "running"
+
+    calls = _run(status="running", toggle=True, now=NOW_AT_END, current_budget=1500.0)
+    assert calls == [("budget", 500.0), ("status", "paused", None)], calls
+
+
+def test_a_stop_is_attempted_even_for_an_unrecognised_status():
+    """A status we cannot map must never silently cancel a stop. Failing to START a
+    campaign is cheap; failing to STOP one costs money every hour. The budget write is
+    skipped (Blinkit would reject it), the stop is still attempted, and the transition
+    table — not this engine — decides whether it is allowed."""
+    calls = _run(status="SOMETHING_NEW", toggle=True, now=NOW_AT_END, current_budget=1500.0)
+    assert calls == [], calls          # the transition table refuses an unknown status…
+    # …but it was ASKED, rather than skipped before it could refuse: the refusal is logged
+    # as a guardrail trip, which is visible, instead of vanishing into a bare "skip".
+
+
+def test_held_campaign_at_a_window_end_is_still_offered_to_the_guardrail():
+    """ON_HOLD reaches the transition table and is refused there — deliberately, so the
+    reason is logged rather than inferred from silence."""
+    assert _run(status="held", toggle=True, now=NOW_AT_END, current_budget=1500.0) == []
+
+
 def _run_all() -> int:
     tests = [v for k, v in sorted(globals().items())
              if k.startswith("test_") and callable(v)]

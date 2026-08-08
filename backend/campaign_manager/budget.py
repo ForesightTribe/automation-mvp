@@ -107,22 +107,31 @@ def target_for_now(default_budget: float, rules: list[dict], now: datetime) -> t
 
 def _window_just_ended(rules: list[dict], now: datetime,
                        grace_seconds: int | None = None) -> bool:
-    """True when no rule matches now but one did `grace` ago — i.e. this moment IS a
-    window END, rather than merely some moment outside a window.
+    """True when nothing matches now but something did within the last `grace` — i.e.
+    this moment IS a window END, rather than merely some moment outside a window.
 
-    This distinction is the whole of AD2. "Stop whenever nothing matches" would stop a
+    That distinction is the whole of AD2. "Stop whenever nothing matches" would stop a
     campaign at times nobody asked for: a schedule created at 14:00 for a 19:00–02:00
     window would have its campaign stopped by the 15:00 safety poll, hours before the
     automation had ever run. Derived from the rules alone — nothing is remembered.
 
-    The grace is the scheduler's own misfire window, so the two agree on what counts as
-    a late fire: a boundary fire late enough that the scheduler would call it *missed* is
-    also late enough that we no longer treat it as a window end. Consequence, accepted
-    deliberately: a window-end fire missed while the runner was down means no stop that
-    night (R8) — the campaign runs on at its default budget until the next window.
+    Probed as an INTERVAL, minute by minute — NOT as a single instant at `now - grace`.
+    A point probe silently fails whenever the window is shorter than the grace: a
+    15:46–15:49 window fired at 15:49 looks back to 15:44, lands before the window even
+    opened, finds no match, and never stops the campaign. That is precisely how campaign
+    574687 was left running on 2026-08-08, and a late fire breaks a point probe the same
+    way even on a long window.
+
+    The grace is the scheduler's own misfire window, so the two agree on what counts as a
+    late fire. Consequence, accepted deliberately: a window-end fire missed while the
+    runner was down means no stop that night (R8) — the campaign runs on at its default
+    budget until the next window.
     """
     grace = settings.SCHEDULER_MISFIRE_GRACE_SECONDS if grace_seconds is None else grace_seconds
-    return any(_matches_rule(r, now - timedelta(seconds=grace)) for r in rules)
+    for minutes_ago in range(1, max(1, int(grace // 60)) + 1):
+        if any(_matches_rule(r, now - timedelta(minutes=minutes_ago)) for r in rules):
+            return True
+    return False
 
 
 def plan_for_now(default_budget: float, rules: list[dict], now: datetime, *,
@@ -253,23 +262,34 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                      f"restart · {reason}", dry_run, True, kind="activation"))
                 continue
 
-            if current_state not in (None, "running"):
-                # Stopped (and not due to start), on hold, completed, draft… Blinkit
-                # rejects writes to these, so skip loudly instead of writing blind (AD7).
+            # Blinkit rejects a budget UPDATE on a campaign that isn't running (a stopped
+            # one reports `allowed_transitions: ['RESTART']`), so the budget write is gated
+            # on the status. The STOP is NOT — see below.
+            can_write_budget = current_state in (None, "running")
+
+            if not can_write_budget and want_state != "paused":
+                # Stopped (and not due to start), on hold, completed, draft… nothing useful
+                # to do, and nothing at risk in doing nothing.
                 logs.decision(run_id, dry_run=dry_run, campaign_id=cid, verdict="skip",
                               reason=f"campaign is {current_state} — no budget write")
                 skipped += 1
                 continue
 
-            # recent_writes=0 in dry-run (nothing real is counted); real count is wired
-            # for live mode (V5), where the rate-limit guardrail actually gates writes.
-            ok = await writes.apply_budget(
-                adapter, client, run_id=run_id, campaign_id=cid,
-                target=target, current=current, dry_run=dry_run, recent_writes=0,
-            )
-            action = "apply" if ok else ("no-op" if current == target else "skip")
-            applied += int(ok)
-            skipped += int(not ok)
+            if can_write_budget:
+                # recent_writes=0 in dry-run (nothing real is counted); real count is wired
+                # for live mode (V5), where the rate-limit guardrail actually gates writes.
+                ok = await writes.apply_budget(
+                    adapter, client, run_id=run_id, campaign_id=cid,
+                    target=target, current=current, dry_run=dry_run, recent_writes=0,
+                )
+                action = "apply" if ok else ("no-op" if current == target else "skip")
+                applied += int(ok)
+                skipped += int(not ok)
+            else:
+                ok, action = False, "skip"
+                logs.decision(run_id, dry_run=dry_run, campaign_id=cid, verdict="skip",
+                              reason=f"campaign is {current_state} — no budget write, "
+                                     "stopping anyway")
 
             # Revert the budget FIRST, then stop (AD6): if the stop fails the campaign
             # runs on at its DEFAULT budget rather than the elevated one, which bounds
@@ -277,10 +297,17 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # default, so a manual restart from Blinkit's dashboard — which pre-fills
             # from the stored budget — doesn't bring it back hot.
             if want_state == "paused":
-                # The stop is attempted even if the revert above failed: a campaign left
-                # RUNNING at an elevated budget is strictly worse than one stopped while
-                # still storing it (a stopped campaign spends nothing). AD6 is about the
-                # ORDER, not about making the stop conditional.
+                # The stop is attempted whatever the status read said and even if the
+                # revert above failed. Skipping a stop because the status was unfamiliar is
+                # how campaign 574687 was left serving at its window budget on 2026-08-08:
+                # Blinkit reported the transient post-restart `SCHEDULED`, the engine
+                # didn't recognise it, and quietly did nothing. Failing to START a campaign
+                # is cheap; failing to STOP one costs money every hour. The transition
+                # table in writes.apply_status is the single place allowed to refuse
+                # (held / ended / already-stopped), and it logs when it does.
+                #
+                # AD6 is about the ORDER of revert-then-stop, not about making the stop
+                # conditional on the revert succeeding.
                 stopped_ok = await writes.apply_status(
                     adapter, client, run_id=run_id, campaign_id=cid, target="paused",
                     current=current_state, dry_run=dry_run,

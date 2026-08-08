@@ -163,6 +163,55 @@ def test_plan_and_target_agree_on_the_budget():
         assert _plan(at)[0] == target_for_now(200, [WINDOW], at)[0]
 
 
+# ── Short windows (the 2026-08-08 production bug) ───────────────────────
+#
+# `_window_just_ended` used to probe a SINGLE instant at `now - grace`. Any window shorter
+# than the grace fell straight through the gap: the probe landed before the window had
+# even opened, so the campaign was never stopped.
+
+SHORT = {"type": "once", "date": "2026-08-08", "start_time": "15:46",
+         "end_time": "15:49", "days": [], "budget": 205}
+
+
+def test_short_window_still_triggers_the_stop():
+    """3-minute window, 5-minute grace — the exact case that left 574687 running."""
+    budget, state, _ = plan_for_now(200, [SHORT], datetime(2026, 8, 8, 15, 50),
+                                    stop_after_window=True)
+    assert (budget, state) == (200, "paused")
+
+
+def test_short_window_is_running_inside_it():
+    assert plan_for_now(200, [SHORT], datetime(2026, 8, 8, 15, 47),
+                        stop_after_window=True)[1] == "running"
+
+
+def test_short_window_is_left_alone_well_afterwards():
+    """Still AD2: an hour later is not a window end, so nothing is touched."""
+    assert plan_for_now(200, [SHORT], datetime(2026, 8, 8, 16, 30),
+                        stop_after_window=True)[1] is None
+
+
+def test_a_late_fire_within_the_grace_still_stops():
+    """The fire ran two minutes late — a point probe would have missed the window."""
+    assert plan_for_now(200, [SHORT], datetime(2026, 8, 8, 15, 51),
+                        stop_after_window=True)[1] == "paused"
+
+
+# ── UI status: a spent one-time rule must read "Ended", not "Scheduled" ──────
+
+def test_spent_once_rule_reads_as_ended_the_same_day():
+    """It used to compare only `date < today`, so a one-time automation that had already
+    run and reverted still showed as upcoming for the rest of the day."""
+    from app.services.campaign_manager_service import _expired, _once_window_end
+
+    assert _once_window_end("2026-08-08", "15:46", "15:49").hour == 15
+    assert _once_window_end("2026-08-08", "19:30", "02:00").day == 9      # overnight tail
+    assert _once_window_end("2026-08-08", "19:30", None).day == 9         # runs to midnight
+    # A future-dated rule is never expired.
+    assert _expired(type_="once", date="2099-01-01", end_date=None,
+                    start_time="15:46", end_time="15:49") is False
+
+
 def _run() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0
