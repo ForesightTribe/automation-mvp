@@ -1,6 +1,7 @@
 # Campaign Activation — start / stop campaigns as part of budget scheduling
 
-> **Status: A0–A4 BUILT (uncommitted, not deployed) · A2's click-through and A5 remain.**
+> **Status: A0–A5 BUILT (uncommitted, not deployed).** What remains is a DEPLOY, then the
+> click-through + one attended live window.
 > Blinkit APIs captured 2026-08-06 (§2); on-demand start/stop proven live on campaign 574687
 > 2026-08-07. Migration `b7e3f9c2a1d4` applied. 104/104 tests across eight suites.
 > Extends Campaign Manager v2. Read [campaign-manager-refactor.md](campaign-manager-refactor.md)
@@ -578,10 +579,23 @@ Conventions per [ui-rules.md](ui-rules.md): arrow components, tabs, theme tokens
   one-shot at 01:59), bid-logic **26/26** (window open at the early fire, closed under the
   look-ahead, look-ahead > lead). **104/104 across eight suites.**
 
-### A5 — UI + cutover
+### A5 — UI ✅ **BUILT 2026-08-07** · cutover still pending
 
-- Toggle in both budget forms, `ScheduledPane` chip, History filter.
-- **Gate:** full click-through dry; then arm and watch one real window open and close, attended.
+- ✅ **`AutomateBudgetForm`** — a checkbox under the window fields: _"Stop the campaign when the
+  window ends"_, with the consequence spelled out beneath it. No third composer tile: activation is
+  a property of a budget automation, and the UI says so.
+- ✅ **`EditBudgetScheduleForm`** — same toggle, so it can be turned on or off later. Saving
+  reconciles and re-applies, as every other schedule edit does.
+- ✅ **`ScheduledPane`** — an **ON/OFF** chip beside the default-budget chip, plus `· on/off` in the
+  one-line summary, so it's visible without expanding the row.
+- ✅ **`HistoryCard`** — a kind filter (All / Budget / Bidding / **On/off**); changing it resets to
+  page 1. Start/stop rows have no numeric change (a status isn't a number, and `cm_run_log`'s value
+  columns are floats), so for those the **reason** text fills the Change column — `running→paused`
+  rather than a bare dash.
+- Prettier + oxlint clean, `vite build` ✅, backend 104/104.
+- **Gate REMAINING:** the click-through (shared with A2) needs a deploy — the VM must have
+  `cm.set_activation` before the UI can enqueue it. Then: arm, and watch one real window open and
+  close, attended.
 
 **Dependencies:** A0 → A1 → A2 is the complete on-demand feature and ships on its own.
 A3 → A4 → A5 is the automation. A3 may start in parallel with A1/A2 — it needs no Blinkit access.

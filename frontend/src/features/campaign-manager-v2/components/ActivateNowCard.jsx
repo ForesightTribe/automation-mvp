@@ -21,12 +21,14 @@ const STATE = {
 	ON_HOLD: {
 		tone: "bg-warning-soft text-warning",
 		label: "On hold",
-		blocked: "Blinkit put this campaign on hold — it can't be started or stopped from here.",
+		blocked:
+			"Blinkit put this campaign on hold — it can't be started or stopped from here.",
 	},
 	COMPLETED: {
 		tone: "bg-muted text-content-subtle",
 		label: "Completed",
-		blocked: "This campaign has ended. Completed campaigns can't be restarted.",
+		blocked:
+			"This campaign has ended. Completed campaigns can't be restarted.",
 	},
 };
 
@@ -52,11 +54,14 @@ export const ActivateNowCard = () => {
 	const [budget, setBudget] = useState("");
 	const [job, setJob] = useState(null);
 
-	const selected = campaigns.find((c) => c.campaign_id === Number(campaign.id));
+	const selected = campaigns.find(
+		(c) => c.campaign_id === Number(campaign.id),
+	);
 	const state = STATE[selected?.status] ?? null;
 	const blocked = state?.blocked ?? null;
 
-	const refreshHistory = () => qc.invalidateQueries({ queryKey: ["cm2-history", activeClientId] });
+	const refreshHistory = () =>
+		qc.invalidateQueries({ queryKey: ["cm2-history", activeClientId] });
 
 	const send = (status, amount) => {
 		const label = campaign.name || `campaign ${campaign.id}`;
@@ -64,7 +69,9 @@ export const ActivateNowCard = () => {
 			{
 				campaignId: Number(campaign.id),
 				status,
-				...(status === "running" && amount ? { budget: Number(amount) } : {}),
+				...(status === "running" && amount
+					? { budget: Number(amount) }
+					: {}),
 			},
 			{
 				onSuccess: (data) => {
@@ -85,7 +92,9 @@ export const ActivateNowCard = () => {
 	};
 
 	const startConfirm = () => {
-		setBudget(selected?.daily_budget != null ? String(selected.daily_budget) : "");
+		setBudget(
+			selected?.daily_budget != null ? String(selected.daily_budget) : "",
+		);
 		setConfirming(true);
 	};
 
@@ -101,15 +110,26 @@ export const ActivateNowCard = () => {
 			<div className="grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
 				<label className="flex flex-col gap-1">
 					<span className={LABEL}>Campaign</span>
-					<CampaignPicker value={campaign.id} name={campaign.name} onChange={pick} />
+					<CampaignPicker
+						value={campaign.id}
+						name={campaign.name}
+						onChange={pick}
+					/>
 				</label>
 
 				{!confirming && (
 					<div className="flex items-center gap-2">
-						<Button variant="secondary" disabled={busy || Boolean(blocked)} onClick={() => send("paused")}>
+						<Button
+							variant="secondary"
+							disabled={busy || Boolean(blocked)}
+							onClick={() => send("paused")}
+						>
 							Stop
 						</Button>
-						<Button disabled={busy || Boolean(blocked)} onClick={startConfirm}>
+						<Button
+							disabled={busy || Boolean(blocked)}
+							onClick={startConfirm}
+						>
 							Start
 						</Button>
 					</div>
@@ -118,7 +138,11 @@ export const ActivateNowCard = () => {
 
 			{state && (
 				<p className="mt-2 flex items-center gap-2 text-xs text-content-muted">
-					<span className={`rounded-full px-2 py-0.5 font-medium ${state.tone}`}>{state.label}</span>
+					<span
+						className={`rounded-full px-2 py-0.5 font-medium ${state.tone}`}
+					>
+						{state.label}
+					</span>
 					as of the last dashboard sync
 				</p>
 			)}
@@ -131,8 +155,9 @@ export const ActivateNowCard = () => {
 						Start {campaign.name || `campaign ${campaign.id}`}?
 					</p>
 					<p className="mt-1 text-xs text-content-muted">
-						Blinkit restarts a campaign by re-submitting it, so its budget is set as part of
-						starting it. Its keywords, bids and products are carried over unchanged.
+						Blinkit restarts a campaign by re-submitting it, so its
+						budget is set as part of starting it. Its keywords, bids
+						and products are carried over unchanged.
 					</p>
 					<div className="mt-3 flex flex-wrap items-end gap-3">
 						<label className="flex flex-col gap-1">
@@ -146,10 +171,16 @@ export const ActivateNowCard = () => {
 								className={FIELD}
 							/>
 						</label>
-						<Button disabled={activate.isPending} onClick={() => send("running", budget)}>
+						<Button
+							disabled={activate.isPending}
+							onClick={() => send("running", budget)}
+						>
 							Start campaign
 						</Button>
-						<Button variant="ghost" onClick={() => setConfirming(false)}>
+						<Button
+							variant="ghost"
+							onClick={() => setConfirming(false)}
+						>
 							Cancel
 						</Button>
 					</div>
@@ -161,7 +192,8 @@ export const ActivateNowCard = () => {
 
 			{conflict && (
 				<p className="mt-3 text-xs text-danger">
-					An activation job is already running for this client — wait for it to finish.
+					An activation job is already running for this client — wait
+					for it to finish.
 				</p>
 			)}
 			{job && (

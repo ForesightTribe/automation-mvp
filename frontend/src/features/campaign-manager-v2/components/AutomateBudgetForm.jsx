@@ -13,12 +13,18 @@ const LABEL = "text-xs font-medium text-content-muted";
  * default budget (what applies when no window is active), and optionally add a
  * first scheduled window (₹ + timing). More windows can be added later from the
  * scheduled list. Backend takes the inline `rule`, so this is a single request.
+ *
+ * The "stop when the window ends" checkbox is campaign ACTIVATION (docs/campaign-activation.md)
+ * folded into this form rather than given its own composer: on Blinkit a restart carries
+ * the budget, so "run 19:00–02:00 at ₹1000" is one automation, not two. Note it governs
+ * only the STOP — a stopped campaign is always started at a window start either way.
  */
 export const AutomateBudgetForm = ({ onDone }) => {
 	const [campaign, setCampaign] = useState({ id: "", name: "" });
 	const [label, setLabel] = useState("");
 	const [defaultBudget, setDefaultBudget] = useState("");
 	const [windowBudget, setWindowBudget] = useState("");
+	const [stopAfterWindow, setStopAfterWindow] = useState(false);
 	const [timing, setTiming] = useState(emptyTiming());
 	const mutation = useCreateBudgetSchedule();
 
@@ -33,7 +39,11 @@ export const AutomateBudgetForm = ({ onDone }) => {
 				campaign_name: campaign.name || null,
 				name: label || null,
 				default_budget: Number(defaultBudget),
-				rule: { budget: Number(windowBudget), ...timingPayload(timing) },
+				stop_after_window: stopAfterWindow,
+				rule: {
+					budget: Number(windowBudget),
+					...timingPayload(timing),
+				},
 			},
 			{ onSuccess: () => onDone?.() },
 		);
@@ -60,7 +70,9 @@ export const AutomateBudgetForm = ({ onDone }) => {
 						placeholder="300"
 						className={FIELD}
 					/>
-					<span className="text-xs text-content-subtle">Used outside the scheduled window.</span>
+					<span className="text-xs text-content-subtle">
+						Used outside the scheduled window.
+					</span>
 				</label>
 				<label className="flex flex-col gap-1">
 					<span className={LABEL}>Label (optional)</span>
@@ -75,7 +87,9 @@ export const AutomateBudgetForm = ({ onDone }) => {
 
 			<div className="space-y-3 border-t border-border pt-4">
 				<div>
-					<h3 className="text-sm font-semibold text-content">Scheduled window</h3>
+					<h3 className="text-sm font-semibold text-content">
+						Scheduled window
+					</h3>
 					<p className="text-xs text-content-muted">
 						When to apply a different budget — and how much.
 					</p>
@@ -92,19 +106,41 @@ export const AutomateBudgetForm = ({ onDone }) => {
 					/>
 				</label>
 				<TimingFields value={timing} onChange={setTiming} />
+
+				<label className="flex cursor-pointer items-start gap-2.5 rounded-lg border border-border bg-card p-3">
+					<input
+						type="checkbox"
+						checked={stopAfterWindow}
+						onChange={(e) => setStopAfterWindow(e.target.checked)}
+						className="mt-0.5 h-4 w-4 accent-primary"
+					/>
+					<span className="min-w-0">
+						<span className="block text-sm font-medium text-content">
+							Stop the campaign when the window ends
+						</span>
+						<span className="block text-xs text-content-muted">
+							At the end of each window the budget returns to the
+							everyday amount and the campaign is stopped. It
+							starts again at the next window.
+						</span>
+					</span>
+				</label>
 			</div>
 
 			{mutation.isError && (
 				<p className="text-xs text-danger">
 					{mutation.error?.status === 409
 						? "An automation for that campaign already exists."
-						: (mutation.error?.message ?? "Failed to create automation")}
+						: (mutation.error?.message ??
+							"Failed to create automation")}
 				</p>
 			)}
 
 			<div className="flex gap-2">
 				<Button type="submit" disabled={mutation.isPending || !valid}>
-					{mutation.isPending ? "Creating…" : "Create budget automation"}
+					{mutation.isPending
+						? "Creating…"
+						: "Create budget automation"}
 				</Button>
 				<Button type="button" variant="ghost" onClick={onDone}>
 					Cancel
