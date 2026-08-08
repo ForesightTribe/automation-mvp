@@ -38,6 +38,11 @@ class CmBudgetSchedule(SQLModel, table=True):
     # D19 lifecycle: "active" | "stopped" (budget has no pause). The reconciler emits
     # schedules only while active; Reset → "stopped" + a set-budget→default job.
     state: str = "active"
+    # Campaign activation (docs/campaign-activation.md AD1/AD2): stop the campaign when
+    # a rule's window ENDS — not whenever it happens to be idle. Starting is unconditional
+    # (AD7); this toggle only governs the stop. Default False = today's exact behaviour,
+    # which also makes the RESTART write path unreachable for every existing schedule.
+    stop_after_window: bool = Field(default=False)
     created_at: datetime = Field(default_factory=now_ist)
 
 

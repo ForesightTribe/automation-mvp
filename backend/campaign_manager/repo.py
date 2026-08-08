@@ -123,13 +123,15 @@ async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str = "blinkit"
 # ── Rules CRUD (service layer — the CLI uses it now, the V4 API will reuse it) ──
 
 async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
-                                 campaign_name: str, default_budget: float, name: str | None = None):
+                                 campaign_name: str, default_budget: float, name: str | None = None,
+                                 stop_after_window: bool = False):
     """Create a budget-schedule container for a campaign. Raises on the unique
     (tenant, platform, campaign_id) conflict."""
     from app.models.campaign_manager_v2 import CmBudgetSchedule
     async with AsyncSessionLocal() as db:
         s = CmBudgetSchedule(tenant_id=tenant_id, platform=platform, campaign_id=campaign_id,
                              campaign_name=campaign_name, name=name, default_budget=default_budget,
+                             stop_after_window=stop_after_window,
                              enabled=True)
         db.add(s)
         await db.commit()

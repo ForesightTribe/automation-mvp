@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Card } from "../../components/ui/Card";
+import { ActivateNowCard } from "./components/ActivateNowCard";
 import { AutomateBidForm } from "./components/AutomateBidForm";
 import { AutomateBudgetForm } from "./components/AutomateBudgetForm";
 import { HistoryCard } from "./components/HistoryCard";
@@ -94,6 +95,7 @@ export const CampaignManagerV2Page = () => {
 				<div className="space-y-6 lg:col-span-2">
 					<Composer mode={mode} setMode={setMode} />
 					<SetBudgetNowCard />
+					<ActivateNowCard />
 				</div>
 				<ScheduledPane />
 			</div>

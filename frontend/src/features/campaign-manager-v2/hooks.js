@@ -16,6 +16,7 @@ import {
 	getJob,
 	resetBudgetSchedule,
 	runEngine,
+	setActivationNow,
 	setAdvertiser,
 	setBidState,
 	setBudgetNow,
@@ -230,6 +231,13 @@ export const useSetBudgetNow = () => {
 	const { activeClientId } = useClient();
 	return useMutation({
 		mutationFn: (body) => setBudgetNow(activeClientId, body),
+	});
+};
+
+export const useSetActivationNow = () => {
+	const { activeClientId } = useClient();
+	return useMutation({
+		mutationFn: ({ campaignId, ...body }) => setActivationNow(activeClientId, campaignId, body),
 	});
 };
 
