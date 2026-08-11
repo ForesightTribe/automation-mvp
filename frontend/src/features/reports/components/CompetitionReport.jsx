@@ -57,7 +57,7 @@ export const CompetitionReport = () => {
 			{isLoading && <Loading label="Loading competition report…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading && !error && data && !data.groups.length && (
-				<div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-content-muted">
+				<div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-content-muted shadow-[0_2px_8px_rgba(0,0,0,0.10)]">
 					No competitor pricing in the selected window.
 				</div>
 			)}
@@ -80,7 +80,7 @@ const CompGroup = ({ group }) => {
 	const ownPerUnit = group.own.find((o) => o.unit_price)?.unit_price ?? null;
 
 	return (
-		<div className="overflow-x-auto rounded-xl border border-border bg-card">
+		<div className="overflow-x-auto rounded-xl border border-border bg-card shadow-[0_2px_8px_rgba(0,0,0,0.10)]">
 			<div className="flex items-center gap-2 border-b border-border bg-muted/60 px-4 py-2">
 				<span className="font-display text-sm font-semibold text-content capitalize">
 					{group.marketplace}

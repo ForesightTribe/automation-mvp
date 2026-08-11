@@ -70,6 +70,7 @@ export const ProductsPage = () => {
 
 			<Card
 				title="SKUs"
+				titleClassName="text-content-muted"
 				actions={
 					<div className="flex items-center gap-2">
 						<input
@@ -77,12 +78,12 @@ export const ProductsPage = () => {
 							value={searchInput}
 							onChange={(e) => setSearchInput(e.target.value)}
 							placeholder="Search SKU…"
-							className="w-44 rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand/30"
+							className="w-44 rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content placeholder:text-content-muted focus:outline-none focus:ring-2 focus:ring-brand/30"
 						/>
 						<select
 							value={status}
 							onChange={(e) => setStatus(e.target.value)}
-							className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-brand/30"
+							className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content-muted focus:outline-none focus:ring-2 focus:ring-brand/30"
 						>
 							{STATUS_OPTIONS.map((o) => (
 								<option key={o.value} value={o.value}>

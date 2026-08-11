@@ -11,20 +11,21 @@ import {
 } from "../../lib/format";
 
 // Token-ish palette (ECharts needs concrete hex; mirrors index.css).
-const PRIMARY = "#4f46e5";
+const PRIMARY = "#f42a34"; // brand red — was indigo
 const SUCCESS = "#16a34a";
 const INFO = "#0284c7";
 const WARNING = "#d97706";
 
-// Category-trend / heatmap series palette (mirrors theme.js PALETTE).
+// Category-trend / heatmap series palette (mirrors theme.js PALETTE). Brand
+// red leads, then status/extra hues carry the remaining series apart.
 const SERIES_PALETTE = [
-	"#4f46e5",
+	"#f42a34",
 	"#0284c7",
 	"#16a34a",
 	"#d97706",
-	"#dc2626",
 	"#7c3aed",
 	"#0d9488",
+	"#b45309",
 ];
 
 /** Vertical fade fill from a hex color (appends alpha). */
@@ -252,25 +253,42 @@ export const salesStockOption = (rows) => ({
  */
 export const rankedBarOption = (
 	items,
-	{ color = PRIMARY, money = true } = {},
+	{ color = PRIMARY, money = true, xName, barColor, label = false } = {},
 ) => {
 	const fmt = money ? formatCompactCurrency : formatNumber;
 	// ECharts category axis draws bottom-up, so reverse to put the largest on top.
 	const rows = [...items].reverse();
+	const max = Math.max(...rows.map((r) => r.value), 1);
 	return {
 		tooltip: { trigger: "axis", valueFormatter: (v) => fmt(v) },
-		grid: { left: 8, right: 16, top: 8, bottom: 8, containLabel: true },
-		xAxis: { type: "value", axisLabel: { formatter: (v) => fmt(v) } },
+		grid: { left: 8, right: 28, top: 8, bottom: xName ? 28 : 8, containLabel: true },
+		xAxis: {
+			type: "value",
+			name: xName,
+			nameLocation: "middle",
+			nameGap: 26,
+			axisLabel: { formatter: (v) => fmt(v) },
+		},
 		yAxis: {
 			type: "category",
 			data: rows.map((r) => r.label),
-			axisLabel: { width: 140, overflow: "truncate" },
+			axisLabel: { width: 200, overflow: "truncate" },
 		},
 		series: [
 			{
 				type: "bar",
-				data: rows.map((r) => r.value),
-				itemStyle: { color, borderRadius: [0, 3, 3, 0] },
+				// `barColor` grades each bar by magnitude; without it every bar
+				// takes the single `color`.
+				data: rows.map((r) => ({
+					value: r.value,
+					itemStyle: {
+						color: barColor ? barColor(r.value / max) : color,
+						borderRadius: [0, 3, 3, 0],
+					},
+				})),
+				label: label
+					? { show: true, position: "right", formatter: (p) => fmt(p.value) }
+					: undefined,
 			},
 		],
 	};
@@ -608,24 +626,42 @@ export const categoryFillOption = (items) => {
 };
 
 /** Minimal sparkline for KPI tiles — no axes, no tooltip, just the trend. */
-export const sparklineOption = (values, color = PRIMARY) => ({
-	grid: { left: 0, right: 0, top: 2, bottom: 2 },
+export const sparklineOption = (values, color = PRIMARY, type = "line") => ({
+	grid: { left: 0, right: 0, top: 4, bottom: 2 },
 	xAxis: {
 		type: "category",
 		show: false,
-		boundaryGap: false,
+		// Bars need room either side; a line should run edge to edge.
+		boundaryGap: type === "bar",
 		data: values.map((_, i) => i),
 	},
-	yAxis: { type: "value", show: false, scale: true },
+	yAxis: { type: "value", show: false, scale: type !== "bar" },
 	tooltip: { show: false },
 	series: [
-		{
-			type: "line",
-			data: values,
-			smooth: true,
-			showSymbol: false,
-			lineStyle: { width: 1.5, color },
-			areaStyle: { color: fade(color) },
-		},
+		type === "bar"
+			? {
+					type: "bar",
+					data: values.map((v, i) => ({
+						value: v,
+						// Emphasised endpoint: the latest bar reads as "now".
+						itemStyle: {
+							color: i === values.length - 1 ? color : `${color}59`,
+							borderRadius: [2, 2, 0, 0],
+						},
+					})),
+					barCategoryGap: "35%",
+				}
+			: {
+					type: "line",
+					data: values,
+					// Straight segments, not a spline: a smoothed sparkline invents
+					// curvature between points that the data never had.
+					smooth: false,
+					showSymbol: true,
+					symbolSize: 4,
+					itemStyle: { color },
+					lineStyle: { width: 1.5, color },
+					areaStyle: { color: fade(color) },
+				},
 	],
 });

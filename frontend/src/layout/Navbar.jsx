@@ -30,7 +30,7 @@ export const Navbar = () => {
 
 			<div className="flex flex-1 flex-wrap items-center justify-center gap-x-3 gap-y-2">
 				<div className="flex items-center gap-2">
-					<label className="text-sm font-normal text-content-muted">
+					<label className="text-[13px] font-normal text-content-muted 2xl:text-lg">
 						Client:
 					</label>
 					{/* `appearance-none` drops the browser's own arrow so the
@@ -41,7 +41,7 @@ export const Navbar = () => {
 							value={activeClientId ?? ""}
 							onChange={(e) => setActiveClient(e.target.value)}
 							disabled={clientsLoading || clients.length === 0}
-							className="appearance-none rounded-md border border-border bg-card py-1.5 pr-9 pl-3 text-sm font-normal text-content disabled:opacity-50"
+							className="appearance-none rounded-md border border-border bg-card py-1.5 pr-9 pl-3 text-[13px] font-normal text-content disabled:opacity-50 2xl:text-lg"
 						>
 							{clients.length === 0 && (
 								<option value="">No clients</option>
@@ -53,10 +53,9 @@ export const Navbar = () => {
 							))}
 						</select>
 						<ChevronDown
-							size={16}
 							strokeWidth={1.5}
 							aria-hidden="true"
-							className="pointer-events-none absolute top-1/2 right-3 -translate-y-1/2 text-content-subtle"
+							className="pointer-events-none absolute top-1/2 right-3 h-3.5 w-3.5 -translate-y-1/2 text-content-subtle 2xl:h-4.5 2xl:w-4.5"
 						/>
 					</div>
 				</div>
@@ -68,7 +67,7 @@ export const Navbar = () => {
 
 			<div className="flex shrink-0 items-center gap-3">
 				{user && (
-					<span className="hidden text-xs text-content-muted lg:inline">
+					<span className="hidden text-[11px] text-content-muted lg:inline 2xl:text-base">
 						{user.email}
 					</span>
 				)}

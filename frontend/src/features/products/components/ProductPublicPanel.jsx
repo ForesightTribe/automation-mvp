@@ -50,7 +50,7 @@ const Meter = ({ label, value, count, total, tone = "brand" }) => (
 				</span>
 			</span>
 		</div>
-		<div className="h-2 w-full overflow-hidden rounded-full bg-surface-subtle">
+		<div className="h-2 w-full overflow-hidden rounded-full bg-muted">
 			<div
 				className={`h-full rounded-full ${tone === "danger" ? "bg-danger" : tone === "success" ? "bg-success" : "bg-brand"}`}
 				style={{ width: `${Math.min(Math.max(value ?? 0, 0), 100)}%` }}
@@ -114,7 +114,7 @@ export const ProductPublicPanel = ({ itemId }) => {
 					</div>
 
 					{notStocked > 0 && (
-						<p className="rounded-md bg-surface-subtle px-3 py-2 text-xs text-content-muted">
+						<p className="rounded-md bg-muted px-3 py-2 text-xs text-content-muted">
 							Not carried in{" "}
 							<span className="font-medium text-content">
 								{formatNumber(notStocked)}

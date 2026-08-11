@@ -26,7 +26,7 @@ export const CampaignManagerPage = () => {
             {/* ── Budget Scheduler ── */}
             <div className="flex flex-col gap-4">
                 <div className="flex flex-col items-center gap-1 py-3 border-y border-border bg-muted/30 rounded-lg">
-                    <h2 className="text-lg font-bold text-content tracking-wide">Budget Scheduler</h2>
+                    <h2 className="font-display text-lg font-bold text-content tracking-wide">Budget Scheduler</h2>
                     <p className="text-xs text-content-muted text-center max-w-md">
                         Automatically changes a campaign's daily budget at your scheduled times.
                     </p>
@@ -61,7 +61,7 @@ export const CampaignManagerPage = () => {
             {/* ── Bid Optimizer ── */}
             <div className="flex flex-col gap-4">
                 <div className="flex flex-col items-center gap-1 py-3 border-y border-border bg-muted/30 rounded-lg">
-                    <h2 className="text-lg font-bold text-content tracking-wide">Bid Optimizer</h2>
+                    <h2 className="font-display text-lg font-bold text-content tracking-wide">Bid Optimizer</h2>
                     <p className="text-xs text-content-muted text-center max-w-md">
                         Automatically adjusts keyword CPM bids to reach your target position.
                     </p>

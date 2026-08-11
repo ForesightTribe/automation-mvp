@@ -44,7 +44,7 @@ export const MarketingReport = () => {
 	if (error) return <ErrorState message={error.message} onRetry={refetch} />;
 	if (!data || !data.rows.length)
 		return (
-			<div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-content-muted">
+			<div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-content-muted shadow-[0_2px_8px_rgba(0,0,0,0.10)]">
 				No marketing data in the selected window.
 			</div>
 		);
@@ -53,7 +53,7 @@ export const MarketingReport = () => {
 	const drr = (v) => (totals.days ? v / totals.days : 0);
 
 	return (
-		<div className="overflow-x-auto rounded-xl border border-border bg-card">
+		<div className="overflow-x-auto rounded-xl border border-border bg-card shadow-[0_2px_8px_rgba(0,0,0,0.10)]">
 			<table className="w-full border-collapse text-sm">
 				<thead>
 					<tr className="border-b border-border bg-muted/60 text-content-subtle">

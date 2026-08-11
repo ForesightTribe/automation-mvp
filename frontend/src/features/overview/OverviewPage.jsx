@@ -6,6 +6,7 @@ import { SalesTrendChart } from "./components/SalesTrendChart";
 import { MonthlyTrendChart } from "./components/MonthlyTrendChart";
 import { FreshnessChips } from "./components/FreshnessChips";
 import { PublicShelfCard } from "./components/PublicShelfCard";
+import { PageHeader } from "../../components/ui/PageHeader";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 
@@ -21,14 +22,10 @@ export const OverviewPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div>
-				<h1 className="font-display text-xl font-bold text-content">
-					Overview
-				</h1>
-				<p className="text-sm text-content-muted">
-					What needs your attention today.
-				</p>
-			</div>
+			<PageHeader
+				title="Overview"
+				subtitle="What needs your attention today."
+			/>
 
 			{/* First-load spinner only; background refetches won't flip isLoading. */}
 			{isLoading && <Loading label="Loading overview…" />}

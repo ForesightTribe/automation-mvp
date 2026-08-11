@@ -27,13 +27,12 @@ export const MarketplacePicker = () => {
 
 	return (
 		<details className="relative">
-			<summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-sm font-normal text-content">
+			<summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-[13px] font-normal text-content 2xl:text-lg">
 				<span>{label}</span>
 				<ChevronDown
-					size={16}
 					strokeWidth={1.5}
 					aria-hidden="true"
-					className="shrink-0 text-content-subtle"
+					className="h-3.5 w-3.5 shrink-0 text-content-subtle 2xl:h-4.5 2xl:w-4.5"
 				/>
 			</summary>
 
@@ -42,7 +41,7 @@ export const MarketplacePicker = () => {
 					type="button"
 					onClick={selectAll}
 					disabled={allSelected}
-					className="w-full rounded px-2 py-1.5 text-left text-sm font-medium text-primary hover:bg-muted disabled:opacity-40"
+					className="w-full rounded px-2 py-1.5 text-left text-[13px] font-medium text-primary hover:bg-muted disabled:opacity-40 2xl:text-base"
 				>
 					Select all connected
 				</button>
@@ -52,7 +51,7 @@ export const MarketplacePicker = () => {
 					return (
 						<label
 							key={mp.slug}
-							className={`flex items-center gap-2 rounded px-2 py-1.5 text-sm ${
+							className={`flex items-center gap-2 rounded px-2 py-1.5 text-[13px] 2xl:text-base ${
 								mp.connected
 									? "cursor-pointer text-content hover:bg-muted"
 									: "cursor-not-allowed text-content-subtle"
@@ -74,7 +73,7 @@ export const MarketplacePicker = () => {
 								{mp.name}
 							</span>
 							{!mp.connected && (
-								<span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-xs text-content-subtle">
+								<span className="ml-auto rounded bg-muted px-1.5 py-0.5 text-[11px] text-content-subtle">
 									soon
 								</span>
 							)}

@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useLocation } from "react-router-dom";
 import { Button } from "../components/ui/Button";
 import { LoginModal } from "../components/auth/LoginModal";
+import { Logo } from "../layout/Logo";
 
 /**
  * Public marketing page at `/` for logged-out visitors. Dummy placeholder for
@@ -22,12 +23,10 @@ export const LandingPage = () => {
 
 	return (
 		<div className="flex min-h-screen flex-col">
-			<header className="flex h-14 shrink-0 items-center justify-between px-6">
-				<span className="font-display text-lg font-bold text-content">
-					Foresight
-				</span>
+			<header className="flex h-14 shrink-0 items-center justify-between px-4 lg:px-6 xl:px-8 2xl:px-10">
+				<Logo />
 				<Button
-					variant="secondary"
+					variant="brand"
 					size="sm"
 					onClick={() => setShowLogin(true)}
 				>
@@ -43,7 +42,7 @@ export const LandingPage = () => {
 					Track your sales, inventory, ads, and competitors across
 					Blinkit, Instamart, and Zepto — in one dashboard.
 				</p>
-				<Button size="lg" onClick={() => setShowLogin(true)}>
+				<Button variant="brand-solid" size="lg" onClick={() => setShowLogin(true)}>
 					Log in to your dashboard
 				</Button>
 			</main>

@@ -42,7 +42,7 @@ export const LoginModal = ({ open, onClose, from = "/overview" }) => {
 	};
 
 	const inputClass =
-		"w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-content outline-none focus:border-primary";
+		"w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-content outline-none focus:border-brand";
 
 	return (
 		// Backdrop — click outside to dismiss.
@@ -103,7 +103,7 @@ export const LoginModal = ({ open, onClose, from = "/overview" }) => {
 						>
 							Cancel
 						</Button>
-						<Button type="submit" disabled={submitting}>
+						<Button type="submit" variant="brand-solid" disabled={submitting}>
 							{submitting ? "Signing in…" : "Sign in"}
 						</Button>
 					</div>

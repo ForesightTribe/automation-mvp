@@ -8,6 +8,8 @@ const VARIANTS = {
 	/* Brand-led action (outlined MIRA red) — the shell's Log out, not a general
 	   primary action. Use `primary` for those. */
 	brand: "border border-brand bg-card text-brand hover:bg-brand-soft",
+	/* Filled brand — the one dominant call to action on a page. */
+	"brand-solid": "bg-brand text-on-brand hover:bg-brand-hover",
 	danger: "bg-danger text-on-primary hover:opacity-90",
 	ghost: "text-content hover:bg-muted",
 };

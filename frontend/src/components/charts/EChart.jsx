@@ -30,14 +30,21 @@ echarts.use([
  *
  * Usage:
  *   <EChart option={{ xAxis: {...}, yAxis: {...}, series: [...] }} height={320} />
+ *
+ * `onSelect` fires with the ECharts click params when a mark is clicked — use
+ * `params.name` for the category. It is held in a ref so passing a new inline
+ * handler each render doesn't tear the chart down and rebuild it.
  */
-export const EChart = ({ option, height = 320, className = "" }) => {
+export const EChart = ({ option, height = 320, className = "", onSelect }) => {
 	const elRef = useRef(null);
 	const chartRef = useRef(null);
+	const selectRef = useRef(onSelect);
+	selectRef.current = onSelect;
 
 	// Init + teardown once.
 	useEffect(() => {
 		chartRef.current = echarts.init(elRef.current, CHART_THEME);
+		chartRef.current.on("click", (params) => selectRef.current?.(params));
 		const observer = new ResizeObserver(() => chartRef.current?.resize());
 		observer.observe(elRef.current);
 		return () => {

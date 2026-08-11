@@ -4,7 +4,8 @@ import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { formatNumber } from "../../../lib/format";
 
-const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`);
+const pct = (v) =>
+	v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`;
 
 /**
  * Headline availability KPIs, for a sales / trade-marketing reader.
@@ -44,7 +45,11 @@ export const InvKpis = ({ kind = "main", city }) => {
 			<MetricTile
 				label="Stores selling you"
 				value={formatNumber(scraped)}
-				hint={nCities ? `across ${formatNumber(nCities)} cities` : undefined}
+				hint={
+					nCities
+						? `across ${formatNumber(nCities)} cities`
+						: undefined
+				}
 			/>
 			<MetricTile
 				label="Your products on shelf"

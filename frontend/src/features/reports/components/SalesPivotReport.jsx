@@ -1,5 +1,10 @@
-import { Fragment, useState } from "react";
-import { ChevronDown, ChevronUp } from "lucide-react";
+import { Fragment, useEffect, useRef, useState } from "react";
+import {
+	ChevronDown,
+	ChevronLeft,
+	ChevronRight,
+	ChevronUp,
+} from "lucide-react";
 import { useSalesPivot } from "../hooks";
 import { formatNumber } from "../../../lib/format";
 import { Loading } from "../../../components/feedback/Loading";
@@ -45,22 +50,34 @@ const WEEKEND = "Fri–Sun";
 /** The table's one tinted surface: weekend columns, category headers and
  *  subtotal rows all share it. */
 const TINT = "bg-[#f0ede8]";
-/** Same tint, but painted on the CELLS. A row-level background sits behind its
- *  cells' borders, so BAND_GAP's transparent border would be filled in by it —
- *  the tint has to be on the cells for the gap to show. */
+/** Same tint, but painted on the CELLS — a row-level background sits behind its
+ *  cells and squares off their rounded corners. */
 const TINT_CELLS = "[&>td]:bg-[#f0ede8]";
 /** Rounds a full-width band row at both ends, so it reads as a band rather
  *  than a full-bleed stripe. */
 const ROUNDED =
-	"[&>td:first-child]:rounded-l-lg [&>td:last-child]:rounded-r-lg";
-/** Clear space above a band row. A <tr> can't take margin, so this is a
- *  transparent top border; `bg-clip-padding` keeps the band's tint out of it,
- *  which is what makes it read as a gap rather than a taller band. */
-const BAND_GAP =
-	"[&>td]:border-t-[10px] [&>td]:border-transparent [&>td]:bg-clip-padding";
+	"[&>td:first-child]:rounded-l-md [&>td:last-child]:rounded-r-md";
+/**
+ * An empty row used as vertical space above a band. A <tr> can't take margin,
+ * and faking it with a transparent border forces `bg-clip-padding`, which then
+ * deforms the band's corner radius (the padding box's radius is reduced by the
+ * border width on that side only). A spacer row has no such interaction.
+ */
+const BandGap = ({ colSpan }) => (
+	<tr aria-hidden="true">
+		<td colSpan={colSpan} className="h-2.5 p-0" />
+	</tr>
+);
+
+/**
+ * Overflow cue. Instead of a scrollbar or overlaid arrows, the pinned SKU
+ * column casts a shadow onto whatever is scrolling beneath it — so the shadow
+ * only exists while content is hidden to its left, and it never covers data.
+ */
+const EDGE_L = "shadow-[8px_0_8px_-6px_rgba(0,0,0,0.14)]";
 
 /** Tint carried by every Fri–Sun column, matching the daily view's weekend tint. */
-const WEEKEND_BG = "bg-[#faf8f5]";
+const WEEKEND_BG = "bg-[#f0ede873]";
 
 /** "2026-07-01" -> "01-07". */
 const dayLabel = (iso) => {
@@ -77,17 +94,25 @@ const dayLabel = (iso) => {
 const avgNumber = (v) =>
 	v === null || v === undefined
 		? "—"
-		: formatNumber(Math.abs(v) < 100 ? Math.round(v * 10) / 10 : Math.round(v));
+		: formatNumber(
+				Math.abs(v) < 100 ? Math.round(v * 10) / 10 : Math.round(v),
+			);
 
 /** Excel-like tinted delta cell from a growth fraction (null -> em dash). */
 const DeltaCell = ({ delta }) => {
 	if (delta === null || delta === undefined)
-		return <td className="px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right text-content-subtle">—</td>;
+		return (
+			<td className="px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right text-content-subtle">
+				—
+			</td>
+		);
 	const up = delta >= 0;
 	return (
 		<td
 			className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right text-xs font-medium tabular-nums ${
-				up ? "bg-success-soft text-success" : "bg-danger-soft text-danger"
+				up
+					? "bg-success-soft text-success"
+					: "bg-danger-soft text-danger"
 			}`}
 		>
 			{delta > 0 ? "+" : ""}
@@ -116,16 +141,106 @@ export const SalesPivotReport = ({ metric, granularity }) => {
 };
 
 const Notice = ({ children }) => (
-	<div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-content-muted">
+	<div className="rounded-xl border border-border bg-card p-8 text-center text-sm text-content-muted shadow-[0_2px_8px_rgba(0,0,0,0.10)]">
 		{children}
+	</div>
+);
+
+/**
+ * Width of the visible scroll area. Category bands are sized to THIS rather than
+ * to the table, so both of their rounded ends stay on screen while the dates
+ * scroll underneath — a band as wide as the table has its right corner off in
+ * the overflow where nothing can show it.
+ */
+const useScrollport = () => {
+	const ref = useRef(null);
+	const [width, setWidth] = useState(0);
+	const [edges, setEdges] = useState({ left: false, right: false });
+
+	// One handler for both observers: width drives the category bands, and the
+	// two edge flags drive the scroll affordances.
+	const measure = () => {
+		const el = ref.current;
+		if (!el) return;
+		setWidth(el.clientWidth);
+		const left = el.scrollLeft > 1;
+		const right = el.scrollLeft + el.clientWidth < el.scrollWidth - 1;
+		// Bail unless a flag actually flipped: setEdges always makes a new object,
+		// so an unconditional call re-renders on every scroll event.
+		setEdges((prev) =>
+			prev.left === left && prev.right === right ? prev : { left, right },
+		);
+	};
+
+	useEffect(() => {
+		const el = ref.current;
+		if (!el) return;
+		measure();
+		// Observe the CONTENT as well as the scrollport. The port's own box never
+		// changes when the table inside it grows wider, so watching only the port
+		// leaves `scrollWidth` stuck at its first (pre-layout) value and the
+		// overflow flags never turn on.
+		const ro = new ResizeObserver(measure);
+		ro.observe(el);
+		if (el.firstElementChild) ro.observe(el.firstElementChild);
+		el.addEventListener("scroll", measure, { passive: true });
+		return () => {
+			ro.disconnect();
+			el.removeEventListener("scroll", measure);
+		};
+	}, []);
+
+	const page = (dir) =>
+		ref.current?.scrollBy({
+			left: dir * ref.current.clientWidth * 0.8,
+			behavior: "smooth",
+		});
+
+	return { ref, width, edges, page };
+};
+
+/**
+ * A small floating chevron marking a direction the table can still scroll.
+ * Deliberately tiny and translucent: it is an indicator first and a control
+ * second, so it reads as "there is more this way" without covering figures.
+ */
+const ScrollNub = ({ dir, onClick }) => (
+	// The card is the whole table and is far taller than the viewport, so
+	// `top-1/2` on the button would sit at the TABLE's midpoint — usually well
+	// below the fold. Instead a full-height rail spans the card and the button
+	// STICKS to the middle of the viewport inside it, staying in view however
+	// far down the table you are.
+	<div
+		className={`pointer-events-none absolute inset-y-0 z-40 w-9 ${
+			dir === "left" ? "left-0" : "right-0"
+		}`}
+	>
+		<button
+			type="button"
+			onClick={onClick}
+			aria-label={
+				dir === "left" ? "Scroll dates left" : "Scroll dates right"
+			}
+			className={`pointer-events-auto sticky top-[calc(50vh-14px)] grid h-7 w-7 place-items-center rounded-full border border-border bg-card text-content-muted opacity-0 shadow-[0_2px_8px_rgba(0,0,0,0.10)] transition-opacity duration-150 group-hover/table:opacity-95 hover:border-brand hover:text-brand focus-visible:opacity-100 ${
+				dir === "left" ? "ml-1" : "ml-auto mr-1"
+			}`}
+		>
+			{dir === "left" ? (
+				<ChevronLeft size={14} strokeWidth={2} />
+			) : (
+				<ChevronRight size={14} strokeWidth={2} />
+			)}
+		</button>
 	</div>
 );
 
 const PivotTable = ({ data, granularity }) => {
 	const daily = granularity === "daily";
 	const { days, weeks, platforms } = data;
+	const { ref: portRef, width: portWidth, edges, page } = useScrollport();
 
-	if (!platforms.length) return <Notice>No sales in the selected window.</Notice>;
+	if (!platforms.length)
+		return <Notice>No sales in the selected window.</Notice>;
 
 	// The weekly axis only holds whole Mon–Sun weeks, so a short or misaligned
 	// range legitimately has nothing to roll up. Say so rather than render an
@@ -137,8 +252,8 @@ const PivotTable = ({ data, granularity }) => {
 					No complete Mon–Sun week in the selected range.
 				</p>
 				<p className="mt-1">
-					The weekly view only counts full Monday-to-Sunday weeks. Widen the
-					date range, or switch to the Daily view.
+					The weekly view only counts full Monday-to-Sunday weeks.
+					Widen the date range, or switch to the Daily view.
 				</p>
 			</Notice>
 		);
@@ -152,29 +267,59 @@ const PivotTable = ({ data, granularity }) => {
 		<div className="flex flex-col gap-2">
 			{!daily && (
 				<p className="text-xs text-content-muted">
-					Weekly figures are <strong className="font-medium">average sales per
-					day</strong>, not totals — Mon–Thu averaged over 4 days, Fri–Sun over
-					3, so the two are directly comparable. Only complete Monday–Sunday
-					weeks are counted ({weeks[0].start} → {weeks[weeks.length - 1].end}).
+					Weekly figures are{" "}
+					<strong className="font-medium">
+						average sales per day
+					</strong>
+					, not totals — Mon–Thu averaged over 4 days, Fri–Sun over 3,
+					so the two are directly comparable. Only complete
+					Monday–Sunday weeks are counted ({weeks[0].start} →{" "}
+					{weeks[weeks.length - 1].end}).
 				</p>
 			)}
-			<div className="overflow-x-auto rounded-xl border border-border bg-card p-2 lg:p-3 2xl:p-4">
-				<table className="w-full border-separate border-spacing-0 text-xs lg:text-[13px] 2xl:text-sm">
-					{daily ? <DailyHead days={days} /> : <WeeklyHead weeks={weeks} />}
-					<tbody>
-						{platforms.map((p) => (
-							<PlatformBlock
-								key={p.platform}
-								platform={p}
-								days={days}
-								weeks={weeks}
-								daily={daily}
-								colCount={colCount}
-								showPlatform={platforms.length > 1}
-							/>
-						))}
-					</tbody>
-				</table>
+			{/* Padding sits on the OUTER, non-scrolling element and the scrollport
+			    is the inner div. With padding on the scroller itself, that strip
+			    lies outside the sticky column's pin point and scrolled-past cells
+			    show through it. */}
+			<div className="group/table relative rounded-xl border border-border bg-card p-2 shadow-[0_2px_8px_rgba(0,0,0,0.10)] lg:p-3 2xl:p-4">
+				{/* Scrolls, but the bar is hidden — same treatment as the sidebar rail. */}
+				<div
+					ref={portRef}
+					className="overflow-x-auto [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+				>
+					<table className="w-full border-separate border-spacing-0 text-xs lg:text-[13px] 2xl:text-sm">
+						{daily ? (
+							<DailyHead days={days} />
+						) : (
+							<WeeklyHead weeks={weeks} />
+						)}
+						<tbody>
+							{platforms.map((p) => (
+								<PlatformBlock
+									key={p.platform}
+									platform={p}
+									days={days}
+									weeks={weeks}
+									daily={daily}
+									colCount={colCount}
+									showPlatform={platforms.length > 1}
+									portWidth={portWidth}
+									edges={edges}
+								/>
+							))}
+						</tbody>
+					</table>
+				</div>
+
+				{/* Only for a direction that actually has more columns, and only
+				    while the pointer is over the table — an arrow that is always
+				    there stops reading as "there is more this way". */}
+				{edges.left && (
+					<ScrollNub dir="left" onClick={() => page(-1)} />
+				)}
+				{edges.right && (
+					<ScrollNub dir="right" onClick={() => page(1)} />
+				)}
 			</div>
 		</div>
 	);
@@ -182,7 +327,10 @@ const PivotTable = ({ data, granularity }) => {
 
 const HEAD_ROW =
 	"bg-card text-content-subtle [&>th]:border-b [&>th]:border-border";
-const HEAD_CELL = "px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-right font-medium";
+/** `whitespace-nowrap`: without it a column whose data is narrower than its
+ *  own date label (e.g. a day of "0") shrinks and wraps the header. */
+const HEAD_CELL =
+	"px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-right font-medium whitespace-nowrap";
 
 const DailyHead = ({ days }) => (
 	<thead>
@@ -193,13 +341,17 @@ const DailyHead = ({ days }) => (
 			{days.map((d) => (
 				<th
 					key={d.date}
-					title={d.weekend ? "Weekend (Fri–Sun)" : "Weekday (Mon–Thu)"}
+					title={
+						d.weekend ? "Weekend (Fri–Sun)" : "Weekday (Mon–Thu)"
+					}
 					className={`${HEAD_CELL} ${d.weekend ? WEEKEND_BG : ""}`}
 				>
 					{dayLabel(d.date)}
 				</th>
 			))}
-			<th className="px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-right font-medium">Total</th>
+			<th className={`${HEAD_CELL} sticky right-0 z-20 bg-card`}>
+				Total
+			</th>
 		</tr>
 	</thead>
 );
@@ -250,11 +402,17 @@ const WeeklyHead = ({ weeks }) => {
 			<tr className={`${HEAD_ROW} text-xs`}>
 				{weeks.map((w) => (
 					<Fragment key={w.label}>
-						<th className={`${HEAD_CELL} border-l border-border`}>{WEEKDAY}</th>
-						<th className={`${HEAD_CELL} ${WEEKEND_BG}`}>{WEEKEND}</th>
+						<th className={`${HEAD_CELL} border-l border-border`}>
+							{WEEKDAY}
+						</th>
+						<th className={`${HEAD_CELL} ${WEEKEND_BG}`}>
+							{WEEKEND}
+						</th>
 					</Fragment>
 				))}
-				<th className={`${HEAD_CELL} border-l border-border`}>{WEEKDAY}</th>
+				<th className={`${HEAD_CELL} border-l border-border`}>
+					{WEEKDAY}
+				</th>
 				<th className={`${HEAD_CELL} ${WEEKEND_BG}`}>{WEEKEND}</th>
 				<th
 					className={HEAD_CELL}
@@ -264,8 +422,12 @@ const WeeklyHead = ({ weeks }) => {
 				</th>
 				{pairs.map((w) => (
 					<Fragment key={w.label}>
-						<th className={`${HEAD_CELL} border-l border-border`}>{WEEKDAY}</th>
-						<th className={`${HEAD_CELL} ${WEEKEND_BG}`}>{WEEKEND}</th>
+						<th className={`${HEAD_CELL} border-l border-border`}>
+							{WEEKDAY}
+						</th>
+						<th className={`${HEAD_CELL} ${WEEKEND_BG}`}>
+							{WEEKEND}
+						</th>
 					</Fragment>
 				))}
 			</tr>
@@ -278,11 +440,21 @@ const WeeklyHead = ({ weeks }) => {
  * platform — they all carry cells/total (daily) and weekday/weekend/week_total
  * (weekly), so the three row types render through the same code.
  */
-const ValueCells = ({ row, days, daily, muted, inverse }) => {
-	const tone = muted ? "text-content-muted" : "";
-	// On the inverse fill the row supplies its own colour, and the light weekend
-	// tint would paint over it — so skip both and inherit.
-	const total = inverse ? "text-inherit" : "text-content";
+const ValueCells = ({
+	row,
+	days,
+	daily,
+	muted,
+	inverse,
+	cellBg = "bg-card",
+}) => {
+	const tone = muted
+		? "text-content-subtle group-hover:text-content-muted"
+		: "";
+	// The Total cell always inherits, so whatever the ROW sets applies to it too
+	// (subtotal rows are #646160, Grand Total is white, SKU rows inherit black).
+	// The light weekend tint would paint over the inverse fill, so skip it there.
+	const total = "text-inherit";
 	const weekend = (i) => (!inverse && days[i].weekend ? WEEKEND_BG : "");
 	if (daily)
 		return (
@@ -295,8 +467,11 @@ const ValueCells = ({ row, days, daily, muted, inverse }) => {
 						{formatNumber(v)}
 					</td>
 				))}
+				{/* Pinned right, mirroring the sticky SKU column — the dates scroll
+				    BETWEEN the two. Needs its own opaque background or the columns
+				    passing underneath show through it. */}
 				<td
-					className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums ${total}`}
+					className={`sticky right-0 z-10 px-1.5 py-2 text-right tabular-nums lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 ${cellBg} ${total}`}
 				>
 					{formatNumber(row.total)}
 				</td>
@@ -319,15 +494,15 @@ const ValueCells = ({ row, days, daily, muted, inverse }) => {
 					</td>
 				</Fragment>
 			))}
-			<td className="border-l border-border px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums text-content">
+			<td className="border-l border-border px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right tabular-nums text-inherit">
 				{avgNumber(row.weekday.total)}
 			</td>
 			<td
-				className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums text-content ${WEEKEND_BG}`}
+				className={`px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right tabular-nums text-inherit ${WEEKEND_BG}`}
 			>
 				{avgNumber(row.weekend.total)}
 			</td>
-			<td className="px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right font-semibold tabular-nums text-content">
+			<td className="px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-right tabular-nums text-inherit">
 				{avgNumber(row.week_total)}
 			</td>
 			{/* Deltas compare like with like — this week's Mon–Thu against last
@@ -342,7 +517,16 @@ const ValueCells = ({ row, days, daily, muted, inverse }) => {
 	);
 };
 
-const PlatformBlock = ({ platform, days, weeks, daily, colCount, showPlatform }) => {
+const PlatformBlock = ({
+	platform,
+	days,
+	weeks,
+	daily,
+	colCount,
+	showPlatform,
+	portWidth,
+	edges,
+}) => {
 	// Categories collapsed by name — expanded by default, so the report opens
 	// looking exactly as it did before categories existed.
 	const [collapsed, setCollapsed] = useState(() => new Set());
@@ -359,7 +543,7 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount, showPlatform })
 			    block to tell apart — with a single marketplace it is noise above
 			    the first category. */}
 			{showPlatform && (
-				<tr className={`${TINT} ${ROUNDED}`}>
+				<tr className={`${TINT_CELLS} ${ROUNDED}`}>
 					<td
 						colSpan={colCount}
 						className="sticky left-0 px-1.5 py-1.5 lg:px-3 lg:py-2.5 2xl:px-4 2xl:py-3 text-left font-display text-sm font-semibold text-content"
@@ -368,74 +552,110 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount, showPlatform })
 					</td>
 				</tr>
 			)}
-			{platform.categories.map((cat) => (
-				<Fragment key={cat.name}>
-					{/* Category heading — a label only; its numbers live on the
-					    subtotal row that closes the group, Excel-pivot style. */}
-					<tr className={`${TINT_CELLS} ${ROUNDED} ${BAND_GAP}`}>
-						<td
-							colSpan={colCount}
-							className="sticky left-0 py-1.5 pr-1.5 pl-6 text-left font-medium text-content lg:py-2.5 lg:pr-3 lg:pl-10 2xl:py-3 2xl:pr-4 2xl:pl-12"
-						>
-							<button
-								type="button"
-								onClick={() => toggle(cat.name)}
-								className="flex items-center gap-1.5 text-left"
-							>
-								{cat.name}
-								<span className="font-normal text-content-subtle">
-									({cat.skus.length})
-								</span>
-								{collapsed.has(cat.name) ? (
-									<ChevronDown
-										size={16}
-										strokeWidth={1.5}
-										aria-hidden="true"
-										className="ml-1 text-content-subtle"
-									/>
-								) : (
-									<ChevronUp
-										size={16}
-										strokeWidth={1.5}
-										aria-hidden="true"
-										className="ml-1 text-content-subtle"
-									/>
-								)}
-							</button>
-						</td>
-					</tr>
-					{!collapsed.has(cat.name) &&
-						cat.skus.map((sku) => (
-							<tr
-								key={sku.item_id}
-								className="hover:bg-muted/40 [&>td]:border-b [&>td]:border-border/60"
-							>
-								<td className="sticky left-0 z-10 max-w-40 truncate lg:max-w-52 2xl:max-w-60 bg-card py-2.5 pr-2 pl-4 lg:py-3 lg:pr-3 lg:pl-5 2xl:py-4 2xl:pr-4 2xl:pl-6 text-left text-content">
-									{sku.name}
+			{platform.categories.map((cat) => {
+				const isCollapsed = collapsed.has(cat.name);
+				// Collapsed, the heading IS the subtotal — the numbers move onto it
+				// and the separate "Total - …" row would just repeat them. Expanded,
+				// the heading is a label only and the totals close the group.
+				const heading = (
+					<button
+						type="button"
+						onClick={() => toggle(cat.name)}
+						className="flex items-center gap-1.5 text-left"
+					>
+						{cat.name}
+						<span className="font-normal text-content-subtle">
+							({cat.skus.length})
+						</span>
+						{collapsed.has(cat.name) ? (
+							<ChevronDown
+								size={16}
+								strokeWidth={1.5}
+								aria-hidden="true"
+								className="ml-1 text-content-subtle"
+							/>
+						) : (
+							<ChevronUp
+								size={16}
+								strokeWidth={1.5}
+								aria-hidden="true"
+								className="ml-1 text-content-subtle"
+							/>
+						)}
+					</button>
+				);
+
+				return (
+					<Fragment key={cat.name}>
+						<BandGap colSpan={colCount} />
+						{isCollapsed ? (
+							<TotalsRow
+								row={cat}
+								days={days}
+								daily={daily}
+								className={`${TINT_CELLS} ${ROUNDED} text-content`}
+								cellBg=""
+								label={heading}
+							/>
+						) : (
+							<tr>
+								{/* The cell spans the table, but the visible bar inside it
+								    is pinned and sized to the SCROLLPORT — so its two
+								    rounded ends are always on screen. */}
+								<td colSpan={colCount} className="p-0">
+									<div
+										style={{
+											width: portWidth || undefined,
+										}}
+										className="sticky left-0 rounded-md bg-[#f0ede8] px-1.5 py-1 text-left font-medium text-content lg:px-3 lg:py-1.5 2xl:px-4 2xl:py-2"
+									>
+										{heading}
+									</div>
 								</td>
-								<ValueCells row={sku} days={days} daily={daily} muted />
 							</tr>
-						))}
-					{/* Category subtotal — shown even when the group is collapsed, so
-					    collapsing everything leaves a clean category-level report. */}
-					<TotalsRow
-						row={cat}
-						days={days}
-						daily={daily}
-						className={`${TINT} ${ROUNDED} text-content`}
-						cellBg={TINT}
-						label={`Total - ${cat.name}`}
-					/>
-				</Fragment>
-			))}
+						)}
+						{!isCollapsed &&
+							cat.skus.map((sku) => (
+								<tr
+									key={sku.item_id}
+									className="group hover:bg-[#f9f7f4] [&>td]:border-b [&>td]:border-border/60"
+								>
+									<td
+										className={`sticky left-0 z-10 max-w-40 truncate bg-card py-2.5 pr-2 pl-1.5 text-left text-content-muted group-hover:bg-[#f9f7f4] lg:max-w-52 lg:py-3 lg:pr-3 lg:pl-3 2xl:max-w-60 2xl:py-4 2xl:pr-4 2xl:pl-4 ${edges.left ? EDGE_L : ""}`}
+									>
+										{sku.name}
+									</td>
+									<ValueCells
+										row={sku}
+										days={days}
+										daily={daily}
+										muted
+										cellBg="bg-card group-hover:bg-[#f9f7f4]"
+									/>
+								</tr>
+							))}
+						{!isCollapsed && (
+							<TotalsRow
+								row={cat}
+								days={days}
+								daily={daily}
+								className={`${TINT_CELLS} ${ROUNDED} text-content-muted`}
+								cellBg={TINT}
+								label={`Total - ${cat.name}`}
+							/>
+						)}
+					</Fragment>
+				);
+			})}
 			{/* Grand Total closes the block on the inverse fill, so it reads as
 			    the end of the report rather than one more subtotal. */}
+			<BandGap colSpan={colCount} />
 			<TotalsRow
 				row={platform}
 				days={days}
 				daily={daily}
 				inverse
-				className={`text-on-inverse ${ROUNDED} ${BAND_GAP} [&>td]:bg-inverse`}
+				className={`text-on-inverse ${ROUNDED} [&>td]:bg-inverse`}
 				cellBg="bg-inverse"
 				label="Grand Total"
 			/>
@@ -449,9 +669,17 @@ const PlatformBlock = ({ platform, days, weeks, daily, colCount, showPlatform })
  */
 const TotalsRow = ({ row, days, daily, className, cellBg, label, inverse }) => (
 	<tr className={`font-semibold ${className}`}>
-		<td className={`sticky left-0 z-10 px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-left ${cellBg}`}>
+		<td
+			className={`sticky left-0 z-10 px-1.5 py-2 lg:px-3 lg:py-3 2xl:px-4 2xl:py-4 text-left ${cellBg}`}
+		>
 			{label}
 		</td>
-		<ValueCells row={row} days={days} daily={daily} inverse={inverse} />
+		<ValueCells
+			row={row}
+			days={days}
+			daily={daily}
+			inverse={inverse}
+			cellBg={cellBg}
+		/>
 	</tr>
 );

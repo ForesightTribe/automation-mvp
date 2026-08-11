@@ -18,9 +18,13 @@
 	--color-brand-soft: #fac9cb; /* tinted backgrounds — ~28% brand on white */
 	--color-on-brand: #ffffff; /* text/icons on a brand fill */
 
-	--color-primary: #4f46e5; /* indigo-600 — primary actions, active nav */
-	--color-primary-hover: #4338ca; /* indigo-700 */
-	--color-primary-soft: #eef2ff; /* indigo-50  — tinted backgrounds */
+	/* `primary` used to be a separate indigo action colour; the app now has one
+	   accent, so it's aliased to brand — every `bg-primary`/`text-primary` in
+	   older pages (Campaign Manager, Ads, Analytics, Scorecard) picks up the
+	   brand red for free instead of needing a per-component swap. */
+	--color-primary: #f42a34;
+	--color-primary-hover: #d31f28;
+	--color-primary-soft: #fac9cb;
 	--color-on-primary: #ffffff; /* text/icons on a primary fill */
 
 	/* ---- Status ---- */
@@ -40,7 +44,7 @@
 	--color-card: #ffffff; /* Background Secondary — cards, panels, tables */
 	--color-border: #e0ddd8; /* hairlines, dividers (from the Figma) */
 	--color-muted: #f2f0ec; /* subtle fills, hover rows */
-	--color-inverse: #3f3b39; /* dark fill — grand-total rows, tooltips */
+	--color-inverse: #484542; /* dark fill — grand-total rows, tooltips */
 	--color-on-inverse: #ffffff; /* text on --color-inverse */
 
 	/* ---- Text / content ---- */

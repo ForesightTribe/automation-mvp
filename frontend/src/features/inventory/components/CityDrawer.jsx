@@ -90,7 +90,7 @@ export const CityDrawer = ({ city, kind = "main", onClose, onSelectStore }) => {
 								<tr
 									key={s.merchant_id}
 									onClick={() => onSelectStore?.(s.merchant_id)}
-									className="cursor-pointer border-b border-border/60 hover:bg-surface-subtle"
+									className="group cursor-pointer border-b border-border/60 hover:bg-[#f9f7f4]"
 								>
 									<td className="py-2.5 pr-3 text-content">
 										{s.store_name || `Store ${s.merchant_id}`}
@@ -98,7 +98,7 @@ export const CityDrawer = ({ city, kind = "main", onClose, onSelectStore }) => {
 											<span className="ml-2 text-xs text-content-subtle">#{s.merchant_id}</span>
 										)}
 										{s.merchant_type && s.merchant_type !== "express" && (
-											<span title={`Blinkit store type: ${s.merchant_type}`} className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle">
+											<span title={`Blinkit store type: ${s.merchant_type}`} className="ml-2 rounded bg-muted px-1.5 py-0.5 text-[10px] text-content-subtle">
 												slower delivery
 											</span>
 										)}

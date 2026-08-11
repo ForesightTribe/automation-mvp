@@ -16,6 +16,8 @@ const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v}d`);
 /** Every column except Product is right-aligned, header and cell together. */
 const CELL =
 	"px-1.5 py-2 text-right lg:px-3 lg:py-3 2xl:px-4 2xl:py-4";
+/** Data cells: #939190 at rest, #646160 while the row is hovered. */
+const DATA = "text-content-subtle group-hover:text-content-muted";
 const HEAD = `${CELL} font-medium text-content-subtle`;
 
 /**
@@ -38,14 +40,12 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 				<button
 					type="button"
 					onClick={() => onSort(sortKey)}
-					className={`relative inline-flex items-center font-medium hover:text-content ${
-						active ? "text-content" : "text-content-subtle"
-					}`}
+					className="relative inline-flex items-center font-medium text-content-subtle"
 				>
 					{label}
 					{arrow && (
 						<span
-							className="absolute top-1/2 -right-3 -translate-y-1/2 text-[10px]"
+							className="absolute top-1/2 -right-3 -translate-y-1/2 text-[10px] text-content-muted"
 							aria-hidden
 						>
 							{arrow}
@@ -92,36 +92,36 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 						<tr
 							key={r.item_id}
 							onClick={() => navigate(`/products/${r.item_id}`)}
-							className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
+							className="group cursor-pointer border-b border-border/60 last:border-0 hover:bg-[#f9f7f4]"
 						>
 							<td className="px-1.5 py-2 text-left lg:px-3 lg:py-3 2xl:px-4 2xl:py-4">
 								<div className="truncate font-medium text-content">
 									{r.item_name || r.item_id}
 								</div>
-								<div className="truncate text-xs text-content-subtle">
+								<div className="truncate text-xs text-content-muted">
 									{r.item_id}
 								</div>
 							</td>
-							<td className={`${CELL} text-content-muted`}>
+							<td className={`${CELL} ${DATA}`}>
 								{r.category || "—"}
 							</td>
-							<td className={`${CELL} tabular-nums text-content`}>
+							<td className={`${CELL} tabular-nums ${DATA}`}>
 								{formatNumber(r.units_sold)}
 							</td>
-							<td className={`${CELL} tabular-nums text-content`}>
+							<td className={`${CELL} tabular-nums ${DATA}`}>
 								{formatCompactCurrency(r.revenue)}
 							</td>
-							<td className={`${CELL} tabular-nums text-content`}>
+							<td className={`${CELL} tabular-nums ${DATA}`}>
 								{formatCompactCurrency(r.avg_price)}
 							</td>
-							<td className={`${CELL} tabular-nums text-content`}>
+							<td className={`${CELL} tabular-nums ${DATA}`}>
 								{formatNumber(r.frontend_qty)}
 								<span className="text-content-subtle">
 									{" "}
 									/ {formatNumber(r.backend_qty)}
 								</span>
 							</td>
-							<td className={`${CELL} tabular-nums text-content`}>
+							<td className={`${CELL} tabular-nums ${DATA}`}>
 								{coverLabel(r.days_of_cover)}
 							</td>
 							<td className={CELL}>

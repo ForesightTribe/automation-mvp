@@ -10,6 +10,7 @@ import { AvailabilityHistoryCard } from "./components/AvailabilityHistoryCard";
 import { PricingCard } from "./components/PricingCard";
 import { FreshnessBadge } from "../../components/ui/FreshnessBadge";
 import { ViewToggle } from "../../components/ui/ViewToggle";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 const KIND_OPTIONS = [
 	{ value: "main", label: "Main SKUs" },
@@ -40,19 +41,16 @@ export const InventoryPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div className="flex flex-wrap items-start justify-between gap-3">
-				<div>
-					<h1 className="font-display text-xl font-bold text-content">
-						Availability
-					</h1>
-					<p className="text-sm text-content-muted">
-						Which stores carry your products, and which have run out.
-					</p>
-				</div>
-				<div className="flex items-center gap-3">
-					<ViewToggle options={KIND_OPTIONS} value={kind} onChange={setKind} />
-					<FreshnessBadge at={stores?.as_of} />
-				</div>
+			<PageHeader
+				title="Inventory"
+				subtitle="Which stores carry your products, and which have run out."
+				actions={<FreshnessBadge at={stores?.as_of} />}
+			/>
+
+			{/* The SKU-kind switch scopes every number below it, so it sits with the
+			    data rather than up in the page heading. */}
+			<div className="-mb-2 flex justify-end">
+				<ViewToggle options={KIND_OPTIONS} value={kind} onChange={setKind} />
 			</div>
 
 			<InvKpis kind={kind} />
@@ -80,10 +78,12 @@ export const InventoryPage = () => {
 				onSelectCity={setCityName}
 			/>
 
-			<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-				<AvailabilityHistoryCard kind={kind} />
-				<PricingCard kind={kind} />
-			</div>
+			{/* Both full width, stacked: the pricing table is seven columns wide
+			    and the trend chart needs the horizontal room to be readable —
+			    side by side they crushed each other. */}
+			<PricingCard kind={kind} />
+
+			<AvailabilityHistoryCard kind={kind} />
 
 			<StoreDrawer merchantId={storeId} kind={kind} onClose={() => setStoreId(null)} />
 			<ProductDrawer productId={productId} kind={kind} onClose={() => setProductId(null)} />

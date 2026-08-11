@@ -9,13 +9,13 @@ export const CHART_THEME = "foresight";
 
 // Series palette — brand first, then the status hues, then a couple of extras.
 const PALETTE = [
-	"#4f46e5", // primary (indigo)
+	"#f42a34", // brand
 	"#0284c7", // info (sky)
 	"#16a34a", // success (green)
 	"#d97706", // warning (amber)
-	"#dc2626", // danger (red)
 	"#7c3aed", // violet
 	"#0d9488", // teal
+	"#b45309", // amber-deep
 ];
 
 const CONTENT = "#000000";

@@ -3,11 +3,16 @@
  * (out_of_stock / low_cover / no_sales / healthy). Unknown values fall back to a
  * neutral chip so the table never breaks on a new status.
  */
+// Exact palette values rather than the generic status tokens: these pills are
+// spec'd per state, and `no_sales` deliberately shares `low_cover`'s amber.
 const STYLES = {
-	out_of_stock: { label: "Out of stock", cls: "bg-danger-soft text-danger" },
-	low_cover: { label: "Low cover", cls: "bg-warning-soft text-warning" },
-	no_sales: { label: "No sales", cls: "bg-warning-soft text-warning" },
-	healthy: { label: "Healthy", cls: "bg-success-soft text-success" },
+	out_of_stock: {
+		label: "Out of stock",
+		cls: "bg-[#fff1f2] text-[#be123c]",
+	},
+	low_cover: { label: "Low cover", cls: "bg-[#fffbeb] text-[#b45309]" },
+	no_sales: { label: "No sales", cls: "bg-[#fffbeb] text-[#b45309]" },
+	healthy: { label: "Healthy", cls: "bg-[#f0fdf4] text-[#15803d]" },
 };
 
 export const StatusBadge = ({ status }) => {

@@ -47,7 +47,7 @@ export const Drawer = ({ open, onClose, title, subtitle, stats, children }) => {
 					<button
 						type="button"
 						onClick={onClose}
-						className="shrink-0 rounded-md p-1.5 text-content-subtle hover:bg-surface-subtle hover:text-content"
+						className="shrink-0 rounded-md p-1.5 text-content-subtle hover:bg-muted hover:text-content"
 						aria-label="Close"
 					>
 						<svg width="18" height="18" viewBox="0 0 20 20" fill="none">
@@ -101,7 +101,7 @@ export const DrawerStat = ({ label, value, hint, tone }) => (
 export const AvailabilityPill = ({ listed, inStock }) => {
 	if (!listed)
 		return (
-			<span className="whitespace-nowrap rounded-full bg-surface-subtle px-2.5 py-0.5 text-xs text-content-subtle">
+			<span className="whitespace-nowrap rounded-full bg-muted px-2.5 py-0.5 text-xs text-content-subtle">
 				Not carried
 			</span>
 		);

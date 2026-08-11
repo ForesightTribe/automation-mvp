@@ -44,16 +44,23 @@ export const DataTable = ({
 					{rows.map((row, i) => (
 						<tr
 							key={keyOf(row, i)}
-							className="border-b border-border/60 last:border-0 hover:bg-muted/50"
+							className="group border-b border-border/60 last:border-0 hover:bg-[#f9f7f4]"
 						>
 							{columns.map((c, ci) => (
 								<td
 									key={c.key}
-									className={`px-3 py-2 text-content ${
+									className={`px-3 py-2 ${
+										// First column names the row, so it stays black.
+										// The data columns recede, then come up to full
+										// black on row hover so the whole row reads as one.
+										ci === 0
+											? "sticky left-0 z-10 bg-card text-content group-hover:bg-[#f9f7f4]"
+											: "text-content-subtle group-hover:text-content-muted"
+									} ${
 										c.align === "right"
 											? "text-right tabular-nums"
 											: "text-left"
-									} ${ci === 0 ? "sticky left-0 z-10 bg-card" : ""}`}
+									}`}
 								>
 									{c.render ? c.render(row) : row[c.key]}
 								</td>

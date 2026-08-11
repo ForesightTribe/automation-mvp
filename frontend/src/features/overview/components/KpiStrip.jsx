@@ -1,6 +1,23 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
 import { formatCompactCurrency, formatNumber } from "../../../lib/format";
 
+/**
+ * One plum for every sparkline. The tiles are a set — six different hues read as
+ * six unrelated metrics, and colour here carries no meaning the label doesn't
+ * already give. The featured tile flips to white on its filled card.
+ */
+const SPARK = "#8b6383";
+const SPARK_ON_FEATURED = "#ffffff";
+
+/** "2026-08-08" -> "Aug 8". */
+const shortDate = (iso) => {
+	if (!iso) return null;
+	const d = new Date(iso);
+	return Number.isNaN(d)
+		? null
+		: d.toLocaleDateString("en-GB", { month: "short", day: "numeric" });
+};
+
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
 	v === null || v === undefined ? "—" : `${v.toFixed(2)}x`;
@@ -15,6 +32,10 @@ const formatRoas = (v) =>
 export const KpiStrip = ({ data, trends = [] }) => {
 	const m = (key) => data?.[key] ?? {};
 	const series = (fn) => trends.map(fn);
+	// The window the sparkline covers, captioned under it.
+	const first = shortDate(trends[0]?.date);
+	const last = shortDate(trends[trends.length - 1]?.date);
+	const seriesLabel = first && last ? `${first} – ${last}` : undefined;
 	const roasSeries = series((t) =>
 		t.ad_spend ? t.ad_sales / t.ad_spend : null,
 	);
@@ -26,21 +47,23 @@ export const KpiStrip = ({ data, trends = [] }) => {
 			value: formatCompactCurrency(m("ad_spend").value),
 			delta: m("ad_spend").delta_pct,
 			series: series((t) => t.ad_spend),
-			sparkColor: "#4f46e5",
+			sparkColor: SPARK,
 		},
 		{
 			label: "Ad Revenue",
 			value: formatCompactCurrency(m("ad_sales").value),
 			delta: m("ad_sales").delta_pct,
 			series: series((t) => t.ad_sales),
-			sparkColor: "#16a34a",
+			sparkColor: SPARK,
 		},
 		{
+			// The headline of the ad plane — filled, so the eye lands here first.
 			label: "Ad RoAS",
 			value: formatRoas(m("roas").value),
 			delta: m("roas").delta_pct,
 			series: roasSeries,
-			sparkColor: "#4f46e5",
+			sparkColor: SPARK_ON_FEATURED,
+			tone: "featured",
 		},
 		// Sales plane (seller dashboard) ──────────────────────────────
 		{
@@ -48,7 +71,7 @@ export const KpiStrip = ({ data, trends = [] }) => {
 			value: formatCompactCurrency(m("revenue").value),
 			delta: m("revenue").delta_pct,
 			series: series((t) => t.revenue),
-			sparkColor: "#0284c7",
+			sparkColor: SPARK,
 		},
 		{
 			label: "Organic Revenue",
@@ -59,14 +82,16 @@ export const KpiStrip = ({ data, trends = [] }) => {
 					? Math.max(0, t.revenue - t.ad_sales)
 					: null,
 			),
-			sparkColor: "#0d9488",
+			sparkColor: SPARK,
 		},
 		{
+			// Units are discrete counts, so bars rather than a smoothed line.
 			label: "Units sold",
 			value: formatNumber(m("units_sold").value),
 			delta: m("units_sold").delta_pct,
 			series: series((t) => t.units),
-			sparkColor: "#d97706",
+			sparkColor: SPARK,
+			seriesType: "bar",
 		},
 	];
 
@@ -80,6 +105,9 @@ export const KpiStrip = ({ data, trends = [] }) => {
 					delta={t.delta}
 					series={t.series}
 					sparkColor={t.sparkColor}
+					seriesType={t.seriesType}
+					seriesLabel={seriesLabel}
+					tone={t.tone}
 				/>
 			))}
 		</div>

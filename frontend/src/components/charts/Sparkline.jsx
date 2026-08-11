@@ -6,10 +6,10 @@ import { sparklineOption } from "./options";
  * Tiny inline trend line for KPI tiles. `values` may contain nulls (gaps are
  * preserved). Renders nothing if there aren't at least two real points to draw.
  */
-export const Sparkline = ({ values, color, height = 32 }) => {
+export const Sparkline = ({ values, color, height = 56, type = "line" }) => {
 	const option = useMemo(
-		() => sparklineOption(values ?? [], color),
-		[values, color],
+		() => sparklineOption(values ?? [], color, type),
+		[values, color, type],
 	);
 	const realPoints = (values ?? []).filter(
 		(v) => v !== null && v !== undefined,

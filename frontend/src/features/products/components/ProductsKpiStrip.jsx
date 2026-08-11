@@ -15,13 +15,26 @@ export const ProductsKpiStrip = ({ summary }) => {
 		{ label: "Revenue", value: formatCompactCurrency(s.revenue) },
 		{ label: "Units sold", value: formatNumber(s.units_sold) },
 		{ label: "Avg price/unit", value: formatCompactCurrency(s.avg_price) },
-		{ label: "Out of stock", value: formatNumber(s.out_of_stock) },
-		{ label: "Low cover", value: formatNumber(s.low_cover) },
+		{
+			label: "Out of stock",
+			value: formatNumber(s.out_of_stock),
+			tone: "danger",
+		},
+		{
+			label: "Low cover",
+			value: formatNumber(s.low_cover),
+			tone: "warning",
+		},
 	];
 	return (
 		<div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 			{tiles.map((t) => (
-				<MetricTile key={t.label} label={t.label} value={t.value} />
+				<MetricTile
+					key={t.label}
+					label={t.label}
+					value={t.value}
+					tone={t.tone}
+				/>
 			))}
 		</div>
 	);
