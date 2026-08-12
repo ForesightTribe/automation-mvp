@@ -1,276 +1,347 @@
-"""Explorer Excel export — the multi-sheet workbook.
+"""Explorer Excel export — an adapter onto the shared renderer.
 
-`write_workbook(insights, result, path)` renders the typed `ExplorerInsights`
-(from `build_insights`) into an .xlsx: INSIGHT sheets first (formatted, with
-colour scales + a couple of native bar charts), RAW sheets last (full field set).
-The writer only formats what `build_insights` computed — no aggregation here.
+`write_workbook(insights, result, path)` keeps its old signature, but no longer
+draws anything itself: it maps the typed `ExplorerInsights` onto a `Report` and
+hands that to `exports.write_workbook`. Explorer and the client report now
+come out of one writer, so a fix to widths, colours or print setup lands in both.
+
+Two things the shared layer changed here, deliberately:
+
+- **The vocabulary is checked.** The old sheets said "SoV %" and "Reach %";
+  `glossary.check_wording` rejects both, so they now read "Share of search %" and
+  "On shelf %" like everywhere else.
+- **Counts are LOCATIONS, not stores.** Explorer samples probe points and never
+  resolves them to dark stores, so the client report's store wording would be a
+  lie here. The glossary carries a `Location` entry saying exactly that.
 """
-from collections import OrderedDict
-
-from openpyxl import Workbook
-from openpyxl.chart import BarChart, Reference
-from openpyxl.formatting.rule import ColorScaleRule
-from openpyxl.styles import Alignment, Font, PatternFill
-from openpyxl.utils import get_column_letter
-from openpyxl.worksheet.worksheet import Worksheet
-
+from exports import glossary
+from exports import write_workbook as _render
+from app.schemas.exports import Column, Kpi, MetaItem, Report, Section
 from app.schemas.explorer import ExplorerInsights
 from scraper.public.explorer.orchestrator import ExplorerResult
 
-_HEADER_FILL = PatternFill("solid", fgColor="1F2937")
-_HEADER_FONT = Font(bold=True, color="FFFFFF")
-_TITLE_FONT = Font(bold=True, size=16)
-_LABEL_FONT = Font(bold=True)
 
-# Number formats
-_RUP = "₹#,##0"
-_RUP2 = "₹#,##0.00"   # per-unit prices — small, need decimals (₹6.25 / 100 ml)
-_PCT = "0.0"
-_NUM = "#,##0"
-_DEC = "0.0"
+def _c(key: str, header: str, type_: str = "text", **kw) -> Column:
+    return Column(key=key, header=header, type=type_, **kw)
 
 
-def _style(ws: Worksheet, columns: list[dict]) -> None:
-    for j, c in enumerate(columns, 1):
-        cell = ws.cell(row=1, column=j)
-        cell.fill = _HEADER_FILL
-        cell.font = _HEADER_FONT
-        cell.alignment = Alignment(horizontal="center", vertical="center", wrap_text=True)
-        letter = get_column_letter(j)
-        width = len(str(c["header"]))
-        for row in range(2, ws.max_row + 1):
-            v = ws.cell(row=row, column=j).value
-            if v is not None:
-                width = max(width, len(str(v)))
-        ws.column_dimensions[letter].width = min(max(width + 2, 10), 46)
-        if c.get("fmt"):
-            for row in range(2, ws.max_row + 1):
-                ws.cell(row=row, column=j).number_format = c["fmt"]
-        if c.get("cf") and ws.max_row >= 2:
-            _color_scale(ws, j, c["cf"])
-    ws.freeze_panes = "A2"
+def _overview(ins: ExplorerInsights) -> Section:
+    ov = ins.overview
+    return Section(
+        key="overview",
+        title="Run Overview",
+        description="How the brand performed across everything this run searched.",
+        context=f"{len(ov.keywords)} search term(s) · "
+                f"{ov.locations_scraped:,} locations · "
+                f"{'full census' if ov.full else f'sample of {ov.sample} per city'}",
+        kpis=[
+            Kpi(label="Share of search", value=ov.overall_sov_pct, type="pct",
+                help="Share of the results page taken by this brand's products, across every "
+                     "search in the run."),
+            Kpi(label="Average position", value=ov.avg_rank, type="rating",
+                help="Position 1 is the top of the page — lower is better."),
+            Kpi(label="In stock", value=ov.in_stock_pct, type="pct",
+                help="Of the brand's products that were found, how many had stock."),
+            Kpi(label="Search terms in the top 3", value=ov.keywords_top3, type="count"),
+            Kpi(label="Strongest search term", value=ov.strongest_keyword or "—", type="text"),
+            Kpi(label="Weakest search term", value=ov.weakest_keyword or "—", type="text"),
+            Kpi(label="Strongest city", value=ov.strongest_city or "—", type="text"),
+            Kpi(label="Weakest city", value=ov.weakest_city or "—", type="text"),
+            Kpi(label="Products captured", value=ov.total_listings, type="count"),
+            Kpi(label="Competitors found", value=ov.total_competitors, type="count"),
+            Kpi(label="Fetch errors", value=ov.errors, type="count",
+                help="Searches that failed outright. A high count means the run under-sampled."),
+        ],
+        notes=[
+            "Counts are LOCATIONS searched, not shops — one location can be served by several "
+            "dark stores, so these are not store counts.",
+            "This is a one-off scrape of whatever was asked for, not a tracked client feed.",
+        ],
+    )
 
 
-def _color_scale(ws: Worksheet, col: int, kind: str) -> None:
-    letter = get_column_letter(col)
-    rng = f"{letter}2:{letter}{ws.max_row}"
-    hi, lo = "63BE7B", "F8696B"
-    start, end = (lo, hi) if kind == "good_high" else (hi, lo)
-    ws.conditional_formatting.add(rng, ColorScaleRule(
-        start_type="min", start_color=start,
-        mid_type="percentile", mid_value=50, mid_color="FFEB84",
-        end_type="max", end_color=end,
-    ))
+def _keywords(ins: ExplorerInsights) -> Section | None:
+    if not ins.keywords:
+        return None
+    return Section(
+        key="keywords",
+        title="Search Term Scorecard",
+        description="How the brand did for each search term.",
+        context="Position 1 is the top of the page — lower is better",
+        columns=[
+            _c("keyword", "Search term"),
+            _c("locations", "Locations", "count", emphasis="bar"),
+            _c("avg_rank", "Average position", "rating", emphasis="good_low",
+               help="Position 1 is the top of the page — LOWER IS BETTER."),
+            _c("best_rank", "Best position", "count"),
+            _c("sov_pct", "Share of search %", "pct", emphasis="good_high"),
+            _c("presence_pct", "Presence %", "pct", emphasis="good_high",
+               help="Locations where the brand appeared at all, out of those searched."),
+            _c("in_stock_pct", "In stock %", "pct", emphasis="good_high"),
+            _c("competitors", "Competitors", "count"),
+            _c("top_competitor", "Top competitor"),
+        ],
+        rows=[r.model_dump() for r in ins.keywords],
+    )
 
 
-def _table(wb: Workbook, title: str, columns: list[dict], rows: list[dict]) -> Worksheet:
-    ws = wb.create_sheet(title[:31])
-    ws.append([c["header"] for c in columns])
-    for r in rows:
-        ws.append([r.get(c["key"]) for c in columns])
-    _style(ws, columns)
-    return ws
+def _geography(ins: ExplorerInsights) -> Section | None:
+    if not ins.geography:
+        return None
+    return Section(
+        key="geography",
+        title="Geography",
+        description="The same numbers city by city.",
+        columns=[
+            _c("city", "City"),
+            _c("locations", "Locations", "count", emphasis="bar"),
+            _c("avg_rank", "Average position", "rating", emphasis="good_low"),
+            _c("sov_pct", "Share of search %", "pct", emphasis="good_high"),
+            _c("in_stock_pct", "In stock %", "pct", emphasis="good_high"),
+            _c("keywords", "Search terms", "count"),
+        ],
+        rows=[r.model_dump() for r in ins.geography],
+    )
 
 
-def _bar(ws: Worksheet, title: str, cat_col: int, val_col: int, anchor: str, max_rows: int = 15) -> None:
-    if ws.max_row < 2:
-        return
-    chart = BarChart()
-    chart.type = "col"
-    chart.title = title
-    chart.height = 8
-    chart.width = 20
-    chart.legend = None
-    last = min(ws.max_row, 1 + max_rows)
-    chart.add_data(Reference(ws, min_col=val_col, min_row=1, max_row=last), titles_from_data=True)
-    chart.set_categories(Reference(ws, min_col=cat_col, min_row=2, max_row=last))
-    ws.add_chart(chart, anchor)
+def _competitors(ins: ExplorerInsights) -> Section | None:
+    if not ins.competitors:
+        return None
+    return Section(
+        key="competitors",
+        title="Competitor Landscape",
+        description="Every rival brand that appeared in these searches.",
+        columns=[
+            _c("competitor", "Brand"),
+            _c("locations", "Locations seen in", "count", emphasis="bar"),
+            _c("keywords", "Search terms", "count"),
+            _c("appearances", "Appearances", "count"),
+            _c("avg_position", "Average position", "rating"),
+            _c("avg_price", "Average price", "money"),
+            _c("share_pct", "Share of shelf %", "pct",
+               help="This brand's slice of every competitor appearance in the run."),
+        ],
+        rows=[r.model_dump() for r in ins.competitors],
+    )
 
 
-# ── Sheets ────────────────────────────────────────────────────────────────────
-
-def _overview_sheet(wb: Workbook, ov) -> None:
-    ws = wb.create_sheet("Run Overview")
-    ws["A1"] = "Explorer Report"
-    ws["A1"].font = _TITLE_FONT
-    pairs = [
-        ("Marketplace", ov.marketplace),
-        ("Brand", ov.brand),
-        ("Mode", ov.mode),
-        ("Label", ov.label or "—"),
-        ("Keywords", ", ".join(ov.keywords) or "—"),
-        ("Cities", ", ".join(ov.cities) or "all catalog cities"),
-        ("Locations scraped", ov.locations_scraped),
-        ("Sampling", "full census" if ov.full else f"{ov.sample}/city"),
-        ("Generated", ov.generated_at.strftime("%Y-%m-%d %H:%M")),
-        ("", ""),
-        ("Overall SoV %", ov.overall_sov_pct),
-        ("Average rank", ov.avg_rank),
-        ("In-stock % (own)", ov.in_stock_pct),
-        ("Keywords in top-3", ov.keywords_top3),
-        ("Strongest keyword", ov.strongest_keyword or "—"),
-        ("Weakest keyword", ov.weakest_keyword or "—"),
-        ("Strongest city", ov.strongest_city or "—"),
-        ("Weakest city", ov.weakest_city or "—"),
-        ("Total listings captured", ov.total_listings),
-        ("Competitors discovered", ov.total_competitors),
-        ("Fetch errors", ov.errors),
-    ]
-    r = 3
-    for k, v in pairs:
-        if k:
-            ws.cell(r, 1, k).font = _LABEL_FONT
-            ws.cell(r, 2, v)
-        r += 1
-    ws.column_dimensions["A"].width = 26
-    ws.column_dimensions["B"].width = 44
+def _pricing(ins: ExplorerInsights) -> Section | None:
+    if not ins.pricing:
+        return None
+    return Section(
+        key="pricing",
+        title="Price & Discount",
+        description="The brand's price band against the rest of the shelf, per search term.",
+        columns=[
+            _c("keyword", "Search term"),
+            _c("own_avg", "You — average", "money"),
+            _c("own_min", "You — low", "money"),
+            _c("own_max", "You — high", "money"),
+            _c("own_discount_pct", "Your discount %", "pct"),
+            _c("comp_avg", "Market — average", "money"),
+            _c("comp_min", "Market — low", "money"),
+            _c("comp_median", "Market — typical", "money"),
+            _c("comp_max", "Market — high", "money"),
+            _c("unit_uom", "Per-unit basis", width=14),
+            _c("own_avg_unit", "You per unit", "money_fine",
+               help="Price normalised by pack size — the fair comparison across pack sizes."),
+            _c("own_min_unit", "You per unit — low", "money_fine"),
+            _c("own_max_unit", "You per unit — high", "money_fine"),
+            _c("comp_avg_unit", "Market per unit", "money_fine"),
+            _c("comp_median_unit", "Market per unit — typical", "money_fine"),
+            _c("comp_max_unit", "Market per unit — high", "money_fine"),
+        ],
+        rows=[r.model_dump() for r in ins.pricing],
+    )
 
 
-def _insight_sheets(wb: Workbook, ins: ExplorerInsights) -> None:
-    kw = _table(wb, "Keyword Scorecard", [
-        {"header": "Keyword", "key": "keyword"},
-        {"header": "Locations", "key": "locations", "fmt": _NUM},
-        {"header": "Avg Rank", "key": "avg_rank", "fmt": _DEC, "cf": "good_low"},
-        {"header": "Best Rank", "key": "best_rank", "fmt": _NUM},
-        {"header": "SoV %", "key": "sov_pct", "fmt": _PCT, "cf": "good_high"},
-        {"header": "Presence %", "key": "presence_pct", "fmt": _PCT, "cf": "good_high"},
-        {"header": "In-stock %", "key": "in_stock_pct", "fmt": _PCT, "cf": "good_high"},
-        {"header": "Competitors", "key": "competitors", "fmt": _NUM},
-        {"header": "Top Competitor", "key": "top_competitor"},
-    ], [r.model_dump() for r in ins.keywords])
-    _bar(kw, "SoV % by keyword", cat_col=1, val_col=5, anchor="K2")
-
-    _table(wb, "Geography", [
-        {"header": "City", "key": "city"},
-        {"header": "Locations", "key": "locations", "fmt": _NUM},
-        {"header": "Avg Rank", "key": "avg_rank", "fmt": _DEC, "cf": "good_low"},
-        {"header": "SoV %", "key": "sov_pct", "fmt": _PCT, "cf": "good_high"},
-        {"header": "In-stock %", "key": "in_stock_pct", "fmt": _PCT, "cf": "good_high"},
-        {"header": "Keywords", "key": "keywords", "fmt": _NUM},
-    ], [r.model_dump() for r in ins.geography])
-
-    comp = _table(wb, "Competitor Landscape", [
-        {"header": "Competitor", "key": "competitor"},
-        {"header": "Locations", "key": "locations", "fmt": _NUM, "cf": "good_high"},
-        {"header": "Keywords", "key": "keywords", "fmt": _NUM},
-        {"header": "Appearances", "key": "appearances", "fmt": _NUM},
-        {"header": "Avg Position", "key": "avg_position", "fmt": _DEC},
-        {"header": "Avg Price", "key": "avg_price", "fmt": _RUP},
-        {"header": "Share %", "key": "share_pct", "fmt": _PCT},
-    ], [r.model_dump() for r in ins.competitors])
-    _bar(comp, "Top competitors by locations", cat_col=1, val_col=2, anchor="I2", max_rows=10)
-
-    _table(wb, "Price & Discount", [
-        {"header": "Keyword", "key": "keyword"},
-        {"header": "Own Avg", "key": "own_avg", "fmt": _RUP},
-        {"header": "Own Min", "key": "own_min", "fmt": _RUP},
-        {"header": "Own Max", "key": "own_max", "fmt": _RUP},
-        {"header": "Own Disc %", "key": "own_discount_pct", "fmt": _PCT},
-        {"header": "Comp Avg", "key": "comp_avg", "fmt": _RUP},
-        {"header": "Comp Min", "key": "comp_min", "fmt": _RUP},
-        {"header": "Comp Median", "key": "comp_median", "fmt": _RUP},
-        {"header": "Comp Max", "key": "comp_max", "fmt": _RUP},
-        # Per-unit band — the fair cross-pack-size comparison (see Basis column).
-        {"header": "Basis", "key": "unit_uom"},
-        {"header": "Own Avg /u", "key": "own_avg_unit", "fmt": _RUP2},
-        {"header": "Own Min /u", "key": "own_min_unit", "fmt": _RUP2},
-        {"header": "Own Max /u", "key": "own_max_unit", "fmt": _RUP2},
-        {"header": "Comp Avg /u", "key": "comp_avg_unit", "fmt": _RUP2},
-        {"header": "Comp Median /u", "key": "comp_median_unit", "fmt": _RUP2},
-        {"header": "Comp Max /u", "key": "comp_max_unit", "fmt": _RUP2},
-    ], [r.model_dump() for r in ins.pricing])
-
-    _table(wb, "Availability", [
-        {"header": "Keyword", "key": "keyword"},
-        {"header": "City", "key": "city"},
-        {"header": "Own Found", "key": "own_found", "fmt": _NUM},
-        {"header": "Own In-stock", "key": "own_in_stock", "fmt": _NUM},
-        {"header": "In-stock %", "key": "in_stock_pct", "fmt": _PCT, "cf": "good_high"},
-    ], [r.model_dump() for r in ins.availability])
-
-    if ins.catalog:
-        _table(wb, "Own Catalog", [
-            {"header": "Product ID", "key": "product_id"},
-            {"header": "Name", "key": "name"},
-            {"header": "Found Locations", "key": "found_locations", "fmt": _NUM},
-            {"header": "Reach %", "key": "reach_pct", "fmt": _PCT, "cf": "good_high"},
-            {"header": "Distribution %", "key": "distribution_pct", "fmt": _PCT, "cf": "good_high"},
-            {"header": "Pack", "key": "pack_size", "fmt": _DEC},
-            {"header": "Unit", "key": "pack_uom"},
-            {"header": "Price Min", "key": "price_min", "fmt": _RUP},
-            {"header": "Price Median", "key": "price_median", "fmt": _RUP},
-            {"header": "Price Max", "key": "price_max", "fmt": _RUP},
-            {"header": "Min /u", "key": "unit_price_min", "fmt": _RUP2},
-            {"header": "Median /u", "key": "unit_price_median", "fmt": _RUP2},
-            {"header": "Max /u", "key": "unit_price_max", "fmt": _RUP2},
-            {"header": "Disc %", "key": "discount_pct", "fmt": _PCT},
-            {"header": "Rating", "key": "rating", "fmt": _DEC},
-            {"header": "Combo", "key": "is_combo"},
-        ], [r.model_dump() for r in ins.catalog])
+def _availability(ins: ExplorerInsights) -> Section | None:
+    if not ins.availability:
+        return None
+    return Section(
+        key="availability",
+        title="Availability",
+        description="Where the brand's products were found but empty.",
+        columns=[
+            _c("keyword", "Search term"),
+            _c("city", "City"),
+            _c("own_found", "Products found", "count"),
+            _c("own_in_stock", "With stock", "count"),
+            _c("in_stock_pct", "In stock %", "pct", emphasis="good_high"),
+        ],
+        rows=[r.model_dump() for r in ins.availability],
+    )
 
 
-def _raw_sheets(wb: Workbook, result: ExplorerResult) -> None:
-    _table(wb, "Raw - Snapshots", [
-        {"header": h, "key": k, "fmt": f} for h, k, f in [
-            ("Keyword", "keyword", None), ("City", "city", None), ("Zone", "zone", None),
-            ("Lat", "lat", None), ("Lon", "lon", None), ("Merchant", "merchant_id", None),
-            ("Total Results", "total_results", _NUM), ("Brand Rank", "brand_rank", _NUM),
-            ("Brand SoV %", "brand_sov_pct", _PCT), ("Brand Products", "brand_product_count", _NUM),
-        ]
-    ], result.snapshots)
+def _catalog(ins: ExplorerInsights) -> Section | None:
+    if not ins.catalog:
+        return None
+    return Section(
+        key="catalog",
+        title="Own Catalogue",
+        description="Every product of the focus brand, and how widely it was found.",
+        columns=[
+            _c("name", "Product"),
+            _c("product_id", "Product ID", "id"),
+            _c("found_locations", "Locations found", "count", emphasis="bar"),
+            _c("reach_pct", "On shelf %", "pct", emphasis="good_high",
+               help="Locations where the product was listed, out of those searched."),
+            _c("distribution_pct", "In stock %", "pct", emphasis="good_high",
+               help="Of the locations listing it, how many had stock."),
+            _c("pack_size", "Pack", "rating"),
+            _c("pack_uom", "Unit", width=10),
+            _c("price_min", "Cheapest", "money"),
+            _c("price_median", "Typical", "money"),
+            _c("price_max", "Dearest", "money"),
+            _c("unit_price_min", "Per unit — low", "money_fine"),
+            _c("unit_price_median", "Per unit — typical", "money_fine"),
+            _c("unit_price_max", "Per unit — high", "money_fine"),
+            _c("discount_pct", "Discount %", "pct"),
+            _c("rating", "Rating", "rating"),
+            _c("is_combo", "Multipack", width=12),
+        ],
+        rows=[r.model_dump() for r in ins.catalog],
+    )
 
-    listing_cols = [
-        ("Keyword", "keyword", None), ("City", "city", None), ("Lat", "lat", None),
-        ("Lon", "lon", None), ("Position", "position", _NUM),
-        ("Merchant", "merchant_id", None), ("Name", "name", None),
-        ("Brand", "brand", None), ("Own?", "is_brand", None), ("Brand Slug", "brand_slug", None),
-        ("Price", "price", _RUP), ("MRP", "mrp", _RUP), ("Discount %", "discount_pct", _PCT),
-        ("In Stock", "in_stock", None), ("Inventory", "inventory", _NUM),
-        ("Product ID", "product_id", None), ("Unit", "unit", None),
-        ("Pack Size", "pack_size", _DEC), ("Pack UOM", "pack_uom", None),
-        ("Pack Count", "pack_count", _NUM), ("Rating", "rating", _DEC),
-        ("State", "product_state", None), ("L0", "l0", None), ("L1", "l1", None),
-        ("L2", "l2", None), ("Merchant Type", "merchant_type", None), ("Combo", "is_combo", None),
-    ]
-    _table(wb, "Raw - Listings",
-           [{"header": h, "key": k, "fmt": f} for h, k, f in listing_cols],
-           result.listings)
 
-    if result.sku_rows:
-        _table(wb, "Raw - Catalog SKUs",
-               [{"header": h, "key": k, "fmt": f} for h, k, f in [
-                   ("Product ID", "product_id", None), ("Name", "name", None),
-                   ("City", "city", None), ("Lat", "lat", None), ("Lon", "lon", None),
-                   ("Merchant", "merchant_id", None), ("Merchant Type", "merchant_type", None),
-                   ("Price", "price", _RUP), ("MRP", "mrp", _RUP),
-                   ("Discount %", "discount_pct", _PCT),
-                   ("Unit", "unit", None), ("Pack Size", "pack_size", _DEC),
-                   ("Pack UOM", "pack_uom", None), ("Pack Count", "pack_count", _NUM),
-                   ("In Stock", "in_stock", None),
-                   ("Inventory", "inventory", _NUM), ("Rating", "rating", _DEC),
-                   ("Combo", "is_combo", None),
-               ]], result.sku_rows)
+# ── Captured rows ─────────────────────────────────────────────────────────────
+# Explorer is ephemeral: nothing it scrapes is stored, so the workbook is the
+# only copy and the captured rows have to ride along. They are `dense` — long
+# sheets get headers, widths and freeze but no per-cell painting.
 
-    # Distinct locations actually used
-    locs = OrderedDict()
+def _snapshots(result: ExplorerResult) -> Section | None:
+    if not result.snapshots:
+        return None
+    return Section(
+        key="captured_searches",
+        title="Captured — Searches",
+        description="One row per search at one location.",
+        dense=True,
+        columns=[
+            _c("keyword", "Search term"), _c("city", "City"), _c("zone", "Zone"),
+            _c("lat", "Latitude", "rating"), _c("lon", "Longitude", "rating"),
+            _c("merchant_id", "Store ID", "id"),
+            _c("total_results", "Results on page", "count"),
+            _c("brand_rank", "Your position", "count"),
+            _c("brand_sov_pct", "Share of search %", "pct"),
+            _c("brand_product_count", "Your products", "count"),
+        ],
+        rows=result.snapshots,
+    )
+
+
+def _listings(result: ExplorerResult) -> Section | None:
+    if not result.listings:
+        return None
+    return Section(
+        key="captured_products",
+        title="Captured — Products",
+        description="Every product seen on every results page, yours and competitors'.",
+        dense=True,
+        columns=[
+            _c("keyword", "Search term"), _c("city", "City"),
+            _c("lat", "Latitude", "rating"), _c("lon", "Longitude", "rating"),
+            _c("position", "Position", "count"), _c("merchant_id", "Store ID", "id"),
+            _c("name", "Product"), _c("brand", "Brand"), _c("is_brand", "Yours?", width=10),
+            _c("brand_slug", "Brand key", "id"),
+            _c("price", "Price", "money"), _c("mrp", "MRP", "money"),
+            _c("discount_pct", "Discount %", "pct"),
+            _c("in_stock", "In stock", width=10), _c("inventory", "Units", "count"),
+            _c("product_id", "Product ID", "id"), _c("unit", "Pack"),
+            _c("pack_size", "Pack size", "rating"), _c("pack_uom", "Unit", width=10),
+            _c("pack_count", "Items in pack", "count"), _c("rating", "Rating", "rating"),
+            _c("product_state", "State"), _c("l0", "Category"), _c("l1", "Sub-category"),
+            _c("l2", "Group"), _c("merchant_type", "Store tier"),
+            _c("is_combo", "Multipack", width=12),
+        ],
+        rows=result.listings,
+    )
+
+
+def _catalog_rows(result: ExplorerResult) -> Section | None:
+    if not result.sku_rows:
+        return None
+    return Section(
+        key="captured_catalogue",
+        title="Captured — Own Catalogue",
+        description="Every own-product reading, one row per product per location.",
+        dense=True,
+        columns=[
+            _c("name", "Product"), _c("product_id", "Product ID", "id"),
+            _c("city", "City"), _c("lat", "Latitude", "rating"), _c("lon", "Longitude", "rating"),
+            _c("merchant_id", "Store ID", "id"), _c("merchant_type", "Store tier"),
+            _c("price", "Price", "money"), _c("mrp", "MRP", "money"),
+            _c("discount_pct", "Discount %", "pct"), _c("unit", "Pack"),
+            _c("pack_size", "Pack size", "rating"), _c("pack_uom", "Unit", width=10),
+            _c("pack_count", "Items in pack", "count"),
+            _c("in_stock", "In stock", width=10), _c("inventory", "Units", "count"),
+            _c("rating", "Rating", "rating"), _c("is_combo", "Multipack", width=12),
+        ],
+        rows=result.sku_rows,
+    )
+
+
+def _locations(result: ExplorerResult) -> Section | None:
+    seen: dict[tuple, dict] = {}
     for r in result.snapshots + result.sku_rows:
-        locs[(r.get("lat"), r.get("lon"))] = {
-            "city": r.get("city"), "zone": r.get("zone"),
-            "pincode": r.get("pincode"), "lat": r.get("lat"), "lon": r.get("lon"),
-        }
-    _table(wb, "Raw - Locations", [
-        {"header": "City", "key": "city"}, {"header": "Zone", "key": "zone"},
-        {"header": "Pincode", "key": "pincode"}, {"header": "Lat", "key": "lat"},
-        {"header": "Lon", "key": "lon"},
-    ], list(locs.values()))
+        seen.setdefault((r.get("lat"), r.get("lon")), {
+            "city": r.get("city"), "zone": r.get("zone"), "pincode": r.get("pincode"),
+            "lat": r.get("lat"), "lon": r.get("lon"),
+        })
+    if not seen:
+        return None
+    return Section(
+        key="captured_locations",
+        title="Captured — Locations",
+        description="The points this run searched from.",
+        dense=True,
+        columns=[
+            _c("city", "City"), _c("zone", "Zone"), _c("pincode", "Pincode", "id"),
+            _c("lat", "Latitude", "rating"), _c("lon", "Longitude", "rating"),
+        ],
+        rows=list(seen.values()),
+    )
+
+
+def _report(insights: ExplorerInsights, result: ExplorerResult) -> Report:
+    ov = insights.overview
+    sections = [
+        _overview(insights), _keywords(insights), _geography(insights),
+        _competitors(insights), _pricing(insights), _availability(insights),
+        _catalog(insights),
+        _snapshots(result), _listings(result), _catalog_rows(result), _locations(result),
+    ]
+    return Report(
+        title=f"{ov.brand.title()} — Market Explorer",
+        subtitle=f"{ov.marketplace.title()} · one-off scrape · "
+                 f"{ov.generated_at:%d %b %Y, %H:%M}"
+                 + (f" · {ov.label}" if ov.label else ""),
+        filename_stem=f"{ov.brand}_explorer",
+        generated_at=ov.generated_at,
+        meta=[
+            MetaItem(label="Brand", value=ov.brand),
+            MetaItem(label="Marketplace", value=ov.marketplace.title()),
+            MetaItem(label="Mode", value=ov.mode),
+            MetaItem(label="Label", value=ov.label or "—"),
+            MetaItem(label="Search terms", value=", ".join(ov.keywords) or "—"),
+            MetaItem(label="Cities", value=", ".join(ov.cities) or "every city in the catalogue"),
+            MetaItem(label="Locations searched", value=ov.locations_scraped,
+                     note="points searched from, not shops"),
+            MetaItem(label="Sampling", value="full census" if ov.full else f"{ov.sample} per city"),
+            MetaItem(label="Scraped", value=f"{ov.generated_at:%d %b %Y, %H:%M}",
+                     note="live at the time of this run"),
+        ],
+        sections=[s for s in sections if s is not None],
+        # No "stores observed" or "freshness": Explorer counts locations and is
+        # scraped live, so the client report's core terms would mislead here.
+        glossary=glossary.collect(
+            "share_of_search", "position", "unit_price", "discount",
+            "main_vs_combo", "probe_location",
+            core=(),
+        ),
+    )
 
 
 def write_workbook(insights: ExplorerInsights, result: ExplorerResult, path: str) -> str:
-    """Render the insights + raw rows to an .xlsx at `path`. Returns `path`."""
-    wb = Workbook()
-    wb.remove(wb.active)  # drop the default empty sheet
-    _overview_sheet(wb, insights.overview)
-    _insight_sheets(wb, insights)
-    _raw_sheets(wb, result)
-    wb.save(path)
-    return path
+    """Render the run to an .xlsx at `path`. Returns `path`."""
+    return _render(_report(insights, result), path)

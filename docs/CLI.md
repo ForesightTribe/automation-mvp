@@ -403,7 +403,7 @@ preserves manual mappings.
 competitors / cities and writes a multi-sheet Excel report. Unlike `public-run`,
 it is **not** tied to a tenant's watchlist and **writes nothing** to the fact
 tables — it's for profiling a prospect or a one-off deep-dive. Each run logs one
-`explorer_runs` record (status + live progress) and saves an `.xlsx` to `exports/`
+`explorer_runs` record (status + live progress) and saves an `.xlsx` to `out/`
 (gitignored). Full design: [explorer.md](explorer.md).
 
 ```bash
@@ -438,11 +438,17 @@ python -m cli explore --brand dobra --keyword "soda" --city bengaluru --full -o 
 | `--brand-cap` | 60 | Catalog brand-query cap override |
 | `--label` | — | Human label stored on the run |
 | `--tenant` / `-t` | — | Optional attribution to a client (does **not** scope storage) |
-| `--output` / `-o` | `exports/<brand>_<ts>.xlsx` | Workbook path |
+| `--output` / `-o` | `out/<brand>_<ts>.xlsx` | Workbook path |
 
-**Workbook** (insight sheets first, raw last): Run Overview · Keyword Scorecard ·
-Geography · Competitor Landscape · Price & Discount · Availability · Own Catalog
-(catalog mode) · then Raw — Snapshots / Listings / Catalog SKUs / Locations.
+**Workbook** — rendered by the shared exports writer, so it looks and reads like
+`cli export public`: Contents · How to read this · Run Overview · Search Term
+Scorecard · Geography · Competitor Landscape · Price & Discount · Availability ·
+Own Catalogue (catalog mode) · then Captured — Searches / Products / Own
+Catalogue / Locations.
+
+Explorer counts **locations searched**, not dark stores: it samples probe points
+and never resolves them to shops, so its numbers are not comparable with the
+store-grain figures in `cli export public`. The glossary sheet says so.
 
 - Only cities already in `marketplace_locations` are reachable (add them via `cli sync`).
 - Ephemeral: nothing in `search_snapshots` / `search_listings` / `sku_snapshots` — only the
@@ -583,20 +589,137 @@ python -m cli cm rules remove-budget --schedule <sid>  # teardown
 python -m cli cm rules remove-bid    --rule <hex>
 ```
 
-The scheduler side (`jobs run`, `schedules`, the runner) is documented in [jobs.md](jobs.md) and [jobs-runbook.md](jobs-runbook.md).
+### One-off manual controls
+
+Outside the rule engine — act on a single campaign right now. All are dry-run
+unless `--live`, except `status`, which is read-only.
+
+```bash
+python -m cli cm status         -t <id> --campaign <cid>   # live state: status, budget, bids, dates
+python -m cli cm set-budget     -t <id> --campaign <cid> --budget 5000
+python -m cli cm set-activation -t <id> --campaign <cid> --status paused|running
+python -m cli cm stop           -t <id> --campaign <cid>   # shorthand for --status paused
+python -m cli cm restart        -t <id> --campaign <cid>   # shorthand for the reverse
+python -m cli cm sync-campaign-data -t <id>                # refresh the keyword/product cache
+```
+
+Two more rule commands not shown above:
+
+```bash
+python -m cli cm rules set-stop-after-window --schedule <sid> --on|--off
+python -m cli cm rules remove-budget-rule --rule <hex>   # drop ONE rule, keep its schedule
+```
+
+**The job queue and scheduler have their own reference.** `jobs run|list|logs|types`,
+`schedules add|list|show|update|enable|disable|remove` and `runner start` are all
+documented in [jobs.md](jobs.md) (design) and [jobs-runbook.md](jobs-runbook.md)
+(full command reference, troubleshooting) — they are not repeated here.
 
 ---
 
-## Export to Excel
+## Export — reports & raw data (`export`)
 
-Export all scraped data for a tenant to a multi-sheet Excel workbook.
+Turns **stored** data into files. Nothing here scrapes: for an on-demand scrape of
+any brand see `explore` above. Full design in [exports.md](exports.md).
+
+Two artifacts, deliberately separate — the report is a readable client deliverable,
+the raw pull is a data dump. One 7-day window of a mid-size client is ~300k rows /
+79 MB, which is why it never rides along with the report.
+
+### The client report — `export public`
+
+A 13-sheet workbook: a cover, a plain-English glossary, then shelf presence
+(overall / per product / per city / per store), the work queue, the availability
+trend, price spread, and the search sheets (visibility, the position grid,
+competitors, price vs market).
 
 ```bash
-python export_to_excel.py <tenant_id>
-python export_to_excel.py <tenant_id> --output report.xlsx
+python -m cli export public -t <tenant-uuid>                      # latest week with data
+python -m cli export public -t <uuid> --from 2026-08-01 --to 2026-08-07
+python -m cli export public -t <uuid> --city bengaluru --kind combo
+python -m cli export public -t <uuid> --sections summary,rank_grid -o pitch.xlsx
 ```
 
-Sheets produced: Ad Performance Summary, Ad Campaigns, Sponsored SOV, Brand Collections, Visibility Plans, Seller Sales, Sales Summary, Purchase Orders, PO Line Items, PO Snapshots, Stock On Hand, Scorecard Weekly, Scorecard Categories, Scorecard Facilities, Scorecard Key SKUs.
+| Option | Meaning |
+|---|---|
+| `-t, --tenant` | Client id (**required**) — `cli tenant list` |
+| `--from` / `--to` | Inclusive dates. Omit both and it uses **the last 7 days that have data**, not the last 7 days from today — public scrapes are weekly, so a today-anchored window often lands after the last scrape and returns nothing |
+| `-c, --city` | One city at a time (multi-city sections are not built) |
+| `--kind` | `main` (default) · `combo` · `all` — combos are stocked selectively, so they are reported apart |
+| `-m, --marketplace` | Restrict to one marketplace |
+| `--sections` | Comma-separated keys; default is every public section |
+| `--label` | Free text printed on the cover |
+| `-o, --output` | Output path (default `out/<Client>_public_<end-date>.xlsx`) |
+
+```bash
+python -m cli export sections     # every section key, its group and glossary terms
+python -m cli export sample       # render a fixture workbook — no database needed
+```
+
+`export sample` exists to judge the look and catch rendering regressions in
+seconds; it uses invented data and touches no database.
+
+### Raw data — `export raw`
+
+The underlying rows as **CSV**, one file per table, on demand. CLI only: this is
+never bundled into the report and will not sit behind the future download button.
+
+```bash
+python -m cli export raw -t <uuid> --dry-run          # count first — always
+python -m cli export raw -t <uuid>                    # write the CSVs
+python -m cli export raw -t <uuid> --tables listings --limit 5000
+```
+
+| Table key | File | What it is |
+|---|---|---|
+| `sku` | `own_products_by_store.csv` | One row per own product per dark store per scrape |
+| `listings` | `search_listings.csv` | Every product seen in a search, yours and competitors'. The biggest table |
+| `searches` | `searches.csv` | One row per search at one probe point |
+| `stores` | `store_catalogue.csv` | The dark-store catalogue (not date-scoped) |
+
+| Option | Meaning |
+|---|---|
+| `-t, --tenant` | Client id (**required**) |
+| `--from` / `--to` | Same defaulting as `export public` |
+| `--tables` | Comma-separated keys; default all four |
+| `-c, --city` / `-m, --marketplace` | Narrow the pull |
+| `--limit` | Cap rows per table — for a quick sample |
+| `--include-extra` | Include the scraper's untyped `extra` payload (mostly image URLs; roughly triples the file) |
+| `--dry-run` | Count and stop, writing nothing |
+| `-o, --out` | Output directory (default `out/<Client>_raw_<from>_<to>/`) |
+
+Row counts always print before anything is written — the volume is the thing worth
+knowing before you commit to it. CSV is deliberate: at this size a styled workbook
+is the wrong container, and Excel opens CSV natively.
+
+> **Legacy:** `python export_to_excel.py <tenant_id>` still dumps the **private**
+> marketing/seller tables (ad campaigns, sales, POs, SOH, scorecard) to a workbook.
+> It predates this subsystem and is kept until a private report replaces it.
+
+---
+
+## Ads automation (`ads`)
+
+Runs on the VM as jobs; see [jobs.md](jobs.md).
+
+```bash
+python -m cli ads budget-scheduler      # apply budget rules for the current IST slot
+python -m cli ads bid-optimizer         # one pass of the bid optimizer
+python -m cli ads sync-campaign-data    # cache campaign keywords + products in the DB
+```
+
+---
+
+## Maintenance & monitoring (`maint`, `monitor`)
+
+```bash
+python -m cli maint log-cleanup    # prune old per-run job logs under logs/jobs/
+python -m cli monitor heartbeat    # assert every enabled schedule ran, and disk is OK
+```
+
+`monitor heartbeat` logs an ERROR per problem (which raises a Cloud Logging alert)
+and exits non-zero if anything is wrong. Both run as scheduled jobs on the VM —
+see [jobs-runbook.md](jobs-runbook.md).
 
 ---
 
