@@ -403,6 +403,28 @@ that doc rests on the smaller number.
   pacing, rest cycle and probe-based recovery before `public-run -m zepto` is
   usable. That is Phase 5.
 - **Q12 untested.** Every rate measurement here is from a residential connection.
+- **There is no Zepto seller-dashboard access — only public data.** This splits
+  the CLI cleanly in two:
+  - **Public-data commands are already shared**, marketplace selected by value,
+    not by a different command: `cli sync` (platform comes from the row's `mp`
+    column), `cli scrape public-run --marketplace zepto`, `cli scrape public
+    --platform zepto`. `zepto` is registered `wired=True` in
+    `scraper/public/providers.py` — a real provider, not a stub like
+    `instamart`.
+  - **Seller-side commands are Blinkit-only**, because the module they'd import
+    doesn't exist for Zepto: `cli/commands/auth.py` imports
+    `scraper.platforms.blinkit.auth` and
+    `scraper.platforms.blinkit.dashboard_data.seller.auth` with no Zepto
+    equivalent. Same for ads, campaign manager, and the SKU-level stock probes.
+  - **Consequence for the dashboard:** until a `scraper/platforms/zepto/
+    dashboard_data/seller/` package is built (mirroring Blinkit's — auth,
+    scraper, parser, storage), Zepto can only ever populate what public search
+    data supports: **Competition** (pricing, rank, SoV) and **Inventory**
+    (on-shelf/out-of-stock presence). Overview's KPI strip (ad spend, ad
+    revenue, RoAS, total/organic revenue, units sold), Products' sales columns,
+    Reports' sales pivot, Ads/Campaign Manager, and Scorecard all read seller
+    data and will show blank/zero for Zepto regardless of how complete the
+    public-data integration is — that's a scope boundary, not a bug to chase.
 
 ---
 

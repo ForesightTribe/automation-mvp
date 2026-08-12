@@ -145,7 +145,7 @@ def _bounds(start: date, end: date) -> tuple[datetime, datetime]:
     )
 
 
-def _store_cond(tenant_id, own, window, city, marketplace, kind="main") -> list:
+def _store_cond(tenant_id, own, window, city, marketplaces, kind="main") -> list:
     """The filters every store-grain public query shares.
 
     `merchant_id != ""` is NOT optional. Rows scraped before 2026-07-18 predate the
@@ -165,12 +165,12 @@ def _store_cond(tenant_id, own, window, city, marketplace, kind="main") -> list:
     ]
     if city:
         cond.append(SkuSnapshot.city == city)
-    if marketplace:
-        cond.append(SkuSnapshot.mp_slug == marketplace)
+    if marketplaces:
+        cond.append(SkuSnapshot.mp_slug.in_(marketplaces))
     return cond
 
 
-def _latest_per_store(tenant_id, own, window, city, marketplace, kind="main"):
+def _latest_per_store(tenant_id, own, window, city, marketplaces, kind="main"):
     """Subquery: the latest sku_snapshots row per (product × dark store) in the window.
 
     Keyed on `merchant_id`, not `(lat, lon)`: a coordinate can return several stores
@@ -194,7 +194,7 @@ def _latest_per_store(tenant_id, own, window, city, marketplace, kind="main"):
             SkuSnapshot.pack_uom.label("pack_uom"),
             SkuSnapshot.scraped_at.label("scraped_at"),
         )
-        .where(*_store_cond(tenant_id, own, window, city, marketplace, kind))
+        .where(*_store_cond(tenant_id, own, window, city, marketplaces, kind))
         .distinct(SkuSnapshot.platform_product_id, SkuSnapshot.merchant_id)
         .order_by(
             SkuSnapshot.platform_product_id,
@@ -206,7 +206,7 @@ def _latest_per_store(tenant_id, own, window, city, marketplace, kind="main"):
 
 
 async def _denominators(
-    session: AsyncSession, tenant_id, own, window, city, marketplace, kind="main"
+    session: AsyncSession, tenant_id, own, window, city, marketplaces, kind="main"
 ) -> tuple[int, int, dict[str, int]]:
     """(stores_scraped, active_range, stores_per_tier) for the window.
 
@@ -215,7 +215,7 @@ async def _denominators(
     that failed to respond is excluded rather than counted as a zero — we don't know
     its shelf, and assuming empty would understate the brand.
     """
-    cond = _store_cond(tenant_id, own, window, city, marketplace, kind)
+    cond = _store_cond(tenant_id, own, window, city, marketplaces, kind)
     row = (
         await session.execute(
             select(
@@ -240,7 +240,7 @@ async def _denominators(
 
 
 async def _store_names(session: AsyncSession, merchant_ids: set[str],
-                       mp_slug: str | None = None) -> dict[str, str]:
+                       mp_slugs: list[str] | None = None) -> dict[str, str]:
     """merchant_id -> human label from the store catalog. Stores discovered by a
     scrape but absent from the catalog (longtail hubs, newly opened) have no name —
     the UI falls back to the id. Cosmetic only; the inventory is exact either way.
@@ -255,8 +255,8 @@ async def _store_names(session: AsyncSession, merchant_ids: set[str],
         select(MarketplaceLocation.merchant_id, MarketplaceLocation.location_name)
         .where(MarketplaceLocation.merchant_id.in_(merchant_ids))
     )
-    if mp_slug:
-        q = q.where(MarketplaceLocation.mp_slug == mp_slug)
+    if mp_slugs:
+        q = q.where(MarketplaceLocation.mp_slug.in_(mp_slugs))
     rows = (await session.execute(q)).all()
     return {m: n for m, n in rows if n}
 
@@ -269,7 +269,7 @@ async def get_availability(
     start: date,
     end: date,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> Page[AvailabilityRow]:
     """Public stock-out monitoring — latest row per (product × dark store),
@@ -282,7 +282,7 @@ async def get_availability(
     rows = (
         await session.execute(
             select(SkuSnapshot)
-            .where(*_store_cond(tenant_id, own, window, city, marketplace, kind))
+            .where(*_store_cond(tenant_id, own, window, city, marketplaces, kind))
             .order_by(
                 SkuSnapshot.platform_product_id,
                 SkuSnapshot.merchant_id,
@@ -295,7 +295,7 @@ async def get_availability(
     rows.sort(key=lambda r: (r.in_stock, r.platform_product_id))  # OOS first
     total = len(rows)
     page = rows[pagination.offset : pagination.offset + pagination.limit]
-    names = await _store_names(session, {r.merchant_id for r in page}, marketplace)
+    names = await _store_names(session, {r.merchant_id for r in page}, marketplaces)
     out = []
     for r in page:
         item = AvailabilityRow.model_validate(r)
@@ -311,7 +311,7 @@ async def get_distribution(
     start: date,
     end: date,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> dict:
     """Per own SKU, at dark-store grain:
@@ -329,9 +329,9 @@ async def get_distribution(
 
     window = _bounds(start, end)
     stores_scraped, active_range, tiers = await _denominators(
-        session, tenant_id, own, window, city, marketplace, kind
+        session, tenant_id, own, window, city, marketplaces, kind
     )
-    latest = _latest_per_store(tenant_id, own, window, city, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, city, marketplaces, kind)
     rows = (
         await session.execute(
             select(
@@ -379,7 +379,7 @@ async def get_availability_history(
     tenant_id: uuid.UUID,
     days: int = 84,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> dict:
     """Weekly on-shelf availability % for own SKUs — the stock-out trend."""
@@ -391,7 +391,7 @@ async def get_availability_history(
     # from now (the route passes weeks*7). See the get_availability_history docstring.
     now = now_ist()
     window = (now - timedelta(days=days), now + timedelta(days=1))
-    cond = _store_cond(tenant_id, own, window, city, marketplace, kind)
+    cond = _store_cond(tenant_id, own, window, city, marketplaces, kind)
 
     # `stores` counts the distinct dark stores sampled that week — the honest sample
     # size behind the percentage. The ratio itself is duplication-safe: a store probed
@@ -428,7 +428,7 @@ async def get_pricing(
     start: date,
     end: date,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> dict:
     """Per own SKU: price dispersion across stores (min/median/max) + avg discount,
@@ -442,9 +442,9 @@ async def get_pricing(
 
     window = _bounds(start, end)
     stores_scraped, _, _ = await _denominators(
-        session, tenant_id, own, window, city, marketplace, kind
+        session, tenant_id, own, window, city, marketplaces, kind
     )
-    latest = _latest_per_store(tenant_id, own, window, city, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, city, marketplaces, kind)
     rows = (
         await session.execute(
             select(
@@ -500,7 +500,7 @@ async def get_stores(
     start: date,
     end: date,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
     tier: str | None = None,
 ) -> dict:
@@ -517,9 +517,9 @@ async def get_stores(
 
     window = _bounds(start, end)
     stores_scraped, active_range, tiers = await _denominators(
-        session, tenant_id, own, window, city, marketplace, kind
+        session, tenant_id, own, window, city, marketplaces, kind
     )
-    latest = _latest_per_store(tenant_id, own, window, city, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, city, marketplaces, kind)
     q = select(
         latest.c.merchant_id,
         func.max(latest.c.merchant_type),
@@ -534,7 +534,7 @@ async def get_stores(
     if not rows:
         return empty
 
-    names = await _store_names(session, {r[0] for r in rows}, marketplace)
+    names = await _store_names(session, {r[0] for r in rows}, marketplaces)
     stores = [
         {
             "merchant_id": mid,
@@ -567,7 +567,7 @@ async def get_cities(
     tenant_id: uuid.UUID,
     start: date,
     end: date,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> dict:
     """City rollup — the same numbers one level up, for the exec view."""
@@ -579,9 +579,9 @@ async def get_cities(
 
     window = _bounds(start, end)
     stores_scraped, active_range, _ = await _denominators(
-        session, tenant_id, own, window, None, marketplace, kind
+        session, tenant_id, own, window, None, marketplaces, kind
     )
-    latest = _latest_per_store(tenant_id, own, window, None, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, None, marketplaces, kind)
     rows = (
         await session.execute(
             select(
@@ -632,7 +632,7 @@ async def get_actions(
     start: date,
     end: date,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> Page:
     """The work queue: one row per problem, each naming a store and a product.
@@ -649,7 +649,7 @@ async def get_actions(
         return Page.build([], 0, pagination)
 
     window = _bounds(start, end)
-    latest = _latest_per_store(tenant_id, own, window, city, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, city, marketplaces, kind)
     rows = (await session.execute(select(latest))).all()
     if not rows:
         return Page.build([], 0, pagination)
@@ -661,7 +661,7 @@ async def get_actions(
         by_store.setdefault(r.merchant_id, {"city": r.city, "type": r.merchant_type, "items": {}})
         by_store[r.merchant_id]["items"][r.pid] = r
 
-    names = await _store_names(session, set(by_store), marketplace)
+    names = await _store_names(session, set(by_store), marketplaces)
     out: list[dict] = []
     if action == "not-listed":
         for mid, s in by_store.items():
@@ -698,7 +698,7 @@ async def get_store_detail(
     merchant_id: str,
     start: date,
     end: date,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> dict:
     """One dark store's whole shelf — every own SKU, listed or not.
@@ -713,7 +713,7 @@ async def get_store_detail(
         return empty
 
     window = _bounds(start, end)
-    latest = _latest_per_store(tenant_id, own, window, None, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, None, marketplaces, kind)
     rows = (await session.execute(select(latest))).all()
     if not rows:
         return empty
@@ -724,7 +724,7 @@ async def get_store_detail(
         return {**empty, "active_range": len(catalogue)}
 
     any_row = next(iter(here.values()))
-    names = await _store_names(session, {merchant_id}, marketplace)
+    names = await _store_names(session, {merchant_id}, marketplaces)
     skus = [
         {
             "platform_product_id": pid,
@@ -756,7 +756,7 @@ async def get_product_detail(
     start: date,
     end: date,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     kind: str = "main",
 ) -> dict:
     """One product across every dark store — the mirror of get_store_detail.
@@ -772,7 +772,7 @@ async def get_product_detail(
         return empty
 
     window = _bounds(start, end)
-    latest = _latest_per_store(tenant_id, own, window, city, marketplace, kind)
+    latest = _latest_per_store(tenant_id, own, window, city, marketplaces, kind)
     rows = (await session.execute(select(latest))).all()
     if not rows:
         return empty
@@ -788,7 +788,7 @@ async def get_product_detail(
     if not here:
         return {**empty, "stores_scraped": len(all_stores)}
 
-    names = await _store_names(session, set(all_stores), marketplace)
+    names = await _store_names(session, set(all_stores), marketplaces)
 
     def rank(mid):
         r = here.get(mid)

@@ -61,7 +61,7 @@ async def get_share_of_voice(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     keyword: str | None = None,
     city: str | None = None,
     start: date,
@@ -70,7 +70,7 @@ async def get_share_of_voice(
     own = await watchlist_service.get_brands_by_relationship(session, tenant_id, "own")
     summary = {
         "brands": own,
-        "marketplace": marketplace,
+        "marketplaces": marketplaces,
         "keyword": keyword,
         "city": city,
         "period_days": (end - start).days + 1,
@@ -90,8 +90,8 @@ async def get_share_of_voice(
         SearchSnapshot.scraped_at >= lo,
         SearchSnapshot.scraped_at < hi,
     ]
-    if marketplace:
-        conditions.append(SearchSnapshot.mp_slug == marketplace)
+    if marketplaces:
+        conditions.append(SearchSnapshot.mp_slug.in_(marketplaces))
     if keyword:
         conditions.append(SearchSnapshot.keyword == keyword)
     if city:
@@ -142,7 +142,7 @@ async def get_rankings(
     pagination: Pagination,
     keyword: str | None = None,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     competitor: str | None = None,
 ) -> Page[CompetitorRankRow]:
     # Competitors are the non-own listing rows in this client's own searches.
@@ -153,8 +153,8 @@ async def get_rankings(
         conditions.append(SearchListing.keyword == keyword)
     if city:
         conditions.append(SearchListing.city == city)
-    if marketplace:
-        conditions.append(SearchListing.mp_slug == marketplace)
+    if marketplaces:
+        conditions.append(SearchListing.mp_slug.in_(marketplaces))
     if competitor:
         conditions.append(SearchListing.brand_slug == competitor)
 
@@ -195,7 +195,7 @@ async def get_rank_matrix(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     start: date,
     end: date,
 ) -> dict:
@@ -214,8 +214,8 @@ async def get_rank_matrix(
         SearchSnapshot.scraped_at >= lo,
         SearchSnapshot.scraped_at < hi,
     ]
-    if marketplace:
-        cond.append(SearchSnapshot.mp_slug == marketplace)
+    if marketplaces:
+        cond.append(SearchSnapshot.mp_slug.in_(marketplaces))
 
     # `searches` counts snapshots — one search at one probe point — NOT distinct
     # stores. Rank and SoV are what the shopper sees in a blended result list, so the
@@ -270,7 +270,7 @@ async def get_top_competitors(
     tenant_id: uuid.UUID,
     keyword: str | None = None,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     start: date,
     end: date,
     limit: int = 15,
@@ -299,8 +299,8 @@ async def get_top_competitors(
         cond.append(SearchListing.keyword == keyword)
     if city:
         cond.append(SearchListing.city == city)
-    if marketplace:
-        cond.append(SearchListing.mp_slug == marketplace)
+    if marketplaces:
+        cond.append(SearchListing.mp_slug.in_(marketplaces))
 
     store = SearchListing.merchant_id
     rows = (
@@ -361,7 +361,7 @@ async def get_price_position(
     tenant_id: uuid.UUID,
     keyword: str | None = None,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: list[str] | None = None,
     start: date,
     end: date,
     kind: str = "main",
@@ -379,8 +379,8 @@ async def get_price_position(
         base.append(SearchListing.keyword == keyword)
     if city:
         base.append(SearchListing.city == city)
-    if marketplace:
-        base.append(SearchListing.mp_slug == marketplace)
+    if marketplaces:
+        base.append(SearchListing.mp_slug.in_(marketplaces))
 
     # Own band per keyword — raw rupees + per-unit. mode() gives the keyword's
     # dominant UOM (drinks-with-drinks in practice), for labelling the basis.

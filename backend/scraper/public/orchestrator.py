@@ -138,55 +138,77 @@ async def _worker(
                                        f"rest — exiting")
                         return
 
-                _t = time.monotonic()
-                try:
-                    # merchant_id as well as the coordinate: marketplaces bind in
-                    # opposite directions (D8). Blinkit ignores it; Zepto needs it,
-                    # or it spends a second rate-limited endpoint resolving a store
-                    # this loop already has in hand.
-                    res = await provider.search(session, keyword, cap,
-                                                lat=loc.lat, lon=loc.lon,
-                                                merchant_id=loc.merchant_id)
-                except Exception as e:
-                    res = {"ok": False, "products": [], "merchant_id": "",
-                           "total_results": 0, "error": f"{type(e).__name__}: {e}"}
-                store_fetch += time.monotonic() - _t
-                searches += 1
+                # Up to 2 attempts at THIS keyword: the plain fetch, plus — only if
+                # it comes back blocked — one retry after a confirmed-successful
+                # session recovery. A BLOCK is not a failure to retry blind (that
+                # prolongs it), but a session that reopens successfully after the
+                # wait is proof the block has actually lifted, and discarding the
+                # keyword anyway at that point just throws away data we've already
+                # paid the wait for. One retry, not unbounded: if it blocks again
+                # immediately, something more persistent is wrong and hammering
+                # this one keyword further only delays the rest of the queue.
+                give_up = False
+                for attempt in range(2):
+                    _t = time.monotonic()
+                    try:
+                        # merchant_id as well as the coordinate: marketplaces bind in
+                        # opposite directions (D8). Blinkit ignores it; Zepto needs it,
+                        # or it spends a second rate-limited endpoint resolving a store
+                        # this loop already has in hand.
+                        res = await provider.search(session, keyword, cap,
+                                                    lat=loc.lat, lon=loc.lon,
+                                                    merchant_id=loc.merchant_id)
+                    except Exception as e:
+                        res = {"ok": False, "products": [], "merchant_id": "",
+                               "total_results": 0, "error": f"{type(e).__name__}: {e}"}
+                    store_fetch += time.monotonic() - _t
+                    searches += 1
 
-                # Pace HERE, not at the end of the loop. Every branch below can
-                # `continue`, and an empty result is the commonest of them — on
-                # Zepto 'sourdough bread loaf' returns 0-6 products at most stores.
-                # Pacing after those branches means the thinnest keywords fire back
-                # to back with no gap at all, which is what blocked five workers in
-                # 37 seconds.
-                if provider.search_gap_s:
-                    await asyncio.sleep(provider.search_gap_s)
+                    # Pace HERE, not at the end of the loop. Every branch below can
+                    # `continue`/`break` out early, and an empty result is the
+                    # commonest of them — on Zepto 'sourdough bread loaf' returns
+                    # 0-6 products at most stores. Pacing after those branches means
+                    # the thinnest keywords fire back to back with no gap at all,
+                    # which is what blocked five workers in 37 seconds.
+                    if provider.search_gap_s:
+                        await asyncio.sleep(provider.search_gap_s)
 
-                # A BLOCK is not a failure to retry — it is the marketplace saying
-                # stop, and retrying into it prolongs it. Wait, rebuild the session,
-                # and let the next search act as the probe. Blinkit never sets
-                # probe_every_s, so this whole branch is dead code for it.
-                if res.get("blocked") and provider.probe_every_s:
-                    waits = 0
-                    while waits < provider.max_block_waits:
-                        waits += 1
-                        logger.warning(
-                            f"w{wid} {loc.city} '{keyword}' BLOCKED — waiting "
-                            f"{provider.probe_every_s // 60} min "
-                            f"({waits}/{provider.max_block_waits})"
-                        )
-                        await asyncio.sleep(provider.probe_every_s)
-                        await provider.close_session(session)
-                        session = await provider.open_session(browser, loc.lat, loc.lon)
-                        if session:
-                            break
-                    if not session:
-                        logger.warning(f"worker {wid}: still blocked after "
-                                       f"{waits} waits — exiting")
-                        return
-                    searches = 0
-                    store_fail += 1
-                    stats["errors"] += 1
+                    if res.get("blocked") and provider.probe_every_s:
+                        waits = 0
+                        while waits < provider.max_block_waits:
+                            waits += 1
+                            logger.warning(
+                                f"w{wid} {loc.city} '{keyword}' BLOCKED — waiting "
+                                f"{provider.probe_every_s // 60} min "
+                                f"({waits}/{provider.max_block_waits})"
+                            )
+                            await asyncio.sleep(provider.probe_every_s)
+                            await provider.close_session(session)
+                            session = await provider.open_session(browser, loc.lat, loc.lon)
+                            if session:
+                                break
+                        if not session:
+                            logger.warning(f"worker {wid}: still blocked after "
+                                           f"{waits} waits — exiting")
+                            return
+                        searches = 0
+                        stats["errors"] += 1
+                        if attempt == 0:
+                            logger.info(
+                                f"w{wid} {loc.city} '{keyword}' recovered — retrying"
+                            )
+                            continue
+                        # Only counts as ONE store failure for `_STORE_SKIP_AFTER`,
+                        # not one per attempt — this keyword got two tries (see
+                        # above) precisely so a single flaky keyword can't, on its
+                        # own, trip a threshold meant for distinct keyword failures.
+                        store_fail += 1
+                        give_up = True
+                        break
+
+                    break  # a real (non-blocked) response — done with this keyword
+
+                if give_up:
                     continue
 
                 if not res.get("ok"):
