@@ -5,6 +5,12 @@ position, step the CPM toward the target position, and route the change through 
 write choke-point. Dry-run by default (positions are read, no bid is written). Runtime
 state (`last_*`) is persisted to `cm_bid_runtime` — no JSON.
 
+Each window is bracketed by the floor: the first fire of a window writes `min_bid` (and
+re-checks until Blinkit reads it back), and the end-of-window `--reset` run writes it
+again. The pair is deliberate — the reset is best-effort (the campaign may be dark, or
+Blinkit may refuse), and without the window-open floor a reset that failed last night is
+never recovered, so the bid ratchets up across days until it pins at `max_bid`.
+
 The decision (`_dynamic_step` / `compute_bid` / `_in_window`) is **pure** — ported from
 `ad_campaigns.bid_optimizer` (validated v1 logic) and unit-tested in
 tests/test_bid_logic.py without Blinkit or the DB. The Blinkit-specific position
@@ -89,6 +95,38 @@ def _in_window(rule: dict, now: datetime) -> bool:
     if not days:
         return True
     return eff.strftime("%A").lower() in days
+
+
+def _parse_hhmm(s: str | None) -> tuple[int, int] | None:
+    """'HH:MM' → (hour, minute); None if empty/unparseable. Deliberately a local copy of
+    the reconciler's: this module stays importable without the jobs/scheduler stack so the
+    decision logic is unit-testable with no DB and no Blinkit."""
+    if not s:
+        return None
+    try:
+        parts = s.split(":")
+        h, m = int(parts[0]), int(parts[1])
+    except (ValueError, IndexError, AttributeError):
+        return None
+    return (h, m) if 0 <= h <= 23 and 0 <= m <= 59 else None
+
+
+def _window_start(rule: dict, now: datetime) -> datetime:
+    """The datetime the rule's CURRENT window opened. Only meaningful while the rule is in
+    window (callers filter on `_in_window` first).
+
+    An overnight window's post-midnight tail belongs to the day it STARTED — the same rule
+    `_in_window` uses — so at 01:00 an 18:00–02:00 rule reports YESTERDAY 18:00. That is
+    what keeps "first fire of this window" from resetting itself at midnight. A rule with
+    no start_time opens at midnight of its effective day.
+    """
+    st, et = rule.get("start_time"), rule.get("stop_time")
+    hm = _parse_hhmm(st)
+    sh, sm = hm if hm else (0, 0)
+    overnight = bool(st and et and et <= st)
+    in_tail = overnight and now.strftime("%H:%M") < et
+    eff = (now - timedelta(days=1)) if in_tail else now
+    return eff.replace(hour=sh, minute=sm, second=0, microsecond=0)
 
 
 def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, max_bid: int,
@@ -211,12 +249,63 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 skipped += 1
                 continue
 
+            # ── Window open: every window starts its bid at the floor (D-bid-open) ──
+            #
+            # The end-of-window reset is BEST EFFORT — the campaign may already be dark, or
+            # Blinkit may refuse the write — so a window must not trust that it happened.
+            # It re-establishes the floor itself. Without this, a reset that failed last
+            # night is never recovered: `current_cpm` reads yesterday's `last_cpm` and steps
+            # UP from it, so the bid ratchets across days until it pins at max_bid.
+            #
+            # "First fire of this window" = runtime `updated_at` older than the window's
+            # start. No new column: `updated_at` is stamped every time a tick persists
+            # runtime for this rule, and the skip paths below deliberately don't persist —
+            # so a tick that couldn't do its job leaves the NEXT one still opening.
+            #
+            # The floor only counts as established once Blinkit READS BACK min_bid. The
+            # budget engine restarts the campaign on the same boundary minute from a
+            # parallel lane, and a RESTART re-submits the bids it read (restart.py) — so it
+            # can land on top of our write. Re-checking each tick makes that self-correcting
+            # (worst case: one lost tick) instead of silently losing the floor for a day.
+            opened = bool(runtime and runtime.updated_at
+                          and runtime.updated_at >= _window_start(_rule_dict(rule), now))
+            live_cpm = bids_cache[cid].get(kw)
+            if not opened and (live_cpm is None or int(live_cpm) != int(rule.min_bid)):
+                ok = await writes.apply_bid(
+                    adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
+                    new_cpm=rule.min_bid, current_cpm=live_cpm, min_bid=rule.min_bid,
+                    max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run,
+                    recent_writes=0,
+                )
+                logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              verdict=f"open ₹{rule.min_bid}",
+                              reason=f"window opened · {live_cpm if live_cpm is not None else '?'}"
+                                     f"→{rule.min_bid}")
+                applied += int(ok)
+                skipped += int(not ok)
+                log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
+                                     "open" if ok else "skip", live_cpm, rule.min_bid,
+                                     "window opened → min", dry_run, ok))
+                # No runtime row on purpose: `updated_at` must stay behind the window start
+                # so the next tick re-checks that the floor actually stuck. Dry-run never
+                # changes the live bid, though, so it would re-open every tick forever and
+                # never exercise the optimizer — stamp it there and move on.
+                if dry_run:
+                    runtime_rows.append({"rule_id": rule.id})
+                continue                       # no position scrape — the bid just moved
+
             products = products_cache[cid]
             names = [p.get("name", "") for p in products if p.get("name")]
             pids = [str(p["pid"]) for p in products if p.get("pid")]
 
-            current_cpm = int((runtime.last_cpm if runtime else None)
-                              or bids_cache[cid].get(kw) or rule.min_bid)
+            # On the tick that CONFIRMS the floor, Blinkit reads back min_bid but runtime
+            # still holds yesterday's `last_cpm` — stepping from that would undo the open.
+            # `open_stamp` also writes the corrected `last_cpm` below, so the tick after
+            # this one (which sees `opened`) reads the floor, not the stale value.
+            open_stamp = not opened
+            current_cpm = (int(rule.min_bid) if open_stamp else
+                           int((runtime.last_cpm if runtime else None)
+                               or bids_cache[cid].get(kw) or rule.min_bid))
 
             try:
                 position, source = await adapter.resolve_position(
@@ -253,7 +342,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # real changes (it's narrated to Cloud Logging via logs.decision above; D6).
             if new_cpm is None:
                 skipped += 1
-                runtime_rows.append({"rule_id": rule.id, "last_position": position})
+                rt = {"rule_id": rule.id, "last_position": position}
+                if open_stamp:
+                    rt["last_cpm"] = int(rule.min_bid)
+                runtime_rows.append(rt)
                 continue
 
             ok = await writes.apply_bid(
@@ -265,6 +357,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             skipped += int(not ok)
 
             rt = {"rule_id": rule.id, "last_position": position}
+            if open_stamp:                         # observed truth: Blinkit reads back the floor
+                rt["last_cpm"] = int(rule.min_bid)
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
                 rt["last_cpm"] = int(writes.clamp_bid(new_cpm, rule.min_bid, rule.max_bid))
                 rt["last_bid_updated_at"] = now.isoformat()
@@ -349,42 +443,57 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                     logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   verdict="warn", reason=f"bid read failed: {e}")
 
-            # A stopped campaign can't take a bid write and doesn't need one — it isn't
-            # serving, so a bid left high costs nothing while it's off. This is the
-            # expected case when the budget engine won the race to stop it.
-            if status_cache[cid] is not None and status_cache[cid] != "running":
+            status = status_cache[cid]
+            # An UNREADABLE bid is not a bid at the floor. This used to fall back to
+            # `min_bid`, which the check below then read as "already there, nothing to do"
+            # and skipped in silence — no decision line, no History row. It was the reset's
+            # single most likely way to do nothing at all while looking healthy. `None` now
+            # means "we don't know", and we write anyway.
+            current = bids_cache[cid].get(kw)
+
+            if current is not None and int(current) <= int(r.min_bid):
+                # Genuinely already at the floor. Skipped rather than written because a
+                # keyword-bid write is a FULL campaign PUT (client.update_keyword_bids
+                # re-submits budget, dates and pids too), and the budget engine writes the
+                # same campaign from a parallel lane around this minute — so a PUT that
+                # changes nothing is a free chance to clobber a budget. Logged either way.
                 logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              verdict="skip", reason=f"campaign is {status_cache[cid]} — no bid write")
+                              verdict="no-op", reason=f"already at floor ₹{current}")
                 skipped += 1
+                log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
+                                     "skip", current, r.min_bid,
+                                     f"window closed · already at min ₹{current}", dry_run, True))
                 continue
 
-            current = int(bids_cache[cid].get(kw) or r.min_bid)
-            if current <= r.min_bid:
-                skipped += 1                              # already at the floor — nothing to do
-                continue
+            # No status gate. `held` (ON_HOLD) is a RUNNING campaign whose budget ran out —
+            # Blinkit takes an UPDATE on it, and budget.py already treats it as writable.
+            # A genuinely stopped campaign gets the write refused, and that refusal is the
+            # useful outcome: a failed History row you can see, not an invisible skip.
+            # A rejected write must not abort the whole reset either — one dark campaign
+            # shouldn't cost every other keyword its de-escalation.
             logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                          verdict=f"reset ₹{r.min_bid}", reason=f"window closed · {current}→{r.min_bid}")
-            # A rejected write must not abort the whole reset: one keyword on a campaign
-            # that just went dark shouldn't cost every other keyword its de-escalation, or
-            # fail the job and page someone at 2am.
+                          verdict=f"reset ₹{r.min_bid}",
+                          reason=f"window closed · {current if current is not None else '?'}"
+                                 f"→{r.min_bid} · campaign is {status or 'unknown'}")
             try:
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=r.min_bid, current_cpm=current, min_bid=r.min_bid,
                     max_bid=r.max_bid, match_type=r.match_type, dry_run=dry_run, recent_writes=0,
                 )
+                err = None
             except Exception as e:
+                ok, err = False, str(e)
                 logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              verdict="skip", reason=f"reset rejected: {e}")
-                skipped += 1
-                continue
+                              verdict="failed", reason=f"reset rejected: {e}")
             applied += int(ok)
-            skipped += int(not ok)
+            errors += int(not ok)
             if ok and not dry_run:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(r.min_bid)})
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
-                                 "reset" if ok else "skip", current, r.min_bid,
-                                 "window closed → min", dry_run, ok))
+                                 "reset", current, r.min_bid,
+                                 err or f"window closed → min (campaign {status or 'unknown'})",
+                                 dry_run, ok))
     finally:
         if browser is not None:
             await browser.close()

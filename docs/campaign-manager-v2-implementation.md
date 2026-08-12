@@ -304,6 +304,37 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
       edit/controls) — fixes the "everything says Active / expired cards linger" confusion (spent `once` now reads
       **Ended**). Backend imports + reconciler tests green; frontend oxlint + build green.
 
+- [x] **V4.12** ✅ **DONE (2026-08-12)** **Bid floor at BOTH window edges** (`bid.py` only — no migration, no
+      schedule change). Diagnosed from the v1 decision log: **79 raises vs 9 lowers**, `cotton candy` climbing
+      201→900 (its `max_bid`) and then parking there. The end-of-window reset shipped in V4.10 could never bring
+      that back, because it had four silent-failure paths — and once a reset is missed **nothing else in the system
+      ever lowers a bid**: `current_cpm` reads yesterday's `last_cpm` and steps UP from it, so the bid ratchets
+      across days until it pins at `max_bid`. Two fixes, deliberately paired:
+      - **Window END (`_reset_run`)** — the status gate is gone: `held` (ON_HOLD) is a *running* campaign whose
+        budget ran out and Blinkit takes an `UPDATE` on it (budget.py already treats it as writable), and a
+        genuinely stopped campaign now gets the write **attempted** so the refusal lands as a visible failed
+        History row instead of an invisible skip. An **unreadable** bid no longer falls back to `min_bid` (which
+        read as "already at the floor" → silent skip — the likeliest way the reset did nothing while looking
+        healthy); unknown now means *write it anyway*. A genuine already-at-floor stays a **skip** (a keyword-bid
+        write is a FULL campaign PUT — `update_keyword_bids` re-submits budget/dates/pids — and the budget engine
+        writes the same campaign from a parallel lane on that minute, so a no-change PUT is a free chance to
+        clobber a budget) but is now **logged**, decision line + History row.
+      - **Window START (`run`)** — the first fire of a window writes `min_bid`, so a failed reset is recovered
+        rather than compounded. The floor only counts as established once Blinkit **reads back** `min_bid`: the
+        budget engine restarts the campaign on the same boundary minute from a parallel lane and a RESTART
+        re-submits the bids it read (`restart.py`), so it can land on top of our write — re-checking each tick
+        makes that self-correcting (worst case one lost tick) instead of losing the floor for a day.
+      - **"First fire of this window" needs no new column** — runtime `updated_at` older than `_window_start(rule,
+        now)`. `updated_at` is stamped whenever a tick persists runtime, and the skip paths deliberately don't
+        persist, so a tick that couldn't do its job leaves the next one still opening. `_window_start` reuses
+        `_in_window`'s overnight rule (an 18:00–02:00 tail belongs to the day it STARTED), so midnight doesn't
+        look like a new window and re-floor a bid mid-flight.
+      - **On a normal day the open-write is a no-op** — last night's reset already left the bid at the floor, so
+        it reads `min_bid`, confirms, and goes straight to optimizing. It only writes on the days the reset failed.
+      - Tests: 6 new `_window_start` cases (32/32 bid-logic green; 123/123 across the package) + a 10-scenario
+        end-to-end sim of `bid.run` against a fake adapter covering ON_HOLD, refused write, unreadable bid,
+        already-at-floor, the RESTART clobber, and the overnight window.
+
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +
 logs; confirm `grep -r playwright app/` is clean.
@@ -442,6 +473,21 @@ cap backstops a frozen bid. No bid baseline restore (`baseline_cpm` dropped). Co
       keyword live every run. Add: at-target keywords → cheap source (24h report API or latest public-scrape DB
       snapshot), checked hourly; actively-chasing → fresh live scrape; **dedup by `(keyword, location)`** across
       campaigns/tenants. *Build when tenant count strains the box — it degrades gracefully until then.*
+- [ ] **`catchup=true` on the bid reset schedule** — the end-of-window reset fire is `catchup=False`, so a firing
+      missed while the runner is down (or >`SCHEDULER_MISFIRE_GRACE_SECONDS`=300 late) is dropped and the recurring
+      cron advances to tomorrow. Budget resets already carry `catchup=true` for exactly this reason. **Lower
+      priority since V4.12** — the window-open floor now recovers a missed reset — but it still means an extra
+      night at a high bid for a campaign that keeps serving between windows. *One-line change in `_bid_reset_fires`.*
+- [ ] **Reset vs optimizer share the overlap-guard key** — both enqueue as `cm.bid_optimizer`, and `uq_jobs_active`
+      is unique on `(job_type, tenant_id)` for `pending|running` (params are NOT in the key). So a reset fire while
+      an optimizer run is still active raises `DuplicateActiveJob`, and the recurring reset row advances to
+      tomorrow. Not biting yet (runs take ~30 s with one keyword) but the type's timeout is 15 min = the cron
+      interval, so it starts biting around 20–30 keywords. *Fix: a distinct job type for the reset, or include
+      params in the guard.*
+- [ ] **Confirm Blinkit's own CPM floor vs `min_bid`** — `get_campaign_detail` returns a `min_cpm_config` per
+      campaign type (the client falls back to 500). If a rule's `min_bid` sits below Blinkit's minimum for that
+      campaign type, both the window-end reset and the window-open floor may be rejected or silently clamped —
+      which would show as a repeating "open" write that never confirms. *Check against a real campaign at cutover.*
 - [ ] **`recent_writes` wiring for the bid rate-limit** — `bid.run` passes `recent_writes=0` (same as budget);
       wire `repo.recent_write_count(kind="bid")` when live writes arm (V5), so the runaway-loop guardrail bites.
 - [ ] **Windows-local live scrape** — v1 offloaded the consumer scrape to a thread executor (Playwright event-loop

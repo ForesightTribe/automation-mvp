@@ -7,7 +7,9 @@ the Blinkit product-matching (positions.match_position).
 """
 from datetime import datetime
 
-from campaign_manager.bid import HOLD_MINUTES, _dynamic_step, _in_window, compute_bid
+from campaign_manager.bid import (
+    HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid,
+)
 from campaign_manager.marketplaces.blinkit.positions import match_position
 
 NOW = datetime(2026, 8, 1, 14, 0)   # 14:00 on 2026-08-01
@@ -183,6 +185,50 @@ def test_overnight_window_is_closed_AT_its_stop_time():
     rule = {"type": "recurring", "start_time": "18:00", "stop_time": "02:00", "days": []}
     assert _in_window(rule, datetime(2026, 8, 8, 1, 59)) is True
     assert _in_window(rule, datetime(2026, 8, 8, 2, 0)) is False
+
+
+# ── _window_start (the "first fire of this window" anchor) ───────────────────
+
+def test_window_start_is_todays_start_time():
+    rule = {"type": "recurring", "start_time": "09:00", "stop_time": "21:00", "days": []}
+    assert _window_start(rule, datetime(2026, 8, 12, 14, 30)) == datetime(2026, 8, 12, 9, 0)
+
+
+def test_window_start_at_the_very_first_fire():
+    """The opening tick itself must anchor to its own window, not the previous one —
+    otherwise `updated_at >= window_start` is true from the start and the floor is skipped."""
+    rule = {"type": "recurring", "start_time": "09:00", "stop_time": "21:00", "days": []}
+    assert _window_start(rule, datetime(2026, 8, 12, 9, 0)) == datetime(2026, 8, 12, 9, 0)
+
+
+def test_window_start_overnight_tail_belongs_to_the_day_it_started():
+    """An 18:00–02:00 window is ONE window. At 01:00 it must report yesterday 18:00, or
+    midnight would look like a new window and re-floor a bid mid-flight."""
+    rule = {"type": "recurring", "start_time": "18:00", "stop_time": "02:00", "days": []}
+    assert _window_start(rule, datetime(2026, 8, 12, 1, 0)) == datetime(2026, 8, 11, 18, 0)
+    assert _window_start(rule, datetime(2026, 8, 12, 19, 0)) == datetime(2026, 8, 12, 18, 0)
+
+
+def test_window_start_no_start_time_is_midnight():
+    rule = {"type": "recurring", "start_time": None, "stop_time": "21:00", "days": []}
+    assert _window_start(rule, datetime(2026, 8, 12, 14, 0)) == datetime(2026, 8, 12, 0, 0)
+
+
+def test_window_start_seconds_are_stripped():
+    """It is compared against a DB timestamp, so a stray second would make the boundary
+    tick's comparison flip depending on when in the minute the runner fired."""
+    rule = {"type": "recurring", "start_time": "09:00", "stop_time": "21:00", "days": []}
+    ws = _window_start(rule, datetime(2026, 8, 12, 14, 30, 47, 123456))
+    assert ws.second == 0 and ws.microsecond == 0
+
+
+def test_yesterdays_runtime_does_not_count_as_this_window_opened():
+    """The whole point: a run that last touched the rule during YESTERDAY's window must
+    read as 'not opened', so today re-establishes the floor."""
+    rule = {"type": "recurring", "start_time": "09:00", "stop_time": "21:00", "days": []}
+    now = datetime(2026, 8, 12, 9, 0)
+    yesterday_evening = datetime(2026, 8, 11, 20, 45)
+    assert yesterday_evening < _window_start(rule, now)
 
 
 def _run() -> int:
