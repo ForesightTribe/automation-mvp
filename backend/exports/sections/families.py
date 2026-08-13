@@ -17,14 +17,13 @@ Two rules do the work:
 Families are *derived* from the product name, never configured, and the derived
 grouping is printed so a wrong call is visible rather than silent.
 """
-import re
-
 from sqlalchemy import select
 
 from exports import text
 from exports.registry import register
 from app.schemas.exports import Column, ReportSpec, Section
 from app.services import watchlist_service
+from scraper.utils.families import is_bundle, label, normalise
 
 # Family grain — one product family across many stores — exists in no read
 # service, so this section projects the service's OWN `_latest_per_store`
@@ -34,43 +33,6 @@ from app.services import watchlist_service
 from app.services.inventory_service import (  # noqa: PLC2701
     _bounds, _denominators, _latest_per_store,
 )
-
-# Promo and pack wording that describes the *offer*, not the product.
-_NOISE = [
-    r"\bbuy\s*\d+\s*get\s*\d+(\s*free)?\b",
-    r"\bpack\s*of\s*\d+\b",
-    r"\b\d+\s*x\b",
-    r"\b(multi|value|saver|family|combo|party)\s*pack\b",
-    r"\bcombo\b",
-    r"\bfree\b",
-]
-
-
-def _normalise(name: str, brands: list[str]) -> str:
-    """A product name reduced to the thing being sold."""
-    s = (name or "").lower()
-    for slug in sorted(brands, key=len, reverse=True):      # longest first
-        s = re.sub(rf"\b{re.escape(slug.replace('-', ' '))}\b", " ", s)
-    for pattern in _NOISE:
-        s = re.sub(pattern, " ", s)
-    s = re.sub(r"\s*/\s*", "/", s)          # "Chips / Crisps" == "Chips /Crisps"
-    s = re.sub(r"[\-–—]+", " - ", s)
-    s = re.sub(r"\(\s*\)|\[\s*\]", " ", s)   # brackets emptied by the noise strip
-    s = re.sub(r"\s+", " ", s).strip(" -")
-    return s
-
-
-def _is_bundle(normalised: str) -> bool:
-    """A bundle names two different products. Checked AFTER the promo wording is
-    stripped, so "Buy 2 Get 1 Free" (one flavour) is not mistaken for one."""
-    return "+" in normalised
-
-
-def _label(normalised: str) -> str:
-    """Title-case each alphabetic run, so "chips/crisps" becomes "Chips/Crisps"
-    rather than being skipped for containing a slash."""
-    return re.sub(r"[a-z]+", lambda m: m.group().capitalize(), normalised)
-
 
 async def product_families(db, spec: ReportSpec) -> Section | None:
     """Sheet: singles plus their multipacks, counted as one product."""
@@ -105,8 +67,8 @@ async def product_families(db, spec: ReportSpec) -> Section | None:
     families: dict[str, dict] = {}
     bundles: list[str] = []
     for pid, p in products.items():
-        key = _normalise(p["name"], own)
-        if _is_bundle(key):
+        key = normalise(p["name"], own)
+        if is_bundle(key):
             bundles.append(p["name"])
             continue
         f = families.setdefault(key, {"variants": [], "stores": set(), "listed": 0,
@@ -126,7 +88,7 @@ async def product_families(db, spec: ReportSpec) -> Section | None:
     for key, f in families.items():
         carried = len(f["stores"])
         data.append({
-            "family": _label(key),
+            "family": label(key),
             "variants": len(f["variants"]),
             "stores_carrying": carried,
             "stores_observed": stores_scraped,

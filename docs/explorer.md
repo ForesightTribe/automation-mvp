@@ -21,6 +21,31 @@ minutes, with **nothing persisted into client data**.
 > (the guard rejects the old wording); "Keyword Scorecard" is "Search Term
 > Scorecard" and the "Raw —" sheets are "Captured —"; and the two native bar
 > charts were dropped in favour of the design system's in-cell data bars.
+>
+> **2026-08-11 — parity with the client report.** Three defects and a gap, found
+> by reading a real run's workbook:
+>
+> - **The unit is now the DARK STORE**, not the serviceable location. Explorer
+>   still counted `(lat, lon)` — correct when it was written, wrong from
+>   2026-07-18 when store discovery landed and the read services migrated. Its own
+>   docstring claimed to "match the rest of the platform" while no longer doing so.
+>   `merchant_id` was always captured, so this was a counting change, not a
+>   re-scrape. Explorer numbers are now directly comparable with `export public`.
+> - **"Products captured" was a lie.** It showed `len(listings)` — search-result
+>   ROWS, where one product recurs once per store per term. A run showed "76,670"
+>   for a brand with a few dozen products. Now "Product listings captured" with
+>   "N distinct products" beside it, plus a separate "Your products found".
+> - **`KeywordScore.locations` counted searches** while `CityScore.locations`
+>   counted distinct locations — one field name, two units. Split into `searches`
+>   and `stores`.
+> - **Five sheets added** (Store Shelf Presence, Needs Attention, Product
+>   Families, Price Spread, the position grid), so Explorer now mirrors the client
+>   report's sheet order. Only Availability Trend is missing, and always will be:
+>   one run is one point in time.
+>
+> Family grouping moved to `scraper/utils/families.py`, shared with the client
+> report, so a variant cannot be grouped one way in one workbook and differently
+> in the other.
 
 ---
 

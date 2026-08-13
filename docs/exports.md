@@ -8,7 +8,8 @@ dashboard **Download Excel** button is wiring, not a rewrite.
 > complete 13-sheet client workbook from stored data (11 insight sections, all
 > cross-checked against the read services), and `cli export raw` dumps the
 > underlying rows to CSV as a **separate** command. Explorer now renders through
-> the same writer. Remaining: the download endpoint (Phase 8), and the
+> the same writer, at **sheet parity** since 2026-08-11 (same dark-store grain,
+> same sheet order). Remaining: the download endpoint (Phase 8), and the
 > **Marketing & Ads + Sales & Operations reports** — planned below, gated on two
 > small renderer additions.
 
@@ -382,6 +383,12 @@ Two things the shared layer forced, and both were improvements:
   resolves them to dark stores, so the client report's store wording would be
   false there. `collect(..., core=())` lets it opt out of "Stores observed" and
   "Freshness" (it is scraped live) and take a `Location` term instead.
+
+Explorer was brought to **sheet parity** on 2026-08-11 — same grain (dark
+stores), same sheet order, same vocabulary, 12 insight sheets against the client
+report's 11. It cannot have Availability Trend: one run is one point in time. Its
+denominator differs and says so — Explorer samples, so "stores seen in this run",
+not "every store that answered". See [explorer.md](explorer.md).
 
 `Section.dense` was added for Explorer's captured sheets: skip per-cell banding,
 borders and conditional formatting on a long sheet, keeping headers, widths and

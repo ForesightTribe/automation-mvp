@@ -70,7 +70,8 @@ class RunOverview(BaseModel):
     label: str
     keywords: list[str]
     cities: list[str]
-    locations_scraped: int
+    locations_scraped: int      # probe points searched from
+    stores_seen: int            # distinct dark stores that answered
     sample: int | None
     full: bool
     generated_at: datetime
@@ -82,14 +83,20 @@ class RunOverview(BaseModel):
     weakest_keyword: str | None
     strongest_city: str | None
     weakest_city: str | None
-    total_listings: int
+    total_listings: int         # PRODUCT ROWS captured, not distinct products
+    total_products: int         # distinct products seen across the run
+    own_products: int           # distinct products belonging to the focus brand
     total_competitors: int
     errors: int
 
 
 class KeywordScore(BaseModel):
     keyword: str
-    locations: int
+    # `searches` counts individual searches; `stores` counts distinct dark stores.
+    # These were one field called `locations` until 2026-08-11, which meant
+    # searches here and distinct locations on CityScore — same name, two units.
+    searches: int
+    stores: int
     avg_rank: float | None
     best_rank: int | None
     sov_pct: float | None
@@ -101,7 +108,8 @@ class KeywordScore(BaseModel):
 
 class CityScore(BaseModel):
     city: str
-    locations: int
+    stores: int
+    searches: int
     avg_rank: float | None
     sov_pct: float | None
     in_stock_pct: float | None
@@ -110,7 +118,7 @@ class CityScore(BaseModel):
 
 class CompetitorScore(BaseModel):
     competitor: str
-    locations: int          # distinct (lat,lon) the competitor appeared in
+    stores: int             # distinct dark stores the competitor appeared in
     keywords: int
     appearances: int
     avg_position: float | None
@@ -151,7 +159,8 @@ class AvailabilityRow(BaseModel):
 class CatalogRow(BaseModel):
     product_id: str
     name: str
-    found_locations: int
+    found_stores: int
+    in_stock_stores: int
     reach_pct: float | None
     distribution_pct: float | None
     price_min: float | None
@@ -168,6 +177,56 @@ class CatalogRow(BaseModel):
     unit_price_max: float | None = None
 
 
+class StoreScore(BaseModel):
+    """One dark store: how much of the brand's range it carries."""
+
+    merchant_id: str
+    store_type: str
+    city: str
+    products_carried: int
+    products_in_stock: int
+    products_out_of_stock: int
+    products_missing: int
+    on_shelf_pct: float | None
+    in_stock_pct: float | None
+
+
+class GapRow(BaseModel):
+    """One product missing or empty at one store — the work queue."""
+
+    problem: str                # "Not carried" | "Out of stock"
+    product: str
+    product_id: str
+    city: str
+    merchant_id: str
+    store_type: str
+    units: int | None = None
+    price: float | None = None
+
+
+class GridCell(BaseModel):
+    """Average position for one (search term, city) — the weakness grid."""
+
+    keyword: str
+    city: str
+    avg_rank: float | None
+    searches: int
+
+
+class FamilyRow(BaseModel):
+    """Singles plus their multipacks, counted as one product."""
+
+    family: str
+    variants: int
+    stores_carrying: int
+    on_shelf_pct: float | None
+    listings: int
+    in_stock_pct: float | None
+    price_low: float | None
+    price_high: float | None
+    variant_names: str
+
+
 class ExplorerInsights(BaseModel):
     overview: RunOverview
     keywords: list[KeywordScore]
@@ -176,3 +235,7 @@ class ExplorerInsights(BaseModel):
     pricing: list[PriceRow]
     availability: list[AvailabilityRow]
     catalog: list[CatalogRow]
+    stores: list[StoreScore] = Field(default_factory=list)
+    gaps: list[GapRow] = Field(default_factory=list)
+    grid: list[GridCell] = Field(default_factory=list)
+    families: list[FamilyRow] = Field(default_factory=list)
