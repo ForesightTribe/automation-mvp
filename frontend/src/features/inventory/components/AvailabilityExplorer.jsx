@@ -69,7 +69,7 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 						)}
 						<span className="ml-2 text-xs capitalize text-content-subtle">{r.city}</span>
 						{r.merchant_type && r.merchant_type !== "express" && (
-							<span title={`Blinkit store type: ${r.merchant_type}`} className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle">
+							<span title={`Store type: ${r.merchant_type}`} className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle">
 								slower delivery
 							</span>
 						)}

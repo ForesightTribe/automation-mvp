@@ -98,7 +98,7 @@ export const CityDrawer = ({ city, kind = "main", onClose, onSelectStore }) => {
 											<span className="ml-2 text-xs text-content-subtle">#{s.merchant_id}</span>
 										)}
 										{s.merchant_type && s.merchant_type !== "express" && (
-											<span title={`Blinkit store type: ${s.merchant_type}`} className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle">
+											<span title={`Store type: ${s.merchant_type}`} className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle">
 												slower delivery
 											</span>
 										)}
