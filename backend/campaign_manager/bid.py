@@ -129,28 +129,80 @@ def _window_start(rule: dict, now: datetime) -> datetime:
     return eff.replace(hour=sh, minute=sm, second=0, microsecond=0)
 
 
+def is_recovery(position: float, target: int, current_cpm: int,
+                last_holding_cpm: int | None) -> bool:
+    """Did OUR OWN drift cause this miss, rather than the market moving against us?
+
+    True when we're off target at a bid BELOW one we know was holding — which only happens
+    when the last drift step went too far. If we're off target at (or above) the last
+    holding bid, the market moved and a normal raise is the right answer. The orchestration
+    uses the same predicate to decide when to start the drift pause, so the two can't drift
+    apart."""
+    return (position > target and last_holding_cpm is not None
+            and int(last_holding_cpm) > int(current_cpm))
+
+
 def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, max_bid: int,
-                last_position: float | None, minutes_since_change: float | None) -> tuple[int | None, str]:
-    """The bid decision. Returns (new_cpm | None, reason). None = no change:
-    'target …' when already at target, or 'hold …' during the reflection window when
-    position hasn't improved since the last change."""
-    if position == target:
-        return None, f"target achieved (pos {position})"
+                last_position: float | None, minutes_since_change: float | None, *,
+                last_holding_cpm: int | None = None, drift_paused: bool = False,
+                drift_pct: float = 0.0, drift_min_step: int = 5) -> tuple[int | None, str]:
+    """The bid decision. Returns (new_cpm | None, reason); None = no change.
 
-    step = _dynamic_step(abs(position - target))
+    "Holding" means position is at target **or better** — better is a success, not an error
+    to correct. Blinkit's sponsored slots sit on a sparse lattice (observed positions are
+    ~89% 1/5/9/13/17), so a target of 3 is frequently unreachable and demanding exact
+    equality would mean never settling.
 
-    if position > target:                        # worse than target → raise the bid
+    Three outcomes when off target: `recover` (snap back precisely — our drift overshot),
+    `hold` (inside the reflection window, position hasn't improved), or `raise`.
+
+    When holding, `drift_pct` decides everything. At its default of **0 the behaviour is
+    exactly what it was before drift existed** — freeze at target, step down only when
+    strictly better than target — so the config kill switch is a true revert, not a
+    half-disabled state. Above 0, holding shaves `drift_pct`% off the bid each tick,
+    gated on two consecutive holding observations and on the post-overshoot pause.
+    """
+    drift_on = drift_pct > 0
+
+    if position > target:                        # ── off target ──
+        # Our own drift went a step too far: go straight back to the bid we KNOW was
+        # holding, rather than a _dynamic_step raise that would overshoot past it and
+        # spend the next hour drifting back down.
+        if drift_on and is_recovery(position, target, current_cpm, last_holding_cpm):
+            return int(last_holding_cpm), (f"recover: pos {position} > target {target}, "
+                                           f"back to last holding ₹{last_holding_cpm}")
         # HOLD: position hasn't improved since the last change and we're still inside the
         # reflection window → wait for Blinkit to catch up rather than over-bidding.
         if (last_position is not None and position >= last_position
                 and minutes_since_change is not None and minutes_since_change < HOLD_MINUTES):
             return None, (f"hold — pos {position} ≥ last {last_position}, "
                           f"{minutes_since_change:.0f}min < {HOLD_MINUTES}min reflection")
+        step = _dynamic_step(abs(position - target))
         new_cpm = min(int(current_cpm + step), int(max_bid))
         return new_cpm, f"raise: pos {position} > target {target}, step ₹{step:g}"
 
-    new_cpm = max(int(current_cpm - step), int(min_bid))   # better than target → lower the bid
-    return new_cpm, f"lower: pos {position} < target {target}, step ₹{step:g}"
+    # ── holding (at target or better) ──
+    if not drift_on:                             # legacy behaviour, unchanged
+        if position == target:
+            return None, f"target achieved (pos {position})"
+        step = _dynamic_step(abs(position - target))
+        new_cpm = max(int(current_cpm - step), int(min_bid))
+        return new_cpm, f"lower: pos {position} < target {target}, step ₹{step:g}"
+
+    # A single reading was unreliable ~28% of the time in the v1 log, so never spend a
+    # write on one. Requiring the PREVIOUS tick to have held too also stops us undoing a
+    # raise the moment it lands — the climb gets one tick to prove itself first.
+    if last_position is None or last_position > target:
+        return None, f"target held (pos {position}) — awaiting a second confirmation"
+    if drift_paused:
+        return None, f"target held (pos {position}) — drift paused after overshoot"
+
+    step = max(current_cpm * drift_pct / 100.0, float(drift_min_step))
+    new_cpm = max(int(current_cpm - step), int(min_bid))
+    if new_cpm >= current_cpm:                   # already sitting on min_bid
+        return None, f"target held (pos {position}) — already at min_bid ₹{min_bid}"
+    return new_cpm, (f"drift: pos {position} ≤ target {target}, "
+                     f"−{drift_pct:g}% (₹{current_cpm}→₹{new_cpm})")
 
 
 def _minutes_since(iso_ts: str | None, now: datetime) -> float | None:
@@ -331,40 +383,72 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
             last_pos = runtime.last_position if runtime else None
             mins = _minutes_since(runtime.last_bid_updated_at if runtime else None, now)
-            new_cpm, reason = compute_bid(position, rule.target_position, current_cpm,
-                                          rule.min_bid, rule.max_bid, last_pos, mins)
+            # Drift state. `open_stamp` means the window just opened, which clears both —
+            # yesterday's holding price says nothing about today, and a pause must not
+            # outlive the window that caused it.
+            holding_cpm = None if open_stamp else (runtime.last_holding_cpm if runtime else None)
+            paused_until = None if open_stamp else (runtime.drift_paused_until if runtime else None)
+            drift_paused = bool(paused_until and paused_until > now)
+
+            new_cpm, reason = compute_bid(
+                position, rule.target_position, current_cpm, rule.min_bid, rule.max_bid,
+                last_pos, mins, last_holding_cpm=holding_cpm, drift_paused=drift_paused,
+                drift_pct=config.BID_DRIFT_PCT, drift_min_step=config.BID_DRIFT_MIN_STEP,
+            )
+            recovering = (config.BID_DRIFT_PCT > 0
+                          and is_recovery(position, rule.target_position, current_cpm, holding_cpm))
             logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                           verdict=(f"bid ₹{new_cpm}" if new_cpm is not None else "no change"),
                           reason=f"{reason} · {source}")
 
-            # No change (target reached or HOLD): record the observed position, but do NOT
-            # write a History row — "held / already at target" every 15 min would bury the
-            # real changes (it's narrated to Cloud Logging via logs.decision above; D6).
+            # The snap-back price is refreshed on EVERY holding tick, not just the first.
+            # Stale, it would send us back to a price that worked an hour ago — the point
+            # is to track the market, not to fight it.
+            rt: dict = {"rule_id": rule.id, "last_position": position}
+            if open_stamp:                         # observed truth: Blinkit reads back the floor
+                rt["last_cpm"] = int(rule.min_bid)
+                rt["last_holding_cpm"] = None
+                rt["drift_paused_until"] = None
+            if position <= rule.target_position:
+                rt["last_holding_cpm"] = int(current_cpm)
+            elif recovering:
+                # Our own drift overshot. Stop shaving for a while so we don't walk into
+                # the same wall every tick — but RAISES stay ungated, so a competitor
+                # outbidding us during the pause is still answered immediately.
+                rt["drift_paused_until"] = now + timedelta(minutes=config.BID_DRIFT_PAUSE_MINUTES)
+
+            # No change (target held, HOLD, awaiting confirmation, or drift paused): record
+            # the observed position, but do NOT write a History row — those every 15 min
+            # would bury the real changes (narrated to Cloud Logging above; D6).
             if new_cpm is None:
                 skipped += 1
-                rt = {"rule_id": rule.id, "last_position": position}
-                if open_stamp:
-                    rt["last_cpm"] = int(rule.min_bid)
                 runtime_rows.append(rt)
                 continue
 
+            # Per-KEYWORD rate limit: the guard exists to catch a runaway loop, and a
+            # per-campaign count would make a multi-keyword campaign throttle keywords
+            # that are behaving. Drift writes up to 4×/hour/keyword against a cap of 12.
+            recent = await repo.recent_write_count(
+                tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
+                kind="bid", keyword=kw,
+            )
             ok = await writes.apply_bid(
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=rule.min_bid,
-                max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run, recent_writes=0,
+                max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run,
+                recent_writes=recent,
             )
             applied += int(ok)
             skipped += int(not ok)
 
-            rt = {"rule_id": rule.id, "last_position": position}
-            if open_stamp:                         # observed truth: Blinkit reads back the floor
-                rt["last_cpm"] = int(rule.min_bid)
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
                 rt["last_cpm"] = int(writes.clamp_bid(new_cpm, rule.min_bid, rule.max_bid))
                 rt["last_bid_updated_at"] = now.isoformat()
             runtime_rows.append(rt)
+            drifted = config.BID_DRIFT_PCT > 0 and position <= rule.target_position
+            action = "recover" if recovering else ("drift" if drifted else "apply")
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                 "apply" if ok else "skip", current_cpm, new_cpm, reason, dry_run, True))
+                                 action if ok else "skip", current_cpm, new_cpm, reason, dry_run, True))
     finally:
         if browser is not None:
             await browser.close()

@@ -116,6 +116,11 @@ class CmBidRuntime(SQLModel, table=True):
     last_cpm: int | None = None
     last_position: float | None = None
     last_bid_updated_at: str | None = None
+    # Drift-down state (cost minimisation at target). Both cleared when a window opens.
+    # `last_holding_cpm` is refreshed on EVERY tick that holds target, so the snap-back
+    # target tracks the market rather than a price that worked an hour ago.
+    last_holding_cpm: int | None = None
+    drift_paused_until: datetime | None = None
     updated_at: datetime = Field(default_factory=now_ist)
 
 

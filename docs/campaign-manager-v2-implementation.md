@@ -335,6 +335,47 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
         end-to-end sim of `bid.run` against a fake adapter covering ON_HOLD, refused write, unreadable bid,
         already-at-floor, the RESTART clobber, and the overnight window.
 
+- [x] **V4.13** ✅ **BUILT, SHIPPED OFF (2026-08-14)** **Bid drift-down — the cheapest price that holds the
+      target.** Until now the optimizer FROZE on reaching target, so it paid whatever price happened to win the
+      climb, for the rest of the day. Drift shaves `CM_BID_DRIFT_PCT`% off the bid each tick while the keyword
+      **holds** target; when a shave goes one step too far it snaps back to the last bid known to hold and pauses
+      shaving for `CM_BID_DRIFT_PAUSE_MINUTES`. Migration `c5a81f4d3e70` (2 nullable cols on `cm_bid_runtime`).
+      - **"Holding" = position at target OR BETTER.** Sponsored slots sit on a sparse lattice (~89% of the 151
+        observed v1 positions were 1/5/9/13/17), so a target of 3 is often unreachable and exact equality would
+        never settle. Better-than-target is a success, not an error to correct.
+      - **Overshoot vs market move** (`is_recovery`) — off target at a bid BELOW one known to hold = our own drift
+        went too far → snap back **precisely** to it (a `_dynamic_step` raise from ₹299 would jump to ₹399 and
+        overshoot the known-good ₹322 by ₹77). Off target at or above it = a competitor moved → normal raise.
+      - **The pause is a ONE-WAY valve** — it gates the decrease only. Raises are never blocked, so being outbid
+        during peak hours is answered on the very next tick.
+      - **Two consecutive holds before shaving** (uses the existing `last_position`, no new state) — a single
+        reading was unreliable in ~28% of repeatedly-measured v1 bid levels, and it also gives a fresh raise one
+        tick to prove itself before we start undoing it.
+      - **`last_holding_cpm` is refreshed on EVERY holding tick**, not just the first, so the snap-back tracks the
+        market instead of returning to a price that worked an hour ago. Both drift columns are cleared at window
+        open, so state never leaks across days.
+      - **`CM_BID_DRIFT_PCT=0` is the default and a TRUE revert** — at 0 `compute_bid` is behaviourally identical
+        to pre-drift (freeze at target; step down only when strictly better). Shipped off; arming is a separate,
+        deliberate step. It is read at import, so **the runner must be restarted** to change it.
+      - **Rate limit is now per KEYWORD** (`repo.recent_write_count(keyword=…)`) and `bid.run` actually passes it
+        (was hard-coded `recent_writes=0`). Campaign-level counting would let one busy keyword throttle keywords
+        that are behaving. `_WRITE_ACTIONS` covers the new `drift`/`recover`/`open` alongside `apply`/`reset`.
+      - **Simulated over a full 12-hour window** against a staircase market, drift on vs off:
+
+        | scenario | avg bid | at target | writes |
+        |---|---|---|---|
+        | A. target 3, unreachable (slots 1/5/9) — **off** | ₹314 | 48% | **48** |
+        | A. — **on** | ₹322 | **81%** | **17** |
+        | B. target 5, reachable, climb lands ₹300 — **off** | ₹302 | 96% | 3 |
+        | B. — **on** | **₹263** (−13%) | 83% | 17 |
+
+        Two distinct wins, and they are not the same win. **B is the money**: the climb froze at ₹300 when ₹250
+        held the same position; drift finds ₹259. **A is a bug fix we did not set out to make** — today's
+        `lower`-when-better branch oscillates ₹300↔₹325 *every single tick* on an unreachable target, 48 writes a
+        window at 48% on-target; drift settles it to 17 writes at 81%. Note A's average bid goes *up* 3%: today's
+        looks cheaper only because it is off-target half the time.
+      - Tests: 13 new decision cases (45/45 bid-logic, 136/136 across the package) + a tick-by-tick day simulator.
+
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +
 logs; confirm `grep -r playwright app/` is clean.
@@ -488,8 +529,12 @@ cap backstops a frozen bid. No bid baseline restore (`baseline_cpm` dropped). Co
       campaign type (the client falls back to 500). If a rule's `min_bid` sits below Blinkit's minimum for that
       campaign type, both the window-end reset and the window-open floor may be rejected or silently clamped —
       which would show as a repeating "open" write that never confirms. *Check against a real campaign at cutover.*
-- [ ] **`recent_writes` wiring for the bid rate-limit** — `bid.run` passes `recent_writes=0` (same as budget);
-      wire `repo.recent_write_count(kind="bid")` when live writes arm (V5), so the runaway-loop guardrail bites.
+- [x] ~~**`recent_writes` wiring for the bid rate-limit**~~ — **done in V4.13**, and made per-keyword.
+- [ ] **Arm the drift** (`CM_BID_DRIFT_PCT=7`) — shipped at 0. Before arming: (a) confirm on real v2 History rows
+      that position is flat across wide bid ranges now the store is fixed per rule — that assumption is the whole
+      payoff and it rests on 151 v1 rows; (b) arm ONE keyword on a low-stakes campaign and watch dip frequency,
+      settle price and write count; (c) then tune `CM_BID_DRIFT_PAUSE_MINUTES` (the cost-vs-position dial) and
+      roll out. Remember the runner needs a restart for an env change to take effect.
 - [ ] **Windows-local live scrape** — v1 offloaded the consumer scrape to a thread executor (Playwright event-loop
       workaround). `positions.resolve` awaits `get_live_positions` directly; fine on the Linux VM, but the V2.6
       dry-run on a Windows laptop may need that workaround. *Confirm during V2.6.*

@@ -8,7 +8,7 @@ the Blinkit product-matching (positions.match_position).
 from datetime import datetime
 
 from campaign_manager.bid import (
-    HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid,
+    HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid, is_recovery,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
 
@@ -185,6 +185,95 @@ def test_overnight_window_is_closed_AT_its_stop_time():
     rule = {"type": "recurring", "start_time": "18:00", "stop_time": "02:00", "days": []}
     assert _in_window(rule, datetime(2026, 8, 8, 1, 59)) is True
     assert _in_window(rule, datetime(2026, 8, 8, 2, 0)) is False
+
+
+# ── drift-down (cost minimisation at target) ─────────────────────────────────
+#
+# DRIFT is the keyword-only knob; at 0 (the default) every test above still describes the
+# behaviour, which is the point of the kill switch.
+DRIFT = {"drift_pct": 7, "drift_min_step": 5}
+
+
+def test_drift_off_by_default_keeps_the_old_freeze():
+    """The kill switch must be a TRUE revert, not a half-disabled state."""
+    assert compute_bid(3, 3, 400, 100, 900, 3, 30)[0] is None
+    assert compute_bid(1, 3, 400, 100, 900, 1, 30)[0] == 375     # legacy 'lower' still steps
+
+
+def test_drift_shaves_a_percentage_when_holding():
+    new, reason = compute_bid(3, 3, 400, 100, 900, 3, 30, **DRIFT)
+    assert new == 372 and reason.startswith("drift")             # 400 - 7% = 372
+
+
+def test_drift_treats_better_than_target_as_holding():
+    """Sponsored slots sit on a sparse lattice, so pos 1 with target 3 is a SUCCESS —
+    the cheapest way to satisfy 'at least as good as 3', not an error to correct."""
+    new, reason = compute_bid(1, 3, 400, 100, 900, 1, 30, **DRIFT)
+    assert new == 372 and reason.startswith("drift")
+
+
+def test_drift_needs_two_consecutive_holds():
+    """One reading was unreliable ~28% of the time in the v1 log — never spend a write on
+    a single observation, and give a fresh raise one tick to prove itself."""
+    new, reason = compute_bid(3, 3, 400, 100, 900, 9, 30, **DRIFT)   # last tick was OFF target
+    assert new is None and "second confirmation" in reason
+
+
+def test_drift_respects_the_pause():
+    new, reason = compute_bid(3, 3, 400, 100, 900, 3, 30, drift_paused=True, **DRIFT)
+    assert new is None and "paused" in reason
+
+
+def test_min_step_floors_a_tiny_percentage():
+    new, _ = compute_bid(3, 3, 50, 10, 900, 3, 30, **DRIFT)      # 7% of 50 = 3.5 → floor 5
+    assert new == 45
+
+
+def test_drift_never_goes_below_min_bid():
+    new, _ = compute_bid(3, 3, 105, 100, 900, 3, 30, **DRIFT)
+    assert new == 100
+
+
+def test_drift_stops_once_sitting_on_min_bid():
+    new, reason = compute_bid(3, 3, 100, 100, 900, 3, 30, **DRIFT)
+    assert new is None and "already at min_bid" in reason
+
+
+# ── recovery (our own drift overshot) vs a competitor outbidding us ──────────
+
+def test_recovery_snaps_back_to_the_last_holding_bid():
+    """A _dynamic_step raise from 299 would jump to 399 and overshoot the known-good 322
+    by ₹77, which we would then spend an hour drifting back off."""
+    new, reason = compute_bid(9, 3, 299, 100, 900, 1, 30, last_holding_cpm=322, **DRIFT)
+    assert new == 322 and reason.startswith("recover")
+
+
+def test_market_moving_against_us_is_a_normal_raise_not_a_recovery():
+    """Off target AT the last holding bid = a competitor moved, not our overshoot. The
+    snap-back would be a no-op, so it must fall through to the raise ladder."""
+    new, reason = compute_bid(9, 3, 322, 100, 900, 1, 30, last_holding_cpm=322, **DRIFT)
+    assert new == 422 and reason.startswith("raise")             # distance 6 → step 100
+
+
+def test_is_recovery_predicate():
+    assert is_recovery(9, 3, 299, 322) is True
+    assert is_recovery(9, 3, 322, 322) is False                  # not below the holding bid
+    assert is_recovery(9, 3, 400, 322) is False                  # above it — market moved
+    assert is_recovery(1, 3, 299, 322) is False                  # still holding
+    assert is_recovery(9, 3, 299, None) is False                 # never held yet
+
+
+def test_pause_never_blocks_a_raise():
+    """The pause is a ONE-WAY valve. Peak hours: a competitor outbids us mid-pause and we
+    must answer on the very next tick, or we sit off-target for 90 minutes."""
+    new, reason = compute_bid(9, 3, 322, 100, 900, 1, 30,
+                              last_holding_cpm=322, drift_paused=True, **DRIFT)
+    assert new == 422 and reason.startswith("raise")
+
+
+def test_reflection_hold_still_applies_with_drift_on():
+    new, reason = compute_bid(9, 3, 400, 100, 900, 9, 2, **DRIFT)
+    assert new is None and reason.startswith("hold")
 
 
 # ── _window_start (the "first fire of this window" anchor) ───────────────────

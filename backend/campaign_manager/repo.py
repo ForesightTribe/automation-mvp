@@ -390,24 +390,38 @@ async def delete_bid_rule(rule_id: str) -> bool:
         return True
 
 
+# Actions that represent a real value write (as opposed to a skip/no-op/error). Bids
+# gained `drift`/`recover`/`open` alongside `apply`; all of them are PUTs and all of them
+# must count toward the runaway-loop guard.
+_WRITE_ACTIONS = ("apply", "drift", "recover", "open", "reset")
+
+
 async def recent_write_count(tenant_id: uuid.UUID, campaign_id: int, *,
-                             window_minutes: int, kind: str) -> int:
-    """How many successful writes this campaign got within the window (rate limit)."""
+                             window_minutes: int, kind: str,
+                             keyword: str | None = None) -> int:
+    """How many successful writes happened within the window (rate limit).
+
+    Scoped to a KEYWORD when one is given. The guard exists to catch a runaway loop, and
+    a keyword-level count still does that — while a campaign-level count would let one
+    busy keyword throttle every other keyword on the same campaign, which is the wrong
+    failure. Budget keeps the campaign-level count (a campaign has one budget).
+    """
     from sqlalchemy import func
     from app.models.campaign_manager_v2 import CmRunLog
 
     cutoff = now_ist() - timedelta(minutes=window_minutes)
     async with AsyncSessionLocal() as db:
-        n = (await db.execute(
-            select(func.count()).select_from(CmRunLog).where(
-                CmRunLog.tenant_id == tenant_id,
-                CmRunLog.campaign_id == campaign_id,
-                CmRunLog.kind == kind,
-                CmRunLog.action == "apply",
-                CmRunLog.dry_run == False,  # noqa: E712 — only real writes count
-                CmRunLog.timestamp >= cutoff,
-            )
-        )).scalar()
+        q = select(func.count()).select_from(CmRunLog).where(
+            CmRunLog.tenant_id == tenant_id,
+            CmRunLog.campaign_id == campaign_id,
+            CmRunLog.kind == kind,
+            CmRunLog.action.in_(_WRITE_ACTIONS),
+            CmRunLog.dry_run == False,  # noqa: E712 — only real writes count
+            CmRunLog.timestamp >= cutoff,
+        )
+        if keyword is not None:
+            q = q.where(CmRunLog.keyword == keyword)
+        n = (await db.execute(q)).scalar()
         return int(n or 0)
 
 
