@@ -63,7 +63,11 @@ def _extract_product(item: dict) -> dict | None:
         return None
 
     rat = pv.get("ratingSummary") or {}
-    qty = pv.get("availableQuantity")
+    # availableQuantity lives on productResponse itself, alongside price/mrp —
+    # NOT on productVariant. Reading it off `pv` silently returned None for
+    # every row (confirmed: 577/577 existing sku_snapshots rows have inventory
+    # IS NULL), which in turn made `in_stock` always default to True below.
+    qty = pr.get("availableQuantity")
     # position is 0-BASED in the payload; the shared contract is 1-based.
     pos_raw = item.get("position")
     position = (pos_raw + 1) if isinstance(pos_raw, int) else None
@@ -83,7 +87,11 @@ def _extract_product(item: dict) -> dict | None:
         "mrp": _num(pv.get("mrp") or pr.get("mrp"), ep.PRICE_DIVISOR),
         "unit": pv.get("formattedPacksize") or "",
         "inventory": qty,
-        "in_stock": bool(qty) if qty is not None else True,
+        # Zepto states this explicitly (`outOfStock`) rather than leaving it to
+        # be inferred from quantity — more direct, and doesn't depend on `qty`
+        # being present. Missing the field defaults to in-stock, same fallback
+        # as before, for whatever fraction of responses might omit it.
+        "in_stock": not pr.get("outOfStock", False),
         "rating": _num(rat.get("averageRating")),
         "rating_count": rat.get("totalRatings"),
         "position": position,
