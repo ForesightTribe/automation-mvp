@@ -6,8 +6,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 from app.core.database import AsyncSessionLocal
-from scraper.utils.session import load_session
+from scraper.utils.session import load_session, ensure_healthy_session, SessionUnhealthy
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
+from scraper.platforms.zepto.dashboard_data.seller.scraper import (
+    validate as zepto_seller_validate,
+    fetch_sales_overview as zepto_fetch_sales_overview,
+)
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
 from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
     parse_campaign,
@@ -561,6 +565,56 @@ async def _scrape_blinkit_scorecard(tenant_id: str, week: str | None, save: bool
             _print_scorecard_facilities(facilities)
             _print_scorecard_key_skus(key_skus)
 
+        except typer.Exit:
+            raise
+        except Exception as e:
+            if job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
+            raise typer.Exit(1)
+
+
+@app.command("zepto-sales")
+def scrape_zepto_sales(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
+):
+    """Fetch Zepto Sales Analytics (GMV/Units) via a browser-free pre-flight
+    health check + direct API call. NOTE: uses a temporary hardcoded ID
+    snapshot for Brik Oven only — not yet general-purpose, see scraper.py."""
+    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to))
+
+
+async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: str | None) -> None:
+    yesterday = (_date.today() - timedelta(days=1)).isoformat()
+    date_from = date_from or (_date.today() - timedelta(days=8)).isoformat()
+    date_to = date_to or yesterday
+
+    async with AsyncSessionLocal() as db:
+        job_id = None
+        try:
+            with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
+                storage_state = await ensure_healthy_session(db, tenant_id, "zepto_seller", zepto_seller_validate)
+            console.print("[green]Session healthy.[/green]")
+
+            job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
+
+            with console.status(f"[cyan]Fetching Sales Analytics {date_from}..{date_to}...[/cyan]"):
+                data = await zepto_fetch_sales_overview(storage_state, date_from, date_to)
+
+            await complete_scrape_job(db, job_id)
+
+            gmv = data["headers"]["gmv"]["value"]
+            units = data["headers"]["units"]["value"]
+            daily = data["metrics"]["gmv"]["data"]
+            console.print(f"\n[bold cyan]Zepto Sales Overview[/bold cyan] ({date_from} to {date_to})")
+            console.print(f"  GMV: [bold]{gmv}[/bold]   Units: [bold]{units}[/bold]   ({len(daily)} days)")
+
+        except SessionUnhealthy as e:
+            console.print(f"[red]Session not usable: {escape(str(e))}[/red]")
+            console.print("[yellow]Run `cli auth zepto-seller --tenant <id>` to re-login.[/yellow]")
+            raise typer.Exit(1)
         except typer.Exit:
             raise
         except Exception as e:
