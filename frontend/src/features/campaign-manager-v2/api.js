@@ -75,10 +75,27 @@ export const setAdvertiser = (clientId, advertiserId) =>
 // ── Campaign catalogue (for the name/id pickers) ────────────────────────────
 // Reuses the Ads campaigns endpoint. A wide window (days=365) so campaigns without
 // recent spend still list; the picker only needs id + name + status.
+//
+// `recent_only` keeps ONLY campaigns seen in the most recent catalogue sync, and it is
+// what stops a dead account's campaigns from being selectable here. Dobra's dashboard
+// moved to a new email in June 2026: the old account's 186 campaigns are still in the
+// table (we never delete data) but can no longer be read or written, while 38 of their
+// NAMES also exist in the live account — several reading ACTIVE on both sides. Picking
+// one is unrecoverable-looking, so the write surfaces must never offer them.
+//
+// This filters on scrape freshness rather than an id cutoff because the catalogue comes
+// from a single all-or-nothing list call: a campaign the account no longer returns keeps
+// its old timestamp and drops out by itself. Ads Analytics deliberately does NOT filter —
+// the client keeps their full pre-migration reporting history.
 export const getCampaigns = (clientId) =>
 	api.get(`/clients/${clientId}/ads/campaigns`, {
-		params: { days: 365, limit: 250, sort: "spend", order: "desc" },
+		params: { days: 365, limit: 250, sort: "spend", order: "desc", recent_only: true },
 	});
+
+// Refresh the campaign catalogue from the live account (enqueue → poll, like the other
+// on-demand actions). One list call on the VM, not a full marketing scrape.
+export const refreshCampaigns = (clientId) =>
+	api.post(`${base(clientId)}/campaigns/refresh`);
 
 export const getCampaignKeywords = (clientId, campaignId) =>
 	api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/keywords`);

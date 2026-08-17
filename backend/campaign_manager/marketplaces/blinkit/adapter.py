@@ -147,15 +147,33 @@ def _canonical(blinkit_status: str | None) -> str | None:
     return _STATUS_FROM_BLINKIT.get(blinkit_status.strip().upper(), blinkit_status)
 
 
+async def list_campaigns(client, days: int = 90) -> list[dict]:
+    """Every campaign on the account with its status, in ONE list call (a READ — safe).
+
+    This is the cheap bulk read behind `cm sync-campaigns`: two requests total (enabled
+    types, then the list) rather than a detail call per campaign, and no consumer-side
+    scraping at all.
+
+    It was long believed unusable — the call returned an empty list on Dobra — but the
+    cause was `get_campaigns()` blindly asking for every campaign type: Blinkit rejects
+    the whole request when any one of them is disabled for the advertiser (`"['BANNER_DIY',
+    'SHELF_DIY', 'BRAND_SPOTLIGHT_DIY'] are not enabled for given advertiser"` → `data:
+    null` → silently empty). The client now asks Blinkit which types are enabled first,
+    the same fix the marketing scraper already carried.
+
+    Raw Blinkit rows (`id`, `campaign_name`, `campaign_status`, …), not canonicalised —
+    the caller stores them in the same shape the scraper does.
+    """
+    return await client.get_campaigns(days=days)
+
+
 async def read_campaign(client, campaign_id: int) -> tuple[str | None, int | None, dict]:
     """(canonical status, current budget, full detail) in ONE call (a READ — safe).
 
-    Campaign detail carries `status`, so status and budget come from the same request —
-    which is why there is no bulk status read here. The obvious alternative, the account
-    campaigns *list*, is **unusable**: `get_campaigns()` asks for every campaign type and
-    Blinkit rejects the whole request when any of them is disabled for the advertiser
-    (`"['BANNER_DIY', 'SHELF_DIY', 'BRAND_SPOTLIGHT_DIY'] are not enabled for given
-    advertiser"` → `data: null` → an empty list, silently). Verified on Dobra 2026-08-07.
+    Campaign detail carries `status`, so status and budget come from the same request.
+    Writes still read per-campaign like this rather than off `list_campaigns`: a write
+    needs the campaign's full detail (pacing, targeting, products) anyway, and it must be
+    read fresh at write time rather than from a list fetched earlier.
 
     `detail["allowed_transitions"]` is Blinkit's own answer to "what may I do to this
     campaign next" (a STOPPED campaign reports `['RESTART']`). Returned as part of the

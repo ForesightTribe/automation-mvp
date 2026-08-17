@@ -171,6 +171,21 @@ async def set_activation_now(client: ClientDep, session: SessionDep, campaign_id
     return EnqueuedOut(job_id=job_id)
 
 
+@router.post("/campaigns/refresh", response_model=EnqueuedOut)
+async def refresh_campaigns(client: ClientDep, session: SessionDep):
+    """Re-read the account's campaigns + statuses from Blinkit into the catalogue.
+
+    A read-only VM job (one list call, not a marketing scrape). The campaign pickers show
+    only campaigns present in the latest sync, so this is also how a campaign created since
+    last night's scrape becomes selectable.
+    """
+    try:
+        job_id = await svc.refresh_campaigns(session, client.id)
+    except DuplicateActiveJob:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A campaign refresh is already active")
+    return EnqueuedOut(job_id=job_id)
+
+
 @router.post("/run/budget-scheduler", response_model=EnqueuedOut)
 async def run_budget_scheduler(client: ClientDep, session: SessionDep):
     try:

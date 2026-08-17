@@ -432,6 +432,54 @@ async def write_bid_runtime(rows: list[dict]) -> None:
         await db.commit()
 
 
+async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
+                                  platform: str = "blinkit") -> int:
+    """Refresh the campaign catalogue from a live account listing. Returns rows written.
+
+    This is the one place the campaign manager writes OUTSIDE its own cm_* tables: the
+    catalogue (`blinkit_ad_campaigns`) is shared with the marketing scraper and Ads
+    Analytics. That is deliberate — a second cm-owned copy would drift from the scraper's,
+    and the pickers' freshness filter only means anything against a single catalogue.
+
+    It is safe because this writes the SAME source the scraper does (the account campaign
+    list) in the same shape, keyed on the same `upsert_key`. Two things it will not touch:
+    `scrape_job_id` (this run has no scrape job, and blanking it would destroy the
+    scraper's lineage) and `platform`/`tenant_id` (identity). `scraped_at` DOES advance —
+    that is the point, since freshness is what marks a campaign as still on the account.
+    """
+    if not campaigns:
+        return 0
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.models.blinkit_marketing import BlinkitAdCampaign
+    from scraper.platforms.blinkit.dashboard_data.marketing.parser import parse_campaign
+    from scraper.platforms.blinkit.dashboard_data.marketing.storage import prepare_row
+
+    rows = []
+    for raw in campaigns:
+        if raw.get("id") is None:
+            continue
+        row = parse_campaign(raw, str(tenant_id), None)
+        row.pop("scrape_job_id")            # keep the scraper's lineage intact
+        row["platform"] = platform
+        rows.append(prepare_row(BlinkitAdCampaign, row))
+    # ON CONFLICT cannot update the same row twice in one statement.
+    rows = list({r["upsert_key"]: r for r in rows}.values())
+    if not rows:
+        return 0
+
+    updatable = {"name", "type", "status", "start_ts", "end_ts",
+                 "infinite_campaign", "daily_budget", "scraped_at"}
+    async with AsyncSessionLocal() as db:
+        stmt = insert(BlinkitAdCampaign).values(rows).on_conflict_do_update(
+            index_elements=["upsert_key"],
+            set_={c: insert(BlinkitAdCampaign).excluded[c] for c in updatable},
+        )
+        await db.execute(stmt)
+        await db.commit()
+    return len(rows)
+
+
 async def write_run_log(rows: list[dict]) -> None:
     """Append slim history rows for the UI. No-op on empty."""
     if not rows:

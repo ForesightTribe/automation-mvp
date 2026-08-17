@@ -264,6 +264,30 @@ def sync_campaign_data(tenant: str = _TENANT):
     typer.echo(f"cm sync-campaign-data is a stub (tenant={tenant}).")
 
 
+@app.command("sync-campaigns")
+def sync_campaigns(
+    tenant: str = _TENANT,
+    days: int = typer.Option(
+        None, "--days",
+        help="Look-back window for the campaign list (default 90, floored at 30 — a "
+        "narrow window would hide campaigns it didn't return from the pickers).",
+    ),
+):
+    """Refresh the campaign catalogue (ids, names, statuses) from the live account.
+
+    A READ — no --live flag, because it never writes to Blinkit. Cheap: one list call, not
+    the full marketing scrape. Run it to pick up campaigns created since last night's
+    scrape, or to see current statuses before starting / stopping something.
+    """
+    from campaign_manager import sync_campaigns as sync
+    r = asyncio.run(sync.run(uuid.UUID(tenant),
+                             days=days if days is not None else sync.DEFAULT_DAYS))
+    if r["errors"]:
+        console.print("[red]Sync failed — catalogue left unchanged. See the log above.[/red]")
+        raise typer.Exit(1)
+    console.print(f"[green]Catalogue refreshed — {r['applied']} campaigns.[/green]")
+
+
 # ── Rules CRUD (`cm rules …`) — manage automations from the CLI ─────────────
 # The rules are the source of truth; after editing, run `cm reconcile -t <id> --live`
 # to compile them into job_schedules. (The V4 API will enqueue that for you.)

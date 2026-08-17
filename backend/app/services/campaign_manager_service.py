@@ -366,6 +366,13 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     return job.id
 
 
+async def refresh_campaigns(session, tenant_id: uuid.UUID) -> uuid.UUID:
+    """Enqueue a catalogue refresh from the live account. No `live` param — it is a read,
+    so it runs the same whether or not the tenant is armed."""
+    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id)
+    return job.id
+
+
 async def run_engine(session, tenant_id: uuid.UUID, job_type: str) -> uuid.UUID:
     """Enqueue a run-now of cm.budget_scheduler / cm.bid_optimizer (dry). Raises
     DuplicateActiveJob if one is already active."""

@@ -154,6 +154,12 @@ def _cm_sync_campaign_data(tenant_id, p):
     return ["cm", "sync-campaign-data", "--tenant", str(tenant_id)]
 
 
+def _cm_sync_campaigns(tenant_id, p):
+    a = ["cm", "sync-campaigns", "--tenant", str(tenant_id)]
+    _opt(a, "--days", p.get("days"))
+    return a
+
+
 def _cm_set_budget(tenant_id, p):
     a = ["cm", "set-budget", "--tenant", str(tenant_id)]
     _opt(a, "--campaign", p.get("campaign"))
@@ -246,6 +252,12 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     ),
     "cm.sync_campaign_data": JobTypeSpec(
         Lane.cm_ops, 2 * 60 * 60, _cm_sync_campaign_data,
+    ),
+    # Catalogue refresh — a READ (one list call), so it never writes to Blinkit and needs
+    # no `live` param. Short timeout: it is a browser launch plus two requests, and it
+    # backs a button someone is waiting on, so a hung run should surface fast.
+    "cm.sync_campaigns": JobTypeSpec(
+        Lane.cm_ops, 5 * 60, _cm_sync_campaigns, param_keys=("days",),
     ),
     "cm.reconcile": JobTypeSpec(
         Lane.interactive, 5 * 60, _cm_reconcile, param_keys=("live",),
