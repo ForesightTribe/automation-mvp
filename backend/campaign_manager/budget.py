@@ -103,7 +103,7 @@ def target_for_now(default_budget: float, rules: list[dict], now: datetime) -> t
     return default_budget, "no active rule — default budget"
 
 
-# ── Campaign activation (docs/campaign-activation.md) ───────────────────────
+# ── Campaign activation (docs/campaign-manager.md) ───────────────────────
 
 def _window_just_ended(rules: list[dict], now: datetime,
                        grace_seconds: int | None = None) -> bool:
@@ -248,7 +248,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                      "error", None, target, str(e), dry_run, False))
                 continue
 
-            # ── The activation branch (docs/campaign-activation.md §5.2) ──
+            # ── The activation branch (docs/campaign-manager.md §6) ──
             # A stopped campaign that should be running is restarted, and the restart
             # CARRIES the budget — so it replaces the budget write rather than preceding
             # it. That is the whole reason activation lives in this engine.

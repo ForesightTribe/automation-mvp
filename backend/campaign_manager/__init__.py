@@ -1,7 +1,7 @@
 """Campaign Manager v2 — Blinkit budget scheduler + bid optimizer (parallel build).
 
-See docs/campaign-manager-refactor.md (the design) and
-docs/campaign-manager-v2-implementation.md (the build plan). This package is the
+See docs/campaign-manager.md (the design) and
+docs/campaign-manager.md (the build plan). This package is the
 v2 domain logic; it runs alongside the v1 code in `ad_campaigns/` + `ads_service`
 until cutover, then v1 is deleted.
 

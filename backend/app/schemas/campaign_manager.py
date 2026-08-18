@@ -52,7 +52,7 @@ class BudgetScheduleIn(BaseModel):
     campaign_name: str | None = None
     name: str | None = None
     default_budget: float
-    # Also stop the campaign when a window ends (docs/campaign-activation.md). Starting
+    # Also stop the campaign when a window ends (docs/campaign-manager.md). Starting
     # is unconditional either way — this only governs the stop.
     stop_after_window: bool = False
     rule: BudgetRuleIn | None = None        # optional inline first rule

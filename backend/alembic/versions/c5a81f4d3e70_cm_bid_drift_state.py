@@ -1,7 +1,7 @@
 """cm_bid_runtime drift + unreachable-target state
 
 Adds the four columns the bid drift-down and the unreachable-target fallback need
-(docs/campaign-manager-v2-implementation.md V4.13). Once a keyword HOLDS its target
+(docs/campaign-manager.md §7.4). Once a keyword HOLDS its target
 position the optimizer shaves a percentage off the bid each tick; when a shave goes one
 step too far and the position is lost it snaps back to the last bid known to hold and
 stops shaving for a while.

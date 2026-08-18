@@ -311,7 +311,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
             if cid not in bids_cache:
                 try:
-                    # ONE detail read gives status AND bids (docs/campaign-activation.md §6).
+                    # ONE detail read gives status AND bids (docs/campaign-manager.md §8.3).
                     status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
                     bids_cache[cid] = adapter.bids_from_detail(detail)
                     products_cache[cid] = await adapter.read_products(client, cid)

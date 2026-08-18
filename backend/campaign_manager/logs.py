@@ -97,7 +97,7 @@ def write_result(run_id: str, *, dry_run: bool, campaign_id, applied: bool,
 
 
 def status_overwrites(run_id: str, *, dry_run: bool, campaign_id, fields: dict) -> None:
-    """What a RESTART is about to overwrite (docs/campaign-activation.md AD10).
+    """What a RESTART is about to overwrite (docs/campaign-manager.md §8.4).
 
     Resuming a campaign re-submits it whole — budget, keywords, bids, pids, dates — so a
     restart built from a stale read silently reverts the bid optimizer's work. WARNING

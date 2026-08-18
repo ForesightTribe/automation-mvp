@@ -13,7 +13,7 @@ them: `campaign_data` carries `products`/`brand_ids`/`category_ids`/`ro_details`
 `campaign_targeting` omits `negative_keywords` and `repeat_order_suggestion`.
 
 Two values are NOT taken from the campaign, because Blinkit's own dashboard doesn't send
-them on a restart (docs/campaign-activation.md AD4):
+them on a restart (docs/campaign-manager.md §8.4):
   - `advertiser_id` is **0** — the server derives the account from the token + campaign
     for this request type (a budget UPDATE sends the real advertiser id).
   - `brand_name` is empty.

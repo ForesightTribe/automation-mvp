@@ -47,7 +47,7 @@ def exceeds_rate_limit(recent_writes: int, *, limit: int | None = None) -> bool:
     return recent_writes >= cap
 
 
-# ── Status transitions (docs/campaign-activation.md §5.3) ───────────────────
+# ── Status transitions (docs/campaign-manager.md §8.1) ───────────────────
 #
 # Unlike budget (a scalar with bounds), a campaign's run state is an ENUM, so the
 # guardrail is a transition table. Two states are terminal-ish and must never be
