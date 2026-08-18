@@ -142,6 +142,38 @@ def is_recovery(position: float, target: int, current_cpm: int,
             and int(last_holding_cpm) > int(current_cpm))
 
 
+def stored_effective_target(rule_target: int, max_bid: int, stored_target: int | None,
+                            stored_at_max: int | None) -> int | None:
+    """The relaxed target still in force, or None to chase the rule's real target.
+
+    Distrusted whenever the ceiling it was derived at no longer matches the rule's — an
+    edit to `max_bid` invalidates the conclusion in both directions. Raising it is the
+    dangerous one: a stale relaxed target would have the optimizer keep drifting DOWN just
+    after being given more room to climb. Also distrusted if it isn't strictly worse than
+    the real target, which would make it meaningless."""
+    if stored_target is None or stored_at_max is None:
+        return None
+    if int(stored_at_max) != int(max_bid):
+        return None
+    if int(stored_target) <= int(rule_target):
+        return None
+    return int(stored_target)
+
+
+def should_relax_target(position: float, rule_target: int, current_cpm: int, max_bid: int,
+                        last_position: float | None) -> bool:
+    """Is the real target out of reach at the ceiling, so the position we DID get should
+    become the working target?
+
+    True only while pinned at `max_bid` with nothing left to try, and only after the
+    previous tick also missed — one bad scrape must not relax a target for the rest of the
+    window. Left alone, this state is the worst outcome in the system: the bid sits at the
+    maximum, every tick recomputes the same value, the no-op guardrail rejects it, and the
+    campaign pays the ceiling for a position the ceiling did not buy."""
+    return (position > rule_target and int(current_cpm) >= int(max_bid)
+            and last_position is not None and last_position > rule_target)
+
+
 def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, max_bid: int,
                 last_position: float | None, minutes_since_change: float | None, *,
                 last_holding_cpm: int | None = None, drift_paused: bool = False,
@@ -346,6 +378,38 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     runtime_rows.append({"rule_id": rule.id})
                 continue                       # no position scrape — the bid just moved
 
+            # ── min_bid / max_bid are INVARIANTS, not just clamps on a computed value ──
+            #
+            # They used to be applied only to a bid the optimizer decided to change. When
+            # the decision was "no change" — the common case once a target is held — an
+            # edit that lowered `max_bid` below the live bid did nothing at all until the
+            # next window opened, leaving the campaign a full day over its ceiling.
+            # Enforced here every tick instead, so an edit lands on the next cycle.
+            if live_cpm is not None:
+                bounded = writes.clamp_bid(live_cpm, rule.min_bid, rule.max_bid)
+                if int(bounded) != int(live_cpm):
+                    # Not rate-limited: this is a correctness write, not optimization, and
+                    # it cannot run away — one write puts the bid back inside the bounds.
+                    ok = await writes.apply_bid(
+                        adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
+                        new_cpm=bounded, current_cpm=live_cpm, min_bid=rule.min_bid,
+                        max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run,
+                        recent_writes=0,
+                    )
+                    why = ("above max" if int(live_cpm) > int(rule.max_bid) else "below min")
+                    logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                  verdict=f"bounds ₹{bounded}",
+                                  reason=f"live ₹{live_cpm} {why} [{rule.min_bid}–{rule.max_bid}]")
+                    applied += int(ok)
+                    skipped += int(not ok)
+                    log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
+                                         "bounds" if ok else "skip", live_cpm, bounded,
+                                         f"live bid {why} — forced into [{rule.min_bid}–"
+                                         f"{rule.max_bid}]", dry_run, ok))
+                    if ok and not dry_run:
+                        runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
+                    continue               # no position scrape — the bid just moved
+
             products = products_cache[cid]
             names = [p.get("name", "") for p in products if p.get("name")]
             pids = [str(p["pid"]) for p in products if p.get("pid")]
@@ -383,20 +447,43 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
             last_pos = runtime.last_position if runtime else None
             mins = _minutes_since(runtime.last_bid_updated_at if runtime else None, now)
-            # Drift state. `open_stamp` means the window just opened, which clears both —
-            # yesterday's holding price says nothing about today, and a pause must not
-            # outlive the window that caused it.
+            # Drift state. `open_stamp` means the window just opened, which clears all of
+            # it — yesterday's holding price says nothing about today, a pause must not
+            # outlive the window that caused it, and a target relaxed against yesterday's
+            # competition must be re-earned so every day retries the REAL target.
             holding_cpm = None if open_stamp else (runtime.last_holding_cpm if runtime else None)
             paused_until = None if open_stamp else (runtime.drift_paused_until if runtime else None)
             drift_paused = bool(paused_until and paused_until > now)
 
+            # ── Unreachable target: chase what the ceiling can actually buy ──
+            eff = None if open_stamp else stored_effective_target(
+                rule.target_position, rule.max_bid,
+                runtime.effective_target if runtime else None,
+                runtime.effective_at_max_bid if runtime else None,
+            )
+            relaxed_now = eff is None and should_relax_target(
+                position, rule.target_position, current_cpm, rule.max_bid, last_pos)
+            if relaxed_now:
+                eff = int(position)
+            target = eff if eff is not None else rule.target_position
+            if relaxed_now:
+                logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              verdict=f"target relaxed to {target}",
+                              reason=f"position {rule.target_position} unreachable at max "
+                                     f"₹{rule.max_bid} — holding position {target} instead")
+                log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
+                                     "relax", current_cpm, current_cpm,
+                                     f"target position {rule.target_position} unreachable at "
+                                     f"max ₹{rule.max_bid} — now holding position {target}",
+                                     dry_run, True))
+
             new_cpm, reason = compute_bid(
-                position, rule.target_position, current_cpm, rule.min_bid, rule.max_bid,
+                position, target, current_cpm, rule.min_bid, rule.max_bid,
                 last_pos, mins, last_holding_cpm=holding_cpm, drift_paused=drift_paused,
                 drift_pct=config.BID_DRIFT_PCT, drift_min_step=config.BID_DRIFT_MIN_STEP,
             )
             recovering = (config.BID_DRIFT_PCT > 0
-                          and is_recovery(position, rule.target_position, current_cpm, holding_cpm))
+                          and is_recovery(position, target, current_cpm, holding_cpm))
             logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                           verdict=(f"bid ₹{new_cpm}" if new_cpm is not None else "no change"),
                           reason=f"{reason} · {source}")
@@ -409,7 +496,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 rt["last_cpm"] = int(rule.min_bid)
                 rt["last_holding_cpm"] = None
                 rt["drift_paused_until"] = None
-            if position <= rule.target_position:
+                rt["effective_target"] = None
+                rt["effective_at_max_bid"] = None
+            if relaxed_now:                        # pin the ceiling it was concluded at
+                rt["effective_target"] = int(target)
+                rt["effective_at_max_bid"] = int(rule.max_bid)
+            if position <= target:
                 rt["last_holding_cpm"] = int(current_cpm)
             elif recovering:
                 # Our own drift overshot. Stop shaving for a while so we don't walk into
@@ -445,7 +537,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 rt["last_cpm"] = int(writes.clamp_bid(new_cpm, rule.min_bid, rule.max_bid))
                 rt["last_bid_updated_at"] = now.isoformat()
             runtime_rows.append(rt)
-            drifted = config.BID_DRIFT_PCT > 0 and position <= rule.target_position
+            drifted = config.BID_DRIFT_PCT > 0 and position <= target
             action = "recover" if recovering else ("drift" if drifted else "apply")
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                  action if ok else "skip", current_cpm, new_cpm, reason, dry_run, True))

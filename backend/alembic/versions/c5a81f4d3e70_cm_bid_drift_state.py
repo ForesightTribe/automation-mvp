@@ -1,9 +1,10 @@
-"""cm_bid_runtime drift state — last_holding_cpm + drift_paused_until
+"""cm_bid_runtime drift + unreachable-target state
 
-Adds the two columns the bid drift-down needs (docs/campaign-manager-v2-implementation.md
-V4.13). Once a keyword HOLDS its target position the optimizer shaves a percentage off the
-bid each tick; when a shave goes one step too far and the position is lost it snaps back to
-the last bid known to hold and stops shaving for a while.
+Adds the four columns the bid drift-down and the unreachable-target fallback need
+(docs/campaign-manager-v2-implementation.md V4.13). Once a keyword HOLDS its target
+position the optimizer shaves a percentage off the bid each tick; when a shave goes one
+step too far and the position is lost it snaps back to the last bid known to hold and
+stops shaving for a while.
 
 - `last_holding_cpm` — the bid we last observed holding target. Refreshed on EVERY holding
   tick, so the snap-back tracks the market instead of returning to a price that worked an
@@ -13,6 +14,14 @@ the last bid known to hold and stops shaving for a while.
 - `drift_paused_until` — when shaving may resume after an overshoot. Gates the DECREASE
   only; raises are never blocked by it, so being outbid during a pause is still answered
   on the next tick.
+- `effective_target` — the position actually achieved once the bid is pinned at `max_bid`
+  and the real target is still out of reach. Adopted as the working target so drift can
+  find the cheapest bid that holds it, rather than sitting at the ceiling paying the
+  maximum for a position the maximum did not buy.
+- `effective_at_max_bid` — the ceiling `effective_target` was derived at. The conclusion is
+  void the moment the rule's `max_bid` differs; most sharply when the ceiling is RAISED,
+  where a stale relaxed target would have the optimizer drift DOWN after being given more
+  room to climb.
 
 Additive and safe:
 
@@ -46,8 +55,12 @@ depends_on = None
 def upgrade() -> None:
     op.add_column("cm_bid_runtime", sa.Column("last_holding_cpm", sa.Integer(), nullable=True))
     op.add_column("cm_bid_runtime", sa.Column("drift_paused_until", sa.DateTime(), nullable=True))
+    op.add_column("cm_bid_runtime", sa.Column("effective_target", sa.Integer(), nullable=True))
+    op.add_column("cm_bid_runtime", sa.Column("effective_at_max_bid", sa.Integer(), nullable=True))
 
 
 def downgrade() -> None:
+    op.drop_column("cm_bid_runtime", "effective_at_max_bid")
+    op.drop_column("cm_bid_runtime", "effective_target")
     op.drop_column("cm_bid_runtime", "drift_paused_until")
     op.drop_column("cm_bid_runtime", "last_holding_cpm")

@@ -9,6 +9,7 @@ from datetime import datetime
 
 from campaign_manager.bid import (
     HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid, is_recovery,
+    should_relax_target, stored_effective_target,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
 
@@ -318,6 +319,77 @@ def test_yesterdays_runtime_does_not_count_as_this_window_opened():
     now = datetime(2026, 8, 12, 9, 0)
     yesterday_evening = datetime(2026, 8, 11, 20, 45)
     assert yesterday_evening < _window_start(rule, now)
+
+
+# ── unreachable target (relax to what the ceiling can buy) ───────────────────
+
+def test_relax_when_pinned_at_max_and_missing_twice():
+    """Target 1, ceiling ₹900, and ₹900 only ever reaches position 5."""
+    assert should_relax_target(5, 1, 900, 900, last_position=5) is True
+
+
+def test_no_relax_on_a_single_bad_reading():
+    """One scrape was unreliable ~28% of the time in the v1 log — relaxing the target for
+    the rest of the window on one of those would be expensive to undo."""
+    assert should_relax_target(5, 1, 900, 900, last_position=1) is False
+    assert should_relax_target(5, 1, 900, 900, last_position=None) is False
+
+
+def test_no_relax_while_there_is_still_room_to_climb():
+    """Below the ceiling the raise still has somewhere to go — giving up early would settle
+    for a worse position that a higher bid could have bought."""
+    assert should_relax_target(5, 1, 400, 900, last_position=5) is False
+
+
+def test_no_relax_when_the_target_is_being_met():
+    assert should_relax_target(1, 1, 900, 900, last_position=1) is False
+    assert should_relax_target(1, 3, 900, 900, last_position=1) is False
+
+
+def test_relax_when_bid_somehow_exceeds_max():
+    """`>=`, not `==` — a bid can sit above the ceiling after max_bid is lowered."""
+    assert should_relax_target(5, 1, 950, 900, last_position=5) is True
+
+
+def test_stored_relaxed_target_is_used_while_the_ceiling_matches():
+    assert stored_effective_target(1, 900, 5, 900) == 5
+
+
+def test_raising_max_bid_voids_the_relaxed_target():
+    """The dangerous direction: with the old target still in force, being handed MORE room
+    to climb would make the optimizer keep drifting DOWN instead."""
+    assert stored_effective_target(1, 1500, 5, 900) is None
+
+
+def test_lowering_max_bid_voids_the_relaxed_target():
+    assert stored_effective_target(1, 400, 5, 900) is None
+
+
+def test_relaxed_target_ignored_when_not_worse_than_the_real_one():
+    """A relaxed target equal to or better than the rule's is meaningless — chase the real
+    one. Covers a target_position edit that moved the goal past the stored value."""
+    assert stored_effective_target(5, 900, 5, 900) is None
+    assert stored_effective_target(9, 900, 5, 900) is None
+
+
+def test_no_relaxed_target_when_unset():
+    assert stored_effective_target(1, 900, None, None) is None
+    assert stored_effective_target(1, 900, 5, None) is None
+    assert stored_effective_target(1, 900, None, 900) is None
+
+
+def test_relaxed_target_makes_the_achieved_position_count_as_held():
+    """The point of relaxing: at position 5 against a relaxed target of 5, drift takes over
+    and starts cutting cost, instead of recomputing max_bid forever."""
+    new, reason = compute_bid(5, 5, 900, 100, 900, 5, 30, drift_pct=7, drift_min_step=5)
+    assert new == 837 and reason.startswith("drift")
+
+
+def test_without_relaxing_a_pinned_bid_just_recomputes_the_ceiling():
+    """Today's behaviour, kept as the contrast: the raise clamps to max_bid, the no-op
+    guardrail rejects it, and nothing changes — every 15 minutes, all day."""
+    new, _ = compute_bid(5, 1, 900, 100, 900, 5, 30)
+    assert new == 900
 
 
 def _run() -> int:

@@ -342,14 +342,26 @@ async def update_budget_rule(rule_id: int, fields: dict):
 
 
 async def update_bid_rule(rule_id: str, fields: dict):
-    """Patch a bid rule's editable fields (target/bids/timing/location). Returns row or None."""
-    from app.models.campaign_manager_v2 import CmBidRule
+    """Patch a bid rule's editable fields (target/bids/timing/location). Returns row or None.
+
+    Editing `max_bid` or `target_position` also voids any relaxed target in runtime: it was
+    concluded against the OLD ceiling and the OLD goal, so keeping it would be wrong — most
+    sharply when `max_bid` is raised, where a stale relaxed target has the optimizer drift
+    DOWN just after being handed more room to climb. `bid.stored_effective_target` guards
+    the `max_bid` case on read too (self-healing for edits that bypass this function); the
+    `target_position` case has no such tell, so it is cleared here."""
+    from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
         if not r:
             return None
         for k, v in fields.items():
             setattr(r, k, v)
+        if "max_bid" in fields or "target_position" in fields:
+            rt = await db.get(CmBidRuntime, rule_id)
+            if rt:
+                rt.effective_target = None
+                rt.effective_at_max_bid = None
         await db.commit()
         await db.refresh(r)
         return r
@@ -393,7 +405,7 @@ async def delete_bid_rule(rule_id: str) -> bool:
 # Actions that represent a real value write (as opposed to a skip/no-op/error). Bids
 # gained `drift`/`recover`/`open` alongside `apply`; all of them are PUTs and all of them
 # must count toward the runaway-loop guard.
-_WRITE_ACTIONS = ("apply", "drift", "recover", "open", "reset")
+_WRITE_ACTIONS = ("apply", "drift", "recover", "open", "reset", "bounds")
 
 
 async def recent_write_count(tenant_id: uuid.UUID, campaign_id: int, *,

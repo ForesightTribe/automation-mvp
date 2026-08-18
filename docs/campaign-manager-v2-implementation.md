@@ -375,6 +375,39 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
         window at 48% on-target; drift settles it to 17 writes at 81%. Note A's average bid goes *up* 3%: today's
         looks cheaper only because it is off-target half the time.
       - Tests: 13 new decision cases (45/45 bid-logic, 136/136 across the package) + a tick-by-tick day simulator.
+- [x] **V4.14** ✅ **BUILT (2026-08-17)** **Bounds as invariants + the unreachable target.** Two independent holes,
+      both closing on the same migration (`c5a81f4d3e70`, extended from 2 columns to 4 — it had not been applied
+      anywhere yet, so it was amended rather than chained).
+      - **`min_bid`/`max_bid` are now enforced EVERY tick**, not just clamped onto a value the optimizer chose to
+        change. They were only ever applied to a computed change, so when the decision was "no change" — the
+        common case once a target is held — lowering `max_bid` below the live bid did **nothing at all until the
+        next window opened**, leaving the campaign a full day over its ceiling. An out-of-bounds live bid is now
+        written back into range on the next tick (`bounds` History action), before the position scrape. Not
+        rate-limited: it is a correctness write and cannot run away, since one write ends the condition.
+      - **Unreachable target → chase what the ceiling can actually buy.** Pinned at `max_bid` with the target still
+        missed, the old behaviour recomputed `max_bid`, had the no-op guardrail reject it, and wrote a junk `skip`
+        row — every 15 minutes, all day, paying the ceiling for a position the ceiling did not buy. The v1 log has
+        this exactly: `cotton candy` climbed ₹350→₹900 with the position stuck at 15 the whole way, then showed
+        position 15 again at ₹300 — ₹600 for nothing. Now the position achieved at the ceiling becomes the working
+        target (`relax` History action), so drift finds the cheapest bid that holds *it*.
+      - **Two confirmations before relaxing** (`should_relax_target`) — same 28%-unreliable-reading problem; one
+        bad scrape must not relax a target for the rest of the window. Relaxes to the CURRENT position, not the
+        best of the two: relaxing too far is self-correcting (drift optimises the cheaper position), relaxing not
+        far enough puts us straight back to pinning at max and doing nothing.
+      - **`effective_at_max_bid` makes the edit case self-healing** (`stored_effective_target`) — the relaxed
+        target is void the moment the rule's `max_bid` differs from the ceiling it was concluded at. **Raising the
+        ceiling is the dangerous direction**: a stale relaxed target would have the optimizer keep drifting DOWN
+        right after being handed more room to climb. `repo.update_bid_rule` also clears both columns on a
+        `max_bid`/`target_position` edit — the latter has no self-healing tell.
+      - **Cleared at window open**, so every day re-climbs and retries the REAL target from scratch. Deliberately
+        accepted: a target that becomes reachable *mid*-window is not noticed until the next day. Re-testing it
+        means climbing back to the ceiling, which burns most of a window and usually finds nothing — revisit only
+        if real History rows show the achievable position moving intra-day.
+      - **No acceptability floor** (decided 2026-08-17): even a relaxed target of position 15 is held rather than
+        abandoned, because the change is strictly better than the status quo in every case — same position, a
+        fraction of the price. "Below what rank is this worth paying for?" is a business question, deferred.
+      - Tests: 12 new decision cases (57/57 bid-logic, 148/148 across the package) + 8 new end-to-end scenarios in
+        the fake-adapter sim, green with drift both armed and off.
 
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +

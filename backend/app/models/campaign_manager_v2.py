@@ -121,6 +121,16 @@ class CmBidRuntime(SQLModel, table=True):
     # target tracks the market rather than a price that worked an hour ago.
     last_holding_cpm: int | None = None
     drift_paused_until: datetime | None = None
+    # Unreachable-target state. When `max_bid` cannot reach `target_position`, the position
+    # actually achieved at the ceiling becomes the working target so the drift can find the
+    # cheapest bid that holds THAT — instead of pinning at max forever, paying the maximum
+    # for a position the maximum did not buy. `effective_at_max_bid` records the ceiling it
+    # was derived at: the moment the rule's `max_bid` differs, the conclusion is void (most
+    # sharply when the ceiling is RAISED, where a stale relaxed target would keep the
+    # optimizer drifting DOWN after being given more room). Cleared when a window opens, so
+    # every day retries the real target from scratch.
+    effective_target: int | None = None
+    effective_at_max_bid: int | None = None
     updated_at: datetime = Field(default_factory=now_ist)
 
 
