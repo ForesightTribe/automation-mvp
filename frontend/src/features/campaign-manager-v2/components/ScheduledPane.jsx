@@ -261,7 +261,7 @@ const BidItem = ({ rule, onAction, onDelete }) => {
 					<dl className="grid grid-cols-2 gap-x-3 gap-y-1 text-xs">
 						<dt className="text-content-subtle">Bid range</dt>
 						<dd className="text-content">
-							₹{rule.min_bid}–{rule.max_bid}
+							{rule.max_bid ? `₹${rule.min_bid}–${rule.max_bid}` : `₹${rule.min_bid}+ · no ceiling`}
 						</dd>
 						<dt className="text-content-subtle">Measured at</dt>
 						<dd className="truncate text-content">

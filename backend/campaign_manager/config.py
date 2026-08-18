@@ -34,15 +34,32 @@ RATE_WINDOW_MINUTES: int = int(os.getenv("CM_RATE_WINDOW_MINUTES", "60"))
 # Finds the cheapest price that keeps the position, and keeps following it as the market
 # moves — instead of freezing at whatever price happened to win the climb.
 #
-# BID_DRIFT_PCT = 0 is the KILL SWITCH and the default: at 0 the optimizer behaves exactly
-# as it did before this feature (freeze at target, step down only when BETTER than target).
-# Set it to 7 to arm the drift. Read at import, so the runner must be restarted to change it.
-BID_DRIFT_PCT: float = float(os.getenv("CM_BID_DRIFT_PCT", "0"))
+# BID_DRIFT_PCT = 0 is the KILL SWITCH: at 0 the optimizer behaves exactly as it did before
+# this feature existed (freeze at target, step down only when BETTER than target), so the
+# switch is a true revert rather than a half-disabled state.
+# Default is 7 = ARMED. Read at import, so the runner must be restarted to change it.
+BID_DRIFT_PCT: float = float(os.getenv("CM_BID_DRIFT_PCT", "7"))
 # Floor for one drift step, so a small bid still moves (7% of ₹60 would round to nothing).
 BID_DRIFT_MIN_STEP: int = int(os.getenv("CM_BID_DRIFT_MIN_STEP", "5"))
 # After a drift goes one step too far and loses the position, how long before trying again.
 # The dial between cost and position: shorter = cheaper but more dips below target.
 BID_DRIFT_PAUSE_MINUTES: int = int(os.getenv("CM_BID_DRIFT_PAUSE_MINUTES", "90"))
+
+# ── Absolute bid ceiling ────────────────────────────────────────────────────
+#
+# A rule's `max_bid` is OPTIONAL — sometimes the client wants the target position whatever
+# it costs. This is the backstop that makes "no ceiling" safe: a rule without one is capped
+# here, and a rule WITH one is capped at the lower of the two (so a typo'd max_bid=50000
+# can't get through either).
+#
+# It is a runaway guard, not a tuning knob — set well above any realistic CPM (the highest
+# ever observed is ₹900) so it never binds in normal operation. Real spend is bounded by
+# the campaign's daily budget long before this: at a ₹10,000 CPM a ₹2,000 daily budget is
+# exhausted in 200 impressions and the campaign goes ON_HOLD.
+#
+# Raising it invalidates any stored unreachable-target relaxation (the ceiling it was
+# concluded at changed), which is the correct behaviour — see bid.stored_effective_target.
+BID_MAX_ABSOLUTE: int = int(os.getenv("CM_BID_MAX_ABSOLUTE", "10000"))
 
 # The advertiser account for LIVE writes (B3) is stored PER-TENANT in the DB
 # (cm_platform_accounts), set via `cm set-advertiser`. Blinkit doesn't expose it in its

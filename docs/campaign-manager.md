@@ -297,7 +297,38 @@ There is deliberately **no acceptability floor**: even a relaxed target of posit
 rather than abandoned, because it is strictly better than the alternative — same position, a
 fraction of the price. "Below what rank is this worth paying for?" is a business question, parked.
 
-### 7.6 Bounds are invariants
+### 7.6 `max_bid` is optional
+
+A rule does not have to name a ceiling — sometimes the target position is wanted whatever
+it costs, and forcing a number up front either caps the rule too low or invites a made-up
+value.
+
+`None` does **not** mean unbounded. `resolve_ceiling` turns a rule's `max_bid` into a
+concrete ceiling once, at the top of the loop:
+
+```
+ceiling = min(rule.max_bid, CM_BID_MAX_ABSOLUTE)  if rule.max_bid
+          else CM_BID_MAX_ABSOLUTE
+```
+
+so every consumer — the decision logic, the clamps, the unreachable-target relaxation —
+still receives a plain int and never has to know the field is optional. A rule that *does*
+set a ceiling is capped at the lower of the two, which also catches a typo'd `max_bid`.
+
+`CM_BID_MAX_ABSOLUTE` is a **runaway guard, not a tuning knob** — set well above any
+realistic CPM (₹10,000 vs the ₹900 high-water mark) so it never binds in normal operation.
+Real spend is bounded by the daily budget long before it: at a ₹10,000 CPM a ₹2,000 budget
+is gone in 200 impressions and the campaign goes ON_HOLD.
+
+⚠️ **Known limitation.** The raise step maxes out at ₹100/tick, so from a ₹100 floor a
+7-hour window (28 ticks) reaches only about **₹2,900**. A rule whose target needs more than
+that won't get there within a window — and won't relax either, because relaxation triggers
+on reaching the ceiling and ₹10,000 is unreachable at ₹100/tick. It climbs all window, gets
+reset at close, and repeats. Fixing it means either a proportional raise step for
+unbounded rules or relaxing on "N raises with no improvement"; both are deferred until
+real History rows show whether ₹2,900/window is actually a constraint.
+
+### 7.7 Bounds are invariants
 
 `min_bid` / `max_bid` are enforced **every tick** against the live bid, not merely clamped onto a
 value the optimizer chose to change. They used to be applied only to a computed change, so when the
@@ -305,7 +336,7 @@ decision was "no change" — the common case once a target is held — lowering 
 bid did nothing at all until the next window opened, leaving the campaign a full day over its
 ceiling. An out-of-bounds live bid is now written back into range before the position scrape.
 
-### 7.7 The end-of-window reset
+### 7.8 The end-of-window reset
 
 `cm.bid_optimizer --reset` writes each just-closed keyword back to `min_bid`. No position scrape, so
 it's cheap. It skips keywords still covered by another in-window rule.
@@ -520,9 +551,10 @@ read at import, so **the runner must be restarted** for a change to take effect.
 | `CM_MIN_BUDGET` / `CM_MAX_BUDGET` | `1` / `100000` | Budget bounds guardrail |
 | `CM_MAX_WRITES_PER_WINDOW` | `12` | Rate limit, per keyword |
 | `CM_RATE_WINDOW_MINUTES` | `60` | Rate-limit window |
-| `CM_BID_DRIFT_PCT` | **`0`** | **The drift kill switch.** 0 = off and a true revert. Set to `7` to arm |
+| `CM_BID_DRIFT_PCT` | **`7`** (armed) | **The drift kill switch.** Set to `0` for a true revert to pre-drift behaviour |
 | `CM_BID_DRIFT_MIN_STEP` | `5` | Floor for one shave, so small bids still move |
 | `CM_BID_DRIFT_PAUSE_MINUTES` | `90` | How long before shaving resumes after an overshoot |
+| `CM_BID_MAX_ABSOLUTE` | `10000` | Runaway guard. The ceiling for a rule with no `max_bid`, and a cap on one that has |
 
 Fixed constants: reflection `HOLD_MINUTES=10` · optimizer cadence 15 min · reset lead 1 min ·
 reset look-ahead 2 min · safety poll hourly · cleanup 04:00.

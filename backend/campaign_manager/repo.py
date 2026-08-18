@@ -221,7 +221,8 @@ async def delete_budget_rule(rule_id: int) -> bool:
 
 
 async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int, campaign_name: str,
-                          keyword: str, target_position: int, min_bid: int, max_bid: int, *,
+                          keyword: str, target_position: int, min_bid: int,
+                          max_bid: int | None = None, *,
                           match_type: str = "EXACT", type: str = "recurring", date=None,
                           days: list | None = None, start_time=None, stop_time=None,
                           start_date=None, stop_date=None, lat=None, lon=None,

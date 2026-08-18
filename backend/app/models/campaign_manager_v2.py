@@ -84,7 +84,11 @@ class CmBidRule(SQLModel, table=True):
     match_type: str = "EXACT"
     target_position: int
     min_bid: int
-    max_bid: int
+    # OPTIONAL — None means "reach the target position whatever it costs". Never read
+    # directly by the engine: `bid.resolve_ceiling` turns it into a concrete ceiling,
+    # falling back to (and capping at) `config.BID_MAX_ABSOLUTE` so an unbounded rule
+    # still has a runaway guard.
+    max_bid: int | None = None
     type: str = "recurring"                 # "recurring" (daily window) | "once" (single-date span)
     date: str | None = None                 # the single day, for a "once" rule
     days: list = Field(default=[], sa_column=Column(JSON))   # weekday filter (empty = every day)

@@ -43,7 +43,8 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 	const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
 	const suggestions = (kwData ?? []).map((k) => k.keyword);
-	const valid = campaign.id && f.keyword && f.min_bid && f.max_bid;
+	// Max bid is optional — blank means "reach the target position whatever it costs".
+	const valid = campaign.id && f.keyword && f.min_bid;
 
 	const submit = (e) => {
 		e.preventDefault();
@@ -53,7 +54,7 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 			keyword: f.keyword,
 			target_position: Number(f.target_position),
 			min_bid: Number(f.min_bid),
-			max_bid: Number(f.max_bid),
+			max_bid: f.max_bid === "" ? null : Number(f.max_bid),
 			city: f.city || undefined,
 			location_id: f.location_id || undefined,
 			...timed,
@@ -117,8 +118,8 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 				<Field label="Min bid (₹)">
 					<input type="number" value={f.min_bid} onChange={set("min_bid")} placeholder="20" className={FIELD} />
 				</Field>
-				<Field label="Max bid (₹)">
-					<input type="number" value={f.max_bid} onChange={set("max_bid")} placeholder="120" className={FIELD} />
+				<Field label="Max bid (₹)" hint="Optional — leave blank to chase the target position with no ceiling">
+					<input type="number" value={f.max_bid} onChange={set("max_bid")} placeholder="No limit" className={FIELD} />
 				</Field>
 				<Field
 					label="Measure in city"

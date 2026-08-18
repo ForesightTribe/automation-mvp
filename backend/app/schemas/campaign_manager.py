@@ -87,7 +87,9 @@ class BidRuleIn(BaseModel):
     keyword: str
     target_position: int
     min_bid: int
-    max_bid: int
+    # Optional — omit for "reach the target whatever it costs". The engine still applies
+    # the absolute backstop (`CM_BID_MAX_ABSOLUTE`), so this is never truly unbounded.
+    max_bid: int | None = None
     match_type: str = "EXACT"
     type: str = "recurring"
     date: str | None = None
@@ -112,7 +114,7 @@ class BidRuleOut(BaseModel):
     keyword: str
     target_position: int
     min_bid: int
-    max_bid: int
+    max_bid: int | None = None          # None = no ceiling set; the absolute backstop applies
     match_type: str
     type: str
     date: str | None = None

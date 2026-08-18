@@ -142,6 +142,19 @@ def is_recovery(position: float, target: int, current_cpm: int,
             and int(last_holding_cpm) > int(current_cpm))
 
 
+def resolve_ceiling(rule_max_bid: int | None, absolute: int) -> int:
+    """A rule's effective bid ceiling.
+
+    `max_bid` is optional: sometimes the target position is wanted whatever it costs. The
+    absolute cap makes that safe without special-casing anything downstream — every caller
+    still receives a plain int, so the decision logic, the clamps and their tests are
+    untouched by the feature. A rule that DOES set a ceiling is capped at the lower of the
+    two, which also catches a typo'd `max_bid`."""
+    if rule_max_bid is None:
+        return int(absolute)
+    return min(int(rule_max_bid), int(absolute))
+
+
 def stored_effective_target(rule_target: int, max_bid: int, stored_target: int | None,
                             stored_at_max: int | None) -> int | None:
     """The relaxed target still in force, or None to chase the rule's real target.
@@ -308,6 +321,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         for rule, runtime in active:
             processed += 1
             cid, kw = rule.campaign_id, rule.keyword
+            # Resolved ONCE, so everything downstream — the decision, the clamps, the
+            # relaxation — keeps taking a plain int and never has to know `max_bid` is
+            # optional. `rule.max_bid` must not be read directly below this line.
+            ceiling = resolve_ceiling(rule.max_bid, config.BID_MAX_ABSOLUTE)
 
             if cid not in bids_cache:
                 try:
@@ -358,7 +375,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=rule.min_bid, current_cpm=live_cpm, min_bid=rule.min_bid,
-                    max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run,
+                    max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                     recent_writes=0,
                 )
                 logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
@@ -386,26 +403,26 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # next window opened, leaving the campaign a full day over its ceiling.
             # Enforced here every tick instead, so an edit lands on the next cycle.
             if live_cpm is not None:
-                bounded = writes.clamp_bid(live_cpm, rule.min_bid, rule.max_bid)
+                bounded = writes.clamp_bid(live_cpm, rule.min_bid, ceiling)
                 if int(bounded) != int(live_cpm):
                     # Not rate-limited: this is a correctness write, not optimization, and
                     # it cannot run away — one write puts the bid back inside the bounds.
                     ok = await writes.apply_bid(
                         adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=rule.min_bid,
-                        max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run,
+                        max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                         recent_writes=0,
                     )
-                    why = ("above max" if int(live_cpm) > int(rule.max_bid) else "below min")
+                    why = ("above max" if int(live_cpm) > int(ceiling) else "below min")
                     logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   verdict=f"bounds ₹{bounded}",
-                                  reason=f"live ₹{live_cpm} {why} [{rule.min_bid}–{rule.max_bid}]")
+                                  reason=f"live ₹{live_cpm} {why} [{rule.min_bid}–{ceiling}]")
                     applied += int(ok)
                     skipped += int(not ok)
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                          "bounds" if ok else "skip", live_cpm, bounded,
                                          f"live bid {why} — forced into [{rule.min_bid}–"
-                                         f"{rule.max_bid}]", dry_run, ok))
+                                         f"{ceiling}]", dry_run, ok))
                     if ok and not dry_run:
                         runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
                     continue               # no position scrape — the bid just moved
@@ -457,12 +474,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
             # ── Unreachable target: chase what the ceiling can actually buy ──
             eff = None if open_stamp else stored_effective_target(
-                rule.target_position, rule.max_bid,
+                rule.target_position, ceiling,
                 runtime.effective_target if runtime else None,
                 runtime.effective_at_max_bid if runtime else None,
             )
             relaxed_now = eff is None and should_relax_target(
-                position, rule.target_position, current_cpm, rule.max_bid, last_pos)
+                position, rule.target_position, current_cpm, ceiling, last_pos)
             if relaxed_now:
                 eff = int(position)
             target = eff if eff is not None else rule.target_position
@@ -470,15 +487,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 logs.decision(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               verdict=f"target relaxed to {target}",
                               reason=f"position {rule.target_position} unreachable at max "
-                                     f"₹{rule.max_bid} — holding position {target} instead")
+                                     f"₹{ceiling} — holding position {target} instead")
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "relax", current_cpm, current_cpm,
                                      f"target position {rule.target_position} unreachable at "
-                                     f"max ₹{rule.max_bid} — now holding position {target}",
+                                     f"max ₹{ceiling} — now holding position {target}",
                                      dry_run, True))
 
             new_cpm, reason = compute_bid(
-                position, target, current_cpm, rule.min_bid, rule.max_bid,
+                position, target, current_cpm, rule.min_bid, ceiling,
                 last_pos, mins, last_holding_cpm=holding_cpm, drift_paused=drift_paused,
                 drift_pct=config.BID_DRIFT_PCT, drift_min_step=config.BID_DRIFT_MIN_STEP,
             )
@@ -500,7 +517,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 rt["effective_at_max_bid"] = None
             if relaxed_now:                        # pin the ceiling it was concluded at
                 rt["effective_target"] = int(target)
-                rt["effective_at_max_bid"] = int(rule.max_bid)
+                rt["effective_at_max_bid"] = int(ceiling)
             if position <= target:
                 rt["last_holding_cpm"] = int(current_cpm)
             elif recovering:
@@ -527,14 +544,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             ok = await writes.apply_bid(
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=rule.min_bid,
-                max_bid=rule.max_bid, match_type=rule.match_type, dry_run=dry_run,
+                max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                 recent_writes=recent,
             )
             applied += int(ok)
             skipped += int(not ok)
 
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
-                rt["last_cpm"] = int(writes.clamp_bid(new_cpm, rule.min_bid, rule.max_bid))
+                rt["last_cpm"] = int(writes.clamp_bid(new_cpm, rule.min_bid, ceiling))
                 rt["last_bid_updated_at"] = now.isoformat()
             runtime_rows.append(rt)
             drifted = config.BID_DRIFT_PCT > 0 and position <= target
@@ -655,7 +672,8 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=r.min_bid, current_cpm=current, min_bid=r.min_bid,
-                    max_bid=r.max_bid, match_type=r.match_type, dry_run=dry_run, recent_writes=0,
+                    max_bid=resolve_ceiling(r.max_bid, config.BID_MAX_ABSOLUTE),
+                    match_type=r.match_type, dry_run=dry_run, recent_writes=0,
                 )
                 err = None
             except Exception as e:

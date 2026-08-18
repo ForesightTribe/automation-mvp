@@ -9,7 +9,7 @@ from datetime import datetime
 
 from campaign_manager.bid import (
     HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid, is_recovery,
-    should_relax_target, stored_effective_target,
+    resolve_ceiling, should_relax_target, stored_effective_target,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
 
@@ -390,6 +390,43 @@ def test_without_relaxing_a_pinned_bid_just_recomputes_the_ceiling():
     guardrail rejects it, and nothing changes — every 15 minutes, all day."""
     new, _ = compute_bid(5, 1, 900, 100, 900, 5, 30)
     assert new == 900
+
+
+# ── optional max_bid → the resolved ceiling ──────────────────────────────────
+
+def test_no_max_bid_falls_back_to_the_absolute_ceiling():
+    """"Reach the target whatever it costs" — but still guarded against a runaway."""
+    assert resolve_ceiling(None, 10000) == 10000
+
+
+def test_a_rule_ceiling_below_the_absolute_one_wins():
+    assert resolve_ceiling(900, 10000) == 900
+
+
+def test_absolute_ceiling_caps_an_absurd_rule_ceiling():
+    """A typo'd max_bid must not become the real ceiling."""
+    assert resolve_ceiling(50000, 10000) == 10000
+
+
+def test_resolved_ceiling_is_always_an_int():
+    """Everything downstream — compute_bid, clamp_bid, the relaxation — takes a plain int,
+    which is what keeps `max_bid` being optional from leaking into the decision logic."""
+    assert isinstance(resolve_ceiling(None, 10000), int)
+    assert isinstance(resolve_ceiling(900, 10000), int)
+
+
+def test_unbounded_rule_still_climbs_and_still_clamps():
+    """With no rule ceiling the raise is bounded by the absolute one, not unbounded."""
+    ceiling = resolve_ceiling(None, 10000)
+    new, _ = compute_bid(9, 3, 9950, 100, ceiling, 9, 30)
+    assert new == 10000
+
+
+def test_unbounded_rule_can_still_relax_at_the_absolute_ceiling():
+    """The unreachable-target fallback keys off the RESOLVED ceiling, so it still works
+    for a rule that never set one."""
+    ceiling = resolve_ceiling(None, 10000)
+    assert should_relax_target(5, 1, ceiling, ceiling, last_position=5) is True
 
 
 def _run() -> int:
