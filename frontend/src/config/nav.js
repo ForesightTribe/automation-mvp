@@ -5,7 +5,6 @@ import {
 	Warehouse,
 	Megaphone,
 	Target,
-	Trophy,
 	Gauge,
 	FileText,
 	Settings,
@@ -25,8 +24,10 @@ export const NAV_ITEMS = [
 	{ label: "Products", path: "/products", icon: Package },
 	{ label: "Inventory", path: "/inventory", icon: Warehouse },
 	{ label: "Ads", path: "/ads", icon: Megaphone },
-	{ label: "Campaign Manager", path: "/campaign-manager", icon: Target },
-	{ label: "Campaign Manager v2", path: "/campaign-manager-v2", icon: Trophy },
+	// The v1 Campaign Manager is hidden from the rail — v2 below supersedes it. Its route
+	// still exists, so /campaign-manager remains reachable by URL until v1 is removed.
+	// { label: "Campaign Manager", path: "/campaign-manager", icon: Target },
+	{ label: "Campaign Manager", path: "/campaign-manager-v2", icon: Target },
 	{ label: "Competition", path: "/competition", icon: Gauge },
 	{ label: "Scorecard", path: "/scorecard", icon: FileText },
 	{ label: "Reports", path: "/reports", icon: FileText },
