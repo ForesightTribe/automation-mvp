@@ -392,7 +392,10 @@ def add_bid(
     keyword: str = typer.Option(..., "--keyword", help="Search keyword to chase"),
     target: int = typer.Option(..., "--target", help="Target sponsored position (e.g. 3)"),
     min_bid: int = typer.Option(..., "--min-bid", help="Floor CPM (₹)"),
-    max_bid: int = typer.Option(..., "--max-bid", help="Ceiling CPM (₹)"),
+    max_bid: int = typer.Option(
+        None, "--max-bid",
+        help="Ceiling CPM (₹). Omit to chase the target position with no per-rule ceiling "
+             "— the absolute backstop (CM_BID_MAX_ABSOLUTE) still applies."),
     campaign_name: str = typer.Option("", "--campaign-name"),
     match_type: str = typer.Option("EXACT", "--match-type", help="EXACT | BROAD"),
     start_time: str = typer.Option(None, "--start-time", help="Active-window start 'HH:MM' (IST; may cross midnight)"),
@@ -440,8 +443,9 @@ def add_bid(
             stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
         )
         shape = f"once {date}" if once else "recurring"
+        band = f"{min_bid}–{max_bid}" if max_bid else f"{min_bid}+ (no ceiling)"
         console.print(f"[green]Bid rule {r.id} created[/green] — {keyword!r} → pos {target} "
-                      f"[{min_bid}–{max_bid}] on campaign {campaign} ({shape})")
+                      f"[{band}] on campaign {campaign} ({shape})")
         console.print(_RECONCILE_HINT.format(t=tenant))
 
     asyncio.run(_run())
@@ -503,7 +507,7 @@ def list_rules(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "-
         for r, rt in bids:
             win = f"{r.start_time or '—'}–{r.stop_time or '—'}"
             table.add_row(r.id, str(r.campaign_id), r.keyword, str(r.target_position),
-                          str(r.min_bid), str(r.max_bid), win,
+                          str(r.min_bid), str(r.max_bid) if r.max_bid else "none", win,
                           f"{rt.last_position:g}" if rt and rt.last_position is not None else "—",
                           str(rt.last_cpm) if rt and rt.last_cpm is not None else "—")
         console.print(table)

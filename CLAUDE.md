@@ -21,6 +21,7 @@
 | [docs/exports.md](docs/exports.md) | **Exports — public report SHIPPED 2026-08-10** (Phases 1–3). `python -m cli export public -t <uuid>` builds a 13-sheet client workbook from stored data; **`export raw` dumps the underlying rows to CSV as a SEPARATE command** (~300k rows/79 MB per week — deliberately never bundled into the report, so the future download button stays small); `export sample` renders a fixture with no DB; `export sections` lists what's buildable. `backend/exports/` (top-level package, sibling of `jobs/`) = theme + workbook (**the one Excel writer — Explorer renders through it too**) + glossary (wording **guard**, raises at render on "reach"/"distribution"/"SoV", for every consumer) + registry + sections. Numbers come from the read services, never new SQL (one documented exception: Product Families projects `_latest_per_store` for family×store grain). Doc covers the design system, clarity rules, gotchas, phases. Artifacts land in `backend/out/` (gitignored). **Marketing/Ads + Sales/Ops reports are PLANNED** in the doc (two reports, Indian ₹ grouping, 28-day window, KPI deltas; Sales report will delete `export_to_excel.py`). Legacy `build_public_analysis.py`/`build_sku_analysis.py` deleted |
 | [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
 | [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
+| [docs/campaign-manager.md](docs/campaign-manager.md) | **Campaign Manager — the one CM doc.** What it is, the reconciler, the budget + bid engines (window floors, drift-down, unreachable-target fallback, bounds invariants), the gated write choke-point, the Blinkit contract (a bid write is a whole-campaign PUT; `DELETE` = stop, not delete; status vocabulary), **a full edge-case reference**, config + kill switches, how to roll it out, and the known gaps |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
 | [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth on the box, cost/capacity model, and the VM gotchas |
@@ -152,14 +153,13 @@ python -m cli runner start                   # the daemon (systemd does this on 
   local runner will claim VM jobs and scrape from your home IP.
 - **Alembic is single-head again** (`b6b4f0f7ee83`, merge of the darkstore +
   campaign lines, stamped 2026-07-21) — `alembic upgrade head` works normally.
-- **Campaign automation is now v2 (`campaign_manager/`), owned by Deepansh.** The legacy
-  v1 (`ad_campaigns/`) was **disabled 2026-07-30**: VM schedules 24 + 25 set `enabled=false`,
-  and the Playwright-invoking routes removed from `app/routes/ads.py` (so Render can't spawn
-  Chromium). v2 vendored v1's `client.py` + `live_position.py` into
-  `campaign_manager/marketplaces/blinkit/`, so `ad_campaigns/` is now inert stale code (kept
-  on disk, not imported). v2 runs in the `cm_bid`/`cm_ops`/`interactive` lanes. Live writes
-  are still gated behind the cutover (dry by default). See
-  [docs/campaign-manager-v2-implementation.md](docs/campaign-manager-v2-implementation.md).
+- **Campaign automation is `campaign_manager/`, owned by Deepansh.** Runs in the
+  `cm_bid` / `cm_ops` / `interactive` lanes; **dry-run by default**, live writes armed
+  per tenant (`live_armed` on `cm_platform_accounts`). `ad_campaigns/` is **dead code** —
+  disabled 2026-07-30 (VM schedules 24 + 25 `enabled=false`, Playwright routes removed
+  from `app/routes/ads.py` so Render can't spawn Chromium), its `client.py` +
+  `live_position.py` vendored into `campaign_manager/marketplaces/blinkit/`. Kept on disk,
+  imported by nothing. See [docs/campaign-manager.md](docs/campaign-manager.md).
 
 ## Database Patterns
 

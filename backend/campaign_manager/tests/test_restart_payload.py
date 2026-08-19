@@ -1,4 +1,4 @@
-"""Golden-payload test for the Blinkit RESTART body (docs/campaign-activation.md A0.3).
+"""Golden-payload test for the Blinkit RESTART body (docs/campaign-manager.md §8.4).
 
 **The most important test in the activation feature.** Resuming a campaign re-submits it
 whole — budget, keywords, bids, pids, dates — so a drift in the builder does not fail

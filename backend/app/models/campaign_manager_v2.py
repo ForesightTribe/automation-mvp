@@ -38,7 +38,7 @@ class CmBudgetSchedule(SQLModel, table=True):
     # D19 lifecycle: "active" | "stopped" (budget has no pause). The reconciler emits
     # schedules only while active; Reset → "stopped" + a set-budget→default job.
     state: str = "active"
-    # Campaign activation (docs/campaign-activation.md AD1/AD2): stop the campaign when
+    # Campaign activation (docs/campaign-manager.md §6): stop the campaign when
     # a rule's window ENDS — not whenever it happens to be idle. This toggle governs ONLY
     # the stop; starting is unconditional (AD7), so a schedule with the toggle OFF still
     # restarts a campaign found stopped at a window start. Default False therefore means
@@ -84,7 +84,11 @@ class CmBidRule(SQLModel, table=True):
     match_type: str = "EXACT"
     target_position: int
     min_bid: int
-    max_bid: int
+    # OPTIONAL — None means "reach the target position whatever it costs". Never read
+    # directly by the engine: `bid.resolve_ceiling` turns it into a concrete ceiling,
+    # falling back to (and capping at) `config.BID_MAX_ABSOLUTE` so an unbounded rule
+    # still has a runaway guard.
+    max_bid: int | None = None
     type: str = "recurring"                 # "recurring" (daily window) | "once" (single-date span)
     date: str | None = None                 # the single day, for a "once" rule
     days: list = Field(default=[], sa_column=Column(JSON))   # weekday filter (empty = every day)
@@ -116,6 +120,26 @@ class CmBidRuntime(SQLModel, table=True):
     last_cpm: int | None = None
     last_position: float | None = None
     last_bid_updated_at: str | None = None
+    # Drift-down state (cost minimisation at target). Both cleared when a window opens.
+    # `last_holding_cpm` is refreshed on EVERY tick that holds target, so the snap-back
+    # target tracks the market rather than a price that worked an hour ago.
+    last_holding_cpm: int | None = None
+    drift_paused_until: datetime | None = None
+    # Unreachable-target state. When `max_bid` cannot reach `target_position`, the position
+    # actually achieved at the ceiling becomes the working target so the drift can find the
+    # cheapest bid that holds THAT — instead of pinning at max forever, paying the maximum
+    # for a position the maximum did not buy. `effective_at_max_bid` records the ceiling it
+    # was derived at: the moment the rule's `max_bid` differs, the conclusion is void (most
+    # sharply when the ceiling is RAISED, where a stale relaxed target would keep the
+    # optimizer drifting DOWN after being given more room). Cleared when a window opens, so
+    # every day retries the real target from scratch.
+    effective_target: int | None = None
+    effective_at_max_bid: int | None = None
+    # The size of the last raise. Escalates while the position refuses to move (we are
+    # mid-tread and whatever we added wasn't enough) and resets the moment it does. NULL
+    # means "start from the base step" — the state at a window open, after a riser is
+    # crossed, and for a rule that has never climbed.
+    raise_step: int | None = None
     updated_at: datetime = Field(default_factory=now_ist)
 
 

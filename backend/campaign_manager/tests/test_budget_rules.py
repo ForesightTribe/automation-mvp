@@ -93,7 +93,7 @@ def test_once_overnight_tail():
     assert target_for_now(300, [rule], datetime(2026, 8, 1, 20, 0))[0] == 300     # wrong day
 
 
-# ── Campaign activation: the state half of the plan (docs/campaign-activation.md) ──
+# ── Campaign activation: the state half of the plan (docs/campaign-manager.md) ──
 #
 # The rule under test is AD2: a campaign is stopped ONLY by a window ENDING, never merely
 # because no window happens to be active. Getting this wrong stops campaigns at times

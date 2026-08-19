@@ -1,4 +1,4 @@
-"""Unit tests for the campaign status transition table (docs/campaign-activation.md §5.3 / A0.1).
+"""Unit tests for the campaign status transition table (docs/campaign-manager.md §8.3).
 
 Pure logic — no Blinkit, no DB. Same shape as test_guardrails.py (no pytest in the repo
 yet), runnable with:

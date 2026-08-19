@@ -2,7 +2,7 @@
 
 Adds the single column that lets a budget automation also STOP its campaign when a
 rule's window ends (and restart it at the next window start). See
-docs/campaign-activation.md — activation is folded into the budget scheduler rather
+docs/campaign-manager.md — activation is folded into the budget scheduler rather
 than built beside it, because Blinkit's restart call carries the budget, so starting a
 campaign and setting its budget is one API call.
 
@@ -13,7 +13,7 @@ Additive and safe:
 - `false` means "we never STOP this campaign". It does not mean "we never write to it":
   starting is unconditional (AD7), so an existing schedule will restart a campaign it
   finds stopped at a window start. That is the intended behaviour change of this feature
-  and it applies to existing schedules on deploy — see docs/campaign-activation.md §5.2;
+  and it applies to existing schedules on deploy — see docs/campaign-manager.md §6;
 - nothing else is altered or dropped.
 
 Hand-written, NOT `--autogenerate`: autogenerate on this shared DB repeatedly sweeps in

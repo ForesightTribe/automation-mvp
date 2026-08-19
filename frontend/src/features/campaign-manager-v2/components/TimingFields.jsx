@@ -155,28 +155,34 @@ export const TimingFields = ({ value, onChange }) => {
 };
 
 /**
- * Build the API payload from the timing state: drops empty strings, keeps only the
- * fields the chosen `type` uses, and remaps end_* → stop_* for bid rules (`stop`).
+ * Build the API payload from the timing state, remapping end_* → stop_* for bid rules
+ * (`stop`).
+ *
+ * EVERY key is always present, and an empty field is sent as an explicit `null` — never
+ * `undefined`, and never simply omitted. Both of those used to make a cleared field
+ * unclearable: `JSON.stringify` drops undefined keys, the API's `exclude_unset` then
+ * treats the field as untouched, and the old value survived. On a date that was not
+ * cosmetic — a `stop_date` you could not remove kept the rule expired, so the reconciler
+ * deleted its optimizer cron and the automation went quietly dark while the UI showed the
+ * date you thought you had cleared.
+ *
+ * The fields the chosen type does NOT use are nulled for the same reason: switching
+ * recurring → once has to clear `start_date`/`end_date`/`days`, and once → recurring has
+ * to clear `date`, or the rule keeps values that contradict its own type.
  */
 export const timingPayload = (t, { stop = false } = {}) => {
-	const v = (x) => (x === "" || x == null ? undefined : x);
+	const v = (x) => (x === "" || x == null ? null : x);
 	const endTime = stop ? "stop_time" : "end_time";
 	const endDate = stop ? "stop_date" : "end_date";
-	if (t.type === "once") {
-		return {
-			type: "once",
-			date: v(t.date),
-			start_time: v(t.start_time),
-			[endTime]: v(t.end_time),
-		};
-	}
+	const once = t.type === "once";
 	return {
-		type: "recurring",
-		days: t.days,
+		type: once ? "once" : "recurring",
+		date: once ? v(t.date) : null,
+		days: once ? [] : t.days,
 		start_time: v(t.start_time),
 		[endTime]: v(t.end_time),
-		start_date: v(t.start_date),
-		[endDate]: v(t.end_date),
+		start_date: once ? null : v(t.start_date),
+		[endDate]: once ? null : v(t.end_date),
 	};
 };
 

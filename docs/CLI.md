@@ -464,7 +464,7 @@ Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
 - **Budget scheduler** — sets a campaign's daily budget from time/day rules (elevated during a window, back to a default otherwise).
 - **Bid optimizer** — a ~15-min control loop that nudges a keyword's CPM to hold a target search position.
 
-**Rules are the source of truth.** You create rules (`cm rules …`); a **reconciler** compiles them into `job_schedules` rows; the runner fires the engines on schedule. See [campaign-manager-refactor.md](campaign-manager-refactor.md) for the design.
+**Rules are the source of truth.** You create rules (`cm rules …`); a **reconciler** compiles them into `job_schedules` rows; the runner fires the engines on schedule. See [campaign-manager.md](campaign-manager.md) for the design.
 
 **Two ways to run every engine** (same as `cli scrape …` vs `jobs run scrape.…`):
 

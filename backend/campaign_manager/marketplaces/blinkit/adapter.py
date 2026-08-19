@@ -117,7 +117,7 @@ async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
     )
 
 
-# ── Campaign activation — start / stop (docs/campaign-activation.md) ────────
+# ── Campaign activation — start / stop (docs/campaign-manager.md) ────────
 #
 # Blinkit's vocabulary stops here: everything above this layer speaks the canonical
 # `running` / `paused` / `held` / `ended` / `draft`, so a second marketplace only has to
