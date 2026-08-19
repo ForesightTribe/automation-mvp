@@ -13,7 +13,7 @@ export const WeekPicker = ({ weeks = [], value, onChange }) => (
 			value={value ?? ""}
 			onChange={(e) => onChange(e.target.value)}
 			disabled={weeks.length === 0}
-			className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-primary/30 disabled:opacity-50"
+			className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-brand/30 disabled:opacity-50"
 		>
 			{weeks.length === 0 && <option value="">No weeks</option>}
 			{weeks.map((w) => (

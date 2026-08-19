@@ -191,8 +191,9 @@ from the raw D19 `state`.
 | DELETE | `/bid-rules/{id}` | Delete a bid automation (+ its runtime). |
 | POST | `/bid-rules/{id}/pause` · `/resume` · `/stop` | **D19** lifecycle (paused → resume; active → pause/stop). |
 | POST | `/set-budget` | One-off "set this campaign's budget now" → enqueues `cm.set_budget`, returns `{job_id}`. 409 if one's active. |
+| POST | `/campaigns/{campaign_id}/activation` | One-off **start/stop** a campaign → enqueues `cm.set_activation`, returns `{job_id}`. Body `{status: running\|paused, budget?}`; `budget` is resume-only (a Blinkit restart re-submits the campaign and sets its budget) and defaults to the campaign's current one. Guardrails run on the VM against a live read, so a refusal comes back on the job, not as a 4xx. 409 if one's active. |
 | GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. |
-| GET | `/history` | Paginated `cm_run_log` — real actions only (no-ops go to logs, not here). `?kind=budget\|bid`. |
+| GET | `/history` | Paginated `cm_run_log` — real actions only (no-ops go to logs, not here). `?kind=budget\|bid\|activation`. |
 | GET · PUT | `/advertiser` | Get / set the Blinkit ad-account id (B3) live writes send. Captured once from a dashboard PUT. |
 
 Timing shapes on budget/bid rules match the CLI ([cli.md](cli.md)): recurring daily window

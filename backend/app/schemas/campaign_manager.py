@@ -1,6 +1,7 @@
 """Request/response contracts for the Campaign Manager v2 API (V4.3)."""
 import uuid
 from datetime import datetime
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict
 
@@ -51,6 +52,9 @@ class BudgetScheduleIn(BaseModel):
     campaign_name: str | None = None
     name: str | None = None
     default_budget: float
+    # Also stop the campaign when a window ends (docs/campaign-manager.md). Starting
+    # is unconditional either way — this only governs the stop.
+    stop_after_window: bool = False
     rule: BudgetRuleIn | None = None        # optional inline first rule
 
 
@@ -61,6 +65,7 @@ class BudgetScheduleOut(BaseModel):
     campaign_name: str
     name: str | None = None
     default_budget: float
+    stop_after_window: bool = False
     state: str
     status: str = "scheduled"           # running | scheduled | ended | stopped (computed)
     platform: str
@@ -71,6 +76,7 @@ class BudgetScheduleUpdate(BaseModel):
     """Partial edit of a budget schedule (its own fields; rules are edited separately)."""
     name: str | None = None
     default_budget: float | None = None
+    stop_after_window: bool | None = None
 
 
 # ── Bid rules ───────────────────────────────────────────────────────────────
@@ -81,7 +87,9 @@ class BidRuleIn(BaseModel):
     keyword: str
     target_position: int
     min_bid: int
-    max_bid: int
+    # Optional — omit for "reach the target whatever it costs". The engine still applies
+    # the absolute backstop (`CM_BID_MAX_ABSOLUTE`), so this is never truly unbounded.
+    max_bid: int | None = None
     match_type: str = "EXACT"
     type: str = "recurring"
     date: str | None = None
@@ -106,7 +114,7 @@ class BidRuleOut(BaseModel):
     keyword: str
     target_position: int
     min_bid: int
-    max_bid: int
+    max_bid: int | None = None          # None = no ceiling set; the absolute backstop applies
     match_type: str
     type: str
     date: str | None = None
@@ -147,6 +155,17 @@ class BidRuleUpdate(BaseModel):
 class SetBudgetIn(BaseModel):
     campaign_id: int
     budget: float
+
+
+class SetActivationIn(BaseModel):
+    """Start or stop one campaign now.
+
+    `budget` applies to `running` only — Blinkit's restart re-submits the campaign and
+    sets its budget, so a resume always sends one. Omit it to reuse whatever the campaign
+    is currently on (resolved on the VM against a fresh read, never guessed here).
+    """
+    status: Literal["running", "paused"]
+    budget: float | None = None
 
 
 class AdvertiserIn(BaseModel):

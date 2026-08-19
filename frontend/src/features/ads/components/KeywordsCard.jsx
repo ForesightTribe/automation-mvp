@@ -79,7 +79,7 @@ export const KeywordsCard = () => {
 				<select
 					value={targetType}
 					onChange={(e) => setTargetType(e.target.value)}
-					className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-primary/30"
+					className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-brand/30"
 				>
 					{TARGET_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>

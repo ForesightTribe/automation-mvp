@@ -53,6 +53,13 @@ RECONCILE_JOB = "cm.reconcile"
 _SAFETY_POLL_CRON = "0 * * * *"      # hourly drift/missed-fire catch (§7.3)
 _BID_STEP_MIN = 15                   # bid optimizer cadence within an active window
 _CLEANUP_CRON = "0 4 * * *"          # daily 04:00 self-reconcile → prune expired schedules
+# The end-of-window bid reset fires this many minutes BEFORE the window's stop time.
+# `cm_bid` and `cm_ops` are PARALLEL lanes, so a reset scheduled at the same minute as a
+# budget window's stop races the budget engine — and once that engine stops the campaign,
+# Blinkit refuses bid writes, failing the reset job and paging someone at 2am. One minute
+# of lead makes the ordering deterministic without any cross-lane coordination.
+# `bid.RESET_LOOKAHEAD_MINUTES` (larger) is what lets the early run see the window as closed.
+_RESET_LEAD_MINUTES = 1
 
 
 # ── Pure planning (unit-tested, no DB) ───────────────────────────────────────
@@ -167,6 +174,12 @@ def _expiry_fires(schedules, tenant: str, platform: str, now: datetime) -> list[
     return out
 
 
+def _lead(hm: tuple[int, int]) -> tuple[int, int]:
+    """(hour, minute) shifted back by the reset lead, wrapping past midnight."""
+    total = (hm[0] * 60 + hm[1] - _RESET_LEAD_MINUTES) % (24 * 60)
+    return divmod(total, 60)
+
+
 def _rule_hours(start_time: str | None, stop_time: str | None) -> set[int]:
     """Active clock-hours (0–23) for a time window; wraps past midnight when stop ≤ start
     (e.g. 18:00–02:00 → {18..23, 0..1}). No window → all 24. Hour granularity (minute
@@ -248,7 +261,7 @@ def _bid_reset_fires(recurring: list, once_by_date: dict[str, list], tenant: str
     one-shot at the stop datetime (overnight → next day). Rules with no stop_time never
     close, so they get no reset. Deduped by time (the engine handles all rules per run)."""
     out: list[Desired] = []
-    rec_stops = {hm for r in recurring if (hm := _parse_hhmm(r.stop_time))}
+    rec_stops = {_lead(hm) for r in recurring if (hm := _parse_hhmm(r.stop_time))}
     for h, m in sorted(rec_stops):
         cron = f"{m} {h} * * *"
         out.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:reset:{h:02d}{m:02d}",
@@ -265,7 +278,7 @@ def _bid_reset_fires(recurring: list, once_by_date: dict[str, list], tenant: str
                 continue
             sh = _parse_hhmm(r.start_time) or (0, 0)
             off_at = ((base + timedelta(days=1)) if eh <= sh else base).replace(
-                hour=eh[0], minute=eh[1])
+                hour=eh[0], minute=eh[1]) - timedelta(minutes=_RESET_LEAD_MINUTES)
             if off_at > now:
                 once_stops.add(off_at)
     for at in sorted(once_stops):

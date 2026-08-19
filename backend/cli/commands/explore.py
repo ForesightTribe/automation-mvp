@@ -23,7 +23,7 @@ from scraper.utils.search_result import slugify
 app = typer.Typer()
 console = Console()
 
-_EXPORT_DIR = Path("exports")
+_EXPORT_DIR = Path("out")
 
 
 def _split(value: str | None) -> list[str]:

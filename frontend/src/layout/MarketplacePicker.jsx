@@ -1,3 +1,4 @@
+import { ChevronDown } from "lucide-react";
 import { useMarketplaces } from "../context/MarketplaceContext";
 
 /**
@@ -26,9 +27,14 @@ export const MarketplacePicker = () => {
 
 	return (
 		<details className="relative">
-			<summary className="flex cursor-pointer list-none items-center gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-sm font-medium text-content">
+			<summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-1.5 text-sm font-normal text-content">
 				<span>{label}</span>
-				<span className="text-content-subtle">▾</span>
+				<ChevronDown
+					size={16}
+					strokeWidth={1.5}
+					aria-hidden="true"
+					className="shrink-0 text-content-subtle"
+				/>
 			</summary>
 
 			<div className="absolute z-10 mt-1 w-56 rounded-md border border-border bg-card p-1 shadow-lg">

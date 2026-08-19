@@ -304,6 +304,111 @@ Goal: enqueue→poll actions; new API surface; new UI page. Still dry by default
       edit/controls) — fixes the "everything says Active / expired cards linger" confusion (spent `once` now reads
       **Ended**). Backend imports + reconciler tests green; frontend oxlint + build green.
 
+- [x] **V4.12** ✅ **DONE (2026-08-12)** **Bid floor at BOTH window edges** (`bid.py` only — no migration, no
+      schedule change). Diagnosed from the v1 decision log: **79 raises vs 9 lowers**, `cotton candy` climbing
+      201→900 (its `max_bid`) and then parking there. The end-of-window reset shipped in V4.10 could never bring
+      that back, because it had four silent-failure paths — and once a reset is missed **nothing else in the system
+      ever lowers a bid**: `current_cpm` reads yesterday's `last_cpm` and steps UP from it, so the bid ratchets
+      across days until it pins at `max_bid`. Two fixes, deliberately paired:
+      - **Window END (`_reset_run`)** — the status gate is gone: `held` (ON_HOLD) is a *running* campaign whose
+        budget ran out and Blinkit takes an `UPDATE` on it (budget.py already treats it as writable), and a
+        genuinely stopped campaign now gets the write **attempted** so the refusal lands as a visible failed
+        History row instead of an invisible skip. An **unreadable** bid no longer falls back to `min_bid` (which
+        read as "already at the floor" → silent skip — the likeliest way the reset did nothing while looking
+        healthy); unknown now means *write it anyway*. A genuine already-at-floor stays a **skip** (a keyword-bid
+        write is a FULL campaign PUT — `update_keyword_bids` re-submits budget/dates/pids — and the budget engine
+        writes the same campaign from a parallel lane on that minute, so a no-change PUT is a free chance to
+        clobber a budget) but is now **logged**, decision line + History row.
+      - **Window START (`run`)** — the first fire of a window writes `min_bid`, so a failed reset is recovered
+        rather than compounded. The floor only counts as established once Blinkit **reads back** `min_bid`: the
+        budget engine restarts the campaign on the same boundary minute from a parallel lane and a RESTART
+        re-submits the bids it read (`restart.py`), so it can land on top of our write — re-checking each tick
+        makes that self-correcting (worst case one lost tick) instead of losing the floor for a day.
+      - **"First fire of this window" needs no new column** — runtime `updated_at` older than `_window_start(rule,
+        now)`. `updated_at` is stamped whenever a tick persists runtime, and the skip paths deliberately don't
+        persist, so a tick that couldn't do its job leaves the next one still opening. `_window_start` reuses
+        `_in_window`'s overnight rule (an 18:00–02:00 tail belongs to the day it STARTED), so midnight doesn't
+        look like a new window and re-floor a bid mid-flight.
+      - **On a normal day the open-write is a no-op** — last night's reset already left the bid at the floor, so
+        it reads `min_bid`, confirms, and goes straight to optimizing. It only writes on the days the reset failed.
+      - Tests: 6 new `_window_start` cases (32/32 bid-logic green; 123/123 across the package) + a 10-scenario
+        end-to-end sim of `bid.run` against a fake adapter covering ON_HOLD, refused write, unreadable bid,
+        already-at-floor, the RESTART clobber, and the overnight window.
+
+- [x] **V4.13** ✅ **BUILT, SHIPPED OFF (2026-08-14)** **Bid drift-down — the cheapest price that holds the
+      target.** Until now the optimizer FROZE on reaching target, so it paid whatever price happened to win the
+      climb, for the rest of the day. Drift shaves `CM_BID_DRIFT_PCT`% off the bid each tick while the keyword
+      **holds** target; when a shave goes one step too far it snaps back to the last bid known to hold and pauses
+      shaving for `CM_BID_DRIFT_PAUSE_MINUTES`. Migration `c5a81f4d3e70` (2 nullable cols on `cm_bid_runtime`).
+      - **"Holding" = position at target OR BETTER.** Sponsored slots sit on a sparse lattice (~89% of the 151
+        observed v1 positions were 1/5/9/13/17), so a target of 3 is often unreachable and exact equality would
+        never settle. Better-than-target is a success, not an error to correct.
+      - **Overshoot vs market move** (`is_recovery`) — off target at a bid BELOW one known to hold = our own drift
+        went too far → snap back **precisely** to it (a `_dynamic_step` raise from ₹299 would jump to ₹399 and
+        overshoot the known-good ₹322 by ₹77). Off target at or above it = a competitor moved → normal raise.
+      - **The pause is a ONE-WAY valve** — it gates the decrease only. Raises are never blocked, so being outbid
+        during peak hours is answered on the very next tick.
+      - **Two consecutive holds before shaving** (uses the existing `last_position`, no new state) — a single
+        reading was unreliable in ~28% of repeatedly-measured v1 bid levels, and it also gives a fresh raise one
+        tick to prove itself before we start undoing it.
+      - **`last_holding_cpm` is refreshed on EVERY holding tick**, not just the first, so the snap-back tracks the
+        market instead of returning to a price that worked an hour ago. Both drift columns are cleared at window
+        open, so state never leaks across days.
+      - **`CM_BID_DRIFT_PCT=0` is the default and a TRUE revert** — at 0 `compute_bid` is behaviourally identical
+        to pre-drift (freeze at target; step down only when strictly better). Shipped off; arming is a separate,
+        deliberate step. It is read at import, so **the runner must be restarted** to change it.
+      - **Rate limit is now per KEYWORD** (`repo.recent_write_count(keyword=…)`) and `bid.run` actually passes it
+        (was hard-coded `recent_writes=0`). Campaign-level counting would let one busy keyword throttle keywords
+        that are behaving. `_WRITE_ACTIONS` covers the new `drift`/`recover`/`open` alongside `apply`/`reset`.
+      - **Simulated over a full 12-hour window** against a staircase market, drift on vs off:
+
+        | scenario | avg bid | at target | writes |
+        |---|---|---|---|
+        | A. target 3, unreachable (slots 1/5/9) — **off** | ₹314 | 48% | **48** |
+        | A. — **on** | ₹322 | **81%** | **17** |
+        | B. target 5, reachable, climb lands ₹300 — **off** | ₹302 | 96% | 3 |
+        | B. — **on** | **₹263** (−13%) | 83% | 17 |
+
+        Two distinct wins, and they are not the same win. **B is the money**: the climb froze at ₹300 when ₹250
+        held the same position; drift finds ₹259. **A is a bug fix we did not set out to make** — today's
+        `lower`-when-better branch oscillates ₹300↔₹325 *every single tick* on an unreachable target, 48 writes a
+        window at 48% on-target; drift settles it to 17 writes at 81%. Note A's average bid goes *up* 3%: today's
+        looks cheaper only because it is off-target half the time.
+      - Tests: 13 new decision cases (45/45 bid-logic, 136/136 across the package) + a tick-by-tick day simulator.
+- [x] **V4.14** ✅ **BUILT (2026-08-17)** **Bounds as invariants + the unreachable target.** Two independent holes,
+      both closing on the same migration (`c5a81f4d3e70`, extended from 2 columns to 4 — it had not been applied
+      anywhere yet, so it was amended rather than chained).
+      - **`min_bid`/`max_bid` are now enforced EVERY tick**, not just clamped onto a value the optimizer chose to
+        change. They were only ever applied to a computed change, so when the decision was "no change" — the
+        common case once a target is held — lowering `max_bid` below the live bid did **nothing at all until the
+        next window opened**, leaving the campaign a full day over its ceiling. An out-of-bounds live bid is now
+        written back into range on the next tick (`bounds` History action), before the position scrape. Not
+        rate-limited: it is a correctness write and cannot run away, since one write ends the condition.
+      - **Unreachable target → chase what the ceiling can actually buy.** Pinned at `max_bid` with the target still
+        missed, the old behaviour recomputed `max_bid`, had the no-op guardrail reject it, and wrote a junk `skip`
+        row — every 15 minutes, all day, paying the ceiling for a position the ceiling did not buy. The v1 log has
+        this exactly: `cotton candy` climbed ₹350→₹900 with the position stuck at 15 the whole way, then showed
+        position 15 again at ₹300 — ₹600 for nothing. Now the position achieved at the ceiling becomes the working
+        target (`relax` History action), so drift finds the cheapest bid that holds *it*.
+      - **Two confirmations before relaxing** (`should_relax_target`) — same 28%-unreliable-reading problem; one
+        bad scrape must not relax a target for the rest of the window. Relaxes to the CURRENT position, not the
+        best of the two: relaxing too far is self-correcting (drift optimises the cheaper position), relaxing not
+        far enough puts us straight back to pinning at max and doing nothing.
+      - **`effective_at_max_bid` makes the edit case self-healing** (`stored_effective_target`) — the relaxed
+        target is void the moment the rule's `max_bid` differs from the ceiling it was concluded at. **Raising the
+        ceiling is the dangerous direction**: a stale relaxed target would have the optimizer keep drifting DOWN
+        right after being handed more room to climb. `repo.update_bid_rule` also clears both columns on a
+        `max_bid`/`target_position` edit — the latter has no self-healing tell.
+      - **Cleared at window open**, so every day re-climbs and retries the REAL target from scratch. Deliberately
+        accepted: a target that becomes reachable *mid*-window is not noticed until the next day. Re-testing it
+        means climbing back to the ceiling, which burns most of a window and usually finds nothing — revisit only
+        if real History rows show the achievable position moving intra-day.
+      - **No acceptability floor** (decided 2026-08-17): even a relaxed target of position 15 is held rather than
+        abandoned, because the change is strictly better than the status quo in every case — same position, a
+        fraction of the price. "Below what rank is this worth paying for?" is a business question, deferred.
+      - Tests: 12 new decision cases (57/57 bid-logic, 148/148 across the package) + 8 new end-to-end scenarios in
+        the fake-adapter sim, green with drift both armed and off.
+
 **Gate:** the v2 page can CRUD rules, trigger dry-run actions, and show status/history; every action reads DB +
 enqueues jobs; **no Playwright import in `app/`.** **Verify:** click through on the test tenant; watch jobs +
 logs; confirm `grep -r playwright app/` is clean.
@@ -442,8 +547,27 @@ cap backstops a frozen bid. No bid baseline restore (`baseline_cpm` dropped). Co
       keyword live every run. Add: at-target keywords → cheap source (24h report API or latest public-scrape DB
       snapshot), checked hourly; actively-chasing → fresh live scrape; **dedup by `(keyword, location)`** across
       campaigns/tenants. *Build when tenant count strains the box — it degrades gracefully until then.*
-- [ ] **`recent_writes` wiring for the bid rate-limit** — `bid.run` passes `recent_writes=0` (same as budget);
-      wire `repo.recent_write_count(kind="bid")` when live writes arm (V5), so the runaway-loop guardrail bites.
+- [ ] **`catchup=true` on the bid reset schedule** — the end-of-window reset fire is `catchup=False`, so a firing
+      missed while the runner is down (or >`SCHEDULER_MISFIRE_GRACE_SECONDS`=300 late) is dropped and the recurring
+      cron advances to tomorrow. Budget resets already carry `catchup=true` for exactly this reason. **Lower
+      priority since V4.12** — the window-open floor now recovers a missed reset — but it still means an extra
+      night at a high bid for a campaign that keeps serving between windows. *One-line change in `_bid_reset_fires`.*
+- [ ] **Reset vs optimizer share the overlap-guard key** — both enqueue as `cm.bid_optimizer`, and `uq_jobs_active`
+      is unique on `(job_type, tenant_id)` for `pending|running` (params are NOT in the key). So a reset fire while
+      an optimizer run is still active raises `DuplicateActiveJob`, and the recurring reset row advances to
+      tomorrow. Not biting yet (runs take ~30 s with one keyword) but the type's timeout is 15 min = the cron
+      interval, so it starts biting around 20–30 keywords. *Fix: a distinct job type for the reset, or include
+      params in the guard.*
+- [ ] **Confirm Blinkit's own CPM floor vs `min_bid`** — `get_campaign_detail` returns a `min_cpm_config` per
+      campaign type (the client falls back to 500). If a rule's `min_bid` sits below Blinkit's minimum for that
+      campaign type, both the window-end reset and the window-open floor may be rejected or silently clamped —
+      which would show as a repeating "open" write that never confirms. *Check against a real campaign at cutover.*
+- [x] ~~**`recent_writes` wiring for the bid rate-limit**~~ — **done in V4.13**, and made per-keyword.
+- [ ] **Arm the drift** (`CM_BID_DRIFT_PCT=7`) — shipped at 0. Before arming: (a) confirm on real v2 History rows
+      that position is flat across wide bid ranges now the store is fixed per rule — that assumption is the whole
+      payoff and it rests on 151 v1 rows; (b) arm ONE keyword on a low-stakes campaign and watch dip frequency,
+      settle price and write count; (c) then tune `CM_BID_DRIFT_PAUSE_MINUTES` (the cost-vs-position dial) and
+      roll out. Remember the runner needs a restart for an env change to take effect.
 - [ ] **Windows-local live scrape** — v1 offloaded the consumer scrape to a thread executor (Playwright event-loop
       workaround). `positions.resolve` awaits `get_live_positions` directly; fine on the Linux VM, but the V2.6
       dry-run on a Windows laptop may need that workaround. *Confirm during V2.6.*

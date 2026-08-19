@@ -14,7 +14,7 @@ log = logging.getLogger(__name__)
 from playwright.async_api import async_playwright, Page
 
 from app.core.database import AsyncSessionLocal
-from scraper.utils.session import load_session
+from platform_auth import service as auth_service
 from scraper.utils.browser import create_browser_context
 
 _IST = timezone(timedelta(hours=5, minutes=30))
@@ -23,11 +23,19 @@ BASE_URL = "https://brands.blinkit.com"
 CAMPAIGNS_PAGE = "/dashboard"
 ADVERTISER_ID = 234  # Blinkit account-specific — update if account changes
 
+# Fallback only. Blinkit 400s the WHOLE request if it is sent a type the advertiser does
+# not have enabled ("[...] are not enabled for given advertiser") and `_fetch` turns that
+# into `{}` — so sending this list blindly yields a silently empty campaign list. Read the
+# live set from CAMPAIGN_CONFIG_API instead; this is only the last resort if that fails.
 ALL_CAMPAIGN_TYPES = [
     "PRODUCT_LISTING", "PRODUCT_RECOMMENDATION", "SEARCH_SUGGESTION",
     "SHELF_DIY", "STORY_DIY", "BANNER_DIY", "BRAND_SPOTLIGHT_DIY",
     "BANNER_LISTING", "BRAND_BOOSTER",
 ]
+
+# Publishes the campaign (asset) types enabled for the logged-in advertiser, grouped under
+# objective_types[].asset_types — the same call the dashboard itself makes.
+CAMPAIGN_CONFIG_API = "/adservice/v2/campaigns/config"
 
 
 def _decode_email(token: str) -> str:
@@ -115,12 +123,26 @@ class BlinkitClient:
             [method, url, self._token, body],
         )
 
+    async def get_enabled_campaign_types(self) -> list[str]:
+        """Campaign types enabled for this advertiser, read from the config call the
+        dashboard makes. Never send the full hardcoded list when this succeeds — Blinkit
+        rejects the entire request if one type is disabled (see ALL_CAMPAIGN_TYPES)."""
+        resp = await self._fetch("GET", CAMPAIGN_CONFIG_API)
+        objectives = (resp.get("data") or {}).get("objective_types") or []
+        types = sorted({t for o in objectives for t in (o.get("asset_types") or [])})
+        if not types:
+            log.warning("[get_enabled_campaign_types] could not read enabled types — "
+                        "falling back to all %d; expect an empty list if any is disabled.",
+                        len(ALL_CAMPAIGN_TYPES))
+            return ALL_CAMPAIGN_TYPES
+        return types
+
     async def get_campaigns(self, days: int = 90) -> list[dict]:
         from_date, to_date = _date_range(days)
         resp = await self._fetch("POST", "/adservice/v1/advertisers/campaigns", {
             "from_date": from_date,
             "to_date": to_date,
-            "campaign_types": ALL_CAMPAIGN_TYPES,
+            "campaign_types": await self.get_enabled_campaign_types(),
         })
         data = resp.get("data", {})
         if isinstance(data, dict):
@@ -927,14 +949,18 @@ async def setup_with_state(storage_state: dict):
 
 
 async def setup(tenant_id: str):
-    """Load session from DB, open browser, return (playwright, browser, BlinkitClient)."""
+    """Get a WORKING session, open browser, return (playwright, browser, BlinkitClient).
+
+    `ensure()` probes the stored session and refreshes or re-logs-in if it is
+    dead, so the campaign manager no longer opens Chromium against a session that
+    expired days ago just to discover the redirect. It raises a typed AuthError,
+    which cli/main.py maps to exit 3 → `jobs.error='auth_expired'`.
+
+    This matters more here than in the scrapers: this path WRITES budgets and bids
+    to Blinkit, so failing halfway through on a dead session is a money-adjacent
+    failure, not just a missing row.
+    """
     async with AsyncSessionLocal() as db:
-        storage_state = await load_session(db, tenant_id, "blinkit")
+        session = await auth_service.ensure(db, tenant_id, "blinkit")
 
-    if not storage_state:
-        raise RuntimeError(
-            f"No saved session for tenant {tenant_id}.\n"
-            "Run: python -m cli auth blinkit --tenant <uuid>"
-        )
-
-    return await setup_with_state(storage_state)
+    return await setup_with_state(session.storage_state)

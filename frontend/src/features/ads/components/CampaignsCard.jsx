@@ -87,7 +87,7 @@ export const CampaignsCard = () => {
 				<select
 					value={status}
 					onChange={(e) => setStatus(e.target.value)}
-					className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-primary/30"
+					className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-brand/30"
 				>
 					<option value="">All statuses</option>
 					{statuses.map((s) => (

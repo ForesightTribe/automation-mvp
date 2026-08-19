@@ -48,7 +48,7 @@ async def save_scrape_results(
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
     if not rows:
         return
-    prepared = [_prepare(model, r) for r in rows]
+    prepared = [prepare_row(model, r) for r in rows]
     # ON CONFLICT can't update the same row twice in one statement, so drop
     # in-batch duplicate upsert_keys (keep the last occurrence).
     prepared = list({r["upsert_key"]: r for r in prepared}.values())
@@ -71,8 +71,11 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
         await session.execute(stmt)
 
 
-def _prepare(model, row: dict) -> dict:
-    """Coerce raw parser values to the types asyncpg expects per column."""
+def prepare_row(model, row: dict) -> dict:
+    """Coerce raw parser values to the types asyncpg expects per column.
+
+    Public because the campaign manager's catalogue refresh writes the same table from the
+    same API shape (`repo.upsert_campaign_catalog`) and must coerce identically."""
     data = dict(row)
     for col in model.__table__.columns:
         if col.name not in data:

@@ -18,10 +18,13 @@
 | [docs/darkstores.md](docs/darkstores.md) | **Dark-store-level public data** (designed, not built) — merchant_id/merchant_type from the atc block, the probe-vs-store model, evidence log, proposed DB changes, tier caveats |
 | [docs/staging.md](docs/staging.md) | **Public scrapes stage to local SQLite**, then `cli scrape load` pushes to Postgres in one all-or-nothing transaction — why, commands, retention, failure modes |
 | [docs/explorer.md](docs/explorer.md) | Explorer — on-demand custom scrape → Excel (agency-facing, ephemeral); design, decisions, architecture, build phases |
+| [docs/exports.md](docs/exports.md) | **Exports — public report SHIPPED 2026-08-10** (Phases 1–3). `python -m cli export public -t <uuid>` builds a 13-sheet client workbook from stored data; **`export raw` dumps the underlying rows to CSV as a SEPARATE command** (~300k rows/79 MB per week — deliberately never bundled into the report, so the future download button stays small); `export sample` renders a fixture with no DB; `export sections` lists what's buildable. `backend/exports/` (top-level package, sibling of `jobs/`) = theme + workbook (**the one Excel writer — Explorer renders through it too**) + glossary (wording **guard**, raises at render on "reach"/"distribution"/"SoV", for every consumer) + registry + sections. Numbers come from the read services, never new SQL (one documented exception: Product Families projects `_latest_per_store` for family×store grain). Doc covers the design system, clarity rules, gotchas, phases. Artifacts land in `backend/out/` (gitignored). **Marketing/Ads + Sales/Ops reports are PLANNED** in the doc (two reports, Indian ₹ grouping, 28-day window, KPI deltas; Sales report will delete `export_to_excel.py`). Legacy `build_public_analysis.py`/`build_sku_analysis.py` deleted |
 | [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
+| [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
+| [docs/campaign-manager.md](docs/campaign-manager.md) | **Campaign Manager — the one CM doc.** What it is, the reconciler, the budget + bid engines (window floors, drift-down, unreachable-target fallback, bounds invariants), the gated write choke-point, the Blinkit contract (a bid write is a whole-campaign PUT; `DELETE` = stop, not delete; status vocabulary), **a full edge-case reference**, config + kill switches, how to roll it out, and the known gaps |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
-| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth over SSH, cost/capacity model, and the VM gotchas |
+| [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth on the box, cost/capacity model, and the VM gotchas |
 | [docs/zepto.md](docs/zepto.md) | **Zepto — platform build plan (Public Data first, PLANNED)** — decisions, the Phase 0 API recon questions, provider-abstraction refactor, Zepto's own store catalog, file-by-file spec, CLI/jobs/VM fit, the disk gate, and the post-public roadmap |
 
 ---
@@ -82,10 +85,10 @@ The things that bite:
 - **Sessions are not files** — they live encrypted in Supabase, so there is nothing
   to copy to the VM. Same `DATABASE_URL` + `ENCRYPTION_KEY` = it just works. A wrong
   `ENCRYPTION_KEY` fails quietly.
-- **Re-auth over SSH** with `cli auth blinkit [--headless]`. The human only ever
-  types into the *terminal* (magic link / OTP), never the browser — so headless is
-  viable. But a headless login can "succeed" with **0 Firebase IndexedDB items** and
-  still save a session that dies in an hour: check the `IndexedDB: N` log line.
+- **Logins need no browser and no human** — both Blinkit dashboards authenticate over
+  plain HTTP, and the OTP/magic link is read from the auth inbox. `cli auth login
+  <platform> -t <uuid>`. Scrapers call `ensure()` and get a working session, so an
+  expired one self-heals. See [docs/platform-auth.md](docs/platform-auth.md).
 - **Anything scheduled needs the full interpreter path** and an explicit output
   redirect — cron/systemd never run `activate` and have no terminal, so a bare
   `python` fails with `ModuleNotFoundError` and unredirected output vanishes.
@@ -102,12 +105,33 @@ the `jobs` table; each job is executed as a **subprocess** — the exact
 per-run log file.
 
 ```bash
+python -m cli status [--days N]              # ONE SCREEN: runner alive? overdue schedules? failures? where compute went
 python -m cli jobs types                     # job types, lanes, timeouts, valid params
 python -m cli jobs run <type> -t <uuid> city=bengaluru workers=5   # queue now
 python -m cli jobs list / logs <id> -f       # status+peak RAM / live-tail a run
 python -m cli schedules add|list|show|update|enable|disable|remove  # cron CRUD (IST)
 python -m cli runner start                   # the daemon (systemd does this on the VM)
 ```
+
+- **`cli status` is the first thing to run when something feels wrong.** It reads the
+  shared `jobs`/`job_schedules` tables, so it works **from a laptop with no VM access** —
+  that is how the 2026-08-18 logging blackout was diagnosed. It reuses the same
+  `check_deadman()` the hourly health check runs, so its verdict on "did scheduled work
+  actually run?" is identical. It does NOT report disk (that would measure whichever
+  machine you ran it on, not the VM — disk stays with `monitor.heartbeat`).
+- **Job types carry a human `label`** (`jobs/types.py`) — `scrape.blinkit_marketing` is a
+  registry key, `"Blinkit ads scrape"` is what it *is*. Logs, `cli status` and alerts read
+  the label; add one with every new job type. `label_for()` never raises on an unknown
+  type, because the case that produces one is deploy skew — exactly when a readable
+  message matters most.
+- **A failed job's log lines quote the child's own log.** The runner supervises
+  subprocesses, so an exit code is genuinely all it sees; `jobs/runner.py::_tail_lines`
+  seeks the END of the run's log file (never reads a multi-GB scrape log whole) and puts
+  the last real line into the failure message and the `log_tail` structured field.
+- ⚠️ **Two different things were once both called "heartbeat".** `monitor.heartbeat` is the
+  hourly deadman JOB. The scheduler's 15-minute "still alive" line is an **idle notice**
+  (`jobs/scheduler.py::_idle_notice`) — renamed 2026-08-18 after the collision sent a real
+  investigation looking for an hourly job that didn't exist.
 
 - **Lanes, not one queue.** `batch` (public scrapes) · `dashboard` (marketing/seller/
   scorecard) · `live` (bid optimizer, later) · `interactive` (explorer/heartbeat).
@@ -129,14 +153,13 @@ python -m cli runner start                   # the daemon (systemd does this on 
   local runner will claim VM jobs and scrape from your home IP.
 - **Alembic is single-head again** (`b6b4f0f7ee83`, merge of the darkstore +
   campaign lines, stamped 2026-07-21) — `alembic upgrade head` works normally.
-- **Campaign automation is now v2 (`campaign_manager/`), owned by Deepansh.** The legacy
-  v1 (`ad_campaigns/`) was **disabled 2026-07-30**: VM schedules 24 + 25 set `enabled=false`,
-  and the Playwright-invoking routes removed from `app/routes/ads.py` (so Render can't spawn
-  Chromium). v2 vendored v1's `client.py` + `live_position.py` into
-  `campaign_manager/marketplaces/blinkit/`, so `ad_campaigns/` is now inert stale code (kept
-  on disk, not imported). v2 runs in the `cm_bid`/`cm_ops`/`interactive` lanes. Live writes
-  are still gated behind the cutover (dry by default). See
-  [docs/campaign-manager-v2-implementation.md](docs/campaign-manager-v2-implementation.md).
+- **Campaign automation is `campaign_manager/`, owned by Deepansh.** Runs in the
+  `cm_bid` / `cm_ops` / `interactive` lanes; **dry-run by default**, live writes armed
+  per tenant (`live_armed` on `cm_platform_accounts`). `ad_campaigns/` is **dead code** —
+  disabled 2026-07-30 (VM schedules 24 + 25 `enabled=false`, Playwright routes removed
+  from `app/routes/ads.py` so Render can't spawn Chromium), its `client.py` +
+  `live_position.py` vendored into `campaign_manager/marketplaces/blinkit/`. Kept on disk,
+  imported by nothing. See [docs/campaign-manager.md](docs/campaign-manager.md).
 
 ## Database Patterns
 
@@ -319,9 +342,15 @@ python -m cli account list
 python -m cli tenant create --name "Brand" --account <account-id>
 python -m cli tenant list
 
-python -m cli auth blinkit --tenant <uuid>
-python -m cli auth blinkit-seller --tenant <uuid>
-python -m cli auth status --tenant <uuid>
+# Platform auth — no browser, no human (see docs/platform-auth.md)
+python -m cli auth platforms                                  # registry + mail-rule status
+python -m cli auth credentials set blinkit -t <uuid> --email ops@brand.com [--password]
+python -m cli auth login blinkit -t <uuid> [--manual]         # unattended by default
+python -m cli auth probe   blinkit -t <uuid>                  # is the session ACTUALLY alive
+python -m cli auth refresh blinkit -t <uuid>                  # extend, no email
+python -m cli auth refresh-all -t <uuid>                      # what the auth.refresh job runs
+python -m cli auth reset   blinkit -t <uuid>                  # clear the circuit breaker
+python -m cli auth status  --tenant <uuid>
 
 python -m cli scrape blinkit --tenant <uuid>
 python -m cli scrape blinkit-seller --tenant <uuid> [--sales] [--po] [--soh]

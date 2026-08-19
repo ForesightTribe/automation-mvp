@@ -11,6 +11,16 @@ minutes, with **nothing persisted into client data**.
 > Status: **CLI shipped (Phases 0–3).** Runnable via `cli explore` — see
 > [cli.md](cli.md). The admin API + React page (Phase 4) are still to build; this
 > doc remains the design + decisions log.
+>
+> **2026-08-10 — the workbook moved onto the shared exports renderer**
+> ([exports.md](exports.md)). `explorer/export.py` is now a thin adapter that maps
+> `ExplorerInsights` onto a `Report`; it draws nothing itself, so widths, colours,
+> print setup and the vocabulary guard are shared with the client report. What
+> changed for a reader: sheets gained a **Contents** and a **How to read this**
+> page; "SoV %" and "Reach %" now read "Share of search %" and "On shelf %"
+> (the guard rejects the old wording); "Keyword Scorecard" is "Search Term
+> Scorecard" and the "Raw —" sheets are "Captured —"; and the two native bar
+> charts were dropped in favour of the design system's in-cell data bars.
 
 ---
 

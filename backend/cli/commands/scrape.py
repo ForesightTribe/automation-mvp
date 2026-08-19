@@ -6,7 +6,12 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 from app.core.database import AsyncSessionLocal
-from scraper.utils.session import load_session, ensure_healthy_session, SessionUnhealthy
+from platform_auth import service as auth_service
+from platform_auth.errors import AuthError
+from scraper.platforms.zepto.dashboard_data.seller.session_health import (
+    ensure_healthy_session,
+    SessionUnhealthy,
+)
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     validate as zepto_seller_validate,
@@ -76,10 +81,11 @@ async def _scrape_blinkit(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            storage_state = await load_session(db, tenant_id, "blinkit")
-            if not storage_state:
-                console.print("[red]No session found. Run `cli auth blinkit` first.[/red]")
-                raise typer.Exit(1)
+            # ensure() = load → probe → refresh → re-login, doing the least work
+            # that yields a session known to work. Replaces a bare load, which
+            # happily returned a session that had died days earlier and let the
+            # scrape fail deep inside Playwright instead.
+            storage_state = (await auth_service.ensure(db, tenant_id, "blinkit")).storage_state
 
             job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
 
@@ -127,6 +133,15 @@ async def _scrape_blinkit(
             _print_plans(plans)
 
         except typer.Exit:
+            raise
+        except AuthError:
+            # Must escape the generic handler below. cli/main.py turns AuthError
+            # into exit code 3, which the job runner records as `auth_expired` —
+            # collapsing it into typer.Exit(1) here would bury every auth failure
+            # among anonymous exit_1s, which is exactly how the seller breakage
+            # went unnoticed for weeks.
+            if job_id:
+                await fail_scrape_job(db, job_id, "auth_expired")
             raise
         except Exception as e:
             # For DB errors, e.orig is the short asyncpg message; str(e) would dump
@@ -311,10 +326,9 @@ async def _scrape_blinkit_seller(
     run_soh = soh_flag or run_all
 
     async with AsyncSessionLocal() as db:
-        storage_state = await load_session(db, tenant_id, "blinkit_seller")
-        if not storage_state:
-            console.print("[red]No session found. Run `cli auth blinkit-seller` first.[/red]")
-            raise typer.Exit(1)
+        storage_state = (
+            await auth_service.ensure(db, tenant_id, "blinkit_seller")
+        ).storage_state
 
         # ── Sales (loops per day) ──────────────────────────────────────────────
         if run_sales:
@@ -536,10 +550,9 @@ async def _scrape_blinkit_scorecard(tenant_id: str, week: str | None, save: bool
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            storage_state = await load_session(db, tenant_id, "blinkit_seller")
-            if not storage_state:
-                console.print("[red]No session found. Run `cli auth blinkit-seller` first.[/red]")
-                raise typer.Exit(1)
+            storage_state = (
+                await auth_service.ensure(db, tenant_id, "blinkit_seller")
+            ).storage_state
 
             job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_scorecard")
 
@@ -568,6 +581,11 @@ async def _scrape_blinkit_scorecard(tenant_id: str, week: str | None, save: bool
             _print_scorecard_key_skus(key_skus)
 
         except typer.Exit:
+            raise
+        except AuthError:
+            # See the note in _scrape_blinkit — must not collapse into exit 1.
+            if job_id:
+                await fail_scrape_job(db, job_id, "auth_expired")
             raise
         except Exception as e:
             if job_id:

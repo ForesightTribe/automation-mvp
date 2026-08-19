@@ -165,6 +165,57 @@ class PlatformSession(SQLModel, table=True):
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
     platform: str
     encrypted_session: bytes = Field(sa_column=Column(LargeBinary, nullable=False))
+
+    # Liveness, so expiry is visible without launching a browser. The row's mere
+    # existence used to be the only signal, which is why a session that died on
+    # 2026-07-21 kept reporting "Session exists" for days.
+    status: str = "unknown"                    # active | expired | unknown
+    last_login_at: datetime | None = None      # last full login (consumed a secret)
+    last_validated_at: datetime | None = None  # last time it was proven working
+    consecutive_failures: int = 0              # resets on success; drives alerting
+    last_error: str | None = None
+
+    created_at: datetime = Field(default_factory=now_ist)
+    updated_at: datetime = Field(default_factory=now_ist)
+
+
+class PlatformCredential(SQLModel, table=True):
+    """What a tenant needs to BEGIN a login — the input, not the result.
+
+    Kept separate from PlatformSession on purpose. Credentials are long-lived and
+    entered by a human; sessions are short-lived, machine-generated, and rotate
+    constantly. Mixing them means every token refresh rewrites the row holding
+    the password.
+
+    Blinkit's dashboards are passwordless (magic link / OTP), so `encrypted_password`
+    is null for them. Zepto uses email + password, which is why this exists now
+    rather than being retrofitted later.
+    """
+
+    __tablename__ = "platform_credentials"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "platform", name="uq_platform_credentials_tenant_platform"
+        ),
+    )
+
+    id: uuid.UUID = Field(default_factory=uuid.uuid4, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str
+
+    # Plaintext: PII, not a secret, and it must stay readable to render status
+    # and to decide whether a tenant can auto-login at all.
+    login_email: str
+
+    # Fernet, same key as encrypted_session. Null where the platform has no password.
+    encrypted_password: bytes | None = Field(
+        default=None, sa_column=Column(LargeBinary, nullable=True)
+    )
+
+    # Anything else a marketplace needs to start a login (sub-account id, portal
+    # code). JSON-encoded, so a new platform needs no schema change.
+    extra: str | None = None
+
     created_at: datetime = Field(default_factory=now_ist)
     updated_at: datetime = Field(default_factory=now_ist)
 

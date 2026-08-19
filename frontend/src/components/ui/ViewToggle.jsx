@@ -13,7 +13,7 @@ export const ViewToggle = ({ options, value, onChange }) => (
 				aria-pressed={value === o.value}
 				className={`rounded px-2 py-0.5 text-xs font-medium transition-colors ${
 					value === o.value
-						? "bg-primary text-on-primary"
+						? "bg-brand text-on-brand"
 						: "text-content-muted hover:text-content"
 				}`}
 			>

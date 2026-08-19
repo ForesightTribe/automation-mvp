@@ -23,8 +23,7 @@ logs/
 .coverage
 htmlcov/
 
-# Explorer — generated workbooks (ephemeral run artifacts)
-exports/
+out/
 
 # OS
 .DS_Store

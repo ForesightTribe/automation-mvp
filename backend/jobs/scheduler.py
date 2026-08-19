@@ -28,7 +28,14 @@ from app.utils.time import IST, now_ist
 from jobs.queue import DuplicateActiveJob, enqueue
 
 log = logger.bind(tag="sched")          # every scheduler line carries the "sched" tag
-_HEARTBEAT_SECONDS = 15 * 60            # a quiet "still alive" line when nothing fires
+
+# A quiet "still alive" line when nothing fires. Deliberately NOT called a heartbeat:
+# `monitor.heartbeat` is a completely different thing (the hourly deadman JOB that
+# checks whether scheduled work actually ran). Both were called "heartbeat" until
+# 2026-08-18, which sent a real investigation looking for an hourly job that was in
+# fact this 15-minute line. docs/jobs.md opens with a glossary precisely because
+# "session" and "worker" already meant three things each — don't add a fourth.
+_IDLE_NOTICE_SECONDS = 15 * 60
 
 
 def validate_cron(cron_expr: str) -> None:
@@ -146,15 +153,15 @@ async def run_producer(
         return
     scope = f" · scope={job_type_prefix}*" if job_type_prefix else ""
     log.info(f"producer started · tick={settings.SCHEDULER_TICK_SECONDS}s{scope}")
-    last_hb = time.monotonic()
+    last_notice = time.monotonic()
     while not shutdown.is_set():
         try:
             await tick(job_type_prefix=job_type_prefix)
         except Exception as e:
             log.error(f"tick failed: {e}")
-        if time.monotonic() - last_hb >= _HEARTBEAT_SECONDS:
-            last_hb = time.monotonic()
-            await _heartbeat(job_type_prefix)
+        if time.monotonic() - last_notice >= _IDLE_NOTICE_SECONDS:
+            last_notice = time.monotonic()
+            await _idle_notice(job_type_prefix)
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=settings.SCHEDULER_TICK_SECONDS)
         except asyncio.TimeoutError:
@@ -162,15 +169,30 @@ async def run_producer(
     log.info("producer stopped")
 
 
-async def _heartbeat(job_type_prefix: str | None) -> None:
-    """A quiet 'still alive' line on idle: how many schedules are armed and the next fire.
-    Keeps the log from going silent for hours without drowning it in per-tick chatter."""
+async def _idle_notice(job_type_prefix: str | None) -> None:
+    """A quiet 'still alive' line on idle. Keeps the log from going silent for hours
+    without drowning it in per-tick chatter.
+
+    This is the single most frequent line in runner.log, so it earns its place by
+    NAMING what is coming next rather than just counting rows — "12 enabled, next fire
+    14:00" told a reader nothing they could act on.
+    """
     async with AsyncSessionLocal() as db:
         rows = (
             await db.execute(select(JobSchedule).where(JobSchedule.enabled == True))  # noqa: E712
         ).scalars().all()
     if job_type_prefix:
         rows = [r for r in rows if r.job_type.startswith(job_type_prefix)]
-    nexts = [r.next_run_at for r in rows if r.next_run_at]
-    nxt = min(nexts).strftime("%H:%M") if nexts else "—"
-    log.info(f"heartbeat · {len(rows)} enabled, next fire {nxt}")
+
+    armed = [r for r in rows if r.next_run_at]
+    if not armed:
+        log.info(f"waiting · {len(rows)} schedule(s) enabled, none armed to fire")
+        return
+    nxt = min(armed, key=lambda r: r.next_run_at)
+    when = nxt.next_run_at
+    mins = (when - now_ist()).total_seconds() / 60
+    eta = f"in {mins:.0f} min" if 0 <= mins < 90 else when.strftime("%d %b %H:%M")
+    log.info(
+        f"waiting · {len(armed)} schedule(s) armed · next is '{nxt.name}' at "
+        f"{when:%H:%M} ({eta})"
+    )

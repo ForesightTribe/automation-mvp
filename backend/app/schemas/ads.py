@@ -225,16 +225,6 @@ class BidOptimizerLogEntry(BaseModel):
     success: bool
 
 
-# ── Blinkit reconnect ─────────────────────────────────────────────────────────
-
-class ReconnectBlinkitRequest(BaseModel):
-    magic_link: str
-
-
-class ReconnectBlinkitResponse(BaseModel):
-    message: str
-
-
 class SetBudgetRequest(BaseModel):
     budget: float
 

@@ -24,9 +24,6 @@ export const getSchedulerHistory = (clientId) =>
 export const runScheduler = (clientId) =>
     api.post(`/clients/${clientId}/ads/budget-schedules/run`);
 
-export const reconnectBlinkit = (clientId, magicLink) =>
-    api.post(`/clients/${clientId}/ads/reconnect-blinkit`, { magic_link: magicLink });
-
 export const setCampaignBudget = (clientId, campaignId, budget) =>
     api.post(`/clients/${clientId}/ads/campaigns/${campaignId}/set-budget`, { budget });
 

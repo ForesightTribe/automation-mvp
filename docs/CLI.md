@@ -44,29 +44,82 @@ python -m cli tenant list                        # show all tenants and their UU
 
 ## Auth
 
-### Blinkit marketing (`brands.blinkit.com`) — magic link
+Platform sessions — logging Foresight **into** Blinkit. (Not app-user auth; that is
+`app/routes/auth.py`.) Full design: [platform-auth.md](platform-auth.md).
+
+**No browser is launched and no human is needed.** Both Blinkit dashboards authenticate
+over plain HTTP, and the magic link / OTP is read from the shared auth inbox.
+
+### First time for a tenant — store the credentials
 
 ```
-python -m cli auth blinkit --tenant <tenant_id>
+python -m cli auth credentials set blinkit        --tenant <tenant_id> --email ops@brand.com
+python -m cli auth credentials set blinkit_seller --tenant <tenant_id> --email ops@brand.com
 ```
 
-Browser opens → fill email → paste magic link from email into terminal.
-
-### Blinkit seller (`partnersbiz.com`) — OTP
-
-```
-python -m cli auth blinkit-seller --tenant <tenant_id>
-```
-
-Browser opens → fills email → enter 6-digit OTP from email into terminal.
-
-Used for all seller commands: `blinkit-seller` (sales + PO + SOH) and `blinkit-scorecard`.
-
-### Check session status
+Blinkit is passwordless (magic link / OTP), so no password is stored. A platform that
+needs one — Zepto will — takes `--password`, which prompts hidden and encrypts at rest:
 
 ```
-python -m cli auth status --tenant <tenant_id>
+python -m cli auth credentials set zepto --tenant <tenant_id> --email ops@brand.com --password
+python -m cli auth credentials list --tenant <tenant_id>      # never shows the password
+python -m cli auth credentials remove zepto --tenant <tenant_id>
 ```
+
+### Log in
+
+```
+python -m cli auth login blinkit        --tenant <tenant_id>
+python -m cli auth login blinkit_seller --tenant <tenant_id>
+```
+
+Unattended by default: it requests the secret, reads it from the auth inbox, and stores
+the session — about 15–20 seconds, no typing. Add `--manual` to paste the link/OTP
+yourself (useful if the mailbox is unavailable, or for a first login you want to watch).
+
+`auth blinkit` and `auth blinkit-seller` still work as aliases for the two commands above.
+
+### Day-to-day
+
+```
+python -m cli auth status  --tenant <tenant_id>          # every platform + health + last error
+python -m cli auth probe   blinkit --tenant <tenant_id>  # is the session ACTUALLY alive
+python -m cli auth refresh blinkit --tenant <tenant_id>  # extend it, no email needed
+python -m cli auth refresh-all      --tenant <tenant_id> # what the auth.refresh job runs
+python -m cli auth reset   blinkit --tenant <tenant_id>  # clear the circuit breaker
+python -m cli auth platforms                            # registry + mail-rule status
+```
+
+**`status` vs `probe`:** `status` reports what was last *recorded*; `probe` checks the
+platform right now (one API call, no browser). A session can read `active` and be dead —
+that gap is what let the seller scrape fail silently for weeks. When in doubt, `probe`.
+
+### You rarely need any of this
+
+Scrapers call `ensure()` internally: load → probe → refresh → re-login, doing the least
+work that yields a working session. **An expired session repairs itself**, so `auth login`
+is for the first login of a new tenant, or after something genuinely broke.
+
+A daily `auth.refresh` job keeps sessions warm so they never reach expiry:
+
+```
+python -m cli schedules add --name "Auth refresh daily" --type auth.refresh     --cron "10 6 * * *" --tenant <tenant_id>
+```
+
+### When a login fails
+
+Auto-login suspends itself after 3 consecutive **login** failures (ordinary expiry does
+not count) — it would otherwise hammer a login endpoint from one datacenter IP and bury a
+broken config in noise. `auth status` shows the count and the last error. After fixing the
+cause:
+
+```
+python -m cli auth reset blinkit --tenant <tenant_id>
+```
+
+A run that dies for auth reasons exits with code **3**, which the job runner records as
+`jobs.error='auth_expired'` — so auth failures are filterable in Cloud Logging rather than
+hiding among anonymous `exit_1`s.
 
 ---
 
@@ -350,7 +403,7 @@ preserves manual mappings.
 competitors / cities and writes a multi-sheet Excel report. Unlike `public-run`,
 it is **not** tied to a tenant's watchlist and **writes nothing** to the fact
 tables — it's for profiling a prospect or a one-off deep-dive. Each run logs one
-`explorer_runs` record (status + live progress) and saves an `.xlsx` to `exports/`
+`explorer_runs` record (status + live progress) and saves an `.xlsx` to `out/`
 (gitignored). Full design: [explorer.md](explorer.md).
 
 ```bash
@@ -385,11 +438,17 @@ python -m cli explore --brand dobra --keyword "soda" --city bengaluru --full -o 
 | `--brand-cap` | 60 | Catalog brand-query cap override |
 | `--label` | — | Human label stored on the run |
 | `--tenant` / `-t` | — | Optional attribution to a client (does **not** scope storage) |
-| `--output` / `-o` | `exports/<brand>_<ts>.xlsx` | Workbook path |
+| `--output` / `-o` | `out/<brand>_<ts>.xlsx` | Workbook path |
 
-**Workbook** (insight sheets first, raw last): Run Overview · Keyword Scorecard ·
-Geography · Competitor Landscape · Price & Discount · Availability · Own Catalog
-(catalog mode) · then Raw — Snapshots / Listings / Catalog SKUs / Locations.
+**Workbook** — rendered by the shared exports writer, so it looks and reads like
+`cli export public`: Contents · How to read this · Run Overview · Search Term
+Scorecard · Geography · Competitor Landscape · Price & Discount · Availability ·
+Own Catalogue (catalog mode) · then Captured — Searches / Products / Own
+Catalogue / Locations.
+
+Explorer counts **locations searched**, not dark stores: it samples probe points
+and never resolves them to shops, so its numbers are not comparable with the
+store-grain figures in `cli export public`. The glossary sheet says so.
 
 - Only cities already in `marketplace_locations` are reachable (add them via `cli sync`).
 - Ephemeral: nothing in `search_snapshots` / `search_listings` / `sku_snapshots` — only the
@@ -405,7 +464,7 @@ Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
 - **Budget scheduler** — sets a campaign's daily budget from time/day rules (elevated during a window, back to a default otherwise).
 - **Bid optimizer** — a ~15-min control loop that nudges a keyword's CPM to hold a target search position.
 
-**Rules are the source of truth.** You create rules (`cm rules …`); a **reconciler** compiles them into `job_schedules` rows; the runner fires the engines on schedule. See [campaign-manager-refactor.md](campaign-manager-refactor.md) for the design.
+**Rules are the source of truth.** You create rules (`cm rules …`); a **reconciler** compiles them into `job_schedules` rows; the runner fires the engines on schedule. See [campaign-manager.md](campaign-manager.md) for the design.
 
 **Two ways to run every engine** (same as `cli scrape …` vs `jobs run scrape.…`):
 
@@ -530,20 +589,137 @@ python -m cli cm rules remove-budget --schedule <sid>  # teardown
 python -m cli cm rules remove-bid    --rule <hex>
 ```
 
-The scheduler side (`jobs run`, `schedules`, the runner) is documented in [jobs.md](jobs.md) and [jobs-runbook.md](jobs-runbook.md).
+### One-off manual controls
+
+Outside the rule engine — act on a single campaign right now. All are dry-run
+unless `--live`, except `status`, which is read-only.
+
+```bash
+python -m cli cm status         -t <id> --campaign <cid>   # live state: status, budget, bids, dates
+python -m cli cm set-budget     -t <id> --campaign <cid> --budget 5000
+python -m cli cm set-activation -t <id> --campaign <cid> --status paused|running
+python -m cli cm stop           -t <id> --campaign <cid>   # shorthand for --status paused
+python -m cli cm restart        -t <id> --campaign <cid>   # shorthand for the reverse
+python -m cli cm sync-campaign-data -t <id>                # refresh the keyword/product cache
+```
+
+Two more rule commands not shown above:
+
+```bash
+python -m cli cm rules set-stop-after-window --schedule <sid> --on|--off
+python -m cli cm rules remove-budget-rule --rule <hex>   # drop ONE rule, keep its schedule
+```
+
+**The job queue and scheduler have their own reference.** `jobs run|list|logs|types`,
+`schedules add|list|show|update|enable|disable|remove` and `runner start` are all
+documented in [jobs.md](jobs.md) (design) and [jobs-runbook.md](jobs-runbook.md)
+(full command reference, troubleshooting) — they are not repeated here.
 
 ---
 
-## Export to Excel
+## Export — reports & raw data (`export`)
 
-Export all scraped data for a tenant to a multi-sheet Excel workbook.
+Turns **stored** data into files. Nothing here scrapes: for an on-demand scrape of
+any brand see `explore` above. Full design in [exports.md](exports.md).
+
+Two artifacts, deliberately separate — the report is a readable client deliverable,
+the raw pull is a data dump. One 7-day window of a mid-size client is ~300k rows /
+79 MB, which is why it never rides along with the report.
+
+### The client report — `export public`
+
+A 13-sheet workbook: a cover, a plain-English glossary, then shelf presence
+(overall / per product / per city / per store), the work queue, the availability
+trend, price spread, and the search sheets (visibility, the position grid,
+competitors, price vs market).
 
 ```bash
-python export_to_excel.py <tenant_id>
-python export_to_excel.py <tenant_id> --output report.xlsx
+python -m cli export public -t <tenant-uuid>                      # latest week with data
+python -m cli export public -t <uuid> --from 2026-08-01 --to 2026-08-07
+python -m cli export public -t <uuid> --city bengaluru --kind combo
+python -m cli export public -t <uuid> --sections summary,rank_grid -o pitch.xlsx
 ```
 
-Sheets produced: Ad Performance Summary, Ad Campaigns, Sponsored SOV, Brand Collections, Visibility Plans, Seller Sales, Sales Summary, Purchase Orders, PO Line Items, PO Snapshots, Stock On Hand, Scorecard Weekly, Scorecard Categories, Scorecard Facilities, Scorecard Key SKUs.
+| Option | Meaning |
+|---|---|
+| `-t, --tenant` | Client id (**required**) — `cli tenant list` |
+| `--from` / `--to` | Inclusive dates. Omit both and it uses **the last 7 days that have data**, not the last 7 days from today — public scrapes are weekly, so a today-anchored window often lands after the last scrape and returns nothing |
+| `-c, --city` | One city at a time (multi-city sections are not built) |
+| `--kind` | `main` (default) · `combo` · `all` — combos are stocked selectively, so they are reported apart |
+| `-m, --marketplace` | Restrict to one marketplace |
+| `--sections` | Comma-separated keys; default is every public section |
+| `--label` | Free text printed on the cover |
+| `-o, --output` | Output path (default `out/<Client>_public_<end-date>.xlsx`) |
+
+```bash
+python -m cli export sections     # every section key, its group and glossary terms
+python -m cli export sample       # render a fixture workbook — no database needed
+```
+
+`export sample` exists to judge the look and catch rendering regressions in
+seconds; it uses invented data and touches no database.
+
+### Raw data — `export raw`
+
+The underlying rows as **CSV**, one file per table, on demand. CLI only: this is
+never bundled into the report and will not sit behind the future download button.
+
+```bash
+python -m cli export raw -t <uuid> --dry-run          # count first — always
+python -m cli export raw -t <uuid>                    # write the CSVs
+python -m cli export raw -t <uuid> --tables listings --limit 5000
+```
+
+| Table key | File | What it is |
+|---|---|---|
+| `sku` | `own_products_by_store.csv` | One row per own product per dark store per scrape |
+| `listings` | `search_listings.csv` | Every product seen in a search, yours and competitors'. The biggest table |
+| `searches` | `searches.csv` | One row per search at one probe point |
+| `stores` | `store_catalogue.csv` | The dark-store catalogue (not date-scoped) |
+
+| Option | Meaning |
+|---|---|
+| `-t, --tenant` | Client id (**required**) |
+| `--from` / `--to` | Same defaulting as `export public` |
+| `--tables` | Comma-separated keys; default all four |
+| `-c, --city` / `-m, --marketplace` | Narrow the pull |
+| `--limit` | Cap rows per table — for a quick sample |
+| `--include-extra` | Include the scraper's untyped `extra` payload (mostly image URLs; roughly triples the file) |
+| `--dry-run` | Count and stop, writing nothing |
+| `-o, --out` | Output directory (default `out/<Client>_raw_<from>_<to>/`) |
+
+Row counts always print before anything is written — the volume is the thing worth
+knowing before you commit to it. CSV is deliberate: at this size a styled workbook
+is the wrong container, and Excel opens CSV natively.
+
+> **Legacy:** `python export_to_excel.py <tenant_id>` still dumps the **private**
+> marketing/seller tables (ad campaigns, sales, POs, SOH, scorecard) to a workbook.
+> It predates this subsystem and is kept until a private report replaces it.
+
+---
+
+## Ads automation (`ads`)
+
+Runs on the VM as jobs; see [jobs.md](jobs.md).
+
+```bash
+python -m cli ads budget-scheduler      # apply budget rules for the current IST slot
+python -m cli ads bid-optimizer         # one pass of the bid optimizer
+python -m cli ads sync-campaign-data    # cache campaign keywords + products in the DB
+```
+
+---
+
+## Maintenance & monitoring (`maint`, `monitor`)
+
+```bash
+python -m cli maint log-cleanup    # prune old per-run job logs under logs/jobs/
+python -m cli monitor heartbeat    # assert every enabled schedule ran, and disk is OK
+```
+
+`monitor heartbeat` logs an ERROR per problem (which raises a Cloud Logging alert)
+and exits non-zero if anything is wrong. Both run as scheduled jobs on the VM —
+see [jobs-runbook.md](jobs-runbook.md).
 
 ---
 
@@ -552,7 +728,11 @@ Sheets produced: Ad Performance Summary, Ad Campaigns, Sponsored SOV, Brand Coll
 - `.env` must have `DATABASE_URL` (Supabase Session Pooler URL) and `ENCRYPTION_KEY`
 - Run `alembic upgrade head` once to create all tables before first use
 - Create a tenant with `cli tenant create` before running any auth or private scrape commands
-- Run `auth` before `scrape` for each tenant
+- Store credentials (`auth credentials set`) and run `auth login` **once** per tenant per
+  platform. After that scrapers self-heal via `ensure()` — you do not run `auth` before
+  each `scrape`
+- Unattended login needs `AUTH_INBOX_USER` + `AUTH_INBOX_APP_PASSWORD` in `.env`; without
+  them `auth login` falls back to prompting (`--manual`)
 - `cli sync` and `scrape public --save` auto-create brand + marketplace rows (`ensure_refs`) — no manual seeding
 - Public scraping is config-driven: `cli sync --file config.xlsx` before `cli scrape public-run` / `public-skus`
 - The two public scrapes are independent commands with independent `scrape_job`s — run them on separate cadences (e.g. `public-skus` daily, `public-run` weekly)

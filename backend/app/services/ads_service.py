@@ -957,52 +957,6 @@ async def set_campaign_budget(tenant_id: uuid.UUID, campaign_id: int, budget: fl
     await loop.run_in_executor(_playwright_executor, _run)
 
 
-# ── Blinkit reconnect ─────────────────────────────────────────────────────────
-
-async def reconnect_blinkit(db_session: AsyncSession, tenant_id: uuid.UUID, magic_link: str, email: str = "") -> None:
-    """Navigate to magic link in headless browser, capture session, save to DB."""
-    result: dict = {}
-
-    def _run():
-        from playwright.async_api import async_playwright
-        from scraper.platforms.blinkit.auth import _capture_session
-        from scraper.platforms.blinkit.dashboard_data.marketing.endpoints import BASE_URL
-        from scraper.utils.browser import create_browser_context
-
-        async def _inner():
-            async with async_playwright() as pw:
-                browser, context = await create_browser_context(pw, headless=True)
-                page = await context.new_page()
-                try:
-                    # Set email in localStorage so Firebase signInWithEmailLink can complete
-                    if email:
-                        await page.goto("https://brands.blinkit.com", wait_until="domcontentloaded", timeout=15_000)
-                        await page.evaluate(f"localStorage.setItem('emailForSignIn', '{email}')")
-                    await page.goto(magic_link.strip(), wait_until="networkidle", timeout=45_000)
-                    # Firebase auth action page redirects to /dashboard via JS — wait for it
-                    if "/diy/" not in page.url and "/dashboard" not in page.url:
-                        try:
-                            await page.wait_for_url("**/dashboard**", timeout=20_000)
-                        except Exception:
-                            pass
-                    if "/diy/" not in page.url and "/dashboard" not in page.url:
-                        raise RuntimeError(
-                            f"Magic link did not land on Blinkit dashboard (landed on {page.url}). "
-                            "Link may be expired or already used."
-                        )
-                    result["storage_state"] = await _capture_session(page, context, BASE_URL)
-                finally:
-                    await browser.close()
-
-        _run_in_new_loop(_inner)
-
-    loop = asyncio.get_event_loop()
-    await loop.run_in_executor(_playwright_executor, _run)
-
-    from scraper.utils.session import save_session
-    await save_session(db_session, str(tenant_id), "blinkit", result["storage_state"])
-
-
 async def _mp_ad_metrics(
     session: AsyncSession,
     *,

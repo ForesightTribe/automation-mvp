@@ -12,11 +12,12 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, CmJobOut, EnqueuedOut, RunLogOut, SetBudgetIn,
+    BudgetScheduleUpdate, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn, SetBudgetIn,
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
 from app.services.campaign_manager_service import EditError
+from campaign_manager.repo import DuplicateSchedule
 from jobs.queue import DuplicateActiveJob
 
 router = APIRouter()
@@ -33,7 +34,12 @@ async def list_budget_schedules(client: ClientDep):
 
 @router.post("/budget-schedules", response_model=BudgetScheduleOut, status_code=201)
 async def create_budget_schedule(client: ClientDep, session: SessionDep, body: BudgetScheduleIn):
-    return await svc.create_budget_schedule(session, client.id, body)
+    try:
+        return await svc.create_budget_schedule(session, client.id, body)
+    except DuplicateSchedule as e:
+        # The UI has always had a message for this; without the mapping it never saw the
+        # 409 and showed a generic failure instead.
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
 
 
 @router.patch("/budget-schedules/{schedule_id}", response_model=BudgetScheduleOut)
@@ -145,6 +151,38 @@ async def set_budget_now(client: ClientDep, session: SessionDep, body: SetBudget
         job_id = await svc.set_budget_now(session, client.id, body.campaign_id, body.budget)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A set-budget job is already active")
+    return EnqueuedOut(job_id=job_id)
+
+
+@router.post("/campaigns/{campaign_id}/activation", response_model=EnqueuedOut)
+async def set_activation_now(client: ClientDep, session: SessionDep, campaign_id: int,
+                             body: SetActivationIn):
+    """Start or stop a campaign now. Enqueues a VM job and returns its id to poll.
+
+    The transition guardrails (terminal states, budget bounds, rate limit) run on the VM
+    against the campaign's live status — not here — so this endpoint accepts any pair and
+    the job reports the refusal.
+    """
+    try:
+        job_id = await svc.set_activation_now(session, client.id, campaign_id,
+                                              body.status, body.budget)
+    except DuplicateActiveJob:
+        raise HTTPException(status.HTTP_409_CONFLICT, "An activation job is already active")
+    return EnqueuedOut(job_id=job_id)
+
+
+@router.post("/campaigns/refresh", response_model=EnqueuedOut)
+async def refresh_campaigns(client: ClientDep, session: SessionDep):
+    """Re-read the account's campaigns + statuses from Blinkit into the catalogue.
+
+    A read-only VM job (one list call, not a marketing scrape). The campaign pickers show
+    only campaigns present in the latest sync, so this is also how a campaign created since
+    last night's scrape becomes selectable.
+    """
+    try:
+        job_id = await svc.refresh_campaigns(session, client.id)
+    except DuplicateActiveJob:
+        raise HTTPException(status.HTTP_409_CONFLICT, "A campaign refresh is already active")
     return EnqueuedOut(job_id=job_id)
 
 

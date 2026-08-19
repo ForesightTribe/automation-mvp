@@ -18,9 +18,9 @@ const PALETTE = [
 	"#0d9488", // teal
 ];
 
-const CONTENT = "#0f172a";
-const CONTENT_MUTED = "#475569";
-const BORDER = "#e2e8f0";
+const CONTENT = "#000000";
+const CONTENT_MUTED = "#646160";
+const BORDER = "#e0ddd8";
 
 echarts.registerTheme(CHART_THEME, {
 	color: PALETTE,

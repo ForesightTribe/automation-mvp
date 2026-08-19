@@ -8,6 +8,7 @@ Convention: functions return schema DTOs (or None for not-found / access-denied,
 route maps to 404); a `DuplicateActiveJob` from the queue propagates for the route to 409.
 """
 import uuid
+from datetime import datetime, timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
@@ -56,17 +57,49 @@ async def _reapply(session, tenant_id: uuid.UUID, job_type: str) -> None:
 
 # ── Status (computed, so the UI shows Running / Scheduled / Ended, not raw state) ──
 
-def _expired(*, type_: str, date: str | None, end_date: str | None) -> bool:
-    today = now_ist().strftime("%Y-%m-%d")
+def _hhmm(value: str | None) -> tuple[int, int] | None:
+    try:
+        h, m = value.split(":")[:2]
+        return int(h), int(m)
+    except (AttributeError, TypeError, ValueError):
+        return None
+
+
+def _once_window_end(date_: str, start_time: str | None, end_time: str | None) -> datetime:
+    """When a one-time rule's window actually closes (overnight-aware)."""
+    base = datetime.strptime(date_, "%Y-%m-%d")
+    eh, sh = _hhmm(end_time), _hhmm(start_time) or (0, 0)
+    if eh is None:
+        return base + timedelta(days=1)          # no end time → runs to midnight
+    end = base.replace(hour=eh[0], minute=eh[1])
+    return end + timedelta(days=1) if eh <= sh else end   # overnight tail
+
+
+def _expired(*, type_: str, date: str | None, end_date: str | None,
+             start_time: str | None = None, end_time: str | None = None) -> bool:
+    """Has this rule finished for good?
+
+    For a `once` rule that means its WINDOW has closed, not merely that its date has
+    passed. Checking only `date < today` left a one-time automation reading "Scheduled"
+    for the rest of the day after it had already run and reverted — which is exactly how
+    a spent rule looked like an upcoming one in the Scheduled pane.
+    """
+    now = now_ist()
     if type_ == "once":
-        return bool(date and date < today)
-    return bool(end_date and end_date < today)
+        if not date:
+            return False
+        try:
+            return _once_window_end(date, start_time, end_time) <= now
+        except ValueError:                       # unparseable date — don't claim it ended
+            return False
+    return bool(end_date and end_date < now.strftime("%Y-%m-%d"))
 
 
 def _budget_rule_status(r, now) -> str:
     if _matches_rule(_rule_to_dict(r), now):
         return "running"
-    if _expired(type_=r.type, date=r.date, end_date=r.end_date):
+    if _expired(type_=r.type, date=r.date, end_date=r.end_date,
+                start_time=r.start_time, end_time=r.end_time):
         return "ended"
     return "scheduled"
 
@@ -87,7 +120,8 @@ def _bid_status(r, now) -> str:
         return r.state                            # paused / stopped
     if _in_window(_bid_dict(r), now):
         return "running"
-    if _expired(type_=r.type, date=r.date, end_date=r.stop_date):
+    if _expired(type_=r.type, date=r.date, end_date=r.stop_date,
+                start_time=r.start_time, end_time=r.stop_time):
         return "ended"
     return "scheduled"
 
@@ -102,6 +136,7 @@ def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
     return BudgetScheduleOut(
         id=schedule.id, campaign_id=schedule.campaign_id, campaign_name=schedule.campaign_name,
         name=schedule.name, default_budget=schedule.default_budget, state=schedule.state,
+        stop_after_window=schedule.stop_after_window,
         status=_budget_status(schedule, rules, now), platform=schedule.platform, rules=rule_outs,
     )
 
@@ -123,6 +158,7 @@ async def create_budget_schedule(session, tenant_id: uuid.UUID, body: BudgetSche
     s = await repo.create_budget_schedule(
         tenant_id, PLATFORM, body.campaign_id,
         body.campaign_name or f"campaign {body.campaign_id}", body.default_budget, body.name,
+        stop_after_window=body.stop_after_window,
     )
     rules = [await repo.add_budget_rule(s.id, **body.rule.model_dump())] if body.rule else []
     await _reconcile(session, tenant_id)
@@ -178,6 +214,9 @@ async def update_budget_rule(session, tenant_id: uuid.UUID, rule_id: int,
     if not s or s.tenant_id != tenant_id:
         return None
     fields = body.model_dump(exclude_unset=True)
+    # Deliberately WITHOUT start/end times: this guard is about the DATE. Passing the
+    # times would block rescheduling a spent one-time rule to later the SAME day, which is
+    # the most natural correction to make.
     if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
                 end_date=fields.get("end_date", r.end_date)):
         raise EditError("This one-time window has already ended — change its date to reschedule it.")
@@ -206,10 +245,25 @@ async def reset_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int)
     if not s or s.tenant_id != tenant_id:
         return None
     await repo.set_budget_state(schedule_id, "stopped")
-    params = {"campaign": str(s.campaign_id), "budget": str(s.default_budget)}
-    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
-        params["live"] = "true"
-    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
+    armed = await repo.get_armed(tenant_id, PLATFORM)      # cutover: write live when armed
+
+    # AD10 — on a stop-after-window schedule, Reset must also bring the campaign BACK.
+    # We may have stopped it at the last window end, and "undo the automation" that
+    # silently leaves the campaign dark is the opposite of what anyone expects. The
+    # restart carries the default budget, so it replaces the set-budget job rather than
+    # running alongside it.
+    if s.stop_after_window:
+        params = {"campaign": str(s.campaign_id), "status": "running",
+                  "budget": str(s.default_budget)}
+        if armed:
+            params["live"] = "true"
+        job = await enqueue(session, job_type="cm.set_activation",
+                            tenant_id=tenant_id, params=params)
+    else:
+        params = {"campaign": str(s.campaign_id), "budget": str(s.default_budget)}
+        if armed:
+            params["live"] = "true"
+        job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
     await _reconcile(session, tenant_id)
     return job.id
 
@@ -247,6 +301,7 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
         return None
     fields = body.model_dump(exclude_unset=True)
     # Reject editing a spent one-time rule unless the edit moves its date into the future.
+    # Date-only on purpose — see the note in update_budget_rule.
     if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
                 end_date=fields.get("stop_date", r.stop_date)):
         raise EditError("This one-time window has already ended — change its date to reschedule it.")
@@ -290,6 +345,31 @@ async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
         params["live"] = "true"
     job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
+    return job.id
+
+
+async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, status: str,
+                             budget: float | None = None) -> uuid.UUID:
+    """Enqueue a start/stop of one campaign. Like set_budget_now, the API only queues —
+    the VM opens the browser, reads the campaign's real state and runs the guardrails.
+
+    `budget` is passed through only for a resume; leaving it out lets the engine reuse the
+    campaign's current budget from a fresh read, which is better than anything the API
+    could guess from stale scraped data.
+    """
+    params = {"campaign": str(campaign_id), "status": status}
+    if status == "running" and budget is not None:
+        params["budget"] = str(budget)
+    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
+        params["live"] = "true"
+    job = await enqueue(session, job_type="cm.set_activation", tenant_id=tenant_id, params=params)
+    return job.id
+
+
+async def refresh_campaigns(session, tenant_id: uuid.UUID) -> uuid.UUID:
+    """Enqueue a catalogue refresh from the live account. No `live` param — it is a read,
+    so it runs the same whether or not the tenant is armed."""
+    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id)
     return job.id
 
 

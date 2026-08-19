@@ -13,6 +13,23 @@ from app.core.database import AsyncSessionLocal
 from app.utils.time import now_ist
 
 
+class DuplicateSchedule(Exception):
+    """A budget automation already exists for this campaign.
+
+    One schedule per (tenant, platform, campaign) is a DB constraint — a campaign has one
+    everyday budget, and several automations for it could only contradict each other.
+    Extra windows go on the existing schedule as rules. Raised as a domain error so the
+    API can answer 409 and the CLI can point at the schedule you actually want, instead of
+    either surfacing a raw UniqueViolationError."""
+
+    def __init__(self, campaign_id: int, schedule_id: int | None):
+        self.campaign_id, self.schedule_id = campaign_id, schedule_id
+        where = f"schedule #{schedule_id}" if schedule_id else "an existing schedule"
+        super().__init__(
+            f"campaign {campaign_id} already has a budget automation ({where}) — "
+            "add a window to it instead of creating a second one")
+
+
 async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
     """Return [(schedule, [rules])] for a tenant. Empty until rules are created."""
     from app.models.campaign_manager_v2 import CmBudgetSchedule, CmBudgetRule
@@ -26,8 +43,15 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
         )).scalars().all()
         out = []
         for s in schedules:
+            # ORDER BY id is load-bearing, not cosmetic: `budget.target_for_now` takes the
+            # FIRST matching rule, so with two overlapping windows the winner is decided
+            # here. Without an explicit order Postgres may return them differently between
+            # runs, and the same campaign would flip between two budgets for no visible
+            # reason. Oldest rule wins — stable, and explainable to a user ("the one you
+            # made first takes precedence").
             rules = (await db.execute(
                 select(CmBudgetRule).where(CmBudgetRule.schedule_id == s.id)
+                .order_by(CmBudgetRule.id)
             )).scalars().all()
             out.append((s, list(rules)))
         return out
@@ -123,16 +147,31 @@ async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str = "blinkit"
 # ── Rules CRUD (service layer — the CLI uses it now, the V4 API will reuse it) ──
 
 async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
-                                 campaign_name: str, default_budget: float, name: str | None = None):
+                                 campaign_name: str, default_budget: float, name: str | None = None,
+                                 stop_after_window: bool = False):
     """Create a budget-schedule container for a campaign. Raises on the unique
     (tenant, platform, campaign_id) conflict."""
+    from sqlalchemy.exc import IntegrityError
+
     from app.models.campaign_manager_v2 import CmBudgetSchedule
     async with AsyncSessionLocal() as db:
         s = CmBudgetSchedule(tenant_id=tenant_id, platform=platform, campaign_id=campaign_id,
                              campaign_name=campaign_name, name=name, default_budget=default_budget,
+                             stop_after_window=stop_after_window,
                              enabled=True)
         db.add(s)
-        await db.commit()
+        try:
+            await db.commit()
+        except IntegrityError:
+            await db.rollback()
+            existing = (await db.execute(
+                select(CmBudgetSchedule).where(
+                    CmBudgetSchedule.tenant_id == tenant_id,
+                    CmBudgetSchedule.platform == platform,
+                    CmBudgetSchedule.campaign_id == campaign_id,
+                )
+            )).scalars().first()
+            raise DuplicateSchedule(campaign_id, existing.id if existing else None) from None
         await db.refresh(s)
         return s
 
@@ -182,7 +221,8 @@ async def delete_budget_rule(rule_id: int) -> bool:
 
 
 async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int, campaign_name: str,
-                          keyword: str, target_position: int, min_bid: int, max_bid: int, *,
+                          keyword: str, target_position: int, min_bid: int,
+                          max_bid: int | None = None, *,
                           match_type: str = "EXACT", type: str = "recurring", date=None,
                           days: list | None = None, start_time=None, stop_time=None,
                           start_date=None, stop_date=None, lat=None, lon=None,
@@ -303,14 +343,26 @@ async def update_budget_rule(rule_id: int, fields: dict):
 
 
 async def update_bid_rule(rule_id: str, fields: dict):
-    """Patch a bid rule's editable fields (target/bids/timing/location). Returns row or None."""
-    from app.models.campaign_manager_v2 import CmBidRule
+    """Patch a bid rule's editable fields (target/bids/timing/location). Returns row or None.
+
+    Editing `max_bid` or `target_position` also voids any relaxed target in runtime: it was
+    concluded against the OLD ceiling and the OLD goal, so keeping it would be wrong — most
+    sharply when `max_bid` is raised, where a stale relaxed target has the optimizer drift
+    DOWN just after being handed more room to climb. `bid.stored_effective_target` guards
+    the `max_bid` case on read too (self-healing for edits that bypass this function); the
+    `target_position` case has no such tell, so it is cleared here."""
+    from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
         if not r:
             return None
         for k, v in fields.items():
             setattr(r, k, v)
+        if "max_bid" in fields or "target_position" in fields:
+            rt = await db.get(CmBidRuntime, rule_id)
+            if rt:
+                rt.effective_target = None
+                rt.effective_at_max_bid = None
         await db.commit()
         await db.refresh(r)
         return r
@@ -351,24 +403,38 @@ async def delete_bid_rule(rule_id: str) -> bool:
         return True
 
 
+# Actions that represent a real value write (as opposed to a skip/no-op/error). Bids
+# gained `drift`/`recover`/`open` alongside `apply`; all of them are PUTs and all of them
+# must count toward the runaway-loop guard.
+_WRITE_ACTIONS = ("apply", "drift", "recover", "open", "reset", "bounds")
+
+
 async def recent_write_count(tenant_id: uuid.UUID, campaign_id: int, *,
-                             window_minutes: int, kind: str) -> int:
-    """How many successful writes this campaign got within the window (rate limit)."""
+                             window_minutes: int, kind: str,
+                             keyword: str | None = None) -> int:
+    """How many successful writes happened within the window (rate limit).
+
+    Scoped to a KEYWORD when one is given. The guard exists to catch a runaway loop, and
+    a keyword-level count still does that — while a campaign-level count would let one
+    busy keyword throttle every other keyword on the same campaign, which is the wrong
+    failure. Budget keeps the campaign-level count (a campaign has one budget).
+    """
     from sqlalchemy import func
     from app.models.campaign_manager_v2 import CmRunLog
 
     cutoff = now_ist() - timedelta(minutes=window_minutes)
     async with AsyncSessionLocal() as db:
-        n = (await db.execute(
-            select(func.count()).select_from(CmRunLog).where(
-                CmRunLog.tenant_id == tenant_id,
-                CmRunLog.campaign_id == campaign_id,
-                CmRunLog.kind == kind,
-                CmRunLog.action == "apply",
-                CmRunLog.dry_run == False,  # noqa: E712 — only real writes count
-                CmRunLog.timestamp >= cutoff,
-            )
-        )).scalar()
+        q = select(func.count()).select_from(CmRunLog).where(
+            CmRunLog.tenant_id == tenant_id,
+            CmRunLog.campaign_id == campaign_id,
+            CmRunLog.kind == kind,
+            CmRunLog.action.in_(_WRITE_ACTIONS),
+            CmRunLog.dry_run == False,  # noqa: E712 — only real writes count
+            CmRunLog.timestamp >= cutoff,
+        )
+        if keyword is not None:
+            q = q.where(CmRunLog.keyword == keyword)
+        n = (await db.execute(q)).scalar()
         return int(n or 0)
 
 
@@ -391,6 +457,54 @@ async def write_bid_runtime(rows: list[dict]) -> None:
             )
             await db.execute(stmt)
         await db.commit()
+
+
+async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
+                                  platform: str = "blinkit") -> int:
+    """Refresh the campaign catalogue from a live account listing. Returns rows written.
+
+    This is the one place the campaign manager writes OUTSIDE its own cm_* tables: the
+    catalogue (`blinkit_ad_campaigns`) is shared with the marketing scraper and Ads
+    Analytics. That is deliberate — a second cm-owned copy would drift from the scraper's,
+    and the pickers' freshness filter only means anything against a single catalogue.
+
+    It is safe because this writes the SAME source the scraper does (the account campaign
+    list) in the same shape, keyed on the same `upsert_key`. Two things it will not touch:
+    `scrape_job_id` (this run has no scrape job, and blanking it would destroy the
+    scraper's lineage) and `platform`/`tenant_id` (identity). `scraped_at` DOES advance —
+    that is the point, since freshness is what marks a campaign as still on the account.
+    """
+    if not campaigns:
+        return 0
+    from sqlalchemy.dialects.postgresql import insert
+
+    from app.models.blinkit_marketing import BlinkitAdCampaign
+    from scraper.platforms.blinkit.dashboard_data.marketing.parser import parse_campaign
+    from scraper.platforms.blinkit.dashboard_data.marketing.storage import prepare_row
+
+    rows = []
+    for raw in campaigns:
+        if raw.get("id") is None:
+            continue
+        row = parse_campaign(raw, str(tenant_id), None)
+        row.pop("scrape_job_id")            # keep the scraper's lineage intact
+        row["platform"] = platform
+        rows.append(prepare_row(BlinkitAdCampaign, row))
+    # ON CONFLICT cannot update the same row twice in one statement.
+    rows = list({r["upsert_key"]: r for r in rows}.values())
+    if not rows:
+        return 0
+
+    updatable = {"name", "type", "status", "start_ts", "end_ts",
+                 "infinite_campaign", "daily_budget", "scraped_at"}
+    async with AsyncSessionLocal() as db:
+        stmt = insert(BlinkitAdCampaign).values(rows).on_conflict_do_update(
+            index_elements=["upsert_key"],
+            set_={c: insert(BlinkitAdCampaign).excluded[c] for c in updatable},
+        )
+        await db.execute(stmt)
+        await db.commit()
+    return len(rows)
 
 
 async def write_run_log(rows: list[dict]) -> None:

@@ -7,8 +7,14 @@ const FIELD =
 /**
  * Searchable campaign selector — the end-user picks by name, not by memorising ids.
  * Types to filter the account's campaigns (name or id); the chosen row reports both
- * `campaign_id` and `campaign_name` up. A purely-numeric query that matches nothing
- * is still accepted as a raw id, so a brand-new campaign is never a dead end.
+ * `campaign_id` and `campaign_name` up.
+ *
+ * Only campaigns from the latest catalogue sync are offered, and **a typed id that isn't
+ * among them is refused** rather than accepted as a raw id. That escape hatch existed so a
+ * just-created campaign was never a dead end, but it also let a dead account's campaign id
+ * be pasted straight back in from an old sheet — which is the exact accident the freshness
+ * filter is here to prevent, and an automation pointed at an unwritable campaign fails
+ * silently every run. Refreshing the campaign list is now the answer for a new campaign.
  */
 export const CampaignPicker = ({ value, name, onChange, placeholder = "Search campaigns…" }) => {
 	const { data: campaigns = [], isLoading } = useCampaigns();
@@ -34,7 +40,7 @@ export const CampaignPicker = ({ value, name, onChange, placeholder = "Search ca
 	}, [campaigns, query]);
 
 	const numericId = /^\d+$/.test(query.trim()) ? Number(query.trim()) : null;
-	const rawFallback =
+	const unknownId =
 		numericId && !campaigns.some((c) => c.campaign_id === numericId) ? numericId : null;
 
 	const pick = (id, label) => {
@@ -76,7 +82,7 @@ export const CampaignPicker = ({ value, name, onChange, placeholder = "Search ca
 					{isLoading && (
 						<li className="px-3 py-2 text-xs text-content-subtle">Loading campaigns…</li>
 					)}
-					{!isLoading && matches.length === 0 && !rawFallback && (
+					{!isLoading && matches.length === 0 && !unknownId && (
 						<li className="px-3 py-2 text-xs text-content-subtle">No campaigns found.</li>
 					)}
 					{matches.map((c) => (
@@ -96,15 +102,11 @@ export const CampaignPicker = ({ value, name, onChange, placeholder = "Search ca
 							</button>
 						</li>
 					))}
-					{rawFallback && (
-						<li>
-							<button
-								type="button"
-								onClick={() => pick(rawFallback, `campaign ${rawFallback}`)}
-								className="w-full px-3 py-2 text-left text-sm text-content hover:bg-muted"
-							>
-								Use campaign id <span className="font-medium">#{rawFallback}</span>
-							</button>
+					{unknownId && (
+						<li className="px-3 py-2 text-xs text-content-muted">
+							<span className="font-medium text-content">#{unknownId}</span> isn't on
+							this account's current campaign list. If you just created it, refresh the
+							list from <span className="font-medium">Start or stop a campaign</span>.
 						</li>
 					)}
 				</ul>

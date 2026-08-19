@@ -5,6 +5,7 @@ import { ProductsTable } from "./components/ProductsTable";
 import { STATUS_OPTIONS } from "./components/StatusBadge";
 import { Card } from "../../components/ui/Card";
 import { Pagination } from "../../components/ui/Pagination";
+import { PageHeader } from "../../components/ui/PageHeader";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 import { EmptyState } from "../../components/feedback/EmptyState";
@@ -60,14 +61,10 @@ export const ProductsPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div>
-				<h1 className="font-display text-xl font-bold text-content">
-					Products
-				</h1>
-				<p className="text-sm text-content-muted">
-					Per-SKU deep dive — sales, stock, and days of cover.
-				</p>
-			</div>
+			<PageHeader
+				title="Products"
+				subtitle="Per-SKU deep dive — sales, stock, and days of cover."
+			/>
 
 			<ProductsKpiStrip summary={data?.summary} />
 
@@ -80,12 +77,12 @@ export const ProductsPage = () => {
 							value={searchInput}
 							onChange={(e) => setSearchInput(e.target.value)}
 							placeholder="Search SKU…"
-							className="w-44 rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-primary/30"
+							className="w-44 rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content placeholder:text-content-subtle focus:outline-none focus:ring-2 focus:ring-brand/30"
 						/>
 						<select
 							value={status}
 							onChange={(e) => setStatus(e.target.value)}
-							className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-primary/30"
+							className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-brand/30"
 						>
 							{STATUS_OPTIONS.map((o) => (
 								<option key={o.value} value={o.value}>

@@ -456,7 +456,8 @@ Useful Cloud Logging filters:
 
 ```
 log_id("foresight_runner") AND severity>=ERROR       ← failures + HEARTBEAT alerts
-jsonPayload.record.message =~ "auth_expired"          ← session died
+log_id("foresight_runner") AND jsonPayload.record.extra.error="auth_expired"
+log_id("foresight_runner") AND jsonPayload.record.extra.tenant_id="<uuid>"
 log_id("foresight_jobs")                              ← raw scraper output
 ```
 
@@ -488,12 +489,30 @@ is marked `failed` — it is **not** auto-re-queued. Public scrapes support `--r
 (skips already-scraped stores), so re-queue with `-p resume=true`. Auto-retry is not
 built.
 
-### 3. Session expiry is the likeliest unattended failure
+### 3. Session expiry — now self-healing
 
-Auto-login is parked. When a Blinkit session dies, scheduled scrapes fail with
-`error='auth_expired'` (loud, alertable). Fix by SSHing in once:
-`python -m cli auth blinkit --tenant <id> --headless`. Watch the `IndexedDB: N Firebase
-items` line — **N=0 means the session will die in an hour; re-login headful.**
+*Updated 2026-08-04. This used to be the likeliest unattended failure; it mostly is not
+any more.*
+
+Scrapes call `ensure()`, which probes the stored session and refreshes or re-logs-in
+(no browser; the magic link / OTP is read from the auth inbox). A dead session repairs
+itself mid-run and the scrape continues. A daily `auth.refresh` job keeps sessions warm
+so they rarely expire in the first place.
+
+You only see `error='auth_expired'` when *recovery* failed — no credentials stored, the
+login mail never arrived, or auto-login suspended itself after 3 consecutive login
+failures. Diagnose without SSHing anywhere near a browser:
+
+```bash
+python -m cli auth status -t <tenant>            # health, failure count, last error
+python -m cli auth probe blinkit -t <tenant>     # is it alive right now
+python -m cli auth login blinkit -t <tenant>     # unattended re-login (~15 s)
+python -m cli auth reset blinkit -t <tenant>     # clear the breaker after a fix
+```
+
+The run's own log carries an `AUTH FAILURE` banner with the cause and the fix command —
+the runner entry's `jsonPayload.record.extra.log_file` names which log to open. Full
+detail: [platform-auth.md](platform-auth.md).
 
 ### 4. Cron is IST, always
 
@@ -563,7 +582,7 @@ by the small pool — public scrapes stage to SQLite, and the loader uses a sing
 | `ModuleNotFoundError` under systemd     | `ExecStart` must use the **full venv python path** — systemd never runs `activate`              |
 | Log file empty until job ends           | `PYTHONUNBUFFERED=1` missing from the unit                                                      |
 | Logs written to `/logs/...` or vanish   | `WorkingDirectory` unset, or `LOG_DIR` not absolute                                             |
-| Everything `failed` with `auth_expired` | Session died → re-auth (see #3)                                                                 |
+| Everything `failed` with `auth_expired` | Auto-recovery failed → `cli auth status -t <id>` (see #3)                                                                 |
 | Schedule never fires                    | It's `disabled`, or `SCHEDULER_ENABLED=false`, or `next_run_at` is NULL (re-`enable` to re-arm) |
 | `DuplicateActiveJob` on `jobs run`      | A job of that (type, tenant) is already pending/running — check `cli jobs list`                 |
 | Jobs run but from the wrong IP          | A local runner is stealing from the queue (see #1)                                              |

@@ -28,7 +28,7 @@ export const MetricTile = ({
 				{label}
 			</p>
 			<div className="mt-2 flex items-baseline justify-between gap-2">
-				<p className="font-display text-2xl font-bold text-content">
+				<p className="font-display text-xl font-bold text-content xl:text-2xl">
 					{value}
 				</p>
 				<DeltaBadge delta={delta} goodWhenDown={goodWhenDown} />

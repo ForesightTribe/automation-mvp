@@ -14,8 +14,10 @@ import {
 	getCampaigns,
 	getHistory,
 	getJob,
+	refreshCampaigns,
 	resetBudgetSchedule,
 	runEngine,
+	setActivationNow,
 	setAdvertiser,
 	setBidState,
 	setBudgetNow,
@@ -230,6 +232,25 @@ export const useSetBudgetNow = () => {
 	const { activeClientId } = useClient();
 	return useMutation({
 		mutationFn: (body) => setBudgetNow(activeClientId, body),
+	});
+};
+
+export const useSetActivationNow = () => {
+	const { activeClientId } = useClient();
+	return useMutation({
+		mutationFn: ({ campaignId, ...body }) => setActivationNow(activeClientId, campaignId, body),
+	});
+};
+
+/**
+ * Re-read the account's campaigns from Blinkit (enqueue→poll). Invalidating the catalogue
+ * is left to the caller once the JOB finishes — the mutation only means "queued", and
+ * refetching then would just re-read the same stale rows.
+ */
+export const useRefreshCampaigns = () => {
+	const { activeClientId } = useClient();
+	return useMutation({
+		mutationFn: () => refreshCampaigns(activeClientId),
 	});
 };
 

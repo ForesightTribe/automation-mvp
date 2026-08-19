@@ -96,6 +96,19 @@ def write_result(run_id: str, *, dry_run: bool, campaign_id, applied: bool,
           run_id=run_id, campaign_id=campaign_id, applied=applied)
 
 
+def status_overwrites(run_id: str, *, dry_run: bool, campaign_id, fields: dict) -> None:
+    """What a RESTART is about to overwrite (docs/campaign-manager.md §8.4).
+
+    Resuming a campaign re-submits it whole — budget, keywords, bids, pids, dates — so a
+    restart built from a stale read silently reverts the bid optimizer's work. WARNING
+    level because it is worth noticing even on a healthy run.
+    """
+    summary = ", ".join(f"{k}={v}" for k, v in sorted(fields.items()))
+    _emit("warning", "status.overwrites", dry_run,
+          f"campaign={campaign_id} restart re-submits: {summary}",
+          run_id=run_id, campaign_id=campaign_id, **{f"ow_{k}": v for k, v in fields.items()})
+
+
 def reconcile_change(run_id: str, *, dry_run: bool, action: str, name: str,
                      detail: str = "") -> None:
     """One create/update/delete the reconciler made (or would make) to job_schedules.
