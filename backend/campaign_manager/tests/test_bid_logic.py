@@ -9,7 +9,7 @@ from datetime import datetime
 
 from campaign_manager.bid import (
     HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid, is_recovery,
-    resolve_ceiling, should_relax_target, stored_effective_target,
+    next_raise_step, resolve_ceiling, should_relax_target, stored_effective_target,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
 
@@ -19,6 +19,8 @@ NOW = datetime(2026, 8, 1, 14, 0)   # 14:00 on 2026-08-01
 # ── step ─────────────────────────────────────────────────────────────────────
 
 def test_dynamic_step_tiers():
+    """Still the step for the LOWER branch (reached only when drift is disabled). The
+    RAISE branch no longer uses it — see the escalating-raise tests below."""
     assert _dynamic_step(5) == 100 and _dynamic_step(4) == 100
     assert _dynamic_step(3.5) == 50 and _dynamic_step(3) == 50
     assert _dynamic_step(2) == 25 and _dynamic_step(1) == 25
@@ -33,13 +35,13 @@ def test_at_target_no_change():
 
 
 def test_below_target_raises():
-    # pos 6 > target 3 → distance 3 → step 50 → 50 + 50 = 100
-    new, _ = compute_bid(6, 3, 50, 10, 200, None, None)
+    # The orchestration supplies the step; here it's given explicitly.
+    new, _ = compute_bid(6, 3, 50, 10, 200, None, None, raise_step=50)
     assert new == 100
 
 
 def test_raise_clamped_to_max():
-    new, _ = compute_bid(6, 3, 190, 10, 200, None, None)   # 190 + 50 = 240 → clamp 200
+    new, _ = compute_bid(6, 3, 190, 10, 200, None, None, raise_step=50)   # 240 → clamp 200
     assert new == 200
 
 
@@ -427,6 +429,64 @@ def test_unbounded_rule_can_still_relax_at_the_absolute_ceiling():
     for a rule that never set one."""
     ceiling = resolve_ceiling(None, 10000)
     assert should_relax_target(5, 1, ceiling, ceiling, last_position=5) is True
+
+
+# ── escalating raise ─────────────────────────────────────────────────────────
+
+_RAISE = dict(min_step=50, pct=8, escalate=1.5)
+
+
+def test_first_raise_uses_the_base_step():
+    assert next_raise_step(100, None, False, **_RAISE) == 50        # 8% of 100 < the floor
+
+
+def test_base_step_is_a_percentage_once_the_bid_is_large():
+    assert next_raise_step(2000, None, False, **_RAISE) == 160      # 8% of 2000 > the floor
+
+
+def test_step_escalates_while_the_position_refuses_to_move():
+    """The whole point: treads are hundreds of rupees wide, so a flat step crawls."""
+    steps, step, bid = [], None, 100
+    for _ in range(6):
+        step = next_raise_step(bid, step, improved=False, **_RAISE)
+        steps.append(step)
+        bid += step
+    assert steps == [50, 75, 112, 168, 252, 378]
+    assert bid == 1135          # a flat ₹100 step would have reached only ₹700
+
+
+def test_step_resets_the_moment_the_position_improves():
+    """Crossing a riser means stop accelerating — the next one may be one step away."""
+    assert next_raise_step(500, 400, improved=True, **_RAISE) == 50
+
+
+def test_step_never_more_than_doubles_the_bid():
+    assert next_raise_step(200, 900, improved=False, **_RAISE) == 200
+
+
+def test_step_never_falls_below_the_floor():
+    assert next_raise_step(10, None, False, **_RAISE) == 50
+
+
+def test_escalate_one_gives_a_flat_step():
+    """The revert path: ESCALATE=1.0 leaves a plain max(floor, pct%) step."""
+    flat = dict(min_step=50, pct=8, escalate=1.0)
+    step, bid = None, 100
+    for _ in range(4):
+        step = next_raise_step(bid, step, improved=False, **flat)
+        bid += step
+    assert step == 50 and bid == 300
+
+
+def test_unbounded_rule_can_reach_a_high_target_inside_one_window():
+    """The limitation the optional-max_bid work left open: a flat ₹100 step tops out near
+    ₹2,900 in a 7-hour window, so a rule needing more never got there."""
+    step, bid, ticks = None, 100, 0
+    while bid < 10000 and ticks < 28:
+        step = next_raise_step(bid, step, improved=False, **_RAISE)
+        bid += step
+        ticks += 1
+    assert bid >= 10000 and ticks <= 15
 
 
 def _run() -> int:

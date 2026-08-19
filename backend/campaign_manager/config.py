@@ -45,6 +45,24 @@ BID_DRIFT_MIN_STEP: int = int(os.getenv("CM_BID_DRIFT_MIN_STEP", "5"))
 # The dial between cost and position: shorter = cheaper but more dips below target.
 BID_DRIFT_PAUSE_MINUTES: int = int(os.getenv("CM_BID_DRIFT_PAUSE_MINUTES", "90"))
 
+# ── Bid raise (climbing toward the target position) ─────────────────────────
+#
+# The step is NOT scaled by distance-from-target any more. Sponsored slots sit ~4 apart
+# (1/5/9/13/17), so slot distance was almost always either ≥4 or 1–2 — the old four-tier
+# table resolved to ₹100 or ₹25 and its ₹50 tier fired once in 88 recorded steps. Worse,
+# slot distance says nothing about RUPEE distance: the bid→position curve is a staircase
+# with treads hundreds of rupees wide, so "one slot away" can cost ₹50 or ₹600.
+#
+# Instead the step escalates on the feedback we already have every tick: if the last raise
+# did NOT improve the position we are mid-tread and the next step must be bigger; if it did,
+# we crossed a riser and reset. Overshoot is safe because drift-down walks it back — climb
+# fast to find the position, descend slowly to find the price.
+#
+# ESCALATE = 1.0 disables escalation and leaves a flat max(MIN_STEP, PCT%) step.
+BID_RAISE_MIN_STEP: int = int(os.getenv("CM_BID_RAISE_MIN_STEP", "50"))
+BID_RAISE_PCT: float = float(os.getenv("CM_BID_RAISE_PCT", "8"))
+BID_RAISE_ESCALATE: float = float(os.getenv("CM_BID_RAISE_ESCALATE", "1.5"))
+
 # ── Absolute bid ceiling ────────────────────────────────────────────────────
 #
 # A rule's `max_bid` is OPTIONAL — sometimes the client wants the target position whatever

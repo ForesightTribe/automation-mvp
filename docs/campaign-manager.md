@@ -148,6 +148,7 @@ existing schedule as rules.
 | `last_holding_cpm` | The last bid observed **holding** target. The precise snap-back price |
 | `drift_paused_until` | When shaving may resume after an overshoot |
 | `effective_target` | The relaxed target, when the real one is unreachable at `max_bid` |
+| `raise_step` | The last raise size. Escalates while the position refuses to move, resets when it does |
 | `effective_at_max_bid` | The ceiling `effective_target` was concluded at — makes edits self-healing |
 | `updated_at` | Stamped whenever a tick persists runtime. **This is how "first tick of this window" is detected**, which is why no extra column was needed |
 
@@ -229,18 +230,57 @@ best-effort (the campaign may be dark, or the write refused), and without the wi
 reset that failed last night is never recovered — `current_cpm` reads yesterday's `last_cpm` and
 steps *up* from it, so the bid ratchets across days until it pins at `max_bid`.
 
-### 7.2 Climbing
+### 7.2 Climbing — the escalating raise
 
-Position worse than target → raise by a distance-scaled step:
+Position worse than target → raise. The step is **not** scaled by distance from target; it
+escalates on whether the last raise actually worked.
 
-| Distance from target | Step |
-|---|---|
-| 4 or more | ₹100 |
-| 3 | ₹50 |
-| 1–2 | ₹25 |
+```
+base   = max(CM_BID_RAISE_MIN_STEP, CM_BID_RAISE_PCT% of the current bid)
+position didn't improve → step × CM_BID_RAISE_ESCALATE
+position improved       → back to base
+window opened           → back to base
+```
+
+**Why not distance-scaled.** Sponsored slots sit about 4 apart (1/5/9/13/17), so slot
+distance is nearly always either ≥4 or 1–2 — the old four-tier table resolved to ₹100 or
+₹25 in practice and its ₹50 tier fired **once in 88 recorded steps**. Slot distance is also
+a poor proxy for *rupee* distance: the bid→position curve is a staircase with treads
+hundreds of rupees wide, so "one slot away" can cost ₹50 or ₹600. Distance simply isn't the
+signal. Whether the last raise moved the position is.
+
+Typical climb from a ₹100 floor at the defaults (₹50 / 8% / ×1.5):
+
+| Tick | Bid | Step |
+|---|---|---|
+| 1 | 100 | +50 |
+| 2 | 150 | +75 |
+| 3 | 225 | +112 |
+| 4 | 337 | +168 |
+| 5 | 506 | +252 |
+| 6 | 758 | +378 |
+
+₹1,135 in six ticks, against ₹700 for a flat ₹100 step — and it reaches ₹10,000 in about
+12 ticks, which is what lets a rule with **no `max_bid`** actually get there inside a window.
+
+**One tick can never more than double the bid** (the step is capped at the current bid),
+and `CM_BID_RAISE_ESCALATE=1.0` disables escalation entirely, leaving a flat
+`max(floor, pct%)` step.
+
+**Escalating is only safe because drift-down exists.** A fast climb overshoots the true
+threshold; drift walks it back and settles just above it. Climb fast to find the position,
+descend slowly to find the price. That is also why the multiplier is 1.5 rather than 2 —
+doubling arrives a tick sooner but overshoots about twice as far, and drift then spends an
+extra hour undoing it.
+
+Only a **genuine raise** carries the escalation forward. A drift recovery snap-back is a
+precise return to a known-good price, not a climb, and holding ticks aren't climbing at all
+— letting either escalate would make the next real raise start from an inflated step.
 
 **Reflection HOLD** — if the position hasn't improved and it's been under 10 minutes since the last
-change, wait. Marketplace changes take time to show up; stacking raises overbids.
+change, wait. Marketplace changes take time to show up; stacking raises overbids. At the
+15-minute cadence this rarely fires; it exists for back-to-back runs, such as an edit
+triggering an immediate re-apply.
 
 ### 7.3 Holding — "at target **or better**"
 
@@ -320,13 +360,9 @@ realistic CPM (₹10,000 vs the ₹900 high-water mark) so it never binds in nor
 Real spend is bounded by the daily budget long before it: at a ₹10,000 CPM a ₹2,000 budget
 is gone in 200 impressions and the campaign goes ON_HOLD.
 
-⚠️ **Known limitation.** The raise step maxes out at ₹100/tick, so from a ₹100 floor a
-7-hour window (28 ticks) reaches only about **₹2,900**. A rule whose target needs more than
-that won't get there within a window — and won't relax either, because relaxation triggers
-on reaching the ceiling and ₹10,000 is unreachable at ₹100/tick. It climbs all window, gets
-reset at close, and repeats. Fixing it means either a proportional raise step for
-unbounded rules or relaxing on "N raises with no improvement"; both are deferred until
-real History rows show whether ₹2,900/window is actually a constraint.
+✅ The old "a flat ₹100/tick tops out near ₹2,900 per window" limitation is **gone** — the
+escalating raise (§7.2) reaches ₹10,000 in about 12 ticks, so an unbounded rule can now
+actually reach a high target inside a window.
 
 ### 7.7 Bounds are invariants
 
@@ -554,6 +590,9 @@ read at import, so **the runner must be restarted** for a change to take effect.
 | `CM_BID_DRIFT_PCT` | **`7`** (armed) | **The drift kill switch.** Set to `0` for a true revert to pre-drift behaviour |
 | `CM_BID_DRIFT_MIN_STEP` | `5` | Floor for one shave, so small bids still move |
 | `CM_BID_DRIFT_PAUSE_MINUTES` | `90` | How long before shaving resumes after an overshoot |
+| `CM_BID_RAISE_MIN_STEP` | `50` | Absolute floor for one raise |
+| `CM_BID_RAISE_PCT` | `8` | Base raise as a % of the current bid |
+| `CM_BID_RAISE_ESCALATE` | `1.5` | Multiplier per tick the position doesn’t move. `1.0` = flat step |
 | `CM_BID_MAX_ABSOLUTE` | `10000` | Runaway guard. The ceiling for a rule with no `max_bid`, and a cap on one that has |
 
 Fixed constants: reflection `HOLD_MINUTES=10` · optimizer cadence 15 min · reset lead 1 min ·

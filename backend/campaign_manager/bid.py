@@ -142,6 +142,28 @@ def is_recovery(position: float, target: int, current_cpm: int,
             and int(last_holding_cpm) > int(current_cpm))
 
 
+def next_raise_step(current_cpm: int, last_step: int | None, improved: bool, *,
+                    min_step: int, pct: float, escalate: float) -> int:
+    """How much to add on this raise.
+
+    Deliberately NOT a function of distance-from-target. Slots sit ~4 apart, so slot
+    distance was almost always ≥4 or 1–2 and the old tier table collapsed to two values
+    (its ₹50 tier fired once in 88 recorded steps) — and slot distance says nothing about
+    rupee distance anyway, because the bid→position curve is a staircase with treads
+    hundreds wide.
+
+    What it uses instead is the one signal each tick already gives us: did the LAST raise
+    move the position?
+      - it didn't → we are mid-tread, whatever we added wasn't enough → escalate;
+      - it did   → we crossed a riser → back to base, so we don't blow past the next one.
+
+    Capped at the current bid, so one tick can never more than double it.
+    """
+    base = max(int(min_step), int(current_cpm * pct / 100))
+    step = base if (last_step is None or improved) else max(base, int(last_step * escalate))
+    return max(int(min_step), min(step, int(current_cpm)))
+
+
 def resolve_ceiling(rule_max_bid: int | None, absolute: int) -> int:
     """A rule's effective bid ceiling.
 
@@ -190,7 +212,8 @@ def should_relax_target(position: float, rule_target: int, current_cpm: int, max
 def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, max_bid: int,
                 last_position: float | None, minutes_since_change: float | None, *,
                 last_holding_cpm: int | None = None, drift_paused: bool = False,
-                drift_pct: float = 0.0, drift_min_step: int = 5) -> tuple[int | None, str]:
+                drift_pct: float = 0.0, drift_min_step: int = 5,
+                raise_step: int | None = None) -> tuple[int | None, str]:
     """The bid decision. Returns (new_cpm | None, reason); None = no change.
 
     "Holding" means position is at target **or better** — better is a success, not an error
@@ -222,7 +245,10 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
                 and minutes_since_change is not None and minutes_since_change < HOLD_MINUTES):
             return None, (f"hold — pos {position} ≥ last {last_position}, "
                           f"{minutes_since_change:.0f}min < {HOLD_MINUTES}min reflection")
-        step = _dynamic_step(abs(position - target))
+        # `raise_step` comes from `next_raise_step` (escalates while the position isn't
+        # moving). Falling back to the distance tiers keeps the pure-function callers in
+        # the tests honest; the orchestration always supplies one.
+        step = raise_step if raise_step is not None else _dynamic_step(abs(position - target))
         new_cpm = min(int(current_cpm + step), int(max_bid))
         return new_cpm, f"raise: pos {position} > target {target}, step ₹{step:g}"
 
@@ -472,6 +498,16 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             paused_until = None if open_stamp else (runtime.drift_paused_until if runtime else None)
             drift_paused = bool(paused_until and paused_until > now)
 
+            # Raise escalation. "Improved" = the position got BETTER since the last tick,
+            # i.e. the last raise crossed a riser — so go back to the base step rather than
+            # keep accelerating into the next one. A window that just opened starts fresh.
+            improved = last_pos is not None and position < last_pos
+            step_now = next_raise_step(
+                current_cpm, None if open_stamp else (runtime.raise_step if runtime else None),
+                improved, min_step=config.BID_RAISE_MIN_STEP, pct=config.BID_RAISE_PCT,
+                escalate=config.BID_RAISE_ESCALATE,
+            )
+
             # ── Unreachable target: chase what the ceiling can actually buy ──
             eff = None if open_stamp else stored_effective_target(
                 rule.target_position, ceiling,
@@ -498,6 +534,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 position, target, current_cpm, rule.min_bid, ceiling,
                 last_pos, mins, last_holding_cpm=holding_cpm, drift_paused=drift_paused,
                 drift_pct=config.BID_DRIFT_PCT, drift_min_step=config.BID_DRIFT_MIN_STEP,
+                raise_step=step_now,
             )
             recovering = (config.BID_DRIFT_PCT > 0
                           and is_recovery(position, target, current_cpm, holding_cpm))
@@ -515,6 +552,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 rt["drift_paused_until"] = None
                 rt["effective_target"] = None
                 rt["effective_at_max_bid"] = None
+                rt["raise_step"] = None
+            # Only a real raise carries the escalation forward. A recovery snap-back is a
+            # precise return to a known price, not a climb, and holding ticks aren't
+            # climbing at all — letting either escalate would have the next genuine raise
+            # start from an inflated step.
+            if new_cpm is not None and position > target and not recovering:
+                rt["raise_step"] = int(step_now)
+            elif improved or position <= target:
+                rt["raise_step"] = None            # crossed a riser → start again at base
             if relaxed_now:                        # pin the ceiling it was concluded at
                 rt["effective_target"] = int(target)
                 rt["effective_at_max_bid"] = int(ceiling)

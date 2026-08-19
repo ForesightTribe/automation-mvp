@@ -135,6 +135,11 @@ class CmBidRuntime(SQLModel, table=True):
     # every day retries the real target from scratch.
     effective_target: int | None = None
     effective_at_max_bid: int | None = None
+    # The size of the last raise. Escalates while the position refuses to move (we are
+    # mid-tread and whatever we added wasn't enough) and resets the moment it does. NULL
+    # means "start from the base step" — the state at a window open, after a riser is
+    # crossed, and for a rule that has never climbed.
+    raise_step: int | None = None
     updated_at: datetime = Field(default_factory=now_ist)
 
 
