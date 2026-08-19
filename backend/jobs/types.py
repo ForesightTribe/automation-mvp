@@ -23,6 +23,11 @@ class JobTypeSpec(NamedTuple):
     needs_tenant: bool = True
     # Accepted param names — used to reject typos and to document the type.
     param_keys: tuple[str, ...] = ()
+    # What to call this in a log line, an email, or a UI — written for someone who
+    # does not know the codebase. `scrape.blinkit_marketing` is a registry key, not a
+    # description; "Blinkit ads scrape" is what the run actually is. Every
+    # human-facing surface reads this instead of the dotted type name.
+    label: str = ""
 
 
 # Values that mean "off" for a boolean param. Without this, `sales=false` would be a
@@ -200,14 +205,17 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "scrape.blinkit_marketing": JobTypeSpec(
         Lane.dashboard, 60 * 60, _marketing,
         param_keys=("date_from", "date_to", "limit"),
+        label="Blinkit ads scrape",
     ),
     "scrape.blinkit_seller": JobTypeSpec(
         Lane.dashboard, 60 * 60, _seller,
         param_keys=("date_from", "date_to", "sales", "po", "soh"),
+        label="Blinkit seller scrape",
     ),
     "scrape.blinkit_scorecard": JobTypeSpec(
         Lane.dashboard, 30 * 60, _scorecard,
         param_keys=("week",),
+        label="Blinkit scorecard scrape",
     ),
     # Public scrapes take the marketplace as a PARAM rather than having a job type
     # each: lane and timeout are identical, and sharing the `batch` lane is correct —
@@ -216,32 +224,40 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "scrape.public_keyword": JobTypeSpec(
         Lane.batch, 12 * 60 * 60, _public_keyword,
         param_keys=("marketplace", "city", "keyword", "cap", "workers", "resume"),
+        label="Public keyword scrape",
     ),
     "scrape.public_skus": JobTypeSpec(
         Lane.batch, 12 * 60 * 60, _public_skus,
         param_keys=("marketplace", "city", "brand_cap", "workers", "resume"),
+        label="Public own-SKU scrape",
     ),
     # Ad automations — each has its own dedicated lane so they never block each other.
     "ads.budget_scheduler": JobTypeSpec(
         Lane.budget_scheduler, 5 * 60, _budget_scheduler,
+        label="Budget scheduler (legacy v1)",
     ),
     "ads.bid_optimizer": JobTypeSpec(
         Lane.bid_optimizer, 5 * 60, _bid_optimizer,
+        label="Bid optimizer (legacy v1)",
     ),
     "ads.sync_campaign_data": JobTypeSpec(
         Lane.sync_campaign_data, 2 * 60 * 60, _sync_campaign_data,
+        label="Campaign data sync (legacy v1)",
     ),
     # Campaign Manager v2 — its OWN lanes (D18): bid isolated in cm_bid (latency-
     # critical); budget + set-budget + sync share cm_ops (latency-tolerant); reconcile
     # is no-browser → the shared interactive lane (prompt).
     "cm.budget_scheduler": JobTypeSpec(
         Lane.cm_ops, 15 * 60, _cm_budget_scheduler, param_keys=("live",),
+        label="Campaign budget scheduler",
     ),
     "cm.bid_optimizer": JobTypeSpec(
         Lane.cm_bid, 15 * 60, _cm_bid_optimizer, param_keys=("live", "reset"),
+        label="Campaign bid optimizer",
     ),
     "cm.set_budget": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("campaign", "budget", "live"),
+        label="Campaign budget change",
     ),
     # On-demand campaign start/stop (the dashboard's Start/Pause buttons). Shares the
     # cm_ops lane with the other latency-tolerant campaign writes, so it can never run
@@ -249,28 +265,34 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "cm.set_activation": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_activation,
         param_keys=("campaign", "status", "budget", "live"),
+        label="Campaign start/pause",
     ),
     "cm.sync_campaign_data": JobTypeSpec(
         Lane.cm_ops, 2 * 60 * 60, _cm_sync_campaign_data,
+        label="Campaign performance sync",
     ),
     # Catalogue refresh — a READ (one list call), so it never writes to Blinkit and needs
     # no `live` param. Short timeout: it is a browser launch plus two requests, and it
     # backs a button someone is waiting on, so a hung run should surface fast.
     "cm.sync_campaigns": JobTypeSpec(
         Lane.cm_ops, 5 * 60, _cm_sync_campaigns, param_keys=("days",),
+        label="Campaign list refresh",
     ),
     "cm.reconcile": JobTypeSpec(
         Lane.interactive, 5 * 60, _cm_reconcile, param_keys=("live",),
+        label="Campaign state reconcile",
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane
     # so it fires promptly (never queued behind a multi-hour scrape).
     "maint.log_cleanup": JobTypeSpec(
         Lane.batch, 10 * 60, _log_cleanup, needs_tenant=False,
         param_keys=("days",),
+        label="Log cleanup",
     ),
     "monitor.heartbeat": JobTypeSpec(
         Lane.interactive, 5 * 60, _heartbeat, needs_tenant=False,
         param_keys=("disk_pct",),
+        label="Health check",
     ),
     # Platform session upkeep (see docs/platform-auth.md). Interactive lane for the
     # same reason as the heartbeat: it is seconds of work and must never queue
@@ -280,6 +302,7 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     # active, because a seller token rotation invalidates the previous token.
     "auth.refresh": JobTypeSpec(
         Lane.interactive, 3 * 60, _auth_refresh,
+        label="Platform session refresh",
     ),
 }
 
@@ -290,3 +313,14 @@ def spec_for(job_type: str) -> JobTypeSpec:
     except KeyError:
         known = ", ".join(sorted(JOB_TYPES))
         raise ValueError(f"unknown job_type {job_type!r}. Known: {known}") from None
+
+
+def label_for(job_type: str) -> str:
+    """The human name for a job type, for logs/emails/UI.
+
+    Never raises: an UNKNOWN type must still be describable, because the case that
+    produces one is deploy skew (the API enqueued a type this box has no code for)
+    — precisely when a readable message matters most. Falls back to the raw key.
+    """
+    spec = JOB_TYPES.get(job_type)
+    return (spec.label if spec and spec.label else job_type)

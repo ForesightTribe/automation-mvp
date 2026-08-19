@@ -1,14 +1,27 @@
 {
-  "displayName": "Foresight — runner ERROR (any failed job)",
+  "displayName": "Foresight — job failed",
+  "severity": "ERROR",
+  "userLabels": {
+    "foresight_policy": "runner_errors"
+  },
   "documentation": {
-    "content": "A job failed, or the heartbeat reported a problem.\n\nWhat fired this: jobs/runner.py logs every job failure at ERROR with structured fields. The `error` field says which kind:\n  auth_expired  - could not authenticate to the platform (see docs/platform-auth.md)\n  oom           - the OOM killer took the subprocess (SIGKILL / returncode -9)\n  timeout       - exceeded the job type's ceiling in jobs/types.py\n  runner_died   - reaped on startup after the runner was killed mid-run\n  exit_N        - the CLI exited non-zero for some other reason\n\nTriage:\n  1. Logs Explorer: log_id(\"foresight_runner\") AND severity>=ERROR\n  2. The entry's jsonPayload.record.extra.log_file names the run's OWN log,\n     which holds the reason. The runner only ever sees an exit code.\n  3. Open it: labels.\"agent.googleapis.com/log_file_path\"=~\"<log_file>\"\n\nFor auth_expired specifically:\n  python -m cli auth status -t <tenant>\n  python -m cli auth probe <platform> -t <tenant>\n",
-    "mimeType": "text/markdown"
+    "mimeType": "text/markdown",
+    "content": "**${log.extracted_label.summary}**\n\nThat one line is written by the runner and already names the client, the job, how long it ran, why it failed, and the last line of its own log. The alert's labels below carry the same values individually, for filtering.\n\n---\n\n**What to do**\n\nRead the whole run log — the summary quotes only its final line:\n\n    python -m cli jobs logs <job id>          # from any machine with the DB\n\nThis run's log file is `${log.extracted_label.log_file}`.\n\nThen, depending on what `reason` says:\n\n**could not log in to the platform** — the fix is a session, not a scrape:\n\n    python -m cli auth status -t <tenant>\n    python -m cli auth login <platform> -t <tenant> --manual\n\n**this runner has no code for that job type** — the VM is behind `main`. Something newer enqueued a job this box cannot run. Deploy, don't retry.\n\n**ran out of memory** — check what shared the box: `python -m cli status` shows peak RAM per lane.\n\n**a schedule is overdue** (these come from the hourly health check and carry no job fields, so `client` and `job` are legitimately empty) — the summary names which schedule and how late it is.\n\nFor the system-wide picture rather than this one job:\n\n    python -m cli status\n"
   },
   "conditions": [
     {
-      "displayName": "Any ERROR from the job runner",
+      "displayName": "Foresight job failure or overdue schedule",
       "conditionMatchedLog": {
-        "filter": "log_id(\"foresight_runner\") AND severity>=ERROR"
+        "filter": "log_id(\"foresight_runner\") AND severity>=ERROR",
+        "labelExtractors": {
+          "summary": "EXTRACT(jsonPayload.record.message)",
+          "client": "EXTRACT(jsonPayload.record.extra.client)",
+          "job": "EXTRACT(jsonPayload.record.extra.job_label)",
+          "reason": "EXTRACT(jsonPayload.record.extra.error)",
+          "detail": "EXTRACT(jsonPayload.record.extra.log_tail)",
+          "duration": "EXTRACT(jsonPayload.record.extra.duration_s)",
+          "log_file": "EXTRACT(jsonPayload.record.extra.log_file)"
+        }
       }
     }
   ],

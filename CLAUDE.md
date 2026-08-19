@@ -104,12 +104,33 @@ the `jobs` table; each job is executed as a **subprocess** — the exact
 per-run log file.
 
 ```bash
+python -m cli status [--days N]              # ONE SCREEN: runner alive? overdue schedules? failures? where compute went
 python -m cli jobs types                     # job types, lanes, timeouts, valid params
 python -m cli jobs run <type> -t <uuid> city=bengaluru workers=5   # queue now
 python -m cli jobs list / logs <id> -f       # status+peak RAM / live-tail a run
 python -m cli schedules add|list|show|update|enable|disable|remove  # cron CRUD (IST)
 python -m cli runner start                   # the daemon (systemd does this on the VM)
 ```
+
+- **`cli status` is the first thing to run when something feels wrong.** It reads the
+  shared `jobs`/`job_schedules` tables, so it works **from a laptop with no VM access** —
+  that is how the 2026-08-18 logging blackout was diagnosed. It reuses the same
+  `check_deadman()` the hourly health check runs, so its verdict on "did scheduled work
+  actually run?" is identical. It does NOT report disk (that would measure whichever
+  machine you ran it on, not the VM — disk stays with `monitor.heartbeat`).
+- **Job types carry a human `label`** (`jobs/types.py`) — `scrape.blinkit_marketing` is a
+  registry key, `"Blinkit ads scrape"` is what it *is*. Logs, `cli status` and alerts read
+  the label; add one with every new job type. `label_for()` never raises on an unknown
+  type, because the case that produces one is deploy skew — exactly when a readable
+  message matters most.
+- **A failed job's log lines quote the child's own log.** The runner supervises
+  subprocesses, so an exit code is genuinely all it sees; `jobs/runner.py::_tail_lines`
+  seeks the END of the run's log file (never reads a multi-GB scrape log whole) and puts
+  the last real line into the failure message and the `log_tail` structured field.
+- ⚠️ **Two different things were once both called "heartbeat".** `monitor.heartbeat` is the
+  hourly deadman JOB. The scheduler's 15-minute "still alive" line is an **idle notice**
+  (`jobs/scheduler.py::_idle_notice`) — renamed 2026-08-18 after the collision sent a real
+  investigation looking for an hourly job that didn't exist.
 
 - **Lanes, not one queue.** `batch` (public scrapes) · `dashboard` (marketing/seller/
   scorecard) · `live` (bid optimizer, later) · `interactive` (explorer/heartbeat).

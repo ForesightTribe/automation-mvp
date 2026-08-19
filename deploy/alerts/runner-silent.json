@@ -1,12 +1,16 @@
 {
-  "displayName": "Foresight — runner SILENT (who watches the watchman)",
+  "displayName": "Foresight — gone silent (who watches the watchman)",
+  "severity": "CRITICAL",
+  "userLabels": {
+    "foresight_policy": "runner_silent"
+  },
   "documentation": {
-    "content": "The runner has logged nothing for over two hours.\n\nWhy this exists separately from the ERROR policy: **a dead runner cannot report its own death.** The heartbeat, the job failures, the auth alerts — all of them are things the runner SAYS. If the VM is off, the daemon crashed into a restart loop, or the Ops Agent's log shipper wedged, every one of those alerts goes quiet and the silence looks exactly like 'nothing is wrong'.\n\nThis is the July 2026 failure mode: Cloud Logging went dark on 07-23 and nobody noticed, because the only signal was the ABSENCE of logs.\n\nExpected traffic: the hourly monitor.heartbeat alone guarantees a line every hour, so two hours of silence is genuinely abnormal.\n\nTriage:\n  gcloud compute instances list                       # is the VM even up?\n  systemctl status foresight-runner                   # is the daemon alive?\n  journalctl -u foresight-runner -n 50\n  sudo service google-cloud-ops-agent restart         # shipper wedged (does NOT self-heal)\n  df -h                                               # a full disk fails in odd, silent ways\n",
-    "mimeType": "text/markdown"
+    "mimeType": "text/markdown",
+    "content": "**Nothing has been logged by the Foresight runner for over two hours. Assume you are blind until this is resolved.**\n\nThis is not \"a job failed\" — it is \"you would not be told if one did\". Every other alert depends on the runner speaking. While this is firing, the job-failure alert cannot fire either, so silence here means silence everywhere.\n\nThree things cause it, in the order they are worth checking:\n\n**1. The log shipper wedged** (most likely — it has happened twice, 2026-07-23 and 2026-08-11). Jobs keep running and writing log files perfectly; the files just stop reaching Cloud Logging. It does **not** self-heal.\n\n    sudo systemctl status 'google-cloud-ops-agent*'\n    sudo tail -50 /var/log/google-cloud-ops-agent/subagents/logging-module.log\n    sudo service google-cloud-ops-agent restart\n\nIf that log shows `Too many open files, errno=24`, fluent-bit has hit its file-descriptor ceiling — one handle per watched log file. Check the drop-in is still in place:\n\n    cat /etc/systemd/system/google-cloud-ops-agent-fluent-bit.service.d/nofile.conf\n\n**2. The runner daemon died.**\n\n    sudo systemctl status foresight-runner\n    sudo journalctl -u foresight-runner -n 50 --no-pager\n\n**3. The VM is off.** Check the instance in the console.\n\n---\n\n**Tell 1 from 2 and 3 without SSH.** Run this from any machine with database access — it reads the shared `jobs` table, not the VM:\n\n    python -m cli status\n\nIf it reports the runner **alive** and jobs completing, the work is fine and only the shipping is broken — that is case 1, and nothing is being lost while you fix it. If it reports **SILENT**, the runner or the box is genuinely down and scheduled work is being missed.\n"
   },
   "conditions": [
     {
-      "displayName": "No runner log lines for 2 hours",
+      "displayName": "Foresight has gone silent — no runner logs for 2 hours",
       "conditionAbsent": {
         "filter": "metric.type=\"logging.googleapis.com/user/foresight_runner_lines\" AND resource.type=\"gce_instance\"",
         "duration": "7200s",

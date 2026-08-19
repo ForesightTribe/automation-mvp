@@ -3,7 +3,7 @@ import asyncio
 import typer
 import app.utils.logger  # noqa: F401 — install the unified logging pipeline before command imports
 from app.utils.logger import logger
-from cli.commands import account, ads, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore, export, jobs, runner, schedules, maint, monitor
+from cli.commands import account, ads, auth, scrape, tenant, watchlist, locations, sync, sku_map, explore, export, jobs, runner, schedules, maint, monitor, status
 from cli.commands import campaign_manager as cm
 from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE, AuthError
 
@@ -43,6 +43,7 @@ app.add_typer(maint.app, name="maint")
 app.add_typer(monitor.app, name="monitor")
 app.command("sync")(sync.run_sync)
 app.command("explore")(explore.explore)
+app.command("status")(status.run_status)
 
 if __name__ == "__main__":
     # Auth failures exit with a distinct code so the job runner can record them

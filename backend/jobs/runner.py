@@ -19,15 +19,19 @@ import shlex
 import socket
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
+
+from sqlmodel import select
 
 from app.core.config import BASE_DIR, settings
 from app.core.database import AsyncSessionLocal
 from app.models.job import Job, JobStatus, Lane
+from app.models.tenant import Tenant
 from app.utils.logger import logger
 from jobs import queue as job_queue
-from jobs.types import spec_for
+from jobs.types import label_for, spec_for
 from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE
 
 try:
@@ -40,6 +44,26 @@ _HOSTNAME = socket.gethostname()
 
 _SAMPLE_INTERVAL_S = 2.0        # how often to poll a running child's RSS
 _SHUTDOWN_GRACE_S = 20.0        # after SIGTERM, how long a child gets before SIGKILL
+
+# Reading a failed job's own log back into the failure line. The runner supervises
+# SUBPROCESSES, so the only thing that crosses back from a child is an exit code —
+# `exit_1` is not laziness, it is genuinely all this process knows. The reason is in
+# the child's log, whose path we already hold. Tailing it is what turns the failure
+# into a sentence, in the log AND in the alert email built from it.
+_TAIL_BYTES = 16 * 1024         # read from the END: a public scrape's log is huge
+_TAIL_LINES = 8
+
+_REASON_TEXT = {
+    "auth_expired": "could not log in to the platform",
+    "oom": "ran out of memory and was killed",
+    "timeout": "ran past its time limit and was stopped",
+    "runner_died": "the runner was killed while this was running",
+    "interrupted": "was stopped when the runner shut down",
+}
+
+# Tenant names for log lines, cached for the process lifetime — a UUID tells a human
+# nothing, and names effectively never change.
+_TENANT_NAMES: dict[uuid.UUID, str] = {}
 
 
 def _tree_rss_mb(pid: int) -> int:
@@ -94,6 +118,81 @@ def _log_path_for(job: Job) -> Path:
     d = Path(settings.LOG_DIR) / "jobs" / day / job.lane.value
     d.mkdir(parents=True, exist_ok=True)
     return d / f"{job.job_type}__{job.id}.log"
+
+
+def _clip(text: str, limit: int = 220) -> str:
+    """Trim a log line to something that fits in a message without swallowing it."""
+    text = " ".join(text.split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _tail_lines(path: Path, max_lines: int = _TAIL_LINES) -> list[str]:
+    """The last few meaningful lines of a job's own log file.
+
+    Seeks to the END rather than reading the file: a public scrape's log runs to
+    hundreds of MB and must never be loaded whole just to describe a failure. Never
+    raises — a missing or unreadable log must not break the job it describes.
+    """
+    try:
+        size = path.stat().st_size
+        with open(path, "rb") as f:
+            if size > _TAIL_BYTES:
+                f.seek(-_TAIL_BYTES, os.SEEK_END)
+            blob = f.read()
+    except OSError:
+        return []
+    lines = blob.decode("utf-8", errors="replace").splitlines()
+    # Drop the runner's own bookkeeping (the `# argv` / `# exit N` markers written
+    # around the child's output) and blank padding — never the reason for anything.
+    meaningful = [ln.strip() for ln in lines if ln.strip() and not ln.lstrip().startswith("#")]
+    return meaningful[-max_lines:]
+
+
+def _plain_reason(error: str | None, returncode: int | None) -> str:
+    """`exit_1` rendered in English. The machine-readable code stays in the structured
+    `error` field for filtering; this is the half a human reads."""
+    if not error:
+        return "failed"
+    if error in _REASON_TEXT:
+        return _REASON_TEXT[error]
+    if error.startswith("spawn_failed"):
+        return "the runner could not start the command"
+    if error.startswith("unresolvable"):
+        return "this runner has no code for that job type"
+    return f"the command exited with code {returncode}"
+
+
+def _duration(seconds: float) -> str:
+    if seconds < 90:
+        return f"{seconds:.0f}s"
+    if seconds < 90 * 60:
+        return f"{seconds / 60:.0f}m"
+    return f"{seconds / 3600:.1f}h"
+
+
+async def _tenant_name(tenant_id: uuid.UUID | None) -> str | None:
+    """The client's name, for log lines. Returns None rather than raising — a label
+    must never be able to fail the job it is describing."""
+    if tenant_id is None:
+        return None
+    if tenant_id in _TENANT_NAMES:
+        return _TENANT_NAMES[tenant_id]
+    try:
+        async with AsyncSessionLocal() as db:
+            name = (
+                await db.execute(select(Tenant.name).where(Tenant.id == tenant_id))
+            ).scalar()
+    except Exception:
+        return None
+    if name:
+        _TENANT_NAMES[tenant_id] = name
+    return name
+
+
+def _describe(job: Job, tenant_name: str | None) -> str:
+    """How a job introduces itself to a human: "Dobra · Blinkit ads scrape"."""
+    label = label_for(job.job_type)
+    return f"{tenant_name} · {label}" if tenant_name else label
 
 
 def _classify_failure(returncode: int | None, timed_out: bool, interrupted: bool) -> str:
@@ -153,6 +252,10 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     # added job type can be enqueued by the API minutes (or days) before this box has the
     # code for it. `spec_for` raises "unknown job_type" and every such enqueue is stranded.
     # Failing loudly instead makes it a visible, alerting error and frees the guard.
+    short = str(job.id)[:8]
+    tenant_name = await _tenant_name(job.tenant_id)
+    desc = _describe(job, tenant_name)
+
     try:
         spec = spec_for(job.job_type)
         timeout_s = settings.JOB_TIMEOUT_OVERRIDES.get(job.job_type, spec.timeout_s)
@@ -160,10 +263,12 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     except Exception as e:
         async with AsyncSessionLocal() as db:
             await job_queue.complete(db, job.id, JobStatus.failed, error=f"unresolvable: {e}")
-        logger.bind(job_type=job.job_type, tenant_id=str(job.tenant_id),
-                    lane=job.lane.value, error=str(e)).error(
-            f"job {str(job.id)[:8]} {job.job_type} could not be resolved: {e} "
-            "— is this runner running older code than whatever enqueued it?")
+        logger.bind(job_id=str(job.id), job_type=job.job_type,
+                    tenant_id=str(job.tenant_id) if job.tenant_id else None,
+                    lane=job.lane.value, error=f"unresolvable: {e}").error(
+            f"{desc} · COULD NOT START — this runner has no code for job type "
+            f"'{job.job_type}'. Something newer enqueued it, so this box is probably "
+            f"behind main. Nothing ran. · job {short}")
         return
     # shlex.join so a value containing spaces (e.g. --city "delhi ncr") is recorded
     # unambiguously and stays copy-pasteable. The subprocess itself gets an argv
@@ -174,11 +279,12 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     async with AsyncSessionLocal() as db:
         await job_queue.mark_started(db, job.id, argv, str(log_path))
 
-    logger.info(f"job {str(job.id)[:8]} [{job.lane.value}] {job.job_type} → {log_path.name}")
+    logger.info(f"{desc} · started · {job.lane.value} lane · job {short}")
 
     env = {**os.environ, "PYTHONUNBUFFERED": "1"}
     returncode = peak = None
     timed_out = interrupted = False
+    started_at = time.monotonic()
     with open(log_path, "w", encoding="utf-8") as f:
         f.write(f"# {argv}\n# started {datetime.now().isoformat()}\n\n")
         f.flush()
@@ -192,11 +298,17 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
             f.write(f"\n# runner failed to spawn: {e}\n")
             async with AsyncSessionLocal() as db:
                 await job_queue.complete(db, job.id, JobStatus.failed, error=f"spawn_failed: {e}")
-            logger.error(f"job {str(job.id)[:8]} spawn failed: {e}")
+            logger.bind(job_id=str(job.id), job_type=job.job_type,
+                        tenant_id=str(job.tenant_id) if job.tenant_id else None,
+                        lane=job.lane.value, error=f"spawn_failed: {e}").error(
+                f"{desc} · COULD NOT START — the runner failed to launch the command: "
+                f"{e} · job {short}")
             return
         returncode, peak, timed_out, interrupted = await _supervise(proc, timeout_s, shutdown)
         f.write(f"\n# exit {returncode} · peak {peak} MB · "
                 f"{'timeout' if timed_out else 'interrupted' if interrupted else 'done'}\n")
+
+    elapsed = time.monotonic() - started_at
 
     if returncode == 0:
         status, error = JobStatus.success, None
@@ -207,22 +319,33 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
         await job_queue.complete(db, job.id, status, exit_code=returncode,
                                  error=error, peak_rss_mb=peak)
 
+    # On failure, read back the end of the child's own log. See _tail_lines: this is
+    # the ONLY way the reason can reach this process, and it is what the alert email
+    # ends up quoting.
+    tail = _tail_lines(log_path) if status == JobStatus.failed else []
+
     # Structured fields, not just a formatted string. runner.log is written with
     # loguru serialize=True, so these land in Cloud Logging as queryable
     # jsonPayload.record.extra.* — you can filter for every auth failure across
-    # all tenants without substring-matching a sentence.
+    # all tenants without substring-matching a sentence. `client`, `job_label` and
+    # `log_tail` exist so an ALERT can interpolate a readable sentence without
+    # anyone opening Logs Explorer.
     bound = logger.bind(
         job_id=str(job.id),
         job_type=job.job_type,
+        job_label=label_for(job.job_type),
+        client=tenant_name,
         lane=job.lane.value,
         tenant_id=str(job.tenant_id) if job.tenant_id else None,
         error=error,
         exit_code=returncode,
         peak_rss_mb=peak,
+        duration_s=round(elapsed, 1),
         log_file=log_path.name,
+        log_tail=" / ".join(tail) or None,
     )
     if status == JobStatus.success:
-        bound.info(f"job {str(job.id)[:8]} success · peak {peak} MB")
+        bound.info(f"{desc} · OK in {_duration(elapsed)} · {peak} MB peak · job {short}")
     else:
         # ERROR, not WARNING. The alert that matters is
         # `log_id("foresight_runner") AND severity>=ERROR` — a failed job logged
@@ -230,8 +353,10 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
         # auth_expired classification pointless: the DB would know, and nobody
         # would be told. Every job failure is something a human must see.
         bound.error(
-            f"job {str(job.id)[:8]} FAILED ({error}) · {job.job_type} · peak {peak} MB"
-            + (f" · see {log_path.name}" if error != "spawn_failed" else "")
+            f"{desc} · FAILED after {_duration(elapsed)} — "
+            f"{_plain_reason(error, returncode)}"
+            + (f' · last log line: "{_clip(tail[-1])}"' if tail else "")
+            + f" · full log: {log_path.name} · job {short}"
         )
 
 
