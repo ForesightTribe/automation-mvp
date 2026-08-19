@@ -96,6 +96,13 @@ def _scorecard(tenant_id, p):
     return a
 
 
+def _zepto_sales(tenant_id, p):
+    a = ["scrape", "zepto-sales", "--tenant", str(tenant_id)]
+    _opt(a, "--from", p.get("date_from"))
+    _opt(a, "--to", p.get("date_to"))
+    return a
+
+
 def _public_keyword(tenant_id, p):
     a = ["scrape", "public-run", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace"))
@@ -189,6 +196,16 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "scrape.blinkit_scorecard": JobTypeSpec(
         Lane.dashboard, 30 * 60, _scorecard,
         param_keys=("week",),
+    ),
+    # Browser-free (session health check + ID discovery + API calls, all plain
+    # HTTP — see scraper/platforms/zepto/dashboard_data/seller/scraper.py), so
+    # a much tighter timeout ceiling than Blinkit's browser-driven scrapes is
+    # appropriate — this should normally finish in well under a minute.
+    # Requires a session already saved via `cli auth zepto-seller` (run
+    # separately, wherever there's a real display — not on this VM's lane).
+    "scrape.zepto_seller_sales": JobTypeSpec(
+        Lane.dashboard, 10 * 60, _zepto_sales,
+        param_keys=("date_from", "date_to"),
     ),
     # Public scrapes take the marketplace as a PARAM rather than having a job type
     # each: lane and timeout are identical, and sharing the `batch` lane is correct —

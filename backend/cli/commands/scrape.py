@@ -10,7 +10,9 @@ from scraper.utils.session import load_session, ensure_healthy_session, SessionU
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     validate as zepto_seller_validate,
+    discover_ids as zepto_discover_ids,
     fetch_sales_overview as zepto_fetch_sales_overview,
+    fetch_product_performance as zepto_fetch_product_performance,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
 from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
@@ -579,14 +581,62 @@ def scrape_zepto_sales(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
     date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
     date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
+    save_xlsx: str = typer.Option(None, "--save-xlsx", help="Write the daily GMV/Units breakdown to this .xlsx path"),
 ):
     """Fetch Zepto Sales Analytics (GMV/Units) via a browser-free pre-flight
-    health check + direct API call. NOTE: uses a temporary hardcoded ID
-    snapshot for Brik Oven only — not yet general-purpose, see scraper.py."""
-    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to))
+    health check, fresh ID discovery, and a direct API call — with an
+    auth-only browser fallback if the API call comes back 401/403. Tenant-
+    general, no hardcoded IDs. NOTE: fetched data is not yet persisted to any
+    table — DB schema changes are on hold (see scraper.py); --save-xlsx is a
+    file-based stopgap so results survive past the terminal session."""
+    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to, save_xlsx))
 
 
-async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: str | None) -> None:
+def _write_zepto_sales_xlsx(
+    path: str, data: dict, products: list[dict], date_from: str, date_to: str, ids: dict
+) -> None:
+    from openpyxl import Workbook
+
+    gmv_daily = data["metrics"]["gmv"]["data"]
+    units_daily = {row["key"]: next(v for k, v in row.items() if k != "key") for row in data["metrics"]["units"]["data"]}
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Daily Sales"
+    ws.append(["Date", "GMV (Rs)", "Units"])
+    for row in gmv_daily:
+        day = row["key"]
+        gmv_val = next(v for k, v in row.items() if k != "key")
+        ws.append([day, gmv_val, units_daily.get(day)])
+
+    ws3 = wb.create_sheet("Top Products")
+    ws3.append([
+        "Product", "Pack Size", "Category", "Subcategory", "GMV (Rs)", "Units Sold",
+        "Sales Contribution %", "Available Stores %", "WoW Growth %", "MoM Growth %",
+        "Stock On Hand",
+    ])
+    for p in products:
+        ws3.append([
+            p.get("productName"), p.get("packSize"), p.get("categoryName"), p.get("subcategoryName"),
+            p.get("gmv"), p.get("qtySold"), p.get("salesContribution"), p.get("availableStores"),
+            p.get("weekOnWeekGrowth"), p.get("monthOnMonthGrowth"), p.get("stockOnHand"),
+        ])
+    products_gmv_sum = sum(p.get("gmv") or 0 for p in products)
+
+    ws2 = wb.create_sheet("Summary")
+    ws2.append(["Brand", ids["brand_name"]])
+    ws2.append(["Date range", f"{date_from} to {date_to}"])
+    ws2.append(["Total GMV (Sales Overview)", data["headers"]["gmv"]["value"]])
+    ws2.append(["Total Units", data["headers"]["units"]["value"]])
+    ws2.append(["Sum of Top-Products GMV", products_gmv_sum])
+    ws2.append(["Note", "Top-Products GMV may not fully reconcile with the overview total — see scraper.py"])
+    ws2.append(["Cities", len(ids["city_ids"])])
+    ws2.append(["Subcategories", ", ".join(ids["subcategory_names"])])
+
+    wb.save(path)
+
+
+async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: str | None, save_xlsx: str | None) -> None:
     yesterday = (_date.today() - timedelta(days=1)).isoformat()
     date_from = date_from or (_date.today() - timedelta(days=8)).isoformat()
     date_to = date_to or yesterday
@@ -600,8 +650,15 @@ async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: st
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
 
+            with console.status("[cyan]Discovering current brand/city/category IDs...[/cyan]"):
+                ids = await zepto_discover_ids(storage_state)
+            console.print(f"[green]IDs discovered:[/green] {ids['brand_name']} — {len(ids['city_ids'])} cities, {len(ids['subcategory_ids'])} subcategories")
+
             with console.status(f"[cyan]Fetching Sales Analytics {date_from}..{date_to}...[/cyan]"):
-                data = await zepto_fetch_sales_overview(storage_state, date_from, date_to)
+                data = await zepto_fetch_sales_overview(storage_state, date_from, date_to, ids)
+
+            with console.status("[cyan]Fetching product-level breakdown...[/cyan]"):
+                products = await zepto_fetch_product_performance(storage_state, date_from, date_to, ids)
 
             await complete_scrape_job(db, job_id)
 
@@ -610,6 +667,11 @@ async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: st
             daily = data["metrics"]["gmv"]["data"]
             console.print(f"\n[bold cyan]Zepto Sales Overview[/bold cyan] ({date_from} to {date_to})")
             console.print(f"  GMV: [bold]{gmv}[/bold]   Units: [bold]{units}[/bold]   ({len(daily)} days)")
+            console.print(f"  Products: [bold]{len(products)}[/bold]")
+
+            if save_xlsx:
+                _write_zepto_sales_xlsx(save_xlsx, data, products, date_from, date_to, ids)
+                console.print(f"[green]Saved:[/green] {save_xlsx}")
 
         except SessionUnhealthy as e:
             console.print(f"[red]Session not usable: {escape(str(e))}[/red]")

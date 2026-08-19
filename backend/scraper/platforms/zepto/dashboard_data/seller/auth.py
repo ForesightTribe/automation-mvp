@@ -15,6 +15,13 @@ async def login(email: str, password: str) -> dict:
     Zepto's login asks for a password before the OTP; Blinkit's doesn't. Password
     is only ever used here, in memory, to fill the login form — never logged,
     never returned, never persisted alongside the saved session.
+
+    Headful only — always was, and stays that way. A headless variant was
+    tested and conclusively ruled out (Chromium, Firefox, and WebKit all get a
+    401 on the sign-in call itself before OTP is ever reached — confirmed
+    headless-mode detection, not a fixable header or timing issue). Running
+    unattended on a display-less server needs a real (non-headless) browser —
+    see docs discussion on Xvfb — not a flag here.
     """
     async with async_playwright() as p:
         browser, context = await create_browser_context(p, headless=False)
@@ -35,7 +42,13 @@ async def login(email: str, password: str) -> dict:
             await page.click(sel.LOGIN_SUBMIT_PASSWORD_BUTTON)
             logger.info("Credentials submitted, awaiting OTP screen")
 
-            await page.wait_for_selector(sel.LOGIN_OTP_INPUT, timeout=30_000)
+            try:
+                await page.wait_for_selector(sel.LOGIN_OTP_INPUT, timeout=30_000)
+            except Exception:
+                logger.error(f"Stuck waiting for OTP screen. Current URL: {page.url}")
+                await page.screenshot(path="zepto_login_stuck_pre_otp.png")
+                logger.error("Screenshot saved: zepto_login_stuck_pre_otp.png")
+                raise
             logger.info("OTP screen visible")
 
             loop = asyncio.get_event_loop()
@@ -109,4 +122,16 @@ async def _capture_session(page, context) -> dict:
     # confirmed via live DevTools inspection — a UUID-named cookie holding an
     # `eyJ...` value), not Firebase/IndexedDB. context.storage_state() above
     # already captures it correctly, so no extra IndexedDB extraction needed.
+
+    # Guard against Blinkit's documented "headless login succeeds but captures
+    # nothing useful" failure mode — verify the actual auth cookie is present,
+    # not just that *some* cookies got captured (analytics/WAF cookies alone
+    # would still show a non-zero count and look fine).
+    has_auth_cookie = any(c.get("name", "").endswith("_AUTH_TOKEN") for c in storage.get("cookies", []))
+    if not has_auth_cookie:
+        logger.error(
+            "Login reached the dashboard URL but no auth cookie was captured — "
+            "this session is likely broken. Retry the login."
+        )
+
     return storage
