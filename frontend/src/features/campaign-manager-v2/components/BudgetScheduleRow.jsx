@@ -126,7 +126,7 @@ export const BudgetScheduleRow = ({
 				<>
 					<Identity
 						className="lg:col-span-4"
-						status={schedule.status}
+						badge={<StatusBadge status={schedule.status} />}
 						title={label}
 						subtitle={subtitle}
 					/>

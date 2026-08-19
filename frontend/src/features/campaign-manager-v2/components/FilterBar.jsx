@@ -1,29 +1,25 @@
 import { Search, X } from "lucide-react";
 
 /**
- * The Scheduled band's toolbar: free-text search plus status pills.
+ * One search-and-status toolbar, shared by the Campaigns and Scheduled bands.
  *
- * Both narrow BOTH groups at once, because the question being asked is usually about a
- * campaign ("what is running on the cola campaign?"), not about a mechanism — and a
- * campaign normally has a budget automation and bid rules at the same time. The counts in
- * each group header stay honest by reading "2 of 5" while a filter is on.
+ * Shared deliberately: this page previously offered three different ways to find a
+ * campaign (a picker dropdown, a segmented filter, a search box), each styled its own
+ * way. One bar means "find the cola campaign" is the same gesture wherever you are.
+ *
+ * `options` is a list of [value, label]; the empty-string value is the "no filter" pill.
+ * `extra` hangs an owner-specific control (the campaign band's Refresh) off the end.
  */
-const STATUSES = [
-	["", "All"],
-	["running", "Running"],
-	["scheduled", "Scheduled"],
-	["paused", "Paused"],
-	["stopped", "Stopped"],
-	["ended", "Ended"],
-];
-
-export const ScheduledFilters = ({
+export const FilterBar = ({
 	query,
 	onQuery,
-	status,
-	onStatus,
+	placeholder,
+	options,
+	value,
+	onValue,
 	active,
 	onClear,
+	extra,
 }) => (
 	<div className="mb-4 flex flex-col gap-3 border-b border-border pb-4 lg:flex-row lg:items-center">
 		<label className="relative min-w-0 sm:w-80">
@@ -31,8 +27,8 @@ export const ScheduledFilters = ({
 			<input
 				value={query}
 				onChange={(e) => onQuery(e.target.value)}
-				placeholder="Search campaign, keyword or id…"
-				aria-label="Search scheduled automations"
+				placeholder={placeholder}
+				aria-label={placeholder}
 				className="w-full rounded-md border border-border bg-surface py-1.5 pr-8 pl-8 text-sm text-content focus:border-primary focus:outline-none"
 			/>
 			{query && (
@@ -48,13 +44,13 @@ export const ScheduledFilters = ({
 		</label>
 
 		<div className="flex flex-wrap items-center gap-1 lg:ml-auto">
-			{STATUSES.map(([value, label]) => (
+			{options.map(([optValue, label]) => (
 				<button
-					key={value || "all"}
+					key={optValue || "all"}
 					type="button"
-					onClick={() => onStatus(value)}
+					onClick={() => onValue(optValue)}
 					className={`rounded-md px-2 py-0.5 text-xs font-medium transition-colors ${
-						status === value
+						value === optValue
 							? "bg-primary-soft text-primary"
 							: "text-content-muted hover:text-content"
 					}`}
@@ -71,6 +67,7 @@ export const ScheduledFilters = ({
 					Clear filters
 				</button>
 			)}
+			{extra}
 		</div>
 	</div>
 );

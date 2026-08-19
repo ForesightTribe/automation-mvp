@@ -1,20 +1,24 @@
 import { useState } from "react";
 import { Card } from "../../components/ui/Card";
-import { ActivateNowCard } from "./components/ActivateNowCard";
 import { AutomateBidForm } from "./components/AutomateBidForm";
 import { AutomateBudgetForm } from "./components/AutomateBudgetForm";
+import { CampaignsSection } from "./components/CampaignsSection";
 import { HistoryCard } from "./components/HistoryCard";
 import { ScheduledSection } from "./components/ScheduledSection";
-import { SetBudgetNowCard } from "./components/SetBudgetNowCard";
 
 /**
  * Campaign Manager — set-and-forget automation for Blinkit budgets and keyword bids.
  *
- * The page reads top-down as one column of full-width bands: the composer for a new
- * automation, then the two on-demand actions side by side, then everything scheduled,
- * then history. Scheduled is a band rather than a side pane because its rows carry
- * campaign names, weekday strips and time windows that a third of a laptop screen
- * truncates into uselessness.
+ * The page reads top-down as four full-width bands: the composer for a new automation,
+ * the account's campaigns with their immediate on/off + budget controls, everything
+ * scheduled, then history. They are bands rather than columns because every one of them
+ * is a list of rows carrying campaign names, weekday strips and time windows — a third of
+ * a laptop screen truncates all of it into uselessness.
+ *
+ * The immediate actions live ON a campaign's own row rather than in separate cards with
+ * their own campaign pickers: the page used to offer three different ways to find a
+ * campaign, and picking one by name is exactly where this goes wrong, because names
+ * repeat across an account.
  *
  * Every edit just writes DB rows + enqueues a reconcile — no browser work happens here.
  */
@@ -106,10 +110,7 @@ export const CampaignManagerV2Page = () => {
 
 			<Composer mode={mode} setMode={setMode} />
 
-			<div className="grid gap-6 lg:grid-cols-2">
-				<SetBudgetNowCard />
-				<ActivateNowCard />
-			</div>
+			<CampaignsSection />
 
 			<ScheduledSection />
 

@@ -9,6 +9,7 @@ import {
 	Identity,
 	RowShell,
 } from "./ScheduleRowParts";
+import { StatusBadge } from "./StatusBadge";
 import { DateWindow, WhenSummary, timingOf } from "./TimingDisplay";
 import { describeTiming } from "./TimingFields";
 
@@ -56,7 +57,7 @@ export const BidRuleRow = ({ rule, onAction, onDelete }) => {
 				<>
 					<Identity
 						className="lg:col-span-4"
-						status={rule.status}
+						badge={<StatusBadge status={rule.status} />}
 						title={`“${rule.keyword}”`}
 						subtitle={`${rule.campaign_name} · #${rule.campaign_id}`}
 					/>

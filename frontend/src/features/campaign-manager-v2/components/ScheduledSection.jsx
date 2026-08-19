@@ -13,7 +13,17 @@ import {
 } from "../hooks";
 import { BidRuleRow } from "./BidRuleRow";
 import { BudgetScheduleRow } from "./BudgetScheduleRow";
-import { ScheduledFilters } from "./ScheduledFilters";
+import { FilterBar } from "./FilterBar";
+
+/** The API's computed run-status vocabulary — the same words the row badges show. */
+const STATUSES = [
+	["", "All"],
+	["running", "Running"],
+	["scheduled", "Scheduled"],
+	["paused", "Paused"],
+	["stopped", "Stopped"],
+	["ended", "Ended"],
+];
 
 /** Everything one row can be found by: its label, its campaign, its keyword, its id. */
 const haystack = (x) =>
@@ -153,11 +163,13 @@ export const ScheduledSection = () => {
 				</p>
 			) : (
 				<>
-					<ScheduledFilters
+					<FilterBar
 						query={query}
 						onQuery={setQuery}
-						status={status}
-						onStatus={setStatus}
+						placeholder="Search campaign, keyword or id…"
+						options={STATUSES}
+						value={status}
+						onValue={setStatus}
 						active={filtering}
 						onClear={clear}
 					/>

@@ -1,10 +1,10 @@
 import { useState } from "react";
-import { StatusBadge } from "./StatusBadge";
 
 /**
- * The pieces every Scheduled row is built from. Both row types (budget schedule, bid
- * rule) share one skeleton — status + identity, a strip of labelled facts, actions — so
- * they line up column-for-column down the list instead of each inventing its own layout.
+ * The pieces every row on this page is built from — budget schedules, bid rules and
+ * campaigns alike. They share one skeleton (badge + identity, a strip of labelled facts,
+ * actions) so the three bands line up column-for-column and read as one system rather
+ * than three lists that happen to sit on the same page.
  */
 
 /** One labelled fact in a row. The label rides with the value rather than sitting in a
@@ -26,14 +26,13 @@ export const Fact = ({ label, value, hint, className = "" }) => (
 	</span>
 );
 
-/** Status badge + the two identity lines, at a fixed badge width so every row's name
- *  starts at the same x. Names WRAP rather than truncate — knowing which campaign an
- *  automation touches is the whole point of the list. */
-export const Identity = ({ status, title, subtitle, className = "" }) => (
+/** Badge + the two identity lines, at a fixed badge width so every row's name starts at
+ *  the same x. Names WRAP rather than truncate — knowing which campaign a row is about is
+ *  the whole point of the list. `badge` is a node, not a status string, because the
+ *  scheduled rows and the campaign rows speak different status vocabularies. */
+export const Identity = ({ badge, title, subtitle, className = "" }) => (
 	<span className={`flex min-w-0 items-start gap-2.5 ${className}`}>
-		<span className="w-22 shrink-0 pt-0.5">
-			<StatusBadge status={status} />
-		</span>
+		<span className="w-22 shrink-0 pt-0.5">{badge}</span>
 		<span className="min-w-0">
 			<span className="block text-sm leading-snug font-semibold wrap-break-word text-content">
 				{title}
@@ -105,17 +104,24 @@ export const ConfirmDelete = ({ onConfirm, children = "Delete" }) => {
 
 /** The shell of a row: a card whose header is a 12-column grid on wide screens and a
  *  stacked block below it. `facts` is wrapped in `lg:contents` by the caller so its
- *  children become columns of this grid at `lg`. */
+ *  children become columns of this grid at `lg`.
+ *
+ *  `onToggle` is optional. Rows that expand make the header itself the toggle; a campaign
+ *  row has nothing to expand into on click, so it renders the same grid as a plain block
+ *  rather than a button you can press to no effect. */
+const HEADER =
+	"grid w-full gap-3 text-left lg:col-span-9 lg:grid-cols-9 lg:items-center lg:gap-4";
+
 export const RowShell = ({ onToggle, header, actions, children }) => (
 	<li className="rounded-xl border border-border bg-surface">
 		<div className="grid gap-3 p-3.5 lg:grid-cols-12 lg:items-center lg:gap-4">
-			<button
-				type="button"
-				onClick={onToggle}
-				className="grid w-full gap-3 text-left lg:col-span-9 lg:grid-cols-9 lg:items-center lg:gap-4"
-			>
-				{header}
-			</button>
+			{onToggle ? (
+				<button type="button" onClick={onToggle} className={HEADER}>
+					{header}
+				</button>
+			) : (
+				<div className={HEADER}>{header}</div>
+			)}
 			<div className="flex flex-wrap items-center gap-2 lg:col-span-3 lg:justify-end">
 				{actions}
 			</div>
