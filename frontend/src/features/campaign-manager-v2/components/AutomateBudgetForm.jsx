@@ -14,13 +14,13 @@ const FIELD =
 const LABEL = "text-xs font-medium text-content-muted";
 
 /**
- * Automate a campaign's daily budget: pick the campaign, set the everyday budget (what
+ * Automate a campaign's daily budget: pick the campaign, set the default budget (what
  * applies when no window is active), and add a first scheduled window (₹ + timing).
  *
- * **A campaign can only have ONE automation** — it has one everyday budget and one on/off
+ * **A campaign can only have ONE automation** — it has one default budget and one on/off
  * policy, so two would only contradict each other. But wanting a second window for a
  * campaign is completely normal, so picking an already-automated campaign switches this
- * form into "add a window to it" rather than refusing: the everyday budget, label and
+ * form into "add a window to it" rather than refusing: the default budget, label and
  * toggle belong to the existing automation and are shown read-only instead of re-asked.
  *
  * The "stop when the window ends" checkbox is campaign ACTIVATION (docs/campaign-activation.md)
@@ -91,7 +91,7 @@ export const AutomateBudgetForm = ({ onDone }) => {
 							This campaign already has an automation
 						</p>
 						<p className="mt-1 text-xs text-content-muted">
-							Everyday budget{" "}
+							Default budget{" "}
 							{formatCurrency(existing.default_budget)} ·{" "}
 							{existing.rules.length} window
 							{existing.rules.length === 1 ? "" : "s"} ·{" "}
@@ -99,14 +99,14 @@ export const AutomateBudgetForm = ({ onDone }) => {
 								? "stops the campaign when a window ends"
 								: "never stops the campaign"}
 							. The window below will be added to it. To change
-							the everyday budget or the on/off setting, edit the
+							the default budget or the on/off setting, edit the
 							automation in the Scheduled list.
 						</p>
 					</div>
 				) : (
 					<>
 						<label className="flex flex-col gap-1">
-							<span className={LABEL}>Everyday budget (₹)</span>
+							<span className={LABEL}>Default budget (₹)</span>
 							<input
 								type="number"
 								min="1"
@@ -118,7 +118,7 @@ export const AutomateBudgetForm = ({ onDone }) => {
 								className={FIELD}
 							/>
 							<span className="text-xs text-content-subtle">
-								Used outside the scheduled window.
+								Used outside every scheduled window.
 							</span>
 						</label>
 						<label className="flex flex-col gap-1">
@@ -172,7 +172,7 @@ export const AutomateBudgetForm = ({ onDone }) => {
 							</span>
 							<span className="block text-xs text-content-muted">
 								At the end of each window the budget returns to
-								the everyday amount and the campaign is stopped.
+								the default budget and the campaign is stopped.
 								It starts again at the next window.
 							</span>
 						</span>
