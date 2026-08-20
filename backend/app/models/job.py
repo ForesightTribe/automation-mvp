@@ -218,11 +218,3 @@ class PlatformCredential(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=now_ist)
     updated_at: datetime = Field(default_factory=now_ist)
-
-    # Proactive session-health tracking (columns pre-existed unused; wired up
-    # here). `status` is "unknown" until the first validate_session() call.
-    status: str = "unknown"
-    last_login_at: datetime | None = None
-    last_validated_at: datetime | None = None
-    consecutive_failures: int = 0
-    last_error: str | None = None

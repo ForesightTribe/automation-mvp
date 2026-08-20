@@ -232,14 +232,19 @@ async def fetch_product_performance(
     storage_state: dict, date_from: str, date_to: str, ids: dict, limit: int = 50
 ) -> list[dict]:
     """Per-SKU breakdown from Zepto's Sales Analytics — GMV, units, sales
-    share, growth, and conversion metrics per product. NOTE: observed live
-    that the returned products' GMV doesn't fully reconcile against
-    fetch_sales_overview's total (~3% gap seen in one test) — likely at
-    least one SKU/variant excluded from this list for an unknown reason.
-    stockOnHand always came back null, consistent with the Stock View
-    paywall found elsewhere in the portal."""
+    share, growth, and conversion metrics per product.
+
+    NOTE ON `viewType`: the browser sends `viewType=top_selling`, which the API
+    caps at the **top 5 products**. Copying that verbatim made the SKU rows sum
+    ~3% under `fetch_sales_overview`'s totals. Omitting the parameter returns
+    the full catalog and reconciles exactly (verified 2026-08-19: 9 selling
+    SKUs summing to ₹18,31,040 / 16,882 units for 17 Jul–16 Aug, matching the
+    overview to the rupee). Do not reinstate it.
+
+    `stockOnHand` always comes back null — Stock View is subscription-gated on
+    this account.
+    """
     params = {
-        "viewType": "top_selling",
         "brandIds": ids["brand_id"],
         "brandNames": ids["brand_name"],
         "subcategoryNames": "|".join(ids["subcategory_names"]),
@@ -253,6 +258,10 @@ async def fetch_product_performance(
     data = await _get_with_auth_fallback(
         storage_state, f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}", params, "Product-performance"
     )
-    products = data["data"]
-    logger.info(f"Zepto product-performance [{date_from}..{date_to}]: {len(products)} products")
+    # Without `viewType` the response covers the whole catalog, so it includes
+    # products with no sales in the window (gmv/qtySold come back null). Those
+    # are dropped: a zero-sales row adds nothing to any chart, and keeping them
+    # would inflate the "Active SKUs" count with products that sold nothing.
+    products = [p for p in (data["data"] or []) if p.get("gmv")]
+    logger.info(f"Zepto product-performance [{date_from}..{date_to}]: {len(products)} products with sales")
     return products

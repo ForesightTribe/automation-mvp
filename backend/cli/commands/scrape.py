@@ -6,6 +6,7 @@ from rich.console import Console
 from rich.markup import escape
 from rich.table import Table
 from app.core.database import AsyncSessionLocal
+from app.utils.logger import logger
 from platform_auth import service as auth_service
 from platform_auth.errors import AuthError
 from scraper.platforms.zepto.dashboard_data.seller.session_health import (
@@ -18,6 +19,13 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     discover_ids as zepto_discover_ids,
     fetch_sales_overview as zepto_fetch_sales_overview,
     fetch_product_performance as zepto_fetch_product_performance,
+)
+from scraper.platforms.zepto.dashboard_data.seller.parser import (
+    parse_sales_daily as parse_zepto_sales_daily,
+    parse_product_perf as parse_zepto_product_perf,
+)
+from scraper.platforms.zepto.dashboard_data.seller.storage import (
+    save_sales_results as zepto_save_sales_results,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
 from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
@@ -50,6 +58,11 @@ from scraper.platforms.blinkit.dashboard_data.seller.storage import (
 
 app = typer.Typer(help="Run scrapers and view results.")
 console = Console()
+
+# Gap between per-day Zepto product calls. A daily production run makes one
+# call and never waits; this only paces multi-day backfills, where a burst of
+# back-to-back requests is the kind of pattern this site's WAF reacts to.
+_ZEPTO_DAY_GAP_S = 1.5
 
 
 @app.command("blinkit")
@@ -599,15 +612,17 @@ def scrape_zepto_sales(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
     date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
     date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
-    save_xlsx: str = typer.Option(None, "--save-xlsx", help="Write the daily GMV/Units breakdown to this .xlsx path"),
+    save_xlsx: str = typer.Option(None, "--save-xlsx", help="Also write the results to this .xlsx path"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
-    """Fetch Zepto Sales Analytics (GMV/Units) via a browser-free pre-flight
-    health check, fresh ID discovery, and a direct API call — with an
-    auth-only browser fallback if the API call comes back 401/403. Tenant-
-    general, no hardcoded IDs. NOTE: fetched data is not yet persisted to any
-    table — DB schema changes are on hold (see scraper.py); --save-xlsx is a
-    file-based stopgap so results survive past the terminal session."""
-    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to, save_xlsx))
+    """Fetch Zepto Sales Analytics (GMV/Units + per-SKU breakdown).
+
+    Browser-free end to end: a pre-flight session health check, fresh
+    brand/city/category ID discovery, then direct API calls — with an auth-only
+    browser fallback if a call comes back 401/403. Tenant-general, no hardcoded
+    IDs. Requires a session saved by `cli auth zepto-seller`.
+    """
+    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to, save_xlsx, save))
 
 
 def _write_zepto_sales_xlsx(
@@ -654,7 +669,13 @@ def _write_zepto_sales_xlsx(
     wb.save(path)
 
 
-async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: str | None, save_xlsx: str | None) -> None:
+async def _scrape_zepto_sales(
+    tenant_id: str,
+    date_from: str | None,
+    date_to: str | None,
+    save_xlsx: str | None,
+    save: bool,
+) -> None:
     yesterday = (_date.today() - timedelta(days=1)).isoformat()
     date_from = date_from or (_date.today() - timedelta(days=8)).isoformat()
     date_to = date_to or yesterday
@@ -675,17 +696,57 @@ async def _scrape_zepto_sales(tenant_id: str, date_from: str | None, date_to: st
             with console.status(f"[cyan]Fetching Sales Analytics {date_from}..{date_to}...[/cyan]"):
                 data = await zepto_fetch_sales_overview(storage_state, date_from, date_to, ids)
 
-            with console.status("[cyan]Fetching product-level breakdown...[/cyan]"):
-                products = await zepto_fetch_product_performance(storage_state, date_from, date_to, ids)
+            # Per-SKU data is fetched one day at a time, like the Blinkit seller
+            # scrape, so the rows land at day grain instead of one aggregate per
+            # window — that is what makes a per-day SKU/category trend possible.
+            # Only this endpoint needs the loop: sales-overview already returns
+            # the whole window broken down by day in a single call.
+            days = _date_range(date_from, date_to)
+            product_rows: list[dict] = []
+            failed_days: list[str] = []
+            with console.status("[cyan]Fetching product-level breakdown...[/cyan]") as status:
+                for i, day in enumerate(days, 1):
+                    status.update(f"[cyan]Fetching product breakdown {day} ({i}/{len(days)})...[/cyan]")
+                    try:
+                        day_products = await zepto_fetch_product_performance(
+                            storage_state, day, day, ids
+                        )
+                    except Exception as e:
+                        # One bad day shouldn't discard the rest of the run; the
+                        # count is reported below so a partial result is visible
+                        # rather than silently short.
+                        logger.warning(f"Zepto product-performance failed for {day}: {e}")
+                        failed_days.append(day)
+                        continue
+                    product_rows.extend(
+                        parse_zepto_product_perf(day_products, tenant_id, job_id, day, day)
+                    )
+                    if i < len(days):
+                        await asyncio.sleep(_ZEPTO_DAY_GAP_S)
 
-            await complete_scrape_job(db, job_id)
+            daily_rows = parse_zepto_sales_daily(data, ids, tenant_id, job_id, date_from, date_to)
+
+            written = 0
+            if save:
+                written = await zepto_save_sales_results(db, daily_rows, product_rows)
+                await complete_scrape_job(db, job_id, written)
+            else:
+                await complete_scrape_job(db, job_id)
 
             gmv = data["headers"]["gmv"]["value"]
             units = data["headers"]["units"]["value"]
-            daily = data["metrics"]["gmv"]["data"]
             console.print(f"\n[bold cyan]Zepto Sales Overview[/bold cyan] ({date_from} to {date_to})")
-            console.print(f"  GMV: [bold]{gmv}[/bold]   Units: [bold]{units}[/bold]   ({len(daily)} days)")
-            console.print(f"  Products: [bold]{len(products)}[/bold]")
+            console.print(f"  GMV: [bold]{gmv}[/bold]   Units: [bold]{units}[/bold]   ({len(daily_rows)} days)")
+            console.print(f"  Product rows: [bold]{len(product_rows)}[/bold] over {len(days) - len(failed_days)}/{len(days)} days")
+            if failed_days:
+                console.print(
+                    f"  [yellow]{len(failed_days)} day(s) failed and were skipped: "
+                    f"{', '.join(failed_days[:5])}{' …' if len(failed_days) > 5 else ''}[/yellow]"
+                )
+            if save:
+                console.print(f"  [green]Saved to DB:[/green] {written} rows")
+            else:
+                console.print("  [yellow]--no-save: nothing written to the database[/yellow]")
 
             if save_xlsx:
                 _write_zepto_sales_xlsx(save_xlsx, data, products, date_from, date_to, ids)
