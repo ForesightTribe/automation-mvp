@@ -1,46 +1,77 @@
 import { useEffect, useState } from "react";
-import { useKeywords } from "../hooks";
+import { useZeptoKeywords } from "../hooks";
 import { Card } from "../../../components/ui/Card";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { useMarketplaces } from "../../../context/MarketplaceContext";
+import { AdTypeTag } from "./AdTypeTag";
 import { formatCurrency, formatNumber } from "../../../lib/format";
 
+// Matches the Blinkit keywords card, so the two paginate identically.
 const LIMIT = 20;
 
 const formatRoas = (v) =>
 	v === null || v === undefined ? "—" : `${v.toFixed(2)}x`;
 
-const TARGET_OPTIONS = [
-	{ value: "", label: "All targets" },
-	{ value: "keyword", label: "Keywords" },
-	{ value: "recommendation", label: "Recommendations" },
+const formatPct = (v) =>
+	v === null || v === undefined ? "—" : `${v.toFixed(2)}%`;
+
+/** Zepto's analogue of the Blinkit card's target-type filter.
+ *
+ * Not the same dimension: Blinkit splits keyword vs recommendation rows, which
+ * Zepto's keyword table has no equivalent of — every row there is a keyword.
+ * Match type is the split that matters here, because Zepto bids the same
+ * keyword under several and they perform very differently.
+ */
+const MATCH_OPTIONS = [
+	{ value: "", label: "All match types" },
+	{ value: "BROAD", label: "Broad" },
+	{ value: "PHRASE", label: "Phrase" },
+	{ value: "EXACT", label: "Exact" },
 ];
 
-/** Keyword / asset performance from the latest detail snapshot per campaign.
- * Sortable by spend/sales/RoAS/impressions; filterable by target type. Shows the
- * per-keyword RoAS that campaign-level metrics can't. */
-export const KeywordsCard = () => {
+/** Zepto keyword performance for the window.
+ *
+ * A separate card from `KeywordsCard` rather than extra rows in it: Zepto's
+ * keywords carry no campaign id and no direct/indirect sales split, so they
+ * cannot fill that table's shape — while Zepto reports clicks, CTR and CPC,
+ * which Blinkit does not and which would be blank columns there.
+ *
+ * Hidden entirely when Zepto is filtered out, rather than rendering an empty
+ * card next to a populated Blinkit one.
+ */
+export const ZeptoKeywordsCard = () => {
 	const [sort, setSort] = useState("spend");
 	const [order, setOrder] = useState("desc");
-	const [targetType, setTargetType] = useState("");
+	const [matchType, setMatchType] = useState("");
 	const [page, setPage] = useState(1);
 
 	const { selected } = useMarketplaces();
 	useEffect(() => {
 		setPage(1);
-	}, [sort, order, targetType, selected]);
+	}, [matchType, sort, order, selected]);
+	const wantsZepto = !selected?.length || selected.includes("zepto");
 
-	const { data, isLoading, error, refetch, isFetching } = useKeywords({
-		page,
-		limit: LIMIT,
-		targetType,
+	const { data, isLoading, error, refetch, isFetching } = useZeptoKeywords({
 		sort,
 		order,
 	});
-	const rows = data?.items ?? [];
+	// Filtered here rather than server-side: the endpoint returns the whole
+	// window's keywords (tens of rows for this account, not thousands), so a
+	// round trip per filter change would cost more than it saves.
+	const all = (data ?? []).filter(
+		(r) => !matchType || r.match_type === matchType,
+	);
+	// Paged in the browser: the endpoint returns the whole window at once, so
+	// there is no server page to ask for.
+	const total = all.length;
+	const pages = Math.max(1, Math.ceil(total / LIMIT));
+	const current = Math.min(page, pages);
+	const rows = all.slice((current - 1) * LIMIT, current * LIMIT);
+
+	if (!wantsZepto) return null;
 
 	const onSort = (key) => {
 		if (key === sort) {
@@ -74,14 +105,14 @@ export const KeywordsCard = () => {
 
 	return (
 		<Card
-			title="Keyword & asset performance"
+			title="Keyword performance · Zepto"
 			actions={
 				<select
-					value={targetType}
-					onChange={(e) => setTargetType(e.target.value)}
+					value={matchType}
+					onChange={(e) => setMatchType(e.target.value)}
 					className="rounded-md border border-border bg-card px-2.5 py-1 text-sm text-content focus:outline-none focus:ring-2 focus:ring-brand/30"
 				>
-					{TARGET_OPTIONS.map((o) => (
+					{MATCH_OPTIONS.map((o) => (
 						<option key={o.value} value={o.value}>
 							{o.label}
 						</option>
@@ -89,12 +120,18 @@ export const KeywordsCard = () => {
 				</select>
 			}
 		>
-			{isLoading && <Loading label="Loading keywords…" />}
+			{isLoading && <Loading label="Loading Zepto keywords…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&
 				!error &&
 				(rows.length === 0 ? (
-					<EmptyState message="No keyword data captured yet." />
+					<EmptyState
+						message={
+							matchType
+								? `No ${matchType.toLowerCase()} match keywords in this period.`
+								: "No Zepto keyword data captured yet."
+						}
+					/>
 				) : (
 					<div
 						className={
@@ -106,7 +143,7 @@ export const KeywordsCard = () => {
 								<thead className="sticky top-0 z-10 bg-card">
 									<tr className="border-b border-border">
 										<th className="px-3 py-2 text-left font-medium text-content-subtle">
-											Target
+											Keyword
 										</th>
 										<th className="px-3 py-2 text-left font-medium text-content-subtle">
 											Match
@@ -115,6 +152,13 @@ export const KeywordsCard = () => {
 											label="Impressions"
 											sortKey="impressions"
 										/>
+										<SortHead
+											label="Clicks"
+											sortKey="clicks"
+										/>
+										<th className="px-3 py-2 text-right font-medium text-content-subtle">
+											CTR
+										</th>
 										<SortHead
 											label="Spend"
 											sortKey="spend"
@@ -129,15 +173,21 @@ export const KeywordsCard = () => {
 								<tbody>
 									{rows.map((r) => (
 										<tr
-											key={`${r.campaign_id}-${r.target}-${r.match_type ?? ""}`}
+											key={`${r.keyword}-${r.match_type ?? ""}`}
 											className="border-b border-border/60 last:border-0 hover:bg-muted/50"
 										>
 											<td className="px-3 py-2">
 												<div className="font-medium text-content">
-													{r.target}
+													{r.keyword}
 												</div>
-												<div className="text-xs text-content-subtle">
-													{r.target_type}
+												<div className="flex items-center gap-1.5 text-xs text-content-subtle">
+													<AdTypeTag
+														types={r.ad_types}
+													/>
+													<span>
+														{r.units_sold} orders ·{" "}
+														{r.atc} ATC
+													</span>
 												</div>
 											</td>
 											<td className="px-3 py-2 text-content-muted">
@@ -147,18 +197,19 @@ export const KeywordsCard = () => {
 												{formatNumber(r.impressions)}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatCurrency(
-													r.budget_consumed,
-												)}
+												{formatNumber(r.clicks)}
+											</td>
+											<td className="px-3 py-2 text-right tabular-nums text-content-muted">
+												{formatPct(r.ctr)}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatCurrency(
-													r.direct_sales +
-														r.indirect_sales,
-												)}
+												{formatCurrency(r.spend)}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatRoas(r.total_roas)}
+												{formatCurrency(r.sales)}
+											</td>
+											<td className="px-3 py-2 text-right tabular-nums text-content">
+												{formatRoas(r.roas)}
 											</td>
 										</tr>
 									))}
@@ -166,10 +217,10 @@ export const KeywordsCard = () => {
 							</table>
 						</div>
 						<Pagination
-							page={data.page}
-							pages={data.pages}
-							total={data.total}
-							limit={data.limit}
+							page={current}
+							pages={pages}
+							total={total}
+							limit={LIMIT}
 							onChange={setPage}
 						/>
 					</div>

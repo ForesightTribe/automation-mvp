@@ -1,6 +1,6 @@
 import { Card } from "../../../components/ui/Card";
 import { DeltaBadge } from "../../../components/ui/DeltaBadge";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 const formatRoas = (v) =>
 	v === null || v === undefined ? "—" : `${v.toFixed(2)}x`;
@@ -55,12 +55,12 @@ export const AdMarketplaceCard = ({ row }) => {
 			<div className="flex flex-col gap-2">
 				<MetricRow
 					label="Ad spend"
-					value={formatCompactCurrency(m("ad_spend").value)}
+					value={formatCurrency(m("ad_spend").value)}
 					delta={m("ad_spend").delta_pct}
 				/>
 				<MetricRow
 					label="Ad revenue"
-					value={formatCompactCurrency(m("ad_sales").value)}
+					value={formatCurrency(m("ad_sales").value)}
 					delta={m("ad_sales").delta_pct}
 				/>
 				<MetricRow

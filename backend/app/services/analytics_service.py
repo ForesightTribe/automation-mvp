@@ -11,7 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchSnapshot
-from app.services import watchlist_service, zepto_analytics
+from app.services import watchlist_service, zepto_ads, zepto_analytics
 
 Sale = BlinkitSellerSale
 AdDaily = BlinkitAdCampaignDaily
@@ -99,7 +99,7 @@ async def _ads_agg(
     ]
     if marketplaces is not None:
         conds.append(AdDaily.platform.in_(marketplaces))
-    return (
+    totals = (
         await session.execute(
             select(
                 func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
@@ -108,6 +108,17 @@ async def _ads_agg(
             ).where(*conds)
         )
     ).one()
+
+    # Zepto's ads live on their own table, so the query above cannot see them.
+    # Merged here rather than at each call site because this is the shared
+    # backbone for the Overview marketplace cards, the Analytics ad metrics and
+    # the Ads per-marketplace breakdown — all three reported Zepto as zero spend
+    # while the Ads summary tiles showed the real figure.
+    if zepto_ads.wants_zepto(marketplaces):
+        z = await zepto_ads.ads_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, z))
+
+    return totals
 
 
 async def _market_agg(
@@ -392,7 +403,7 @@ async def get_sales_by_city(
             .order_by(revenue.desc())
         )
     ).all()
-    return [
+    out = [
         {
             "city": city_name or city_id,
             "revenue": round(float(rev), 2),
@@ -400,6 +411,25 @@ async def get_sales_by_city(
         }
         for city_id, city_name, rev, units in rows
     ]
+
+    # Zepto's per-city sales live on their own table — its sales response has no
+    # city dimension, so the split is scraped one city at a time. Merged here,
+    # like _sales_agg already does for the brand totals, so the Revenue-by-city
+    # chart covers both marketplaces instead of silently being Blinkit-only.
+    #
+    # City names are marketplace-specific and are NOT reconciled: Zepto reports
+    # "BLR - Bengaluru" where Blinkit reports "Bengaluru". Merging them by name
+    # would need a mapping that does not exist yet, and guessing would combine
+    # two marketplaces' revenue under a name that might not match either.
+    if zepto_analytics.wants_zepto(marketplaces):
+        out.extend(
+            await zepto_analytics.sales_by_city(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        )
+        out.sort(key=lambda r: r["revenue"], reverse=True)
+
+    return out
 
 
 async def get_sales_by_category(

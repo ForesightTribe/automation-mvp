@@ -49,6 +49,186 @@ class ZeptoSellerSalesDaily(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
+class ZeptoAdCampaignDaily(SQLModel, table=True):
+    """One row per ad campaign per day.
+
+    Zepto's `/ads-bff/api/v1/campaigns` returns a campaign's identity *and* its
+    metrics for whatever window is asked for, so scraping it a day at a time
+    yields campaign x day rows directly. That covers what Blinkit splits across
+    two tables (`blinkit_ad_campaigns` for identity, `blinkit_ad_campaign_daily`
+    for the series) — hence one table here, not two.
+
+    A row is filled from two endpoints, because neither is complete: the
+    campaigns endpoint above for the operational fields (budgets, base bid,
+    targeting, status, dates) and `/metrics/tabular?view=campaign_table` for
+    revenue, add-to-carts and the rest of the block at the bottom of this class.
+    The keyword breakdown lives on `ZeptoAdKeywordDaily`.
+
+    Column names follow Zepto's own (`spend`, `roi`) rather than Blinkit's
+    (`budget_consumed`, `roas`); mapping between them belongs in the service
+    layer, not baked into a column name that would then misdescribe the source.
+    """
+
+    __tablename__ = "zepto_ad_campaign_daily"
+
+    __table_args__ = (Index("idx_zacd_tenant_date", "tenant_id", "date"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    campaign_id: int
+    campaign_name: str | None = None
+    brand_id: str
+    brand_name: str | None = None
+
+    # The campaign's real tab — but only once the Analytics table has confirmed
+    # it. The campaigns endpoint ignores its `categoryType` parameter (asking
+    # for sponsored_products, sponsored_display or sponsored_brands returns the
+    # same 26 campaigns each time, verified 20-Aug-2026), so on its own this is
+    # just the tab that was requested. `/metrics/tabular` DOES partition —
+    # 14-Aug-2026 it returned 6 campaigns / Rs 8,136 under sponsored_products,
+    # 1 / Rs 144 under sponsored_brands and nothing under display, summing to
+    # the Rs 8,280 the campaigns endpoint reports for the day — so the scraper
+    # overwrites this with the tab a campaign actually appeared in.
+    #
+    # A campaign with no spend in the window appears in no tabular tab, so its
+    # value stays the requested-tab default. Filter on it for spend analysis,
+    # not for a campaign inventory. `campaign_type` (PLA/Display) is a
+    # different axis and always reflects the campaign itself.
+    campaign_category: str
+    campaign_type: str | None = None          # PLA | Display
+    campaign_sub_type: str | None = None      # AUCTION_UP_SELL | PCA | ...
+    status: str | None = None                 # ACTIVE | ...
+    is_active: bool | None = None
+    bid_targeting_type: str | None = None     # KEYWORD | ...
+    campaign_targeting_type: str | None = None
+
+    daily_budget: float | None = None
+    lifetime_budget: float | None = None
+    base_bid: float | None = None
+
+    # ── Windowed: these DO change with the from/to dates, so they can be
+    # summed or averaged over a date range. Verified 20-Aug-2026 by fetching
+    # the same campaign for a 1-day, 6-day and 31-day window and watching the
+    # values move.
+    spend: float = 0.0
+    impressions: int = 0
+    clicks: int = 0
+    cpc: float | None = None
+    ecpm: float | None = None
+
+    # ── NOT windowed. Zepto returns the same figure whatever date range is
+    # requested (Bakers Dozen CKW: orders=158, sov=0.07, ad_position=16 for a
+    # 1-day, 6-day and 31-day window alike), and every campaign in the table
+    # has exactly one distinct value across all its days. `sov` is labelled
+    # "SOV - last 7 day" in Zepto's own UI, i.e. a trailing metric by design.
+    #
+    # They are stored because they are real, current figures — but they must
+    # never be summed across days, and must not be shown as though they
+    # describe a chosen window. Summing `orders` per day is exactly what
+    # inflated the Units-sold tile to 5,845; see app/services/zepto_ads.py.
+    orders: int = 0
+    # Zepto's "RoAS (including FOC)" — the campaign table's first RoAS column.
+    # Its second, FOC-excluded column renders "-" here and this endpoint's
+    # `robas` field is empty; the Analytics view does report it, so it is stored
+    # in `robas` below. FOC = free-of-cost impressions Zepto grants, so this
+    # runs at or above a pure return-on-money-spent figure.
+    roi: float | None = None
+    # Share of voice, percent — trailing 7 days, NOT the requested window
+    # (Zepto's own column is titled "SOV - last 7 day"). See the note above.
+    sov: float | None = None
+    # Average ad position — also fixed, not windowed. See the note above.
+    ad_position: float | None = None
+
+    campaign_start_date: datetime | None = None
+    campaign_end_date: datetime | None = None
+
+    # ── From the Analytics page's campaign_table view, which the Campaign
+    # Management endpoint does not report. All date-aware (verified: they scale
+    # across 1-day / 6-day / 31-day windows).
+    #
+    # `revenue` is Zepto's own reported figure. It was previously reconstructed
+    # as spend x roi, which came within ~0.1% (7,586 vs 7,580 on 14 Aug) — the
+    # gap being RoAS rounded to 2dp — but a reported number beats a derived one.
+    revenue: float | None = None
+    atc: int | None = None
+    # Orders from campaign_table, which IS windowed — unlike the `orders`
+    # column above, taken from the campaigns endpoint, which is a lifetime
+    # figure that ignores the date range.
+    windowed_orders: int | None = None
+    # RoAS excluding free-of-cost impressions. The Campaign Management table
+    # renders this as "-"; only the Analytics view populates it.
+    robas: float | None = None
+    cpm: float | None = None
+    # Orders split by whether they were for the advertised SKU or another one.
+    same_skus: int | None = None
+    other_skus: int | None = None
+    unique_reach: int | None = None
+    new_to_brand_pct: float | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoAdKeywordDaily(SQLModel, table=True):
+    """One row per keyword per match type per day, per campaign category —
+    Zepto's equivalent of Blinkit's `blinkit_ad_campaign_detail`.
+
+    From `/metrics/tabular` with view=keyword_table. Note the grain: keywords
+    are reported per BRAND, not per campaign — the response carries no campaign
+    id, so a keyword cannot be attributed to the campaign that bid on it. That
+    is the one place Blinkit's detail table is richer, since its rows are keyed
+    by campaign.
+
+    A consequence of that missing id: the same keyword bid by two campaigns
+    comes back as two rows identical in every field. The parser sums them, so a
+    row here means "this keyword, this match type, this day, across every
+    campaign that bid it". Verified additive against the campaign table for the
+    same day — spend, clicks, add-to-carts and orders agree to the unit.
+
+    `ctr`/`cpc`/`cpm`/`roas` are recomputed from the summed components rather
+    than copied, so they stay correct for the summed rows; Zepto's own values
+    round CPC to whole rupees anyway. `robas` is spend-weighted, since the
+    free-of-cost revenue it excludes is not reported separately.
+    """
+
+    __tablename__ = "zepto_ad_keyword_daily"
+
+    __table_args__ = (Index("idx_zakd_tenant_date", "tenant_id", "date"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    brand_id: str
+    campaign_category: str
+
+    keyword: str
+    match_type: str | None = None      # BROAD | PHRASE | EXACT
+
+    spend: float = 0.0
+    revenue: float | None = None
+    impressions: int = 0
+    clicks: int = 0
+    orders: int | None = None
+    atc: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    cpm: float | None = None
+    roas: float | None = None
+    robas: float | None = None
+    same_skus: int | None = None
+    other_skus: int | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
 class ZeptoSellerProductPerf(SQLModel, table=True):
     """One row per tenant per SKU per scraped window.
 
@@ -88,5 +268,162 @@ class ZeptoSellerProductPerf(SQLModel, table=True):
     week_on_week_growth: float | None = None
     month_on_month_growth: float | None = None
     stock_on_hand: int | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoAdProductDaily(SQLModel, table=True):
+    """One row per advertised SKU per campaign category per day.
+
+    From `/metrics/tabular` with view=product_table — the Analytics page's
+    Product Performance tab. Answers "which SKUs is the ad spend going to",
+    which no other Zepto endpoint reports: the campaigns endpoint stops at
+    campaign level and `zepto_seller_product_perf` covers organic sales, not ads.
+
+    `campaign_category` is part of the key. No product was observed under more
+    than one ad type, but categories were (Cheese ran under both sponsored
+    products and sponsored brands on 19-Aug-2026), so the same guard applies
+    here rather than relying on that holding.
+
+    Verified additive and date-aware: 18 Aug Rs 6,474 + 19 Aug Rs 8,353 equals
+    the Rs 14,827 the 18-19 range returns, and each day matches the campaign
+    table's spend for that day.
+    """
+
+    __tablename__ = "zepto_ad_product_daily"
+
+    __table_args__ = (Index("idx_zapd_tenant_date", "tenant_id", "date"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    brand_id: str
+    campaign_category: str
+
+    # Zepto's product variant id, from the `product_details` box.
+    product_variant_id: str
+    product_name: str | None = None
+    image_link: str | None = None
+    # The SKU's retail category ("Breads & Buns"), NOT the ad type.
+    product_category: str | None = None
+
+    spend: float = 0.0
+    revenue: float | None = None
+    impressions: int = 0
+    clicks: int = 0
+    orders: int | None = None
+    atc: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    cpm: float | None = None
+    roas: float | None = None
+    robas: float | None = None
+    same_skus: int | None = None
+    other_skus: int | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoAdBreakdownDaily(SQLModel, table=True):
+    """One row per breakdown bucket per campaign category per day.
+
+    Covers three `/metrics/tabular` views that are structurally identical —
+    `category_table`, `city_table` and `page_table`. Each returns nothing but a
+    `{dim}_name` and the same twelve metrics, so three separate tables would
+    have had identical columns and three copies of the same parser. The view is
+    stored in `dimension` instead.
+
+    * `dimension="category"` — the RETAIL category ("Breads & Buns", "Cheese"),
+      not the ad type. Both are in the key: Cheese ran under sponsored products
+      AND sponsored brands on 19-Aug-2026 (Rs 1,422 and Rs 158), so dropping the
+      ad type would silently discard one.
+    * `dimension="city"` — Zepto's delivery city. Only Bengaluru has had spend
+      on this account so far.
+    * `dimension="page"` — where the ad appeared: Search Page, Product Details
+      Page, Trending Page, Category Page.
+
+    None of these views reports CTR, unlike the product and keyword ones.
+    """
+
+    __tablename__ = "zepto_ad_breakdown_daily"
+
+    __table_args__ = (
+        Index("idx_zabd_tenant_date", "tenant_id", "date"),
+        Index("idx_zabd_dimension", "tenant_id", "dimension", "date"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    brand_id: str
+    campaign_category: str
+
+    # Which tabular view this row came from: category | city | page.
+    dimension: str
+    # The bucket's name — a retail category, a city, or a page type.
+    name: str
+
+    spend: float = 0.0
+    revenue: float | None = None
+    impressions: int = 0
+    clicks: int = 0
+    orders: int | None = None
+    atc: int | None = None
+    cpc: float | None = None
+    cpm: float | None = None
+    roas: float | None = None
+    robas: float | None = None
+    same_skus: int | None = None
+    other_skus: int | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoSellerSalesCityDaily(SQLModel, table=True):
+    """One row per city per day — GMV and units for the brand in that city.
+
+    Zepto's Sales Analytics has no city breakdown in its response: asking for
+    `viewType=CITY` is rejected outright (strict `oneof` validation on the
+    parameter). The only way to get a city split is to ask for one city at a
+    time — `cityIds` accepts a single id and returns that city's full daily
+    series — so this table is filled by looping cities rather than by one call.
+
+    That loop is cheap in practice, not expensive. A sweep of all 138 cities on
+    21-Aug-2026 found sales in exactly ONE (Bengaluru, GMV Rs 395,300 for 14-21
+    Aug, which equals the brand total to the rupee). So the daily scrape covers
+    the cities already known to sell, and a wider sweep only needs running
+    occasionally to catch a new one.
+
+    Separate from `ZeptoSellerSalesDaily`, which holds the same figures with no
+    city dimension. Kept apart rather than adding a nullable city column there,
+    so summing the brand table can never double-count a city split.
+    """
+
+    __tablename__ = "zepto_seller_sales_city_daily"
+
+    __table_args__ = (Index("idx_zsscd_tenant_date", "tenant_id", "date"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    brand_id: str
+    city_id: str
+    # Zepto prefixes these with an airport-style code ("BLR - Bengaluru").
+    city_name: str | None = None
+
+    gmv: float = 0.0
+    units: int = 0
 
     scraped_at: datetime = Field(default_factory=now_ist)

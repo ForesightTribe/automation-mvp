@@ -4,11 +4,7 @@
  * they fetch data and call a builder. Nulls are left as-is so charts show honest
  * gaps on days with no data.
  */
-import {
-	formatCompactCurrency,
-	formatDate,
-	formatNumber,
-} from "../../lib/format";
+import { formatCompactCurrency, formatCurrency, formatDate, formatNumber } from "../../lib/format";
 
 // Token-ish palette (ECharts needs concrete hex; mirrors index.css).
 const PRIMARY = "#4f46e5";
@@ -58,7 +54,7 @@ const baseGrid = { left: 8, right: 8, top: 24, bottom: 28, containLabel: true };
 export const spendRevenueOption = (rows) => ({
 	tooltip: {
 		trigger: "axis",
-		valueFormatter: (v) => formatCompactCurrency(v),
+		valueFormatter: (v) => formatCurrency(v),
 	},
 	legend: { data: ["Ad Spend", "Ad Revenue"], bottom: 0 },
 	grid: baseGrid,
@@ -149,7 +145,7 @@ export const adTrendOption = (rows, { showRoas = false } = {}) => {
 export const revenueOption = (rows) => ({
 	tooltip: {
 		trigger: "axis",
-		valueFormatter: (v) => formatCompactCurrency(v),
+		valueFormatter: (v) => formatCurrency(v),
 	},
 	grid: baseGrid,
 	xAxis: {
@@ -178,11 +174,14 @@ export const revenueOption = (rows) => ({
 export const dailyMetricOption = (rows, { metric = "revenue" } = {}) => {
 	const money = metric === "revenue";
 	const fmt = money ? formatCompactCurrency : formatNumber;
+	// Tooltips show the exact figure; axis labels stay compact, since a
+	// grouped number per gridline overflows the axis gutter.
+	const tipFmt = money ? formatCurrency : formatNumber;
 	const color = money ? INFO : WARNING;
 	const valueOf = (r) =>
 		metric === "revenue" ? r.revenue : (r.units_sold ?? r.units);
 	return {
-		tooltip: { trigger: "axis", valueFormatter: (v) => fmt(v) },
+		tooltip: { trigger: "axis", valueFormatter: (v) => tipFmt(v) },
 		grid: baseGrid,
 		xAxis: {
 			type: "category",
@@ -255,10 +254,13 @@ export const rankedBarOption = (
 	{ color = PRIMARY, money = true } = {},
 ) => {
 	const fmt = money ? formatCompactCurrency : formatNumber;
+	// Tooltips show the exact figure; axis labels stay compact, since a
+	// grouped number per gridline overflows the axis gutter.
+	const tipFmt = money ? formatCurrency : formatNumber;
 	// ECharts category axis draws bottom-up, so reverse to put the largest on top.
 	const rows = [...items].reverse();
 	return {
-		tooltip: { trigger: "axis", valueFormatter: (v) => fmt(v) },
+		tooltip: { trigger: "axis", valueFormatter: (v) => tipFmt(v) },
 		grid: { left: 8, right: 16, top: 8, bottom: 8, containLabel: true },
 		xAxis: { type: "value", axisLabel: { formatter: (v) => fmt(v) } },
 		yAxis: {
@@ -280,7 +282,7 @@ export const rankedBarOption = (
 export const donutOption = (items) => ({
 	tooltip: {
 		trigger: "item",
-		valueFormatter: (v) => formatCompactCurrency(v),
+		valueFormatter: (v) => formatCurrency(v),
 	},
 	legend: { bottom: 0, type: "scroll" },
 	series: [
@@ -303,7 +305,7 @@ export const donutOption = (items) => ({
 export const categoryTrendOption = (dates, series) => ({
 	tooltip: {
 		trigger: "axis",
-		valueFormatter: (v) => (v == null ? "—" : formatCompactCurrency(v)),
+		valueFormatter: (v) => (v == null ? "—" : formatCurrency(v)),
 	},
 	legend: { bottom: 0, type: "scroll" },
 	grid: { ...baseGrid, bottom: 28 },
@@ -510,9 +512,14 @@ export const monthlySeriesOption = (
 		kind === "percent"
 			? (v) => `${Math.round(v)}%`
 			: (v) => formatCompactCurrency(v);
+	// Tooltip shows the exact figure; `fmt` stays compact for the axis labels.
+	const tipFmt =
+		kind === "percent"
+			? (v) => `${Math.round(v)}%`
+			: (v) => formatCurrency(v);
 	const data = rows.map((r) => r[key]);
 	return {
-		tooltip: { trigger: "axis", valueFormatter: fmt },
+		tooltip: { trigger: "axis", valueFormatter: tipFmt },
 		grid: baseGrid,
 		xAxis: {
 			type: "category",
@@ -561,8 +568,9 @@ const SCORECARD_TREND_META = {
 export const scorecardTrendOption = (rows, { metric = "fill_rate" } = {}) => {
 	const meta = SCORECARD_TREND_META[metric] ?? SCORECARD_TREND_META.fill_rate;
 	const fmt = meta.percent ? pctFmt : (v) => formatCompactCurrency(v);
+	const tipFmt = meta.percent ? pctFmt : (v) => formatCurrency(v);
 	return {
-		tooltip: { trigger: "axis", valueFormatter: fmt },
+		tooltip: { trigger: "axis", valueFormatter: tipFmt },
 		grid: baseGrid,
 		xAxis: {
 			type: "category",

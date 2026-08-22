@@ -1,9 +1,5 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import {
-	formatCompactCurrency,
-	formatNumber,
-	formatPercent,
-} from "../../../lib/format";
+import { formatCurrency, formatNumber, formatPercent } from "../../../lib/format";
 
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
@@ -22,14 +18,14 @@ export const KpiStrip = ({ summary, performance = [] }) => {
 	const tiles = [
 		{
 			label: "Ad Spend",
-			value: formatCompactCurrency(m("ad_spend").value),
+			value: formatCurrency(m("ad_spend").value),
 			delta: m("ad_spend").delta_pct,
 			series: series((r) => r.budget_consumed),
 			sparkColor: "#4f46e5",
 		},
 		{
 			label: "Ad Revenue",
-			value: formatCompactCurrency(m("ad_sales").value),
+			value: formatCurrency(m("ad_sales").value),
 			delta: m("ad_sales").delta_pct,
 			series: series((r) => r.ad_sales),
 			sparkColor: "#16a34a",

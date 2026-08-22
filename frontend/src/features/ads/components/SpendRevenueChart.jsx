@@ -4,11 +4,7 @@ import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { adTrendOption } from "../../../components/charts/options";
-import {
-	formatCompactCurrency,
-	formatDate,
-	formatNumber,
-} from "../../../lib/format";
+import { formatCurrency, formatDate, formatNumber } from "../../../lib/format";
 
 const formatRoas = (v) =>
 	v === null || v === undefined ? "—" : `${v.toFixed(2)}x`;
@@ -38,7 +34,7 @@ export const SpendRevenueChart = () => {
 			key: "budget_consumed",
 			label: "Spend",
 			align: "right",
-			render: (r) => formatCompactCurrency(r.budget_consumed),
+			render: (r) => formatCurrency(r.budget_consumed),
 		},
 		{
 			key: "impressions",
@@ -50,7 +46,7 @@ export const SpendRevenueChart = () => {
 			key: "ad_sales",
 			label: "Ad revenue",
 			align: "right",
-			render: (r) => formatCompactCurrency(r.ad_sales),
+			render: (r) => formatCurrency(r.ad_sales),
 		},
 		{
 			key: "roas",

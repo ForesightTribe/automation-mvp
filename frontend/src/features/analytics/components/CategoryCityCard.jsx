@@ -5,7 +5,7 @@ import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { stackedBarOption } from "../../../components/charts/options";
 import {
-	formatCompactCurrency,
+	formatCurrency,
 	formatNumber,
 	formatPercent,
 } from "../../../lib/format";
@@ -141,7 +141,7 @@ export const CategoryCityCard = () => {
 			key: "total",
 			label: "Revenue",
 			align: "right",
-			render: (r) => formatCompactCurrency(r.total),
+			render: (r) => formatCurrency(r.total),
 		},
 		{
 			key: "share",
@@ -159,7 +159,7 @@ export const CategoryCityCard = () => {
 			key: s,
 			label: s,
 			align: "right",
-			render: (r) => formatCompactCurrency(r[s]),
+			render: (r) => formatCurrency(r[s]),
 		})),
 	];
 

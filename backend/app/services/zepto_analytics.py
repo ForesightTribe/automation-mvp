@@ -21,6 +21,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
+from app.models.zepto_seller import ZeptoSellerSalesCityDaily as CityDaily
 from app.models.zepto_seller import ZeptoSellerSalesDaily as Daily
 
 # Which marketplace slug routes to these tables.
@@ -171,4 +172,44 @@ async def category_trend(
             "units_sold": int(u),
         }
         for d, cat, rev, u in rows
+    ]
+
+
+async def sales_by_city(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> list[dict]:
+    """Revenue and units per city — same shape as analytics_service's Blinkit one.
+
+    Zepto reports no city split in any single response, so these rows come from
+    one API call per city (see scraper.fetch_sales_by_city). Only cities with
+    actual sales are stored, so this returns a short list: on this account it is
+    Bengaluru alone, which accounts for 100% of GMV.
+
+    `city_name` carries Zepto's own prefixed form ("BLR - Bengaluru"); it is left
+    as-is rather than cleaned, so the dashboard shows what the seller portal shows.
+    """
+    rows = (
+        await session.execute(
+            select(
+                CityDaily.city_id,
+                func.max(CityDaily.city_name),
+                func.coalesce(func.sum(CityDaily.gmv), 0.0),
+                func.coalesce(func.sum(CityDaily.units), 0),
+            )
+            .where(
+                CityDaily.tenant_id == tenant_id,
+                CityDaily.date >= start,
+                CityDaily.date <= end,
+            )
+            .group_by(CityDaily.city_id)
+            .order_by(func.coalesce(func.sum(CityDaily.gmv), 0.0).desc())
+        )
+    ).all()
+    return [
+        {
+            "city": name or city_id,
+            "revenue": round(float(rev), 2),
+            "units_sold": int(units),
+        }
+        for city_id, name, rev, units in rows
     ]
