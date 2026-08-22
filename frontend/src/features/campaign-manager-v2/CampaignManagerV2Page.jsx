@@ -1,18 +1,26 @@
 import { useState } from "react";
 import { Card } from "../../components/ui/Card";
-import { ActivateNowCard } from "./components/ActivateNowCard";
 import { AutomateBidForm } from "./components/AutomateBidForm";
 import { AutomateBudgetForm } from "./components/AutomateBudgetForm";
+import { CampaignsSection } from "./components/CampaignsSection";
 import { HistoryCard } from "./components/HistoryCard";
-import { ScheduledPane } from "./components/ScheduledPane";
-import { SetBudgetNowCard } from "./components/SetBudgetNowCard";
+import { ScheduledSection } from "./components/ScheduledSection";
 
 /**
  * Campaign Manager — set-and-forget automation for Blinkit budgets and keyword bids.
- * Left: a launcher that opens an in-place composer for a new budget or bid automation,
- * plus a one-off "set budget now". Right: everything currently scheduled, with its
- * controls. History spans the bottom. Every edit just writes DB rows + enqueues a
- * reconcile — no browser work happens here.
+ *
+ * The page reads top-down as four full-width bands: the composer for a new automation,
+ * the account's campaigns with their immediate on/off + budget controls, everything
+ * scheduled, then history. They are bands rather than columns because every one of them
+ * is a list of rows carrying campaign names, weekday strips and time windows — a third of
+ * a laptop screen truncates all of it into uselessness.
+ *
+ * The immediate actions live ON a campaign's own row rather than in separate cards with
+ * their own campaign pickers: the page used to offer three different ways to find a
+ * campaign, and picking one by name is exactly where this goes wrong, because names
+ * repeat across an account.
+ *
+ * Every edit just writes DB rows + enqueues a reconcile — no browser work happens here.
  */
 const OPTIONS = [
 	{
@@ -38,7 +46,9 @@ const OptionTile = ({ option, onClick }) => (
 		<span className="flex h-9 w-9 items-center justify-center rounded-lg bg-primary-soft text-lg text-primary">
 			{option.icon}
 		</span>
-		<span className="font-display text-sm font-semibold text-content">{option.title}</span>
+		<span className="font-display text-sm font-semibold text-content">
+			{option.title}
+		</span>
 		<span className="text-xs text-content-muted">{option.desc}</span>
 	</button>
 );
@@ -49,7 +59,11 @@ const Composer = ({ mode, setMode }) => {
 			<Card title="Create an automation">
 				<div className="grid gap-3 sm:grid-cols-2">
 					{OPTIONS.map((o) => (
-						<OptionTile key={o.key} option={o} onClick={() => setMode(o.key)} />
+						<OptionTile
+							key={o.key}
+							option={o}
+							onClick={() => setMode(o.key)}
+						/>
 					))}
 				</div>
 			</Card>
@@ -85,20 +99,20 @@ export const CampaignManagerV2Page = () => {
 	return (
 		<div className="space-y-6">
 			<header>
-				<h1 className="font-display text-xl font-semibold text-content">Campaign Manager</h1>
+				<h1 className="font-display text-xl font-semibold text-content">
+					Campaign Manager
+				</h1>
 				<p className="text-sm text-content-muted">
-					Automate campaign budgets and keyword bids across the times that matter.
+					Automate campaign budgets and keyword bids across the times
+					that matter.
 				</p>
 			</header>
 
-			<div className="grid gap-6 lg:grid-cols-3">
-				<div className="space-y-6 lg:col-span-2">
-					<Composer mode={mode} setMode={setMode} />
-					<SetBudgetNowCard />
-					<ActivateNowCard />
-				</div>
-				<ScheduledPane />
-			</div>
+			<Composer mode={mode} setMode={setMode} />
+
+			<CampaignsSection />
+
+			<ScheduledSection />
 
 			<HistoryCard />
 		</div>

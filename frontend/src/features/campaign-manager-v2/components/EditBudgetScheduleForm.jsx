@@ -6,7 +6,7 @@ const FIELD =
 	"rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-content focus:border-primary focus:outline-none";
 const LABEL = "text-xs font-medium text-content-muted";
 
-/** Edit a budget automation's own fields (label, everyday budget, and whether the campaign
+/** Edit a budget automation's own fields (label, default budget, and whether the campaign
  * is stopped when a window ends). Windows themselves are edited separately. */
 export const EditBudgetScheduleForm = ({ schedule, onDone }) => {
 	const [name, setName] = useState(schedule.name ?? "");
@@ -49,7 +49,7 @@ export const EditBudgetScheduleForm = ({ schedule, onDone }) => {
 				/>
 			</label>
 			<label className="flex flex-col gap-1">
-				<span className={LABEL}>Everyday budget (₹)</span>
+				<span className={LABEL}>Default budget (₹)</span>
 				<input
 					type="number"
 					min="1"
@@ -70,8 +70,8 @@ export const EditBudgetScheduleForm = ({ schedule, onDone }) => {
 						Stop the campaign when a window ends
 					</span>
 					<span className="block text-xs text-content-muted">
-						Budget returns to the everyday amount and the campaign
-						is stopped; it starts again at the next window.
+						Budget returns to the default budget and the campaign is
+						stopped; it starts again at the next window.
 					</span>
 				</span>
 			</label>
