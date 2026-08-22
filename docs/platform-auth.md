@@ -8,6 +8,14 @@
 Both Blinkit dashboards log in, probe and refresh over plain HTTP with **no browser**;
 unattended login and self-healing are proven end to end. Migration `f3c8d1a5e7b2` applied.
 **Not yet on the VM** — see [Open / next](#open--next).
+> ⚠️ This status block predates the VM deploy and may be stale — verify before relying on it.
+
+**Zepto added 2026-08-22.** Third platform, slug `zepto`, one console covering ads *and*
+sales (hence one slug where Blinkit needs two). Same browserless shape — email + password
+→ emailed 4-digit OTP → JWT — but with **two structural differences that the rest of this
+doc assumes away**: it cannot refresh, and it permits only one session per user. Both are
+covered where they bite: [Where logins run](#where-logins-run-and-when) and the ladder
+below. Required **no CLI changes** — the registry design absorbed it.
 
 ---
 
@@ -130,10 +138,16 @@ storage_states and are read as legacy — **no backfill required**.
 ### The service ladder
 
 `ensure()` climbs only as far as it must: stored session that probes clean → refresh →
-full login. Probing is cheap on both platforms (one API call, no browser).
+full login. Probing is cheap on all three platforms (one API call, no browser).
 
-- **Lazy, never scheduled.** Re-auth fires only when a session is actually dead;
-  repeated logins from one datacenter IP look like a bot.
+For **Zepto** the ladder is shorter than it looks: the refresh rung does not exist, so a
+dead session goes straight to a full login. Probing matters more there than anywhere else
+— single-session eviction means a Zepto session can die minutes after it was issued, with
+hours left on `expires_at`, so the clock cannot be trusted and only a call can answer.
+
+- **Lazy by default.** Re-auth fires only when a session is actually dead; repeated
+  logins from one datacenter IP look like a bot. (Zepto is the documented exception —
+  see below.)
 - **Serialized** per `(tenant, platform)` with a Postgres advisory lock. Two concurrent
   OTP requests genuinely cross wires — the second invalidates the first's code.
 
@@ -147,8 +161,35 @@ Two mechanisms, complementary rather than alternative:
   call per platform, consumes no secret and sends no email, so it cannot lose to a mail
   scanner or forwarding lag the way a full login can.
 
-**Logins themselves are never scheduled** — repeated logins from one datacenter IP are
-what looks like a bot. The schedule only refreshes.
+**Logins are not scheduled — except for Zepto, which leaves no choice.**
+
+For Blinkit the rule holds absolutely: repeated logins from one datacenter IP are what
+looks like a bot, and a refresh achieves the same thing for free. The schedule only
+refreshes.
+
+**Zepto cannot refresh.** There is no rotate/renew endpoint anywhere in its API,
+`refreshToken` is null in every response, and the JWT expires at **local midnight IST** —
+not after a fixed duration (confirmed across three logins issued at 16:56, 17:45 and 18:44
+IST, all carrying the same `exp`). The only way to hold a Zepto session is to log in
+again, so it gets a daily **`auth.login`** job at **00:05 IST**:
+
+```
+python -m cli schedules add --name "Zepto daily login" --type auth.login     --cron "5 0 * * *" --tenant <tenant_id> --catchup platform=zepto
+```
+
+Just *after* midnight for two reasons: a login at 23:50 would buy a ten-minute session;
+and **every Zepto login evicts whoever is on the dashboard** (one session per user,
+server-enforced), so midnight is when that costs a human the least.
+
+The risk the original rule guarded against is smaller here than it looks: the login is two
+REST calls, the mail rule is verified against real messages, and `ensure()` still recovers
+on demand if the scheduled login fails. But it *is* a real exception — one emailed
+single-use secret burned per day, per tenant. **Do not extend `auth.login` to a platform
+that can refresh.**
+
+⚠️ **`auth.login` for Zepto stays DISABLED until the client provisions a service user.**
+Single-session eviction means a nightly login logs the client's own team out of their
+dashboard. Build it, schedule it `--disabled`, enable it when the account is ours.
 
 **Everything runs on the VM.** Both logins are now plain HTTP that Render *could* make,
 but shouldn't: Blinkit is India-geo, so a login from Render's US IP shortly before the

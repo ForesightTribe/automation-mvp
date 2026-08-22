@@ -44,11 +44,14 @@ python -m cli tenant list                        # show all tenants and their UU
 
 ## Auth
 
-Platform sessions — logging Foresight **into** Blinkit. (Not app-user auth; that is
-`app/routes/auth.py`.) Full design: [platform-auth.md](platform-auth.md).
+Platform sessions — logging Foresight **into** Blinkit and Zepto. (Not app-user auth;
+that is `app/routes/auth.py`.) Full design: [platform-auth.md](platform-auth.md).
 
-**No browser is launched and no human is needed.** Both Blinkit dashboards authenticate
-over plain HTTP, and the magic link / OTP is read from the shared auth inbox.
+**No browser is launched and no human is needed.** All three dashboards authenticate over
+plain HTTP, and the magic link / OTP is read from the shared auth inbox.
+
+Every command below is **generic over the registry** — the platform is an argument, not a
+command. Adding Zepto needed no CLI change at all.
 
 ### First time for a tenant — store the credentials
 
@@ -57,8 +60,9 @@ python -m cli auth credentials set blinkit        --tenant <tenant_id> --email o
 python -m cli auth credentials set blinkit_seller --tenant <tenant_id> --email ops@brand.com
 ```
 
-Blinkit is passwordless (magic link / OTP), so no password is stored. A platform that
-needs one — Zepto will — takes `--password`, which prompts hidden and encrypts at rest:
+Blinkit is passwordless (magic link / OTP), so no password is stored. **Zepto is not** —
+it wants email + password *and* an emailed OTP, so it takes `--password`, which prompts
+hidden and encrypts at rest with the same Fernet key as sessions:
 
 ```
 python -m cli auth credentials set zepto --tenant <tenant_id> --email ops@brand.com --password
@@ -71,6 +75,7 @@ python -m cli auth credentials remove zepto --tenant <tenant_id>
 ```
 python -m cli auth login blinkit        --tenant <tenant_id>
 python -m cli auth login blinkit_seller --tenant <tenant_id>
+python -m cli auth login zepto          --tenant <tenant_id>
 ```
 
 Unattended by default: it requests the secret, reads it from the auth inbox, and stores
@@ -90,7 +95,18 @@ python -m cli auth reset   blinkit --tenant <tenant_id>  # clear the circuit bre
 python -m cli auth platforms                            # registry + mail-rule status
 ```
 
-**`status` vs `probe`:** `status` reports what was last *recorded*; `probe` checks the
+⚠️ **Refresh does not apply to Zepto.** Zepto exposes no refresh/rotate endpoint —
+`refreshToken` is null in every response — so `auth refresh zepto` does nothing and
+`refresh-all` reports it as `not_refreshable` and **exits 0**. That is correct output, not
+a failure. Zepto's JWT expires at **local midnight IST** (not after a fixed duration), so
+it is re-logged-in daily instead — see the `auth.login` schedule below.
+
+⚠️ **Zepto allows ONE session per user.** A new login server-side revokes the previous
+one, in both directions: our login evicts a human's dashboard, and their login kills our
+session mid-run. So a Zepto session can be dead long before `expires_at` — `probe` is the
+only way to know, and `status` alone will mislead you.
+
+**`status` vs `probe`:** `status` reports what was last _recorded_; `probe` checks the
 platform right now (one API call, no browser). A session can read `active` and be dead —
 that gap is what let the seller scrape fail silently for weeks. When in doubt, `probe`.
 
@@ -100,11 +116,24 @@ Scrapers call `ensure()` internally: load → probe → refresh → re-login, do
 work that yields a working session. **An expired session repairs itself**, so `auth login`
 is for the first login of a new tenant, or after something genuinely broke.
 
-A daily `auth.refresh` job keeps sessions warm so they never reach expiry:
+A daily `auth.refresh` job keeps refreshable sessions warm so they never reach expiry:
 
 ```
 python -m cli schedules add --name "Auth refresh daily" --type auth.refresh     --cron "10 6 * * *" --tenant <tenant_id>
 ```
+
+**Zepto instead schedules a LOGIN**, because it has nothing to refresh. This is the one
+exception to the rule in [platform-auth.md](platform-auth.md) that logins are never
+scheduled:
+
+```
+python -m cli schedules add --name "Zepto daily login" --type auth.login          --cron "5 0 * * *" --tenant <tenant_id> --catchup platform=zepto
+```
+
+Just **after** midnight, for two reasons: the JWT dies at 23:59:59 IST, so a 23:50 login
+would buy a ten-minute session; and since every Zepto login evicts whoever is on the
+dashboard, midnight is when that costs a human the least. `--catchup` matters here — a
+missed login means no session all day, where a missed refresh self-heals.
 
 ### When a login fails
 
@@ -252,11 +281,11 @@ own engine; coordinates are never shared between platforms. See [zepto.md](zepto
 
 **1. Configure — `cli sync`.** `config.xlsx` has three sheets:
 
-| Sheet | Columns | What it is |
-|---|---|---|
-| `locations` | `mp, merchant_id, city, state, region, pincode, lat, lon, active, location_name, address` | that marketplace's **express** store catalog (keyed on `mp` + `merchant_id`); `lat/lon` is the probe point. `mp` is optional, blank → `blinkit`. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
-| `brands` | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional). Shared across marketplaces |
-| `coverage` | `mp, tenant, city` | which cities a tenant scrapes on which marketplace (all that marketplace's stores in each listed city). `mp` blank → `blinkit` |
+| Sheet       | Columns                                                                                    | What it is                                                                                                                                                                                                                                                                 |
+| ----------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `locations` | `mp, merchant_id, city, state, region, pincode, lat, lon, active, location_name, address`  | that marketplace's **express** store catalog (keyed on `mp` + `merchant_id`); `lat/lon` is the probe point. `mp` is optional, blank → `blinkit`. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
+| `brands`    | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional). Shared across marketplaces                                                                                                                                          |
+| `coverage`  | `mp, tenant, city`                                                                         | which cities a tenant scrapes on which marketplace (all that marketplace's stores in each listed city). `mp` blank → `blinkit`                                                                                                                                             |
 
 > ⚠️ **`--prune` only deletes within the marketplaces the file mentions** — a
 > workbook with no Zepto rows can never prune Zepto. But a workbook whose `mp`
@@ -310,7 +339,7 @@ python -m cli scrape public-run --all                          # every active te
 **2b. Targeted own-SKU scrape — `cli scrape public-skus`.** Searches the tenant's
 **brand name** and paginates its whole catalog to `brand_cap`, own-brand only →
 `sku_snapshots` (one row per product × store, keyed on `product_id`). This
-*guarantees* coverage of every own SKU's price/stock/inventory, closing the gap
+_guarantees_ coverage of every own SKU's price/stock/inventory, closing the gap
 where an own product doesn't rank in a category-keyword search.
 
 ```bash
@@ -371,11 +400,11 @@ python -m cli scrape public --keyword "soda" --brand "dobra" --tenant <id> --cit
 
 **What they save:**
 
-| Table | Written by | Data |
-|---|---|---|
-| `search_snapshots` | `public-run` | Per (tenant, keyword, store, scrape): brand rank, share-of-voice %, total results |
-| `search_listings`  | `public-run` | Per product in the result page: brand, price, MRP, discount %, in-stock, inventory, position, `extra` (group_id, merchant_id, unit, category…) |
-| `sku_snapshots`    | `public-skus` | Per (own product × location × scrape), keyed on `platform_product_id`: name, price, MRP, discount %, in-stock, inventory, rating, `is_combo` |
+| Table              | Written by    | Data                                                                                                                                           |
+| ------------------ | ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------- |
+| `search_snapshots` | `public-run`  | Per (tenant, keyword, store, scrape): brand rank, share-of-voice %, total results                                                              |
+| `search_listings`  | `public-run`  | Per product in the result page: brand, price, MRP, discount %, in-stock, inventory, position, `extra` (group_id, merchant_id, unit, category…) |
+| `sku_snapshots`    | `public-skus` | Per (own product × location × scrape), keyed on `platform_product_id`: name, price, MRP, discount %, in-stock, inventory, rating, `is_combo`   |
 
 > **Metrics count serviceable locations, not stores.** The catalog lat/long is a
 > delivery point several stores can share, so all public read endpoints count
@@ -421,24 +450,24 @@ python -m cli explore --brand dobra --keyword "soda" --competitors "paper boat,7
 python -m cli explore --brand dobra --keyword "soda" --city bengaluru --full -o dobra.xlsx
 ```
 
-| Option | Default | Notes |
-| --- | --- | --- |
-| `--brand` / `-b` | (required) | Focus brand (name or slug) |
-| `--keyword` / `-k` | — | Comma-separated keywords (required unless `--mode catalog`) |
-| `--city` / `-c` | all catalog cities | Comma-separated; must exist in the darkstore catalog |
-| `--competitors` | discover all | Comma-separated whitelist; empty = keep every competitor found |
-| `--aliases` | brand | Comma-separated brand-name variants for matching |
-| `--marketplace` / `-m` | `blinkit` | Only Blinkit is wired today |
-| `--mode` | `keyword` | `keyword` \| `catalog` \| `both` |
-| `--catalog` | off | Sugar — also scrape the own catalog (folds into `--mode`) |
-| `--sample` | 50 | Locations sampled per city (evenly spread) |
-| `--full` | off | Census — every catalog location (ignores `--sample`) |
-| `--workers` / `-w` | 5 | Concurrent browser workers |
-| `--cap` | 12 | Per-keyword result cap override |
-| `--brand-cap` | 60 | Catalog brand-query cap override |
-| `--label` | — | Human label stored on the run |
-| `--tenant` / `-t` | — | Optional attribution to a client (does **not** scope storage) |
-| `--output` / `-o` | `out/<brand>_<ts>.xlsx` | Workbook path |
+| Option                 | Default                 | Notes                                                          |
+| ---------------------- | ----------------------- | -------------------------------------------------------------- |
+| `--brand` / `-b`       | (required)              | Focus brand (name or slug)                                     |
+| `--keyword` / `-k`     | —                       | Comma-separated keywords (required unless `--mode catalog`)    |
+| `--city` / `-c`        | all catalog cities      | Comma-separated; must exist in the darkstore catalog           |
+| `--competitors`        | discover all            | Comma-separated whitelist; empty = keep every competitor found |
+| `--aliases`            | brand                   | Comma-separated brand-name variants for matching               |
+| `--marketplace` / `-m` | `blinkit`               | Only Blinkit is wired today                                    |
+| `--mode`               | `keyword`               | `keyword` \| `catalog` \| `both`                               |
+| `--catalog`            | off                     | Sugar — also scrape the own catalog (folds into `--mode`)      |
+| `--sample`             | 50                      | Locations sampled per city (evenly spread)                     |
+| `--full`               | off                     | Census — every catalog location (ignores `--sample`)           |
+| `--workers` / `-w`     | 5                       | Concurrent browser workers                                     |
+| `--cap`                | 12                      | Per-keyword result cap override                                |
+| `--brand-cap`          | 60                      | Catalog brand-query cap override                               |
+| `--label`              | —                       | Human label stored on the run                                  |
+| `--tenant` / `-t`      | —                       | Optional attribution to a client (does **not** scope storage)  |
+| `--output` / `-o`      | `out/<brand>_<ts>.xlsx` | Workbook path                                                  |
 
 **Workbook** — rendered by the shared exports writer, so it looks and reads like
 `cli export public`: Contents · How to read this · Run Overview · Search Term
@@ -468,23 +497,23 @@ Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
 
 **Two ways to run every engine** (same as `cli scrape …` vs `jobs run scrape.…`):
 
-| Path | Command | Use |
-|---|---|---|
-| Direct | `python -m cli cm budget-scheduler -t <id>` | dev / manual / dry-run testing |
+| Path      | Command                                              | Use                                   |
+| --------- | ---------------------------------------------------- | ------------------------------------- |
+| Direct    | `python -m cli cm budget-scheduler -t <id>`          | dev / manual / dry-run testing        |
 | Scheduler | `python -m cli jobs run cm.budget_scheduler -t <id>` | production (queue + lanes, on the VM) |
 
-> ⚠️ **Dry-run is the default; nothing touches Blinkit unless the tenant is armed (`cm arm`) AND the run carries `--live`.** The engines read real budgets/positions in dry-run but write nothing. Going live is a deliberate per-tenant switch — see "Go live — arm the tenant" below. Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing. Never run the *plain* `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
+> ⚠️ **Dry-run is the default; nothing touches Blinkit unless the tenant is armed (`cm arm`) AND the run carries `--live`.** The engines read real budgets/positions in dry-run but write nothing. Going live is a deliberate per-tenant switch — see "Go live — arm the tenant" below. Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing. Never run the _plain_ `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
 
 ### Timing model (rules)
 
 Both systems share the same timing shapes:
 
-| Shape | How | Example |
-|---|---|---|
+| Shape                      | How                                                                            | Example                                     |
+| -------------------------- | ------------------------------------------------------------------------------ | ------------------------------------------- |
 | **Recurring daily window** | `--start-time`/`--end-time` (+ optional `--days`, `--start-date`/`--end-date`) | boost 4pm–11pm every Fri/Sat/Sun this month |
-| **Continuous (all day)** | omit the times, set a date range | around-the-clock for a 2-day sale |
-| **One-time span** | `--once --date` (+ times) | a single night, 6pm–2am |
-| **Overnight** | set end ≤ start time (e.g. `16:00`→`02:00`) | window that crosses midnight |
+| **Continuous (all day)**   | omit the times, set a date range                                               | around-the-clock for a 2-day sale           |
+| **One-time span**          | `--once --date` (+ times)                                                      | a single night, 6pm–2am                     |
+| **Overnight**              | set end ≤ start time (e.g. `16:00`→`02:00`)                                    | window that crosses midnight                |
 
 **Overnight tails belong to the start day**: a Sun 16:00–02:00 rule runs to **Mon 02:00**, and `--days friday,saturday,sunday` still covers Sunday's tail. `--days` is the weekday filter (empty = every day); it applies to budget and bid.
 
@@ -512,27 +541,27 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 
 **Budget** (`add-budget-schedule` / `add-budget-rule`):
 
-| Flag | Notes |
-|---|---|
-| `--campaign` | Blinkit campaign id (schedule) |
-| `--default-budget` | ₹ applied when no rule matches (schedule) |
-| `--name` / `--campaign-name` | labels |
-| `--budget` | ₹ the rule applies (rule; on `add-budget-schedule` it creates one inline rule) |
-| `--start-time` / `--end-time` | daily window `HH:MM` IST (end ≤ start = overnight) |
-| `--days` | `"friday,saturday,sunday"` (empty = every day) |
-| `--start-date` / `--end-date` | recurring date range `YYYY-MM-DD` |
-| `--once` / `--date` | one-time span on a single date (mutually exclusive with the recurring flags) |
+| Flag                          | Notes                                                                          |
+| ----------------------------- | ------------------------------------------------------------------------------ |
+| `--campaign`                  | Blinkit campaign id (schedule)                                                 |
+| `--default-budget`            | ₹ applied when no rule matches (schedule)                                      |
+| `--name` / `--campaign-name`  | labels                                                                         |
+| `--budget`                    | ₹ the rule applies (rule; on `add-budget-schedule` it creates one inline rule) |
+| `--start-time` / `--end-time` | daily window `HH:MM` IST (end ≤ start = overnight)                             |
+| `--days`                      | `"friday,saturday,sunday"` (empty = every day)                                 |
+| `--start-date` / `--end-date` | recurring date range `YYYY-MM-DD`                                              |
+| `--once` / `--date`           | one-time span on a single date (mutually exclusive with the recurring flags)   |
 
 **Bid** (`add-bid`) — all of the above timing flags (with `--stop-time`/`--stop-date` instead of `--end-*`), plus:
 
-| Flag | Notes |
-|---|---|
-| `--keyword` | search keyword to chase |
-| `--target` | target sponsored position (e.g. `3`) |
-| `--min-bid` / `--max-bid` | CPM floor / ceiling (₹) |
-| `--lat` / `--lon` | store to **measure** position at (position is per-store; find one via `cli locations list --city <slug>`) |
-| `--location` / `--brand` | store label / brand-name fallback for product matching |
-| `--match-type` | `EXACT` (default) or `BROAD` |
+| Flag                      | Notes                                                                                                     |
+| ------------------------- | --------------------------------------------------------------------------------------------------------- |
+| `--keyword`               | search keyword to chase                                                                                   |
+| `--target`                | target sponsored position (e.g. `3`)                                                                      |
+| `--min-bid` / `--max-bid` | CPM floor / ceiling (₹)                                                                                   |
+| `--lat` / `--lon`         | store to **measure** position at (position is per-store; find one via `cli locations list --city <slug>`) |
+| `--location` / `--brand`  | store label / brand-name fallback for product matching                                                    |
+| `--match-type`            | `EXACT` (default) or `BROAD`                                                                              |
 
 > One bid rule per (campaign, keyword) — the bid is campaign-wide; `--lat/--lon` only chooses where you measure.
 
@@ -640,16 +669,16 @@ python -m cli export public -t <uuid> --city bengaluru --kind combo
 python -m cli export public -t <uuid> --sections summary,rank_grid -o pitch.xlsx
 ```
 
-| Option | Meaning |
-|---|---|
-| `-t, --tenant` | Client id (**required**) — `cli tenant list` |
-| `--from` / `--to` | Inclusive dates. Omit both and it uses **the last 7 days that have data**, not the last 7 days from today — public scrapes are weekly, so a today-anchored window often lands after the last scrape and returns nothing |
-| `-c, --city` | One city at a time (multi-city sections are not built) |
-| `--kind` | `main` (default) · `combo` · `all` — combos are stocked selectively, so they are reported apart |
-| `-m, --marketplace` | Restrict to one marketplace |
-| `--sections` | Comma-separated keys; default is every public section |
-| `--label` | Free text printed on the cover |
-| `-o, --output` | Output path (default `out/<Client>_public_<end-date>.xlsx`) |
+| Option              | Meaning                                                                                                                                                                                                                 |
+| ------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `-t, --tenant`      | Client id (**required**) — `cli tenant list`                                                                                                                                                                            |
+| `--from` / `--to`   | Inclusive dates. Omit both and it uses **the last 7 days that have data**, not the last 7 days from today — public scrapes are weekly, so a today-anchored window often lands after the last scrape and returns nothing |
+| `-c, --city`        | One city at a time (multi-city sections are not built)                                                                                                                                                                  |
+| `--kind`            | `main` (default) · `combo` · `all` — combos are stocked selectively, so they are reported apart                                                                                                                         |
+| `-m, --marketplace` | Restrict to one marketplace                                                                                                                                                                                             |
+| `--sections`        | Comma-separated keys; default is every public section                                                                                                                                                                   |
+| `--label`           | Free text printed on the cover                                                                                                                                                                                          |
+| `-o, --output`      | Output path (default `out/<Client>_public_<end-date>.xlsx`)                                                                                                                                                             |
 
 ```bash
 python -m cli export sections     # every section key, its group and glossary terms
@@ -670,23 +699,23 @@ python -m cli export raw -t <uuid>                    # write the CSVs
 python -m cli export raw -t <uuid> --tables listings --limit 5000
 ```
 
-| Table key | File | What it is |
-|---|---|---|
-| `sku` | `own_products_by_store.csv` | One row per own product per dark store per scrape |
-| `listings` | `search_listings.csv` | Every product seen in a search, yours and competitors'. The biggest table |
-| `searches` | `searches.csv` | One row per search at one probe point |
-| `stores` | `store_catalogue.csv` | The dark-store catalogue (not date-scoped) |
+| Table key  | File                        | What it is                                                                |
+| ---------- | --------------------------- | ------------------------------------------------------------------------- |
+| `sku`      | `own_products_by_store.csv` | One row per own product per dark store per scrape                         |
+| `listings` | `search_listings.csv`       | Every product seen in a search, yours and competitors'. The biggest table |
+| `searches` | `searches.csv`              | One row per search at one probe point                                     |
+| `stores`   | `store_catalogue.csv`       | The dark-store catalogue (not date-scoped)                                |
 
-| Option | Meaning |
-|---|---|
-| `-t, --tenant` | Client id (**required**) |
-| `--from` / `--to` | Same defaulting as `export public` |
-| `--tables` | Comma-separated keys; default all four |
-| `-c, --city` / `-m, --marketplace` | Narrow the pull |
-| `--limit` | Cap rows per table — for a quick sample |
-| `--include-extra` | Include the scraper's untyped `extra` payload (mostly image URLs; roughly triples the file) |
-| `--dry-run` | Count and stop, writing nothing |
-| `-o, --out` | Output directory (default `out/<Client>_raw_<from>_<to>/`) |
+| Option                             | Meaning                                                                                     |
+| ---------------------------------- | ------------------------------------------------------------------------------------------- |
+| `-t, --tenant`                     | Client id (**required**)                                                                    |
+| `--from` / `--to`                  | Same defaulting as `export public`                                                          |
+| `--tables`                         | Comma-separated keys; default all four                                                      |
+| `-c, --city` / `-m, --marketplace` | Narrow the pull                                                                             |
+| `--limit`                          | Cap rows per table — for a quick sample                                                     |
+| `--include-extra`                  | Include the scraper's untyped `extra` payload (mostly image URLs; roughly triples the file) |
+| `--dry-run`                        | Count and stop, writing nothing                                                             |
+| `-o, --out`                        | Output directory (default `out/<Client>_raw_<from>_<to>/`)                                  |
 
 Row counts always print before anything is written — the volume is the thing worth
 knowing before you commit to it. CSV is deliberate: at this size a styled workbook

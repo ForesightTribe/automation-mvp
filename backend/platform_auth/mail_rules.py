@@ -147,12 +147,28 @@ RULES: dict[str, MailRule] = {
     "zepto": MailRule(
         platform="zepto",
         secret_kind=SecretKind.OTP,
-        from_contains=("zepto", "zeptonow"),
-        subject_contains=("otp", "verification", "code"),
-        subject_required=False,
-        body_pattern=r"(?<!\d)(\d{4,6})(?!\d)",
-        notes="Email + password login, with an OTP second factor. See docs/zepto.md.",
-        verified=False,
+        # Full address, not the bare "zepto" this used to carry — that is the same
+        # too-loose pattern that once let blinkit_seller match the marketing sender.
+        from_contains=("mailer@zeptonow.com",),
+        subject_contains=("email otp",),
+        subject_required=True,
+        recipient_required=True,
+        # FOUR digits, not Blinkit's six — materially more collision-prone, so the
+        # reader's _visible_text() strip matters more here, not less. The real mail
+        # is only ~110 chars of visible text and yields exactly one candidate.
+        body_pattern=r"(?<!\d)(\d{4})(?!\d)",
+        # The mail states "valid for 5 minutes", so the whole budget must fit
+        # inside that: observed arrival was ~10-25s after the sign-in call.
+        initial_delay_seconds=8.0,
+        timeout_seconds=120.0,
+        notes=(
+            "Email + password login with an emailed OTP second factor. Verified "
+            "against the real mailbox 2026-08-20: From 'mailer@zeptonow.com', "
+            "Subject 'Email Otp', body 'Your otp code is NNNN.'. The To: header "
+            "survives forwarding as the tenant's own address, so recipient_required "
+            "works as the per-tenant filter. OTP expires in 5 minutes."
+        ),
+        verified=True,
     ),
     "instamart": MailRule(
         platform="instamart",

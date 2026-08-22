@@ -198,6 +198,10 @@ def _auth_refresh(tenant_id, p):
     return ["auth", "refresh-all", "--tenant", str(tenant_id)]
 
 
+def _auth_login(tenant_id, p):
+    return ["auth", "login", str(p["platform"]), "--tenant", str(tenant_id)]
+
+
 # Timeouts are SAFETY CEILINGS (~2–3× expected), not expectations — a healthy run
 # should never hit one. They exist so a hung (not crashed) Chromium can't hold a lane
 # forever. Override per type via settings.JOB_TIMEOUT_OVERRIDES.
@@ -303,6 +307,21 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "auth.refresh": JobTypeSpec(
         Lane.interactive, 3 * 60, _auth_refresh,
         label="Platform session refresh",
+    ),
+    # ⚠️ A scheduled LOGIN, which docs/platform-auth.md otherwise forbids: a login
+    # burns a single-use emailed secret and can lose to mail-scanner lag, where a
+    # refresh costs one API call and cannot. Zepto leaves no choice — it has no
+    # refresh endpoint at all and its JWT dies at local midnight IST, so the only
+    # way to hold a session is to log in again. Do NOT add other platforms here;
+    # if a platform can refresh, refresh it.
+    #
+    # Schedule it just AFTER midnight (e.g. "5 0 * * *"): a login at 23:50 would
+    # buy a ten-minute session. It is also when the single-session eviction that
+    # every Zepto login causes costs a human the least.
+    "auth.login": JobTypeSpec(
+        Lane.interactive, 5 * 60, _auth_login,
+        param_keys=("platform",),
+        label="Platform login (daily, Zepto only)",
     ),
 }
 
