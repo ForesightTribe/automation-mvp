@@ -429,7 +429,8 @@ async def reconcile(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     platform: str = "blinkit") -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = logs.new_run_id()
-    logs.run_start(run_id, "reconcile", tenant_id, dry_run=dry_run, platform=platform)
+    logs.run_start(run_id, "reconcile", tenant_id, dry_run=dry_run, platform=platform,
+                   tenant_name=await repo.get_tenant_name(tenant_id))
 
     budget_schedules = await repo.get_budget_schedules(tenant_id, platform)
     bid_rules = [r for r, _ in await repo.get_bid_rules(tenant_id, platform)]
@@ -442,7 +443,7 @@ async def reconcile(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     async with AsyncSessionLocal() as db:
         created, updated, deleted = await _apply(db, tenant_id, platform, desired, dry_run, run_id)
 
-    logs.run_summary(run_id, "reconcile", dry_run=dry_run,
+    logs.run_summary(run_id, "reconcile", dry_run=dry_run, unit="schedules",
                      processed=created + updated + deleted, applied=created + updated,
                      skipped=deleted, errors=0)
     return {"created": created, "updated": updated, "deleted": deleted}
