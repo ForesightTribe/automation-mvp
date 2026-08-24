@@ -79,6 +79,15 @@ async def get_bid_rules(tenant_id: uuid.UUID, platform: str = "blinkit"):
 
 # ── Platform account (advertiser id) — per (tenant, platform), B3 ───────────
 
+async def get_tenant_name(tenant_id: uuid.UUID) -> str | None:
+    """The client's display name, for the run header. One row, once per run — a log that
+    says "Tenant: Dobra" is worth more to whoever is reading it than a bare UUID."""
+    from app.models.tenant import Tenant
+    async with AsyncSessionLocal() as db:
+        row = await db.get(Tenant, tenant_id)
+        return row.name if row else None
+
+
 async def get_advertiser(tenant_id: uuid.UUID, platform: str = "blinkit") -> int | None:
     """The stored advertiser (ad-account) id for a tenant, or None if not configured."""
     from app.models.campaign_manager_v2 import CmPlatformAccount
