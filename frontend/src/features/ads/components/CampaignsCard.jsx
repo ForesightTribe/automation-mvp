@@ -8,7 +8,7 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { useDateRange } from "../../../context/DateRangeContext";
 import { useMarketplaces } from "../../../context/MarketplaceContext";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 const LIMIT = 20;
 
@@ -154,7 +154,7 @@ export const CampaignsCard = () => {
 												{r.type || "—"}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatCompactCurrency(
+												{formatCurrency(
 													r.budget_consumed,
 												)}
 											</td>
@@ -162,7 +162,7 @@ export const CampaignsCard = () => {
 												{formatNumber(r.impressions)}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatCompactCurrency(
+												{formatCurrency(
 													r.ad_sales,
 												)}
 											</td>

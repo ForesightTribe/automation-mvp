@@ -87,8 +87,10 @@ class Settings(BaseSettings):
     AUTH_ALLOW_LOGIN: bool = True
 
     # Marketplaces with real, trusted data today. Everything else is shown but
-    # gated as "not connected" in the UI (no real scrapers yet). Stopgap until
-    # connectivity is derived from successful scrape_jobs per platform.
+    # gated as "not connected" in the UI (no real scrapers yet). Superseded by
+    # reference_service.list_marketplaces(), which derives `connected` from
+    # actual scrape history instead — kept here for reference/rollback, not read
+    # anywhere in the app.
     CONNECTED_MARKETPLACES: list[str] = ["blinkit"]
 
     class Config:

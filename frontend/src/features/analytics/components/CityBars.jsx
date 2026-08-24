@@ -3,7 +3,7 @@ import { useSalesByCity } from "../hooks";
 import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { rankedBarOption } from "../../../components/charts/options";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 /** The chart shows the top N; the table shows every city the endpoint returns. */
 const TOP_N = 12;
@@ -14,7 +14,7 @@ const COLUMNS = [
 		key: "revenue",
 		label: "Revenue",
 		align: "right",
-		render: (r) => formatCompactCurrency(r.revenue),
+		render: (r) => formatCurrency(r.revenue),
 	},
 	{
 		key: "units_sold",

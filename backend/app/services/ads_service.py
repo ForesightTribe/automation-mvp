@@ -50,7 +50,7 @@ from app.models.blinkit_marketing import (
 )
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
-from app.services import reference_service
+from app.services import reference_service, zepto_ads
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
 
@@ -98,7 +98,7 @@ async def _summary_agg(
 ) -> tuple:
     """(spend, impressions, ad_sales, atc, units, active_campaigns) for one window.
     Active campaigns = distinct campaigns with any daily row in the window."""
-    return (
+    totals = (
         await session.execute(
             select(
                 func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
@@ -110,6 +110,12 @@ async def _summary_agg(
             ).where(*_ad_conds(tenant_id, start, end, marketplaces))
         )
     ).one()
+
+    if zepto_ads.wants_zepto(marketplaces):
+        z = await zepto_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, z))
+
+    return totals
 
 
 async def get_summary(
@@ -224,6 +230,30 @@ async def get_campaigns(
         for c in campaigns
     ]
 
+    if zepto_ads.wants_zepto(marketplaces):
+        # Zepto campaigns have no BlinkitAdCampaign metadata row to join to —
+        # its campaigns endpoint returns identity and metrics together — so they
+        # are appended already-shaped rather than merged by campaign_id. The
+        # two marketplaces' ids are separate namespaces and never collide.
+        for z in await zepto_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end):
+            if status and (z.get("status") or "") != status:
+                continue
+            rows.append(
+                {
+                    "campaign_id": z["campaign_id"],
+                    "name": z["name"],
+                    "type": z.get("campaign_type"),
+                    "status": z.get("status"),
+                    "daily_budget": None,
+                    "budget_consumed": z["spend"],
+                    "impressions": z["impressions"],
+                    "atc": z["atc"],
+                    "quantities_sold": z["units_sold"],
+                    "ad_sales": z["sales"],
+                    "roas": z["roas"] or 0.0,
+                }
+            )
+
     # Campaign count per client is small -> rank + paginate in memory.
     sort_key = _CAMPAIGN_SORTS.get(sort, "budget_consumed")
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
@@ -255,7 +285,7 @@ async def get_performance(
             .order_by(AdDaily.date)
         )
     ).all()
-    return [
+    series = [
         {
             "date": d,
             "budget_consumed": round(float(b), 2),
@@ -265,6 +295,22 @@ async def get_performance(
         }
         for d, b, i, s in rows
     ]
+    if zepto_ads.wants_zepto(marketplaces):
+        z = await zepto_ads.performance(session, tenant_id=tenant_id, start=start, end=end)
+        by_date: dict = {r["date"]: dict(r) for r in series}
+        for r in z:
+            cur = by_date.get(r["date"])
+            if cur:
+                cur["budget_consumed"] += r["budget_consumed"]
+                cur["impressions"] += r["impressions"]
+                cur["ad_sales"] += r["ad_sales"]
+                # RoAS is a ratio, so recompute from the merged bases rather
+                # than averaging the two marketplaces' ratios.
+                cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
+            else:
+                by_date[r["date"]] = dict(r)
+        series = [by_date[k] for k in sorted(by_date)]
+    return series
 
 
 async def get_budget_split(

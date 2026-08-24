@@ -20,6 +20,10 @@ class MarketplaceOut(BaseModel):
     # Whether this marketplace has real, trusted data. The selector shows all
     # marketplaces but disables/labels the unconnected ones.
     connected: bool = False
+    # "full" = public scrape + seller panel (revenue/ads/stock); "public" = public
+    # scrape only. Lets the UI hide metrics a marketplace can't structurally supply
+    # instead of showing them blank.
+    data_scope: str = "public"
 
 
 class ZoneOut(BaseModel):

@@ -18,6 +18,7 @@ extraction, the store-binding mechanism — lives in that marketplace's
 rows. See docs/zepto.md.
 """
 import asyncio
+import random
 import time
 import uuid
 
@@ -34,7 +35,20 @@ from scraper.utils.browser import PLAYWRIGHT_ARGS
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
-_PACING = 0.05          # polite gap between stores (seconds)
+_JITTER_FRAC = 0.15     # ± spread on the block-recovery wait, so workers stop retrying in lockstep
+
+
+def _jittered(base_s: float) -> float:
+    """`base_s` ± `_JITTER_FRAC`. All 5 workers hit the same block within seconds of
+    each other (they run the same keyword list at the same pace), so an un-jittered
+    wait means they also RECOVER within seconds of each other and retry in one
+    synchronized burst — observed directly: gets blocked again immediately, every
+    time. Spreading the wake-up time breaks that lockstep."""
+    spread = base_s * _JITTER_FRAC
+    return base_s + random.uniform(-spread, spread)
+# Pacing moved onto Provider — it is per-marketplace, not global. Blinkit has no
+# volume cap and runs 5 workers at 0.05 s between stores; Zepto enforces one and
+# dies after a single search at that rate. See scraper/public/providers.py.
 
 
 async def _own_keyword_map(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, list[tuple[str, list[str]]]]:
@@ -89,7 +103,7 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
 
 async def _worker(
     wid, provider, browser, seed, queue, kw_map, competitor_list, done,
-    stg, stats, total, tid, job_id, cap,
+    stg, stats, total, tid, job_id, cap, misses,
 ) -> None:
     """One concurrent worker: its own browser context + session, pulling stores off
     the shared queue until it's empty.
@@ -97,12 +111,20 @@ async def _worker(
     Holds NO database session — results are staged to the run's local SQLite file and
     pushed to Postgres later by `cli scrape load`. That decoupling is why a Supabase
     blip can no longer kill a multi-hour run. See scraper/public/staging.py.
+
+    `misses` is a shared list (safe to append from any worker without a lock — no
+    `await` happens between the check and the append, so no other task can interleave)
+    collecting every (location, keyword) pair that gave up after both attempts. After
+    every worker has drained the main queue, `run_tenant` runs one more pass over just
+    this list — see the backlog pass there. A keyword that fails there too is genuinely
+    left out of this run, not queued forever.
     """
     session = await provider.open_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
     stale = 0
+    searches = 0        # since this worker's last rest, for provider.pause_every
     try:
         while True:
             try:
@@ -118,13 +140,96 @@ async def _worker(
                 if (keyword, loc.lat, loc.lon) in done:
                     stats["skipped"] += 1
                     continue
-                _t = time.monotonic()
-                try:
-                    res = await provider.search(session, keyword, cap, lat=loc.lat, lon=loc.lon)
-                except Exception as e:
-                    res = {"ok": False, "products": [], "merchant_id": "",
-                           "total_results": 0, "error": f"{type(e).__name__}: {e}"}
-                store_fetch += time.monotonic() - _t
+
+                # Scheduled rest, for a marketplace with a volume cap. Resting
+                # BEFORE the wall is cheaper than crashing into it: recovery from a
+                # hard block yields ~3 searches per 5-minute cycle, while a clean
+                # pause resets the window. No-op when pause_every is None (Blinkit).
+                if provider.pause_every and searches >= provider.pause_every:
+                    logger.info(f"w{wid} scheduled rest {provider.pause_s // 60} min "
+                                f"after {searches} searches")
+                    await asyncio.sleep(provider.pause_s)
+                    searches = 0
+                    await provider.close_session(session)
+                    session = await provider.open_session(browser, loc.lat, loc.lon)
+                    if not session:
+                        logger.warning(f"worker {wid}: session refresh failed after "
+                                       f"rest — exiting")
+                        return
+
+                # Up to 2 attempts at THIS keyword: the plain fetch, plus — only if
+                # it comes back blocked — one retry after a confirmed-successful
+                # session recovery. A BLOCK is not a failure to retry blind (that
+                # prolongs it), but a session that reopens successfully after the
+                # wait is proof the block has actually lifted, and discarding the
+                # keyword anyway at that point just throws away data we've already
+                # paid the wait for. One retry, not unbounded: if it blocks again
+                # immediately, something more persistent is wrong and hammering
+                # this one keyword further only delays the rest of the queue.
+                give_up = False
+                for attempt in range(2):
+                    _t = time.monotonic()
+                    try:
+                        # merchant_id as well as the coordinate: marketplaces bind in
+                        # opposite directions (D8). Blinkit ignores it; Zepto needs it,
+                        # or it spends a second rate-limited endpoint resolving a store
+                        # this loop already has in hand.
+                        res = await provider.search(session, keyword, cap,
+                                                    lat=loc.lat, lon=loc.lon,
+                                                    merchant_id=loc.merchant_id)
+                    except Exception as e:
+                        res = {"ok": False, "products": [], "merchant_id": "",
+                               "total_results": 0, "error": f"{type(e).__name__}: {e}"}
+                    store_fetch += time.monotonic() - _t
+                    searches += 1
+
+                    # Pace HERE, not at the end of the loop. Every branch below can
+                    # `continue`/`break` out early, and an empty result is the
+                    # commonest of them — on Zepto 'sourdough bread loaf' returns
+                    # 0-6 products at most stores. Pacing after those branches means
+                    # the thinnest keywords fire back to back with no gap at all,
+                    # which is what blocked five workers in 37 seconds.
+                    if provider.search_gap_s:
+                        await asyncio.sleep(provider.search_gap_s)
+
+                    if res.get("blocked") and provider.probe_every_s:
+                        waits = 0
+                        while waits < provider.max_block_waits:
+                            waits += 1
+                            logger.warning(
+                                f"w{wid} {loc.city} '{keyword}' BLOCKED — waiting "
+                                f"{provider.probe_every_s // 60} min "
+                                f"({waits}/{provider.max_block_waits})"
+                            )
+                            await asyncio.sleep(_jittered(provider.probe_every_s))
+                            await provider.close_session(session)
+                            session = await provider.open_session(browser, loc.lat, loc.lon)
+                            if session:
+                                break
+                        if not session:
+                            logger.warning(f"worker {wid}: still blocked after "
+                                           f"{waits} waits — exiting")
+                            return
+                        searches = 0
+                        stats["errors"] += 1
+                        if attempt == 0:
+                            logger.info(
+                                f"w{wid} {loc.city} '{keyword}' recovered — retrying"
+                            )
+                            continue
+                        # Only counts as ONE store failure for `_STORE_SKIP_AFTER`,
+                        # not one per attempt — this keyword got two tries (see
+                        # above) precisely so a single flaky keyword can't, on its
+                        # own, trip a threshold meant for distinct keyword failures.
+                        store_fail += 1
+                        give_up = True
+                        misses.append((loc, keyword))
+                        break
+
+                    break  # a real (non-blocked) response — done with this keyword
+
+                if give_up:
+                    continue
 
                 if not res.get("ok"):
                     store_fail += 1
@@ -182,10 +287,79 @@ async def _worker(
                 f"[fetch {store_fetch:5.1f}s stage {store_db:4.1f}s]  "
                 f"| {stats['snapshots']} snap, {stats['rows']} rows, {stats['errors']} err"
             )
-            await asyncio.sleep(_PACING)
+            await asyncio.sleep(provider.store_gap_s)
     finally:
         if session:
             await provider.close_session(session)
+
+
+async def _retry_worker(
+    wid, provider, browser, seed, queue, competitor_list, kw_map,
+    stg, stats, tid, job_id, cap,
+) -> None:
+    """Second-pass worker for the backlog `run_tenant` builds from the main pass's
+    misses. Pulls one (location, keyword) pair at a time instead of a whole
+    location's keyword list — every pair here already failed twice during the main
+    pass, so this gets exactly one more attempt each, not another multi-wait escalation.
+    A pair that fails here too is genuinely left out of this run.
+    """
+    session = await provider.open_session(browser, seed[0], seed[1])
+    if not session:
+        logger.warning(f"backlog worker {wid}: could not open session — exiting")
+        return
+    try:
+        while True:
+            try:
+                loc, keyword = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+            brands = kw_map.get(keyword)
+            if not brands:
+                continue
+
+            try:
+                res = await provider.search(session, keyword, cap,
+                                            lat=loc.lat, lon=loc.lon,
+                                            merchant_id=loc.merchant_id)
+            except Exception as e:
+                res = {"ok": False, "products": [], "merchant_id": "",
+                       "total_results": 0, "error": f"{type(e).__name__}: {e}"}
+            if provider.search_gap_s:
+                await asyncio.sleep(provider.search_gap_s)
+
+            if res.get("blocked") and provider.probe_every_s:
+                # One wait, one look — this pair already had its fair shot in the
+                # main pass. Compounding further waits here just delays the rest
+                # of the backlog for something that's already twice-failed.
+                await asyncio.sleep(_jittered(provider.probe_every_s))
+                await provider.close_session(session)
+                session = await provider.open_session(browser, loc.lat, loc.lon)
+                stats["errors"] += 1
+                if not session:
+                    logger.warning(f"backlog worker {wid}: still blocked — exiting")
+                    return
+                continue
+
+            if not res.get("ok") or not res["products"]:
+                stats["errors"] += 1
+                continue
+
+            for brand_slug, aliases in brands:
+                raw = {
+                    "platform": provider.slug, "keyword": keyword, "brand_slug": brand_slug,
+                    "city": loc.city, "zone": loc.location_name, "pincode": loc.pincode,
+                    "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
+                    "competitors": competitor_list or None,
+                    "merchant_id": res["merchant_id"], "total_results": res["total_results"],
+                    "products": res["products"],
+                }
+                result = provider.parse(raw)
+                n = await staging.save_search(stg, result, tid, job_id)
+                stats["rows"] += n
+                stats["snapshots"] += 1
+            stats["recovered"] = stats.get("recovered", 0) + 1
+    finally:
+        await provider.close_session(session)
 
 
 async def run_tenant(
@@ -259,6 +433,11 @@ async def run_tenant(
     # already-loaded ORM rows and stay readable detached (expire_on_commit=False).
     await db.close()
 
+    # Every (location, keyword) pair that gave up after both main-pass attempts
+    # lands here — shared across workers, appended with no `await` between check
+    # and append so it's safe without a lock. See the backlog pass below.
+    misses: list = []
+
     try:
         async with async_playwright() as pw:
             browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
@@ -270,11 +449,36 @@ async def run_tenant(
                 tasks = [
                     asyncio.create_task(_worker(
                         w, provider, browser, seed, queue, kw_map, competitor_list, done,
-                        stg, stats, total, tid, job_id, cap,
+                        stg, stats, total, tid, job_id, cap, misses,
                     ))
                     for w in range(1, n_workers + 1)
                 ]
                 await asyncio.gather(*tasks)
+
+                # Backlog pass: one more look at everything the main pass gave up
+                # on, now that the main queue is fully drained (so this can't
+                # starve stores still waiting their first attempt). Same browser,
+                # so no new launch overhead.
+                if misses:
+                    logger.info(
+                        f"orchestrator: main pass done — {len(misses)} misses, "
+                        f"running one backlog pass to close them"
+                    )
+                    retry_queue: asyncio.Queue = asyncio.Queue()
+                    for item in misses:
+                        retry_queue.put_nowait(item)
+                    retry_tasks = [
+                        asyncio.create_task(_retry_worker(
+                            w, provider, browser, seed, retry_queue, competitor_list,
+                            kw_map, stg, stats, tid, job_id, cap,
+                        ))
+                        for w in range(1, min(n_workers, len(misses)) + 1)
+                    ]
+                    await asyncio.gather(*retry_tasks)
+                    logger.info(
+                        f"orchestrator: backlog pass done — "
+                        f"{stats.get('recovered', 0)}/{len(misses)} recovered"
+                    )
             finally:
                 await browser.close()
         staging.update_stats(stg, stats, total)

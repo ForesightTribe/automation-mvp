@@ -11,10 +11,32 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchSnapshot
-from app.services import watchlist_service
+from app.services import watchlist_service, zepto_ads, zepto_analytics
 
 Sale = BlinkitSellerSale
 AdDaily = BlinkitAdCampaignDaily
+
+
+def _merge_series(
+    a: list[dict], b: list[dict], key: str | tuple[str, ...], sums: tuple[str, ...]
+) -> list[dict]:
+    """Combine two same-shaped series, adding `sums` where `key` collides.
+
+    Zepto's rows live in their own tables (different grain, no city dimension),
+    so cross-marketplace totals are merged here rather than in SQL. `key` may be
+    a tuple for series keyed on more than one field, e.g. (date, category).
+    Sorted by key so a merged series is still ordered for charting.
+    """
+    fields = (key,) if isinstance(key, str) else key
+    out: dict = {}
+    for row in [*a, *b]:
+        k = tuple(row[f] for f in fields)
+        if k in out:
+            for f in sums:
+                out[k][f] = out[k][f] + row[f]
+        else:
+            out[k] = dict(row)
+    return [out[k] for k in sorted(out)]
 
 
 def _metric(value: float | None, prev: float | None) -> dict:
@@ -38,7 +60,7 @@ async def _sales_agg(
     conds = [Sale.tenant_id == tenant_id, Sale.date >= start, Sale.date <= end]
     if marketplaces is not None:
         conds.append(Sale.platform.in_(marketplaces))
-    return (
+    rev, units, skus = (
         await session.execute(
             select(
                 func.coalesce(func.sum(Sale.mrp_value), 0.0),
@@ -47,6 +69,16 @@ async def _sales_agg(
             ).where(*conds)
         )
     ).one()
+
+    if zepto_analytics.wants_zepto(marketplaces):
+        z_rev, z_units, z_skus = await zepto_analytics.sales_agg(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        # SKU counts add rather than dedupe: a SKU is per-marketplace here, so
+        # the same physical product listed on both is two sellable items.
+        rev, units, skus = rev + z_rev, units + z_units, skus + z_skus
+
+    return rev, units, skus
 
 
 async def _ads_agg(
@@ -67,7 +99,7 @@ async def _ads_agg(
     ]
     if marketplaces is not None:
         conds.append(AdDaily.platform.in_(marketplaces))
-    return (
+    totals = (
         await session.execute(
             select(
                 func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
@@ -76,6 +108,17 @@ async def _ads_agg(
             ).where(*conds)
         )
     ).one()
+
+    # Zepto's ads live on their own table, so the query above cannot see them.
+    # Merged here rather than at each call site because this is the shared
+    # backbone for the Overview marketplace cards, the Analytics ad metrics and
+    # the Ads per-marketplace breakdown — all three reported Zepto as zero spend
+    # while the Ads summary tiles showed the real figure.
+    if zepto_ads.wants_zepto(marketplaces):
+        z = await zepto_ads.ads_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, z))
+
+    return totals
 
 
 async def _market_agg(
@@ -203,10 +246,16 @@ async def get_revenue_series(
             .order_by(Sale.date)
         )
     ).all()
-    return [
+    series = [
         {"date": d, "revenue": round(float(rev), 2), "units_sold": int(units)}
         for d, rev, units in rows
     ]
+    if zepto_analytics.wants_zepto(marketplaces):
+        z = await zepto_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        series = _merge_series(series, z, "date", ("revenue", "units_sold"))
+    return series
 
 
 async def get_trends(
@@ -254,6 +303,16 @@ async def get_trends(
     ).all()
     sale_map = {d: (rev, units) for d, rev, units in sale_rows}
 
+    if zepto_analytics.wants_zepto(marketplaces):
+        for row in await zepto_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        ):
+            prev = sale_map.get(row["date"], (0.0, 0))
+            sale_map[row["date"]] = (
+                prev[0] + row["revenue"],
+                prev[1] + row["units_sold"],
+            )
+
     out = []
     day = start
     while day <= end:
@@ -300,7 +359,7 @@ async def get_top_skus(
             .limit(limit)
         )
     ).all()
-    return [
+    skus = [
         {
             "item_id": item_id,
             "item_name": name,
@@ -309,6 +368,14 @@ async def get_top_skus(
         }
         for item_id, name, rev, units in rows
     ]
+    if zepto_analytics.wants_zepto(marketplaces):
+        z = await zepto_analytics.top_skus(
+            session, tenant_id=tenant_id, start=start, end=end, limit=limit
+        )
+        # Each side is already its own top-N; re-sort the union and re-cut so
+        # the result is the true top-N across both, not 2N rows.
+        skus = sorted([*skus, *z], key=lambda r: r["revenue"], reverse=True)[:limit]
+    return skus
 
 
 async def get_sales_by_city(
@@ -336,7 +403,7 @@ async def get_sales_by_city(
             .order_by(revenue.desc())
         )
     ).all()
-    return [
+    out = [
         {
             "city": city_name or city_id,
             "revenue": round(float(rev), 2),
@@ -344,6 +411,25 @@ async def get_sales_by_city(
         }
         for city_id, city_name, rev, units in rows
     ]
+
+    # Zepto's per-city sales live on their own table — its sales response has no
+    # city dimension, so the split is scraped one city at a time. Merged here,
+    # like _sales_agg already does for the brand totals, so the Revenue-by-city
+    # chart covers both marketplaces instead of silently being Blinkit-only.
+    #
+    # City names are marketplace-specific and are NOT reconciled: Zepto reports
+    # "BLR - Bengaluru" where Blinkit reports "Bengaluru". Merging them by name
+    # would need a mapping that does not exist yet, and guessing would combine
+    # two marketplaces' revenue under a name that might not match either.
+    if zepto_analytics.wants_zepto(marketplaces):
+        out.extend(
+            await zepto_analytics.sales_by_city(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        )
+        out.sort(key=lambda r: r["revenue"], reverse=True)
+
+    return out
 
 
 async def get_sales_by_category(
@@ -371,10 +457,17 @@ async def get_sales_by_category(
             .order_by(revenue.desc())
         )
     ).all()
-    return [
+    cats = [
         {"category": cat, "revenue": round(float(rev), 2), "units_sold": int(units)}
         for cat, rev, units in rows
     ]
+    if zepto_analytics.wants_zepto(marketplaces):
+        z = await zepto_analytics.sales_by_category(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        cats = _merge_series(cats, z, "category", ("revenue", "units_sold"))
+        cats.sort(key=lambda r: r["revenue"], reverse=True)
+    return cats
 
 
 async def get_category_trend(
@@ -405,7 +498,7 @@ async def get_category_trend(
             .order_by(Sale.date, category)
         )
     ).all()
-    return [
+    trend = [
         {
             "date": d,
             "category": cat,
@@ -414,6 +507,12 @@ async def get_category_trend(
         }
         for d, cat, rev, units in rows
     ]
+    if zepto_analytics.wants_zepto(marketplaces):
+        z = await zepto_analytics.category_trend(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        trend = _merge_series(trend, z, ("date", "category"), ("revenue", "units_sold"))
+    return trend
 
 
 async def get_city_category(

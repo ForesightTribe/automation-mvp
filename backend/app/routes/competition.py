@@ -4,7 +4,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Query
 
-from app.dependencies import ClientDep, PaginationDep, PeriodDep, SessionDep
+from app.dependencies import ClientDep, MarketplacesDep, PaginationDep, PeriodDep, SessionDep
 from app.schemas.common import Page
 from app.schemas.competition import (
     CompetitorRankRow,
@@ -23,14 +23,14 @@ async def share_of_voice(
     session: SessionDep,
     client: ClientDep,
     period: PeriodDep,
-    marketplace: str | None = Query(None, description="Marketplace slug, e.g. blinkit"),
+    marketplaces: MarketplacesDep = None,
     keyword: str | None = None,
     city: str | None = None,
 ):
     return await competition_service.get_share_of_voice(
         session,
         tenant_id=client.id,
-        marketplace=marketplace,
+        marketplaces=marketplaces,
         keyword=keyword,
         city=city,
         start=period.start,
@@ -43,11 +43,11 @@ async def rank_matrix(
     session: SessionDep,
     client: ClientDep,
     period: PeriodDep,
-    marketplace: str | None = Query(None, description="Marketplace slug, e.g. blinkit"),
+    marketplaces: MarketplacesDep = None,
 ):
     """Own-brand rank + SoV per (keyword, city) — the heatmap of where you're weak."""
     return await competition_service.get_rank_matrix(
-        session, tenant_id=client.id, marketplace=marketplace, start=period.start, end=period.end
+        session, tenant_id=client.id, marketplaces=marketplaces, start=period.start, end=period.end
     )
 
 
@@ -58,13 +58,13 @@ async def top_competitors(
     period: PeriodDep,
     keyword: str | None = None,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     limit: int = Query(15, ge=1, le=50),
 ):
     """Competitor leaderboard — who shows up most in the client's searches."""
     return await competition_service.get_top_competitors(
         session, tenant_id=client.id, keyword=keyword, city=city,
-        marketplace=marketplace, start=period.start, end=period.end, limit=limit,
+        marketplaces=marketplaces, start=period.start, end=period.end, limit=limit,
     )
 
 
@@ -75,14 +75,14 @@ async def price_position(
     period: PeriodDep,
     keyword: str | None = None,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: Literal["main", "combo", "all"] = "main",
 ):
     """Per keyword: own price band vs competitor price band. `kind` filters
     combos/multipacks (default main = singles on both sides)."""
     return await competition_service.get_price_position(
         session, tenant_id=client.id, keyword=keyword, city=city,
-        marketplace=marketplace, start=period.start, end=period.end, kind=kind,
+        marketplaces=marketplaces, start=period.start, end=period.end, kind=kind,
     )
 
 
@@ -94,7 +94,7 @@ async def rankings(
     pagination: PaginationDep,
     keyword: str | None = None,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     competitor: str | None = None,
 ):
     return await competition_service.get_rankings(
@@ -103,6 +103,6 @@ async def rankings(
         pagination=pagination,
         keyword=keyword,
         city=city,
-        marketplace=marketplace,
+        marketplaces=marketplaces,
         competitor=competitor,
     )

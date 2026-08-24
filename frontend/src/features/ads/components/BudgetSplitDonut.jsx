@@ -3,7 +3,7 @@ import { useBudgetSplit } from "../hooks";
 import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { donutOption } from "../../../components/charts/options";
-import { formatCompactCurrency, formatPercent } from "../../../lib/format";
+import { formatCurrency, formatPercent } from "../../../lib/format";
 
 const formatRoas = (v) =>
 	v === null || v === undefined ? "—" : `${v.toFixed(2)}x`;
@@ -47,7 +47,7 @@ export const BudgetSplitDonut = () => {
 			key: "budget_consumed",
 			label: "Spend",
 			align: "right",
-			render: (r) => formatCompactCurrency(r.budget_consumed),
+			render: (r) => formatCurrency(r.budget_consumed),
 		},
 		{
 			key: "share",

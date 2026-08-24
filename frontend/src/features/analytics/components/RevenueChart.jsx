@@ -4,11 +4,7 @@ import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { dailyMetricOption } from "../../../components/charts/options";
-import {
-	formatCompactCurrency,
-	formatDate,
-	formatNumber,
-} from "../../../lib/format";
+import { formatCurrency, formatDate, formatNumber } from "../../../lib/format";
 
 const METRIC_OPTIONS = [
 	{ value: "revenue", label: "Revenue" },
@@ -21,7 +17,7 @@ const COLUMNS = [
 		key: "revenue",
 		label: "Revenue",
 		align: "right",
-		render: (r) => formatCompactCurrency(r.revenue),
+		render: (r) => formatCurrency(r.revenue),
 	},
 	{
 		key: "units_sold",

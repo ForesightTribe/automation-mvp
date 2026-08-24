@@ -1,5 +1,5 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCompactCurrency, formatCurrency, formatNumber } from "../../../lib/format";
 
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
@@ -36,7 +36,7 @@ export const KpiStrip = ({ data, trends = [] }) => {
 	const tiles = [
 		{
 			label: "Total Revenue",
-			value: formatCompactCurrency(m("revenue").value),
+			value: formatCurrency(m("revenue").value),
 			delta: m("revenue").delta_pct,
 			series: series((t) => t.revenue),
 			sparkColor: "#0284c7",
@@ -66,7 +66,7 @@ export const KpiStrip = ({ data, trends = [] }) => {
 		},
 		{
 			label: "Avg price/unit",
-			value: formatCompactCurrency(asp.value),
+			value: formatCurrency(asp.value),
 			delta: asp.delta_pct,
 		},
 		// {

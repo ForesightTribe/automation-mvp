@@ -244,11 +244,17 @@ async def close_session(session: dict) -> None:
 async def search(
     session: dict, keyword: str, cap: int = ep.RESULT_CAP,
     lat: float | None = None, lon: float | None = None,
+    merchant_id: str | None = None,
     follow_similarity: bool = False,
 ) -> dict:
     """Run one keyword search in an open session, paginating up to `cap`. Pass
     `lat`/`lon` to target a specific store without reopening the session — Blinkit
     selects the dark store from the lat/lon headers.
+
+    `merchant_id` is accepted for interface compatibility and IGNORED. Blinkit
+    binds by coordinate and reports the serving store back off the products; the
+    argument exists for marketplaces that bind the other way round (see D8 and
+    scraper/public/providers.py).
 
     By default paging stops when results switch from `basic` to `similarity`
     (loosely-related padding) — right for a category-keyword scrape. Set

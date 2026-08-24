@@ -9,7 +9,7 @@ from fastapi import APIRouter, Query
 # apart from main SKUs unless explicitly requested.
 KindQuery = Literal["main", "combo", "all"]
 
-from app.dependencies import ClientDep, PaginationDep, PeriodDep, SessionDep
+from app.dependencies import ClientDep, MarketplacesDep, PaginationDep, PeriodDep, SessionDep
 from app.schemas.common import Page
 from app.schemas.inventory import (
     ActionRow,
@@ -59,7 +59,7 @@ async def availability(
     pagination: PaginationDep,
     period: PeriodDep,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """Public stock-out monitoring for the client's own brand (out-of-stock first),
@@ -72,7 +72,7 @@ async def availability(
         start=period.start,
         end=period.end,
         city=city,
-        marketplace=marketplace,
+        marketplaces=marketplaces,
         kind=kind,
     )
 
@@ -83,13 +83,13 @@ async def distribution(
     client: ClientDep,
     period: PeriodDep,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """Per own SKU: % of covered stores it's actually in-stock in (widest gaps first).
     `kind` = main (default) | combo | all."""
     return await inventory_service.get_distribution(
-        session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind
+        session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplaces=marketplaces, kind=kind
     )
 
 
@@ -99,7 +99,7 @@ async def availability_history(
     client: ClientDep,
     weeks: int = Query(12, ge=1, le=52),
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """Weekly on-shelf availability % trend for own SKUs.
@@ -109,7 +109,7 @@ async def availability_history(
     leaves nothing to plot. `kind` = main | combo | all."""
     return await inventory_service.get_availability_history(
         session, tenant_id=client.id, days=weeks * 7, city=city,
-        marketplace=marketplace, kind=kind,
+        marketplaces=marketplaces, kind=kind,
     )
 
 
@@ -119,13 +119,13 @@ async def pricing(
     client: ClientDep,
     period: PeriodDep,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """Per own SKU: price dispersion across stores (min/median/max) + avg discount.
     `kind` = main | combo | all."""
     return await inventory_service.get_pricing(
-        session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind
+        session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplaces=marketplaces, kind=kind
     )
 
 
@@ -140,7 +140,7 @@ async def stores(
     client: ClientDep,
     period: PeriodDep,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
     tier: str | None = Query(None, description="express | longtail | super_longtail"),
 ):
@@ -151,7 +151,7 @@ async def stores(
     """
     return await inventory_service.get_stores(
         session, tenant_id=client.id, start=period.start, end=period.end, city=city,
-        marketplace=marketplace, kind=kind, tier=tier,
+        marketplaces=marketplaces, kind=kind, tier=tier,
     )
 
 
@@ -160,12 +160,12 @@ async def cities(
     session: SessionDep,
     client: ClientDep,
     period: PeriodDep,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """City rollup of store availability — the same numbers one level up."""
     return await inventory_service.get_cities(
-        session, tenant_id=client.id, start=period.start, end=period.end, marketplace=marketplace, kind=kind
+        session, tenant_id=client.id, start=period.start, end=period.end, marketplaces=marketplaces, kind=kind
     )
 
 
@@ -177,7 +177,7 @@ async def actions(
     period: PeriodDep,
     action: Literal["oos", "not-listed"] = "oos",
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """The work queue: one row per problem, each naming a store and a product.
@@ -187,7 +187,7 @@ async def actions(
     """
     return await inventory_service.get_actions(
         session, tenant_id=client.id, pagination=pagination, action=action,
-        start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind,
+        start=period.start, end=period.end, city=city, marketplaces=marketplaces, kind=kind,
     )
 
 
@@ -198,7 +198,7 @@ async def product_stores(
     product_id: str,
     period: PeriodDep,
     city: str | None = None,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """One product across every store — where it is out of stock, where it is not
@@ -206,7 +206,7 @@ async def product_stores(
     drawer."""
     return await inventory_service.get_product_detail(
         session, tenant_id=client.id, product_id=product_id,
-        start=period.start, end=period.end, city=city, marketplace=marketplace, kind=kind,
+        start=period.start, end=period.end, city=city, marketplaces=marketplaces, kind=kind,
     )
 
 
@@ -216,12 +216,12 @@ async def store_detail(
     client: ClientDep,
     merchant_id: str,
     period: PeriodDep,
-    marketplace: str | None = None,
+    marketplaces: MarketplacesDep = None,
     kind: KindQuery = "main",
 ):
     """One store's whole shelf — every own SKU, including the ones it does not
     carry (`listed=false`), so range gaps sit next to stockouts."""
     return await inventory_service.get_store_detail(
         session, tenant_id=client.id, merchant_id=merchant_id,
-        start=period.start, end=period.end, marketplace=marketplace, kind=kind,
+        start=period.start, end=period.end, marketplaces=marketplaces, kind=kind,
     )
