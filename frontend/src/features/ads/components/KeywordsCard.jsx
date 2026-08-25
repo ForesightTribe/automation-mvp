@@ -6,7 +6,7 @@ import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { useMarketplaces } from "../../../context/MarketplaceContext";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 const LIMIT = 20;
 
@@ -147,12 +147,12 @@ export const KeywordsCard = () => {
 												{formatNumber(r.impressions)}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatCompactCurrency(
+												{formatCurrency(
 													r.budget_consumed,
 												)}
 											</td>
 											<td className="px-3 py-2 text-right tabular-nums text-content">
-												{formatCompactCurrency(
+												{formatCurrency(
 													r.direct_sales +
 														r.indirect_sales,
 												)}

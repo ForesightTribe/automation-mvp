@@ -36,10 +36,17 @@ const Header = ({ row }) => (
 );
 
 /**
- * One marketplace's slice of the overview. Connected marketplaces show the full
- * metric set (each with its growth badge); unconnected ones render a muted
- * "Not connected" placeholder instead of faking numbers. `row` is a
- * MarketplaceRow from /overview/marketplaces.
+ * One marketplace's slice of the overview. Connected marketplaces show their
+ * metrics (each with its growth badge); unconnected ones render a muted "Not
+ * connected" placeholder instead of faking numbers. `row` is a MarketplaceRow
+ * from /overview/marketplaces.
+ *
+ * `data_scope` decides WHICH metrics render, not just whether they're present:
+ * a "public" marketplace (public search scrape only, no seller-panel login —
+ * Zepto today) has no order/ads feed to compute Revenue/RoAS/Ad spend/Units
+ * sold from at all. Showing those as blank/zero would read as broken; showing
+ * only what the marketplace can actually supply (Visibility, Avg rank) reads
+ * as intentional.
  */
 export const MarketplaceCard = ({ row }) => {
 	if (!row.connected) {
@@ -54,31 +61,36 @@ export const MarketplaceCard = ({ row }) => {
 	}
 
 	const m = (key) => row[key] ?? {};
+	const isFull = row.data_scope === "full";
 
 	return (
 		<Card>
 			<Header row={row} />
 			<div className="flex flex-col gap-2">
-				<MetricRow
-					label="Revenue"
-					value={formatCompactCurrency(m("revenue").value)}
-					delta={m("revenue").delta_pct}
-				/>
-				<MetricRow
-					label="RoAS"
-					value={formatRoas(m("roas").value)}
-					delta={m("roas").delta_pct}
-				/>
-				<MetricRow
-					label="Ad spend"
-					value={formatCompactCurrency(m("ad_spend").value)}
-					delta={m("ad_spend").delta_pct}
-				/>
-				<MetricRow
-					label="Units sold"
-					value={formatNumber(m("units_sold").value)}
-					delta={m("units_sold").delta_pct}
-				/>
+				{isFull && (
+					<>
+						<MetricRow
+							label="Revenue"
+							value={formatCompactCurrency(m("revenue").value)}
+							delta={m("revenue").delta_pct}
+						/>
+						<MetricRow
+							label="RoAS"
+							value={formatRoas(m("roas").value)}
+							delta={m("roas").delta_pct}
+						/>
+						<MetricRow
+							label="Ad spend"
+							value={formatCompactCurrency(m("ad_spend").value)}
+							delta={m("ad_spend").delta_pct}
+						/>
+						<MetricRow
+							label="Units sold"
+							value={formatNumber(m("units_sold").value)}
+							delta={m("units_sold").delta_pct}
+						/>
+					</>
+				)}
 				<MetricRow
 					label="Visibility"
 					value={formatPercent(m("visibility").value)}
@@ -90,6 +102,11 @@ export const MarketplaceCard = ({ row }) => {
 					delta={m("avg_rank").delta_pct}
 					goodWhenDown
 				/>
+				{!isFull && (
+					<p className="mt-1 text-[11px] text-content-subtle">
+						Public data only — no order/ads feed for this marketplace yet.
+					</p>
+				)}
 			</div>
 		</Card>
 	);

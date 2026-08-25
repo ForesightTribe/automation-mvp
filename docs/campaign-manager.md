@@ -89,7 +89,7 @@ campaign_manager/
     └── blinkit/
         ├── adapter.py        the marketplace mechanism (read_*/apply_*), status mapping
         ├── client.py         raw Blinkit API client
-        ├── live_position.py  consumer-search scrape (where our ad actually ranks)
+        ├── live_position.py  consumer-search API client (where our ad actually ranks)
         ├── positions.py      product matching → sponsored position
         └── restart.py        the RESTART payload builder
 ```
@@ -281,6 +281,39 @@ precise return to a known-good price, not a climb, and holding ticks aren't clim
 change, wait. Marketplace changes take time to show up; stacking raises overbids. At the
 15-minute cadence this rarely fires; it exists for back-to-back runs, such as an edit
 triggering an immediate re-apply.
+
+### 7.2b Where the position comes from
+
+One **API request per (keyword, store)** — the engine does not load search pages.
+
+A single warm-up per run (homepage + one throwaway search) establishes a cleared session
+and captures the headers Blinkit attaches to its own `/v1/layout/search` request. After
+that every keyword is an in-page `fetch()` costing well under a second, and **the store is
+selected by the `lat`/`lon` headers**, so spanning several stores costs no more than one.
+
+Two properties the bid loop depends on:
+
+- **Results are cached per `(keyword, store)` for the run.** Several campaigns routinely
+  target the same keyword at the same store; the search results are identical, so only the
+  product match differs. A *failed* fetch is cached as the failure too — re-scraping a
+  keyword that just timed out only feeds the throttling that caused it.
+- **"Couldn't look" is distinct from "our ad isn't there."** A failed request raises (→
+  `error` row); an empty or organic-only result returns normally (→ `skip`). Collapsing
+  them would let a transport fault read as "we're not ranking" and be acted on.
+
+The transport — in-page fetch on a cleared session, Cloudflare-challenge detection, retry
+with backoff — is **shared with the public scraper** (`in_page_fetch`), not copied, so a
+Blinkit change is fixed once.
+
+> **Why it works this way.** Until 2026-08-22 this launched a Playwright driver and a
+> Chromium **per keyword**, then did two full `page.goto`s waiting on `networkidle`. That
+> cost 10–60s per keyword and made Blinkit see a dozen cold clients hitting the same search
+> from one IP within minutes. Eight of twelve keywords were lost to `Page.goto` timeouts and
+> run time climbed 87s → 524s across four runs, heading for the 15-minute job timeout —
+> past which the next fire is silently dropped by the overlap guard. There is also
+> deliberately **no DOM fallback**: it could not read `ads_campaign_id`, so everything it
+> returned was flagged organic, which `match_position` can only read as "skip". It never
+> once produced a usable bid decision.
 
 ### 7.3 Holding — "at target **or better**"
 
@@ -650,7 +683,7 @@ Everything defaults to dry-run. `--live` is always explicit.
 | Target becoming reachable **mid-window** | Not noticed until the next day. Re-testing means climbing back to the ceiling, which burns most of a window and usually finds nothing |
 | No acceptability floor on a relaxed target | A poor position is held cheaply rather than abandoned. "Below what rank is this worth paying for?" is a business call |
 | Drift parameters (7%, 90 min) | Educated guesses, unmeasured. Tune from real History rows |
-| Tiered position sourcing | Every keyword is scraped live every run. Fine until keyword count grows |
+| Tiered position sourcing | Every distinct (keyword, store) is fetched live every run. Now one cheap API request each rather than a browser launch, so the pressure is much lower |
 | Per-tenant guardrail bounds | Global defaults for now; revisit when a second tenant with a different budget scale lands |
 
 ### Known, not yet fixed

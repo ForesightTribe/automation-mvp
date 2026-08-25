@@ -15,7 +15,8 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
               dry_run: bool | None = None, platform: str = "blinkit") -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = logs.new_run_id()
-    logs.run_start(run_id, "set_budget", tenant_id, dry_run=dry_run, platform=platform)
+    logs.run_start(run_id, "set_budget", tenant_id, dry_run=dry_run, platform=platform,
+                   tenant_name=await repo.get_tenant_name(tenant_id))
 
     adapter = get_adapter(platform)
     pw = browser = None
@@ -23,7 +24,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError:
         logs.session_expired(run_id, dry_run=dry_run)
-        logs.run_summary(run_id, "set_budget", dry_run=dry_run,
+        logs.run_summary(run_id, "set_budget", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     logs.session_ok(run_id, dry_run=dry_run)
@@ -38,7 +39,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
                 await browser.close()
             if pw is not None:
                 await pw.stop()
-            logs.run_summary(run_id, "set_budget", dry_run=dry_run,
+            logs.run_summary(run_id, "set_budget", dry_run=dry_run, unit="campaigns",
                              processed=0, applied=0, skipped=0, errors=1)
             return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
@@ -65,7 +66,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
             await pw.stop()
 
     await repo.write_run_log([row])
-    logs.run_summary(run_id, "set_budget", dry_run=dry_run,
+    logs.run_summary(run_id, "set_budget", dry_run=dry_run, unit="campaigns",
                      processed=1, applied=applied, skipped=skipped, errors=errors)
     return {"processed": 1, "applied": applied, "skipped": skipped, "errors": errors}
 

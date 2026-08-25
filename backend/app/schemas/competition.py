@@ -12,7 +12,7 @@ class SovTrendPoint(BaseModel):
 
 class SovSummary(BaseModel):
     brands: list[str]  # the client's own brand(s) this SOV covers
-    marketplace: str | None
+    marketplaces: list[str] | None
     keyword: str | None
     city: str | None
     period_days: int

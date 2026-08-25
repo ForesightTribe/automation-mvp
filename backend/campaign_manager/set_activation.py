@@ -24,12 +24,13 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = logs.new_run_id()
     logs.run_start(run_id, "set_activation", tenant_id, dry_run=dry_run, platform=platform,
-                   campaign_id=campaign_id, target=status)
+                   campaign_id=campaign_id, target=status,
+                   tenant_name=await repo.get_tenant_name(tenant_id))
 
     if status not in writes.WRITABLE_STATES:
         logs.decision(run_id, dry_run=dry_run, campaign_id=campaign_id, verdict="error",
                       reason=f"status must be one of {writes.WRITABLE_STATES}, got {status!r}")
-        logs.run_summary(run_id, "set_activation", dry_run=dry_run,
+        logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
@@ -39,7 +40,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError:
         logs.session_expired(run_id, dry_run=dry_run)
-        logs.run_summary(run_id, "set_activation", dry_run=dry_run,
+        logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     logs.session_ok(run_id, dry_run=dry_run)
@@ -51,7 +52,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         except RuntimeError as e:
             logs.live_refused(run_id, reason=str(e))
             await _close(pw, browser)
-            logs.run_summary(run_id, "set_activation", dry_run=dry_run,
+            logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                              processed=0, applied=0, skipped=0, errors=1)
             return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
@@ -121,7 +122,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         await _close(pw, browser)
 
     await repo.write_run_log(rows)
-    logs.run_summary(run_id, "set_activation", dry_run=dry_run,
+    logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                      processed=1, applied=applied, skipped=skipped, errors=errors)
     return {"processed": 1, "applied": applied, "skipped": skipped, "errors": errors}
 

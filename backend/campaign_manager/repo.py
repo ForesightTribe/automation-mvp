@@ -79,6 +79,22 @@ async def get_bid_rules(tenant_id: uuid.UUID, platform: str = "blinkit"):
 
 # ── Platform account (advertiser id) — per (tenant, platform), B3 ───────────
 
+async def get_tenant_name(tenant_id: uuid.UUID) -> str | None:
+    """The client's display name, for the run header. One row, once per run — a log that
+    says "Tenant: Dobra" beats a bare UUID for whoever is reading it.
+
+    Never raises. This is a cosmetic detail in a log line, and it runs BEFORE the engine
+    does any real work — letting it fail would take down a whole bid or budget run over a
+    label. If the DB is genuinely unreachable the very next repo call says so loudly."""
+    from app.models.tenant import Tenant
+    try:
+        async with AsyncSessionLocal() as db:
+            row = await db.get(Tenant, tenant_id)
+            return row.name if row else None
+    except Exception:
+        return None
+
+
 async def get_advertiser(tenant_id: uuid.UUID, platform: str = "blinkit") -> int | None:
     """The stored advertiser (ad-account) id for a tenant, or None if not configured."""
     from app.models.campaign_manager_v2 import CmPlatformAccount

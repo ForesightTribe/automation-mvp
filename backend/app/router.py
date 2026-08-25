@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from app.routes import auth, clients, reference, analytics, overview, products, inventory, scorecard, competition, ads, platforms, watchlist, jobs, purchase_orders, reports, campaign_manager
+from app.routes import auth, clients, reference, analytics, overview, products, inventory, scorecard, competition, ads, zepto_ads, platforms, watchlist, jobs, purchase_orders, reports, campaign_manager
 
 api_router = APIRouter()
 
@@ -16,6 +16,9 @@ api_router.include_router(jobs.router,        prefix="/clients/{client_id}/jobs"
 api_router.include_router(purchase_orders.router, prefix="/clients/{client_id}/purchase-orders", tags=["purchase-orders"])
 api_router.include_router(competition.router, prefix="/clients/{client_id}/competition", tags=["competition"])
 api_router.include_router(ads.router,         prefix="/clients/{client_id}/ads", tags=["ads"])
+# Zepto-only ad routes, same prefix. Separate module so the Blinkit ad
+# routes and their response models need no changes to accommodate them.
+api_router.include_router(zepto_ads.router,   prefix="/clients/{client_id}/ads", tags=["ads"])
 api_router.include_router(platforms.router,   prefix="/clients/{client_id}/platforms", tags=["platforms"])
 api_router.include_router(reports.router,      prefix="/clients/{client_id}/reports", tags=["reports"])
 api_router.include_router(campaign_manager.router, prefix="/clients/{client_id}/campaign-manager", tags=["campaign-manager"])

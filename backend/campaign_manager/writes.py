@@ -155,25 +155,23 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
 
     if is_noop(clamped, current_cpm):
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
-                             passed=False, reason="no-op (already at target bid)")
+                             passed=False, reason="no-op (already at target bid)", keyword=keyword)
         return False
     if exceeds_rate_limit(recent_writes):
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
-                             passed=False, reason=f"rate limit ({recent_writes} recent writes)")
+                             passed=False, reason=f"rate limit ({recent_writes} recent writes)", keyword=keyword)
         return False
 
-    logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=True)
+    logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=True, keyword=keyword)
 
+    # No write.result line here: the bid engine narrates the outcome itself, inside the
+    # rule block, in a sentence. Emitting both would report every bid change twice.
     if dry_run:
-        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True)
         return True
 
     # LIVE — the single real Blinkit bid mutation.
     resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
-    ok = bool(resp.get("status") or resp.get("success"))
-    logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=f"bid=₹{clamped}")
-    return ok
+    return bool(resp.get("status") or resp.get("success"))
 
 
 async def apply_status(adapter, client, *, run_id, campaign_id, target, current,

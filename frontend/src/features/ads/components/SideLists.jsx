@@ -3,7 +3,7 @@ import { Card } from "../../../components/ui/Card";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 /** Visibility/placement plans — name, type, budget, status. */
 export const VisibilityPlans = () => {
@@ -35,7 +35,7 @@ export const VisibilityPlans = () => {
 									</div>
 								</div>
 								<span className="shrink-0 text-sm font-semibold tabular-nums text-content">
-									{formatCompactCurrency(p.budget)}
+									{formatCurrency(p.budget)}
 								</span>
 							</li>
 						))}

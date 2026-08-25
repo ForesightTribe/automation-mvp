@@ -31,7 +31,7 @@ def test_dynamic_step_tiers():
 
 def test_at_target_no_change():
     new, reason = compute_bid(3, 3, 50, 10, 200, None, None)
-    assert new is None and reason.startswith("target")
+    assert new is None and "target reached" in reason
 
 
 def test_below_target_raises():
@@ -59,7 +59,7 @@ def test_lower_clamped_to_min():
 def test_hold_when_no_improvement_inside_window():
     # pos didn't improve (6 >= last 6) and only 5min < 10min → HOLD, no change
     new, reason = compute_bid(6, 3, 50, 10, 200, last_position=6, minutes_since_change=5)
-    assert new is None and reason.startswith("hold")
+    assert new is None and "has not improved" in reason
 
 
 def test_no_hold_when_improved():
@@ -205,14 +205,14 @@ def test_drift_off_by_default_keeps_the_old_freeze():
 
 def test_drift_shaves_a_percentage_when_holding():
     new, reason = compute_bid(3, 3, 400, 100, 900, 3, 30, **DRIFT)
-    assert new == 372 and reason.startswith("drift")             # 400 - 7% = 372
+    assert new == 372 and "trimming cost" in reason             # 400 - 7% = 372
 
 
 def test_drift_treats_better_than_target_as_holding():
     """Sponsored slots sit on a sparse lattice, so pos 1 with target 3 is a SUCCESS —
     the cheapest way to satisfy 'at least as good as 3', not an error to correct."""
     new, reason = compute_bid(1, 3, 400, 100, 900, 1, 30, **DRIFT)
-    assert new == 372 and reason.startswith("drift")
+    assert new == 372 and "trimming cost" in reason
 
 
 def test_drift_needs_two_consecutive_holds():
@@ -239,7 +239,7 @@ def test_drift_never_goes_below_min_bid():
 
 def test_drift_stops_once_sitting_on_min_bid():
     new, reason = compute_bid(3, 3, 100, 100, 900, 3, 30, **DRIFT)
-    assert new is None and "already at min_bid" in reason
+    assert new is None and "already at the ₹100 floor" in reason
 
 
 # ── recovery (our own drift overshot) vs a competitor outbidding us ──────────
@@ -248,14 +248,14 @@ def test_recovery_snaps_back_to_the_last_holding_bid():
     """A _dynamic_step raise from 299 would jump to 399 and overshoot the known-good 322
     by ₹77, which we would then spend an hour drifting back off."""
     new, reason = compute_bid(9, 3, 299, 100, 900, 1, 30, last_holding_cpm=322, **DRIFT)
-    assert new == 322 and reason.startswith("recover")
+    assert new == 322 and "going back to" in reason
 
 
 def test_market_moving_against_us_is_a_normal_raise_not_a_recovery():
     """Off target AT the last holding bid = a competitor moved, not our overshoot. The
     snap-back would be a no-op, so it must fall through to the raise ladder."""
     new, reason = compute_bid(9, 3, 322, 100, 900, 1, 30, last_holding_cpm=322, **DRIFT)
-    assert new == 422 and reason.startswith("raise")             # distance 6 → step 100
+    assert new == 422 and "raising to" in reason             # distance 6 → step 100
 
 
 def test_is_recovery_predicate():
@@ -271,12 +271,12 @@ def test_pause_never_blocks_a_raise():
     must answer on the very next tick, or we sit off-target for 90 minutes."""
     new, reason = compute_bid(9, 3, 322, 100, 900, 1, 30,
                               last_holding_cpm=322, drift_paused=True, **DRIFT)
-    assert new == 422 and reason.startswith("raise")
+    assert new == 422 and "raising to" in reason
 
 
 def test_reflection_hold_still_applies_with_drift_on():
     new, reason = compute_bid(9, 3, 400, 100, 900, 9, 2, **DRIFT)
-    assert new is None and reason.startswith("hold")
+    assert new is None and "has not improved" in reason
 
 
 # ── _window_start (the "first fire of this window" anchor) ───────────────────
@@ -384,7 +384,7 @@ def test_relaxed_target_makes_the_achieved_position_count_as_held():
     """The point of relaxing: at position 5 against a relaxed target of 5, drift takes over
     and starts cutting cost, instead of recomputing max_bid forever."""
     new, reason = compute_bid(5, 5, 900, 100, 900, 5, 30, drift_pct=7, drift_min_step=5)
-    assert new == 837 and reason.startswith("drift")
+    assert new == 837 and "trimming cost" in reason
 
 
 def test_without_relaxing_a_pinned_bid_just_recomputes_the_ceiling():

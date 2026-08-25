@@ -8,13 +8,16 @@ from app.schemas.analytics import Metric
 class MarketplaceRow(BaseModel):
     """One marketplace's slice of the overview. Metrics are None for marketplaces
     without real data yet (`connected=False`) — the UI renders those as a
-    'Not connected' card. Connected rows carry the same metric set as the global
-    KPI strip, scoped to this marketplace."""
+    'Not connected' card. Connected rows carry visibility/avg_rank always, plus
+    revenue/roas/ad_spend/units_sold only when `data_scope == "full"` (a
+    marketplace whose scrape is public-data-only, like Zepto today, has no
+    order/ads feed to compute those from — they stay None, not zero)."""
 
     slug: str
     name: str
     color: str | None
     connected: bool
+    data_scope: str = "public"
     revenue: Metric | None = None
     roas: Metric | None = None  # blended = revenue / spend
     ad_spend: Metric | None = None

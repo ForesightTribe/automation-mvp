@@ -1,0 +1,571 @@
+import asyncio
+
+import httpx
+from playwright.async_api import async_playwright
+
+from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
+from scraper.utils.browser import create_browser_context
+from app.utils.logger import logger
+
+
+def _extract_auth(storage_state: dict) -> tuple[str, str] | None:
+    """Pull the JWT and WAF token straight out of the saved cookies — no
+    browser needed. Confirmed live (DevTools + captured requests) that
+    Zepto's frontend sends these cookie values verbatim as the `authorization`
+    and `x-aws-waf-token` headers on every API call, so replaying them here
+    is equivalent to what the real page does."""
+    jwt = None
+    waf_token = None
+    for c in storage_state.get("cookies", []):
+        name = c.get("name", "")
+        if name.endswith("_AUTH_TOKEN"):
+            jwt = c.get("value")
+        elif name == "aws-waf-token":
+            waf_token = c.get("value")
+    if not jwt or not waf_token:
+        return None
+    return jwt, waf_token
+
+
+def _headers_for(jwt: str, waf_token: str) -> dict:
+    return {
+        "authorization": jwt,
+        "x-aws-waf-token": waf_token,
+        "x-proxy-target": "brand-analytics",
+        "accept": "application/json",
+    }
+
+
+async def validate(storage_state: dict) -> tuple[bool, str | None]:
+    """Cheap, browser-free check: is this saved session still accepted by
+    Zepto's API? Deliberately avoids launching a browser at all — a headless
+    page load was observed (live) to trigger AWS WAF's bot-challenge flow,
+    so routine health checks use a single plain HTTP request instead, which
+    looks like any other API call rather than a fresh browser session."""
+    auth = _extract_auth(storage_state)
+    if not auth:
+        return False, "Saved session is missing the auth or WAF-token cookie"
+    jwt, waf_token = auth
+
+    try:
+        async with httpx.AsyncClient() as client:
+            resp = await client.get(f"{ep.BASE_URL}{ep.USER_INFO_API}", headers=_headers_for(jwt, waf_token), timeout=15)
+    except Exception as e:
+        return False, f"{type(e).__name__}: {e}"
+
+    if resp.status_code == 200:
+        logger.info("Zepto seller session validation: OK")
+        return True, None
+
+    error = f"HTTP {resp.status_code}: {resp.text[:200]}"
+    logger.warning(f"Zepto seller session validation failed: {error}")
+    return False, error
+
+
+# ── ID discovery ─────────────────────────────────────────────────────────────
+# Zepto's Sales Analytics API rejects calls that don't specify brand/city/
+# subcategory IDs ("At least one City id is required") — these are specific
+# to each tenant's own account, so they can't be hardcoded for a general
+# scraper. Re-discovered fresh on every call (not cached) — same "no caching"
+# choice Blinkit's own Scorecard scraper makes for its manufacturer_id, after
+# weighing it against a cached-mapping design that risked silently missing
+# newly-added cities/brands/categories. Both calls are plain httpx, no
+# browser, same as validate() above.
+
+async def discover_ids(storage_state: dict) -> dict:
+    auth = _extract_auth(storage_state)
+    if not auth:
+        raise RuntimeError("Saved session is missing the auth or WAF-token cookie")
+    jwt, waf_token = auth
+    headers = _headers_for(jwt, waf_token)
+
+    async with httpx.AsyncClient() as client:
+        city_resp, brand_resp = await client.get(
+            f"{ep.BASE_URL}{ep.CITY_LIST_API}", headers=headers, timeout=15
+        ), await client.get(
+            f"{ep.BASE_URL}{ep.BRAND_CATEGORY_MAPPING_API}", headers=headers, timeout=15
+        )
+    city_resp.raise_for_status()
+    brand_resp.raise_for_status()
+
+    city_list = city_resp.json()["data"]["cityList"]
+    city_ids = [c["cityID"] for c in city_list]
+
+    brand_list = brand_resp.json()["data"]["brandCategoryList"]
+    if not brand_list:
+        raise RuntimeError("brand-category-mapping returned no brands for this account")
+    brand = brand_list[0]  # one brand per seller account, per what we've observed
+
+    subcategory_ids: list[str] = []
+    subcategory_names: list[str] = []
+    for category in brand.get("categoryList", []):
+        for sub in category.get("subcategoryList", []):
+            subcategory_ids.append(sub["subcategoryID"])
+            subcategory_names.append(sub["subcategoryName"])
+
+    result = {
+        "brand_id": brand["brandID"],
+        "brand_name": brand["brandName"],
+        "subcategory_ids": subcategory_ids,
+        "subcategory_names": subcategory_names,
+        "city_ids": city_ids,
+        # Full {cityID, cityName} objects — the per-city sales split needs
+        # the names, and re-fetching the list to get them would be wasteful.
+        "city_list": city_list,
+    }
+    logger.info(
+        f"Zepto IDs discovered: brand={result['brand_name']} "
+        f"({len(subcategory_ids)} subcategories, {len(city_ids)} cities)"
+    )
+    return result
+
+
+# ── Browser fallback ─────────────────────────────────────────────────────────
+# Only reached for 401/403 (auth-shaped) failures on an otherwise-healthy
+# session — a 400/429/500/timeout can't be fixed by touching a browser, so
+# those are never routed here (see classify_sales_error / the caller in
+# cli/commands/scrape.py). Kept as a rare exception path, not the routine
+# daily behavior, given the WAF-challenge risk observed from browser page
+# loads on this site.
+
+async def _recapture_auth_via_browser(storage_state: dict) -> tuple[str, str] | None:
+    captured: dict = {}
+
+    async with async_playwright() as p:
+        browser, context = await create_browser_context(p, headless=True, storage_state=storage_state)
+        page = await context.new_page()
+
+        async def on_request(request):
+            if "fcc.zepto.co.in" in request.url and not captured:
+                hdrs = dict(request.headers)
+                if hdrs.get("authorization") and hdrs.get("x-aws-waf-token"):
+                    captured.update(hdrs)
+
+        page.on("request", on_request)
+        try:
+            await page.goto(
+                f"https://brands.zepto.co.in{ep.SALES_ANALYTICS_PAGE}",
+                wait_until="domcontentloaded",
+                timeout=30_000,
+            )
+            if not captured:
+                await asyncio.sleep(3)
+        except Exception as e:
+            logger.warning(f"Browser fallback page load warning: {e}")
+        finally:
+            await browser.close()
+
+    if not captured:
+        return None
+    return captured["authorization"], captured["x-aws-waf-token"]
+
+
+def classify_sales_error(status_code: int) -> str:
+    """Auth-shaped failures (401/403) are the only ones a browser fallback
+    could plausibly fix — everything else (bad params, rate limit, server
+    error, timeout) needs a different response, not a browser touch."""
+    if status_code in (401, 403):
+        return "auth"
+    return "other"
+
+
+async def _get_with_auth_fallback(storage_state: dict, url: str, params: dict, label: str) -> dict:
+    """Shared GET-with-fallback logic for every Sales Analytics call: try
+    browser-free first, and only if it comes back 401/403 (auth-shaped),
+    retry once via a live browser header re-capture. Any other error surfaces
+    immediately — no fallback, since a browser touch can't fix a bad
+    parameter, a rate limit, a server error, or a timeout."""
+    auth = _extract_auth(storage_state)
+    if not auth:
+        raise RuntimeError("Saved session is missing the auth or WAF-token cookie")
+    jwt, waf_token = auth
+
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(url, headers=_headers_for(jwt, waf_token), params=params, timeout=30)
+
+    if resp.status_code >= 400:
+        error_kind = classify_sales_error(resp.status_code)
+        if error_kind == "auth":
+            logger.warning(f"{label} got {resp.status_code}, attempting browser fallback re-capture...")
+            recaptured = await _recapture_auth_via_browser(storage_state)
+            if recaptured:
+                jwt, waf_token = recaptured
+                async with httpx.AsyncClient() as client:
+                    resp = await client.get(url, headers=_headers_for(jwt, waf_token), params=params, timeout=30)
+                if resp.status_code >= 400:
+                    raise RuntimeError(
+                        f"Session appears genuinely dead — re-login required "
+                        f"(browser fallback also failed: HTTP {resp.status_code})"
+                    )
+            else:
+                raise RuntimeError(
+                    "Session appears genuinely dead — re-login required "
+                    "(browser fallback could not capture fresh auth headers)"
+                )
+        else:
+            resp.raise_for_status()  # not auth-shaped — surface the real error, no fallback
+
+    resp.raise_for_status()
+    return resp.json()["data"]
+
+
+async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str, ids: dict) -> dict:
+    """Real GMV/Units data from Zepto's Sales Analytics — direct API call,
+    no browser, using freshly-discovered tenant IDs (see discover_ids)."""
+    params = {
+        "brandIds": ids["brand_id"],
+        "brandNames": ids["brand_name"],
+        "subcategoryNames": "|".join(ids["subcategory_names"]),
+        "subcategoryIds": ",".join(ids["subcategory_ids"]),
+        "cityIds": ",".join(ids["city_ids"]),
+        "startDate": date_from,
+        "endDate": date_to,
+        "viewType": "BRAND",
+        "aggregationLevel": "DAY",
+    }
+    data = await _get_with_auth_fallback(
+        storage_state, f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}", params, "Sales-overview"
+    )
+    gmv = data["headers"]["gmv"]["value"]
+    units = data["headers"]["units"]["value"]
+    daily = data["metrics"]["gmv"]["data"]
+    logger.info(f"Zepto sales-overview [{date_from}..{date_to}]: GMV={gmv} Units={units} ({len(daily)} days)")
+    return data
+
+
+async def fetch_sales_by_city(
+    storage_state: dict,
+    date_from: str,
+    date_to: str,
+    ids: dict,
+    city_ids: list[str] | None = None,
+) -> dict[str, dict]:
+    """Per-city GMV/units. Returns {city_id: raw sales-overview response}.
+
+    Zepto exposes no city breakdown in a single response — `viewType=CITY` is
+    rejected by the parameter's `oneof` validation — but `cityIds` accepts ONE
+    id and returns that city's full daily series. So a city split means one call
+    per city, each covering the whole date range.
+
+    `city_ids` defaults to every city the account can see (138 on this one). A
+    sweep on 21-Aug-2026 found sales in exactly one of them, so callers should
+    normally pass the short list of cities already known to sell and only sweep
+    everything occasionally.
+    """
+    targets = city_ids if city_ids is not None else ids["city_ids"]
+    out: dict[str, dict] = {}
+    for i, city_id in enumerate(targets, 1):
+        params = {
+            "brandIds": ids["brand_id"],
+            "brandNames": ids["brand_name"],
+            "subcategoryNames": "|".join(ids["subcategory_names"]),
+            "subcategoryIds": ",".join(ids["subcategory_ids"]),
+            "cityIds": city_id,
+            "startDate": date_from,
+            "endDate": date_to,
+            "viewType": "BRAND",
+            "aggregationLevel": "DAY",
+        }
+        try:
+            out[city_id] = await _get_with_auth_fallback(
+                storage_state,
+                f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}",
+                params,
+                f"Sales-by-city[{city_id[:8]}]",
+            )
+        except Exception as e:
+            logger.warning(f"Zepto sales-by-city failed for {city_id}: {e}")
+        if i < len(targets):
+            await asyncio.sleep(0.6)
+
+    logger.info(
+        f"Zepto sales-by-city [{date_from}..{date_to}]: {len(out)}/{len(targets)} cities fetched"
+    )
+    return out
+
+
+async def fetch_product_performance(
+    storage_state: dict, date_from: str, date_to: str, ids: dict, limit: int = 50
+) -> list[dict]:
+    """Per-SKU breakdown from Zepto's Sales Analytics — GMV, units, sales
+    share, growth, and conversion metrics per product.
+
+    NOTE ON `viewType`: the browser sends `viewType=top_selling`, which the API
+    caps at the **top 5 products**. Copying that verbatim made the SKU rows sum
+    ~3% under `fetch_sales_overview`'s totals. Omitting the parameter returns
+    the full catalog and reconciles exactly (verified 2026-08-19: 9 selling
+    SKUs summing to ₹18,31,040 / 16,882 units for 17 Jul–16 Aug, matching the
+    overview to the rupee). Do not reinstate it.
+
+    `stockOnHand` always comes back null — Stock View is subscription-gated on
+    this account.
+    """
+    params = {
+        "brandIds": ids["brand_id"],
+        "brandNames": ids["brand_name"],
+        "subcategoryNames": "|".join(ids["subcategory_names"]),
+        "subcategoryIds": ",".join(ids["subcategory_ids"]),
+        "cityIds": ",".join(ids["city_ids"]),
+        "startDate": date_from,
+        "endDate": date_to,
+        "limit": limit,
+        "offset": 0,
+    }
+    data = await _get_with_auth_fallback(
+        storage_state, f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}", params, "Product-performance"
+    )
+    # Without `viewType` the response covers the whole catalog, so it includes
+    # products with no sales in the window (gmv/qtySold come back null). Those
+    # are dropped: a zero-sales row adds nothing to any chart, and keeping them
+    # would inflate the "Active SKUs" count with products that sold nothing.
+    products = [p for p in (data["data"] or []) if p.get("gmv")]
+    logger.info(f"Zepto product-performance [{date_from}..{date_to}]: {len(products)} products with sales")
+    return products
+
+
+# ── Ads (`ads-bff`) ──────────────────────────────────────────────────────────
+# Unlike the analytics endpoints above, ads-bff will not accept the saved
+# session's WAF token — it answers 202, an AWS WAF challenge. Only a live
+# browser produces a token it accepts, so ads scraping harvests headers from
+# one short page load and then makes plain HTTP calls with them, the same
+# shape as blinkit/dashboard_data/seller/scraper.py::_capture_headers.
+#
+# Header set matters too: the request must look like the app's own. Sending
+# `accept: application/json, text/plain, */*` (httpx-ish) or omitting
+# referer/user-agent also draws a 202, even with a good token.
+
+_ADS_HEADER_KEYS = frozenset(
+    {"accept", "accept-language", "authorization", "referer", "user-agent",
+     "waf-enabled", "x-aws-waf-token"}
+)
+
+
+async def capture_ads_headers(storage_state: dict) -> dict:
+    """Load the ads page in a browser and keep the headers off its first
+    ads-bff call. Raises if none appear — usually a dead session."""
+    captured: dict = {}
+
+    async with async_playwright() as p:
+        browser, context = await create_browser_context(p, headless=True, storage_state=storage_state)
+        page = await context.new_page()
+
+        async def on_request(request):
+            if "/ads-bff/" in request.url and not captured:
+                captured.update(request.headers)
+
+        page.on("request", on_request)
+        try:
+            await page.goto(f"https://brands.zepto.co.in{ep.ADS_PAGE}", wait_until="domcontentloaded", timeout=45_000)
+            if not captured:
+                await asyncio.sleep(12)
+        except Exception as e:
+            logger.warning(f"Ads page load warning: {e}")
+        finally:
+            await browser.close()
+
+    headers = {k: v for k, v in captured.items() if k.lower() in _ADS_HEADER_KEYS}
+    if "authorization" not in headers or "x-aws-waf-token" not in headers:
+        raise RuntimeError(
+            "Could not capture ads-bff auth headers — session is probably dead, re-login required"
+        )
+    logger.info("Zepto ads headers captured")
+    return headers
+
+
+async def fetch_ad_campaigns(
+    headers: dict, brand_id: str, date_from: str, date_to: str, category: str
+) -> list[dict]:
+    """Every campaign in one category for a window, following pagination.
+
+    The response carries `total_count` and `has_next`; rows come 10 at a time,
+    so a brand with 26 campaigns is three calls.
+    """
+    by_id: dict = {}
+    total = None
+    page = 1
+    async with httpx.AsyncClient() as client:
+        while True:
+            # `page`, 1-based. Verified by elimination: offset / skip / page_no
+            # / pageNumber / page_number are all silently ignored and return
+            # page 1 again, which is how the first version of this loop spun to
+            # offset=920 and drew a 429.
+            params = {
+                "selectedBrand": brand_id,
+                "brand_id": brand_id,
+                "from_date": date_from,
+                "to_date": date_to,
+                "categoryType": category,
+                "page": page,
+            }
+            resp = await client.get(
+                f"{ep.BASE_URL}{ep.ADS_CAMPAIGNS_API}", headers=headers, params=params, timeout=30
+            )
+            if resp.status_code == 202:
+                raise RuntimeError(
+                    "ads-bff answered 202 (WAF challenge) — the captured token was rejected; retry the header capture"
+                )
+            resp.raise_for_status()
+            data = resp.json()["data"] or {}
+            rows = data.get("campaigns") or []
+            if total is None:
+                total = data.get("total_count") or 0
+
+            # Bound the loop on total_count and on actually seeing new ids —
+            # NOT on has_next alone. `has_next` stayed true even once every
+            # campaign had been returned, so trusting it spun to offset=920
+            # and drew a 429. Duplicate ids mean the offset param is being
+            # ignored, in which case paging further is pointless.
+            before = len(by_id)
+            for r in rows:
+                cid = r.get("campaign_id")
+                if cid is not None:
+                    by_id[cid] = r
+            if not rows or len(by_id) == before or len(by_id) >= total:
+                break
+
+            page += 1
+            await asyncio.sleep(1.5)
+
+    out = list(by_id.values())
+    if total and len(out) < total:
+        logger.warning(
+            f"Zepto ad campaigns [{category}]: got {len(out)} of {total} — pagination stopped early"
+        )
+
+    # ads-bff sometimes answers with the campaign list intact but every metric
+    # set to "-", then returns real figures for the same window moments later
+    # (observed repeatedly on 2026-08-20). Storing that quietly would write a
+    # day of zeros over good data, so say so — the caller decides whether to
+    # retry rather than this function looping on its own.
+    if out and not any(_has_metrics(c) for c in out):
+        logger.warning(
+            f"Zepto ad campaigns [{category}] [{date_from}]: {len(out)} campaigns but every "
+            "metric is empty — ads-bff often does this transiently; treat as not-yet-ready, not as zero spend"
+        )
+
+    logger.info(f"Zepto ad campaigns [{category}] [{date_from}..{date_to}]: {len(out)} of {total}")
+    return out
+
+
+def _has_metrics(c: dict) -> bool:
+    """True if a campaign row carries any real figure. Zepto writes "-" (not 0
+    or null) where it has nothing."""
+    for key in ("spend", "impressions", "clicks"):
+        v = c.get(key)
+        if v in (None, "", "-", "0"):
+            continue
+        try:
+            if float(v) > 0:
+                return True
+        except (TypeError, ValueError):
+            continue
+    return False
+
+
+async def fetch_ad_daily_metrics(
+    headers: dict, brand_id: str, date_from: str, date_to: str, category: str
+) -> dict[str, list[dict]]:
+    """Per-day brand-level ad metrics for one category.
+
+    `breakdown: true` is what returns the time series; `summary: true` would
+    give only window totals. Metrics are requested one at a time because that
+    is how the portal itself asks — a combined request returns the series for
+    just one of them.
+
+    Note the grain: this is per brand per day, NOT per campaign per day (which
+    is what Blinkit's blinkit_ad_campaign_daily holds). Zepto exposes no
+    per-campaign time series that we have found.
+    """
+    series: dict[str, list[dict]] = {}
+    async with httpx.AsyncClient() as client:
+        for metric in ep.ADS_METRIC_NAMES:
+            body = {
+                "from": f"{date_from} 00:00:00",
+                "to": f"{date_to} 23:59:59",
+                "interval": "day",
+                "campaign_category": category,
+                "metrics": [metric],
+                "breakdown": True,
+                "brand_id": brand_id,
+            }
+            resp = await client.post(
+                f"{ep.BASE_URL}{ep.ADS_METRICS_API}",
+                headers={**headers, "content-type": "application/json"},
+                json=body,
+                timeout=30,
+            )
+            if resp.status_code == 202:
+                raise RuntimeError("ads-bff answered 202 (WAF challenge) — retry the header capture")
+            resp.raise_for_status()
+            m = ((resp.json().get("data") or {}).get("metrics") or {}).get(metric) or {}
+            series[metric] = m.get("interval_breakdown") or []
+            await asyncio.sleep(1.5)
+
+    days = max((len(v) for v in series.values()), default=0)
+    logger.info(f"Zepto ad daily metrics [{category}] [{date_from}..{date_to}]: {days} days")
+    return series
+
+
+async def fetch_ads_tabular(
+    headers: dict,
+    brand_id: str,
+    date_from: str,
+    date_to: str,
+    view: str,
+    category: str = "sponsored_products",
+) -> list[dict]:
+    """One of the Analytics page's performance tables, following pagination.
+
+    `view` is an ep.ADS_VIEW_* value. Every view shares a metric set prefixed
+    with its dimension (campaign_revenue, keyword_revenue, ...), so callers
+    strip the prefix rather than special-casing each one.
+
+    Prefer this over `fetch_ad_campaigns` for performance figures: it reports
+    revenue, add-to-carts and the FOC-excluded RoAS (`robas`), none of which
+    the Campaign Management endpoint returns. `fetch_ad_campaigns` remains the
+    source for operational fields — daily budget, base bid, targeting, dates.
+
+    Date-aware — verified 20-Aug-2026 on campaign 2127644, where every figure
+    scaled with the window (1 day / 6 days / 31 days): spend 2,598 / 13,154 /
+    73,023, revenue 7,580 / 40,210 / 199,020, atc 29 / 150 / 730, orders
+    73 / 389 / 1,915. Safe to store per day.
+
+    Note `orders` here is NOT the `orders` on the campaigns endpoint, which is
+    a lifetime figure that ignores the range entirely (stuck at 158 for every
+    window). Same name, different behaviour — take orders from this view.
+    """
+    out: list[dict] = []
+    page = 1
+    async with httpx.AsyncClient() as client:
+        while True:
+            body = {
+                "from": f"{date_from} 00:00:00",
+                "to": f"{date_to} 23:59:59",
+                "view": view,
+                "size": ep.ADS_TABULAR_PAGE_SIZE,
+                "page": page,
+                "campaign_category": category,
+                "brand_id": brand_id,
+            }
+            resp = await client.post(
+                f"{ep.BASE_URL}{ep.ADS_TABULAR_API}",
+                headers={**headers, "content-type": "application/json"},
+                json=body,
+                timeout=30,
+            )
+            if resp.status_code == 202:
+                raise RuntimeError("ads-bff answered 202 (WAF challenge) — retry the header capture")
+            resp.raise_for_status()
+            data = resp.json().get("data") or {}
+            rows = data.get("rows") or []
+            out.extend(rows)
+            total = data.get("total_count") or 0
+            # Bounded by total_count, not has_next — the campaigns endpoint's
+            # has_next stayed true forever and spun a loop to 92 requests.
+            if not rows or len(out) >= total:
+                break
+            page += 1
+            await asyncio.sleep(1.5)
+
+    logger.info(f"Zepto ads {view} [{date_from}..{date_to}]: {len(out)} rows")
+    return out

@@ -44,7 +44,11 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 
 	const suggestions = (kwData ?? []).map((k) => k.keyword);
 	// Max bid is optional — blank means "reach the target position whatever it costs".
-	const valid = campaign.id && f.keyword && f.min_bid;
+	// A measurement location is NOT optional: without one the engine silently falls back to
+	// a default Bengaluru store, so every rule ends up measuring somewhere nobody chose.
+	// On edit, a blank city is fine only when the rule already has a location to keep.
+	const hasLocation = Boolean(f.city || f.location_id || (isEdit && editing?.location_name));
+	const valid = campaign.id && f.keyword && f.min_bid && hasLocation;
 
 	const submit = (e) => {
 		e.preventDefault();
@@ -122,14 +126,22 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 					<input type="number" value={f.max_bid} onChange={set("max_bid")} placeholder="No limit" className={FIELD} />
 				</Field>
 				<Field
-					label="Measure in city"
+					label="Measure in city *"
 					hint={
 						isEdit
-							? `Currently: ${editing.location_name || "—"}. Enter a new city to change; leave blank to keep.`
-							: "Position is checked at one store here."
+							? editing?.location_name
+								? `Currently: ${editing.location_name}. Enter a new city to change; leave blank to keep.`
+								: "Required — this rule has no measurement store yet."
+							: "Required — position is checked at one store here."
 					}
 				>
-					<input value={f.city} onChange={set("city")} placeholder="bengaluru" className={FIELD} />
+					<input
+						value={f.city}
+						onChange={set("city")}
+						placeholder="bengaluru"
+						className={FIELD}
+						aria-invalid={!hasLocation}
+					/>
 				</Field>
 			</div>
 

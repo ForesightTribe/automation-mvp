@@ -2,9 +2,9 @@
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.models.brand import Brand, Marketplace
-from app.models.search import MarketplaceLocation
+from app.models.job import JobStatus, ScrapeJob
+from app.models.search import MarketplaceLocation, SearchSnapshot
 from scraper.utils.cities import CITIES
 
 
@@ -13,18 +13,56 @@ async def list_brands(session: AsyncSession) -> list[Brand]:
 
 
 async def list_marketplaces(session: AsyncSession) -> list[dict]:
-    """List marketplaces, flagging which have real data (`connected`). Returns
-    dicts so the connectivity flag can ride alongside the ORM columns."""
+    """List marketplaces, flagging which have real data (`connected`) and what
+    plane of data they can supply (`data_scope`). Returns dicts so both flags can
+    ride alongside the ORM columns.
+
+    Both flags used to be (or risked becoming) a hardcoded config list — brittle,
+    because it drifts from the database the moment a marketplace's real
+    capability changes without a matching code deploy. Both are derived instead:
+
+    `connected` — is there *any* real scraped row for this marketplace, anywhere.
+    This is not client-scoped (see the route's docstring), so it means "some
+    tenant has data for it" — the global picker's job is only to decide whether a
+    marketplace is selectable at all, not whether the CURRENT client has data for
+    it (that's a separate, tenant-scoped check — see
+    overview_service.get_marketplace_breakdown).
+
+    `data_scope` — "full" if any successful scrape_jobs row for this platform is
+    a PRIVATE job (seller/marketing/scorecard — dashboard values like
+    "blinkit_seller_sales", never prefixed "public_"), "public" otherwise. A
+    marketplace only gains "full" once real seller-panel data has actually
+    landed — never from a hardcoded map someone has to remember to update.
+    """
     rows = (
         await session.execute(select(Marketplace).order_by(Marketplace.name))
     ).scalars().all()
-    connected = set(settings.CONNECTED_MARKETPLACES)
+    connected = set(
+        (await session.execute(select(SearchSnapshot.mp_slug).distinct()))
+        .scalars()
+        .all()
+    )
+    full_scope = set(
+        (
+            await session.execute(
+                select(ScrapeJob.platform)
+                .where(
+                    ScrapeJob.status == JobStatus.success,
+                    ~ScrapeJob.dashboard.startswith("public_"),
+                )
+                .distinct()
+            )
+        )
+        .scalars()
+        .all()
+    )
     return [
         {
             "slug": m.slug,
             "name": m.name,
             "color": m.color,
             "connected": m.slug in connected,
+            "data_scope": "full" if m.slug in full_scope else "public",
         }
         for m in rows
     ]

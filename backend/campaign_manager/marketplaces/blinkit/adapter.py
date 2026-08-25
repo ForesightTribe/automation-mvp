@@ -99,10 +99,50 @@ async def resolve_position(client, campaign_id: int, keyword: str, *, lat: float
     """Live sponsored position for the campaign's product on `keyword` (a READ — safe).
     Scrapes consumer search, then matches this campaign's product by pid/name/brand.
     Returns (position | None, source). None = product not found / organic-only → skip.
-    MP-specific matching lives in `positions.py`; the bid loop stays MP-agnostic."""
+    MP-specific matching lives in `positions.py`; the bid loop stays MP-agnostic.
+
+    Self-contained (own browser) — for a one-off lookup. A run with several keywords uses
+    `open_position_session` + `fetch_positions` + `locate_position` so one browser serves
+    them all and identical (keyword, location) pairs are scraped once."""
     from campaign_manager.marketplaces.blinkit import positions
     return await positions.resolve(keyword, lat, lon, product_names=product_names,
                                    product_pids=product_pids, brand_name=brand_name)
+
+
+# ── Batched position sourcing (one session per run) ─────────────────────────
+
+async def open_position_session(pw, lat: float | None = None, lon: float | None = None) -> dict:
+    """Open the consumer-side browser for a whole run and capture Blinkit's session-bound
+    search headers. One warm-up (two navigations) serves every keyword AND every store in
+    the run. The caller closes it with `close_position_session`."""
+    from campaign_manager.marketplaces.blinkit import live_position
+    kw = {k: v for k, v in (("lat", lat), ("lon", lon)) if v is not None}
+    return await live_position.open_session(pw, **kw)
+
+
+async def close_position_session(session: dict) -> None:
+    from campaign_manager.marketplaces.blinkit import live_position
+    await live_position.close_session(session)
+
+
+async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -> list[dict]:
+    """Raw search results for (keyword, store) on an open session — one API request, no
+    page navigation. The store is selected by the lat/lon HEADERS, so a run spanning
+    several stores costs no more than one at a single store.
+
+    Raises when the search could not be performed, so the caller can tell "our ad isn't
+    there" (empty list) from "we couldn't look" (error)."""
+    from campaign_manager.marketplaces.blinkit import live_position
+    return await live_position.search(session, keyword, lat, lon)
+
+
+def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
+                    product_names: list[str], product_pids: list[str],
+                    brand_name: str | None) -> tuple[float | None, str]:
+    """Match a campaign's product inside already-fetched results (pure, no I/O)."""
+    from campaign_manager.marketplaces.blinkit import positions
+    return positions.locate(results, keyword, lat, lon, product_names=product_names,
+                            product_pids=product_pids, brand_name=brand_name)
 
 
 async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,

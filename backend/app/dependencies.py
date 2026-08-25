@@ -192,3 +192,19 @@ def get_pagination(
 
 
 PaginationDep = Annotated[Pagination, Depends(get_pagination)]
+
+
+# --- Marketplace filter -------------------------------------------------------
+
+def get_marketplaces(
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
+) -> list[str] | None:
+    """Parse the shared `?marketplaces=` filter into a list, or None for "all
+    marketplaces" — the one parsing rule every marketplace-filtered endpoint
+    should use, so a future change (trimming, case-normalising) happens once."""
+    return [m for m in marketplaces.split(",") if m] if marketplaces else None
+
+
+MarketplacesDep = Annotated[list[str] | None, Depends(get_marketplaces)]

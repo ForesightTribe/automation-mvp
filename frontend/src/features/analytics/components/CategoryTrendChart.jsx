@@ -3,7 +3,7 @@ import { useCategoryTrend } from "../hooks";
 import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { categoryTrendOption } from "../../../components/charts/options";
-import { formatCompactCurrency, formatDate } from "../../../lib/format";
+import { formatCurrency, formatDate } from "../../../lib/format";
 
 /**
  * Pivot the long {date, category, revenue} rows into a date spine + one series
@@ -44,7 +44,7 @@ export const CategoryTrendChart = () => {
 			key: c,
 			label: c,
 			align: "right",
-			render: (r) => formatCompactCurrency(r[c]),
+			render: (r) => formatCurrency(r[c]),
 		})),
 	];
 
