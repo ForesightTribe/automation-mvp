@@ -33,7 +33,6 @@ DASHBOARD = "public_skus"
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining brands
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session stale, re-open
-_PACING = 0.05
 
 
 def _brand_query(brand_slug: str, aliases: list[str]) -> str:
@@ -101,13 +100,40 @@ async def _worker(
                     # only ~18 own products as `basic`, the rest as similarity;
                     # own-only classification discards non-own padding. A provider
                     # without that distinction may ignore the flag.
+                    # Sold-out SKUs are the point of this scrape, not noise: a
+                    # store that has run out is a supply problem, and omitting the
+                    # row makes it indistinguishable from a store that never
+                    # stocked the product at all. Only passed where the provider
+                    # declares the parameter — Blinkit's search has no such arg.
+                    oos_kw = (
+                        {"include_oos": True} if provider.search_includes_oos else {}
+                    )
+                    # Name the store instead of letting the marketplace pick one.
+                    # We are iterating catalogue rows, so the store id is already
+                    # known; without it Zepto resolves a store from the coordinate
+                    # and several nearby coordinates collapse onto the same shop —
+                    # measured 2026-08-24 at 2.68 coords per store, with 8 separate
+                    # Bengaluru stores recorded as one. All 8 answered correctly and
+                    # held different stock when addressed directly. Passing it also
+                    # skips get_page, which has its own rate-limit budget.
+                    # Blinkit accepts and ignores the argument (it binds by
+                    # coordinate and reports the store back), so this is a no-op there.
                     res = await provider.search(
                         session, query, brand_cap,
-                        lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                        lat=loc.lat, lon=loc.lon, merchant_id=loc.merchant_id,
+                        follow_similarity=True, **oos_kw,
                     )
                 except Exception as e:
                     res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
                 store_fetch += time.monotonic() - _t
+
+                # Pace HERE, not at the end of the loop. Every branch below can
+                # `continue` out early — a store carrying none of the brand is the
+                # commonest — so pacing later lets those stores fire back to back
+                # with no gap. That is what rate-limited the last 38 stores of the
+                # 2026-08-24 Zepto run: 131 stores in 52s, then HTTP 429 for the rest.
+                if provider.search_gap_s:
+                    await asyncio.sleep(provider.search_gap_s)
 
                 if not res.get("ok"):
                     store_fail += 1
@@ -150,7 +176,7 @@ async def _worker(
                 f"{store_rows} skus  [fetch {store_fetch:5.1f}s stage {store_db:4.1f}s]  "
                 f"| {stats['rows']} rows, {stats['errors']} err"
             )
-            await asyncio.sleep(_PACING)
+            await asyncio.sleep(provider.store_gap_s)
     finally:
         if session:
             await provider.close_session(session)

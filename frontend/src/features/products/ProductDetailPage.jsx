@@ -88,12 +88,22 @@ export const ProductDetailPage = () => {
 
 					<ProductPublicPanel itemId={data.item_id} />
 
+					{/* `marketplace` lets each section say why it is empty. A blank
+					    panel reading "no data" where the platform simply doesn't
+					    publish that dimension sends people hunting for a scrape
+					    that was never missing. */}
 					<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-						<FacilityStock facilities={data.facilities} />
-						<CityBreakdown cities={data.cities} />
+						<FacilityStock
+							facilities={data.facilities}
+							marketplace={data.marketplace}
+						/>
+						<CityBreakdown
+							cities={data.cities}
+							marketplace={data.marketplace}
+						/>
 					</div>
 
-					<PoHistory itemId={data.item_id} />
+					<PoHistory itemId={data.item_id} marketplace={data.marketplace} />
 				</>
 			)}
 		</div>

@@ -123,6 +123,10 @@ class ProductDetail(BaseModel):
     item_id: str
     item_name: str | None
     category: str | None
+    # Which marketplace produced this row. The detail page uses it to say why a
+    # section is empty — "Zepto doesn't report stock by facility" is a different
+    # statement from "this SKU has no stock", and the UI must not conflate them.
+    marketplace: str = "blinkit"
     period_days: int
     units_sold: int
     revenue: float

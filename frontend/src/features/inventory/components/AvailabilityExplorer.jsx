@@ -131,12 +131,16 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 		else onSelectCity?.(r.city); // city lens → city drawer
 	};
 
+	// One-of-anything is common here (a single-city client, a single store in a
+	// tier filter), so every count carries its own plural rather than a bare "s".
+	const plural = (n, one, many) => `${formatNumber(n)} ${n === 1 ? one : many}`;
+	const nCityRows = (cities.data?.cities ?? []).length;
 	const subtitle =
 		lens === "product"
-			? `Each of your ${formatNumber(range)} products, across ${formatNumber(scraped)} stores`
+			? `Each of your ${plural(range, "product", "products")}, across ${plural(scraped, "store", "stores")}`
 			: lens === "store"
-				? `${formatNumber(scraped)} stores · click any row for its full shelf`
-				: `${formatNumber((cities.data?.cities ?? []).length)} cities · click any row for its stores`;
+				? `${plural(scraped, "store", "stores")} · click any row for its full shelf`
+				: `${plural(nCityRows, "city", "cities")} · click any row for its stores`;
 
 	return (
 		<Card>

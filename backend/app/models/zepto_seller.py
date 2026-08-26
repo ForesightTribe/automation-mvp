@@ -427,3 +427,58 @@ class ZeptoSellerSalesCityDaily(SQLModel, table=True):
     units: int = 0
 
     scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoSellerProductCityDaily(SQLModel, table=True):
+    """One row per tenant per SKU per **city** per day.
+
+    A finer grain than `ZeptoSellerProductPerf`, not a replacement: that table is
+    SKU x day summed over every city, this one splits the same money by city.
+    **Never sum across the two** — they hold the same rupees at different
+    resolutions, exactly like the four `zepto_ad_*` tables.
+
+    Why a separate table rather than city columns on the existing one: mixing an
+    all-cities row and per-city rows in one table makes `sum(gmv)` silently wrong
+    for anyone who forgets to filter. `zepto_ad_breakdown_daily` already
+    demonstrates that failure — it totals ~3x its real spend because it stacks
+    three views of the same money.
+
+    Zepto exposes no city dimension inside a single product-performance
+    response, but `cityIds` does filter it (verified 2026-08-26: Bengaluru
+    returned 9 SKUs / Rs 52,215 for 25-Aug while three other cities returned
+    nothing). So a city split means one call per city, the same shape as
+    `fetch_sales_by_city`.
+
+    This is what the Analytics "Revenue by category & city" heatmap needs: it
+    requires city and category on one row, which no other Zepto table has.
+    """
+
+    __tablename__ = "zepto_seller_product_city_daily"
+
+    __table_args__ = (
+        Index("idx_zspcd_tenant_date", "tenant_id", "date"),
+        Index("idx_zspcd_city", "tenant_id", "city_id", "date"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    city_id: str
+    # Zepto's own prefixed form ("BLR - Bengaluru"), left uncleaned so the
+    # dashboard shows what the seller portal shows.
+    city_name: str | None = None
+
+    product_variant_id: str
+    product_name: str | None = None
+    sku_name: str | None = None
+    category_name: str | None = None
+    subcategory_name: str | None = None
+
+    gmv: float = 0.0
+    qty_sold: int = 0
+
+    scraped_at: datetime = Field(default_factory=now_ist)

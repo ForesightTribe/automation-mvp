@@ -323,6 +323,67 @@ async def fetch_product_performance(
     return products
 
 
+async def fetch_product_performance_by_city(
+    storage_state: dict,
+    date_from: str,
+    date_to: str,
+    ids: dict,
+    city_ids: list[str] | None = None,
+    limit: int = 50,
+) -> dict[str, list[dict]]:
+    """Per-SKU breakdown split by city. Returns {city_id: [product, ...]}.
+
+    Same endpoint as `fetch_product_performance`, but with `cityIds` set to ONE
+    city instead of all of them — which is what makes the city dimension appear.
+    Verified 2026-08-26: Bengaluru returned 9 SKUs / Rs 52,215 for 25-Aug while
+    three other cities returned nothing, so the filter is real and not ignored.
+
+    This is the only way to get city and category onto the same row; no single
+    Zepto response carries both.
+
+    `city_ids` defaults to every city the account can see (138 on this account),
+    which is a lot of calls. Callers should normally pass the short list of
+    cities already known to sell and sweep everything only occasionally — the
+    same trade-off `fetch_sales_by_city` documents. A sweep is worth running
+    periodically: Hosur went unnoticed for weeks because it was not in the known
+    list (found 2026-08-26, Rs 220 on 21-Aug).
+    """
+    targets = city_ids if city_ids is not None else ids["city_ids"]
+    out: dict[str, list[dict]] = {}
+    for i, city_id in enumerate(targets, 1):
+        params = {
+            "brandIds": ids["brand_id"],
+            "brandNames": ids["brand_name"],
+            "subcategoryNames": "|".join(ids["subcategory_names"]),
+            "subcategoryIds": ",".join(ids["subcategory_ids"]),
+            "cityIds": city_id,
+            "startDate": date_from,
+            "endDate": date_to,
+            "limit": limit,
+            "offset": 0,
+        }
+        try:
+            data = await _get_with_auth_fallback(
+                storage_state,
+                f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}",
+                params,
+                f"Product-performance/city[{city_id[:8]}]",
+            )
+            rows = [p for p in (data["data"] or []) if p.get("gmv")]
+            if rows:
+                out[city_id] = rows
+        except Exception as e:
+            logger.warning(f"Zepto product-performance failed for city {city_id}: {e}")
+        if i < len(targets):
+            await asyncio.sleep(0.6)
+
+    logger.info(
+        f"Zepto product-performance by city [{date_from}..{date_to}]: "
+        f"{len(out)}/{len(targets)} cities with sales"
+    )
+    return out
+
+
 # ── Ads (`ads-bff`) ──────────────────────────────────────────────────────────
 # Unlike the analytics endpoints above, ads-bff will not accept the saved
 # session's WAF token — it answers 202, an AWS WAF challenge. Only a live

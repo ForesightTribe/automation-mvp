@@ -21,7 +21,7 @@ const COLUMNS = [
 ];
 
 /** Where this SKU sells — top cities by revenue (bars) or the full table. */
-export const CityBreakdown = ({ cities = [] }) => {
+export const CityBreakdown = ({ cities = [], marketplace }) => {
 	const option = useMemo(
 		() =>
 			rankedBarOption(
@@ -40,7 +40,15 @@ export const CityBreakdown = ({ cities = [] }) => {
 			isLoading={false}
 			error={null}
 			isEmpty={cities.length === 0}
-			emptyMessage="No city sales in this window."
+			// Zepto does report sales by city, but only for the brand as a whole —
+			// its API carries no product dimension on that endpoint. Showing the
+			// brand split under a per-SKU heading would misattribute it, so the
+			// section stays empty and says why.
+			emptyMessage={
+				marketplace === "zepto"
+					? "Zepto reports city sales for the brand, not per SKU."
+					: "No city sales in this window."
+			}
 			renderChart={() => <EChart option={option} height={320} />}
 			columns={COLUMNS}
 			rows={cities}

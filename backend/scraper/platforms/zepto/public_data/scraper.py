@@ -105,8 +105,16 @@ def _extract_product(item: dict) -> dict | None:
     }
 
 
-def _extract_products(body: dict) -> tuple[list[dict], bool]:
+def _extract_products(body: dict, include_oos: bool = False) -> tuple[list[dict], bool]:
     """(products, hit_break) for one response page.
+
+    `include_oos` adds the sold-out widget (see ep.PRODUCT_WIDGETS). It is OFF by
+    default because the two scrapes want different answers from the same response:
+    the targeted own-catalogue scrape needs the stockouts (a sold-out SKU is a supply
+    problem, and dropping it makes the store look like it never stocked the product),
+    while the keyword scrape measures rank and share of voice, where sold-out items
+    sit in a separate below-the-fold block and are not part of the organic ranking.
+    Turning it on unconditionally would silently move every SoV number.
 
     `or []`, NOT a .get default: Zepto sends "layout": null on a page past the end
     of the results. The key IS present, so .get("layout", []) hands back None and
@@ -126,9 +134,25 @@ def _extract_products(body: dict) -> tuple[list[dict], bool]:
         # Products" carousel, not ranks. See SECTION_BREAK_WIDGETS.
         if wid in ep.SECTION_BREAK_WIDGETS:
             return out, True
-        if wid != ep.PRODUCT_GRID_WIDGET:
-            continue
+        wanted = ep.PRODUCT_WIDGETS if include_oos else {ep.PRODUCT_GRID_WIDGET}
         resolver = ((w.get("data") or {}).get("resolver") or {}).get("data") or {}
+        if wid not in wanted:
+            # Loud, because the cost of the OOS_SEARCH_WIDGET bug was not the missing
+            # widget — it was that dropping it left no trace anywhere, so a whole
+            # class of product looked like it had never existed. A new Zepto widget
+            # carrying real items must announce itself, not vanish.
+            n = len(resolver.get("items") or [])
+            if (
+                n
+                and wid not in ep.PRODUCT_WIDGETS
+                and wid not in ep.EXCLUDED_PRODUCT_WIDGETS
+            ):
+                logger.warning(
+                    f"Zepto: unrecognised widget {wid!r} carrying {n} product(s) — "
+                    f"dropped. Add it to endpoints.PRODUCT_WIDGETS if these are real "
+                    f"results."
+                )
+            continue
         for it in (resolver.get("items") or []):
             p = _extract_product(it)
             if p:
@@ -339,6 +363,7 @@ async def search(
     lat: float | None = None, lon: float | None = None,
     merchant_id: str | None = None,
     follow_similarity: bool = False,
+    include_oos: bool = False,
 ) -> dict:
     """One keyword search in an open session, paging up to `cap`.
 
@@ -396,7 +421,7 @@ async def search(
             break
         ok = True
 
-        page_rows, hit_break = _extract_products(resp["body"])
+        page_rows, hit_break = _extract_products(resp["body"], include_oos)
         if not page_rows:
             break  # genuinely nothing more for this term
         # Keep the FIRST sighting — it carries the true (best) rank.

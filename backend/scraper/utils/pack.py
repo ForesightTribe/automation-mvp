@@ -18,6 +18,15 @@ Grammar (validated 100% against ~290k real staged rows):
     unit  := term ( "+" term )*
     term  := [ mult ("x"|"*") ] qty uom          # "12 x 250 ml", "225 ml"
 
+Two marketplaces write the same facts differently, so `_normalize` rewrites the
+other surface forms into that grammar BEFORE parsing rather than growing it:
+
+    "1 pack (250 g)"  ->  "1 x 250 g"      # Zepto: container + parenthesised content
+    "330 g X 2"       ->  "2 x 330 g"      # Zepto: multiplier written as a suffix
+
+Both are the same fact as the prefix form Blinkit uses; normalising keeps one
+grammar and one code path. `pack_raw` still stores the ORIGINAL string untouched.
+
 `pack_count` sums the multipliers across terms, so a 12-pack, a 3-flavour bundle and
 a Buy-2-Get-1 all resolve to their true item count — a strictly better combo signal
 than the product name (which misses ~13% of multipacks). See docs/per-unit-price.md.
@@ -63,6 +72,43 @@ _TERM = re.compile(
 _BASIS: dict[str, float] = {"ml": 100.0, "g": 100.0, "pc": 1.0}
 
 
+# "<count> <container> (<content>)" — a container word holding the real content, e.g.
+# "1 pack (250 g)", "1 pc (200 g)", "1 pack (4 pcs)". The container must be a
+# count-family token (pack/pc/...), so a stray parenthesis on a measured unit is left
+# alone and still reads as unparseable rather than being silently reinterpreted.
+_PARENS = re.compile(
+    r"^\s*(?P<count>\d+(?:\.\d+)?)?\s*(?P<container>[a-zA-Z]+)\s*"
+    r"\(\s*(?P<content>[^()]+?)\s*\)\s*$"
+)
+
+# "<term> X <mult>" — the multiplier written AFTER the term ("330 g X 2"). Anchored on
+# a trailing number so the prefix form ("12 x 250 ml", which ends in a UOM) can never
+# match it.
+_SUFFIX_MULT = re.compile(
+    r"^\s*(?P<body>.+?)\s*[xX*]\s*(?P<mult>\d+(?:\.\d+)?)\s*$"
+)
+
+
+def _normalize(raw: str) -> str:
+    """Rewrite the known alternate surface forms into the `term` grammar.
+
+    Returns the string unchanged when nothing matches, so an unparseable unit stays
+    unparseable instead of being coerced into a wrong number.
+    """
+    m = _PARENS.match(raw)
+    if m:
+        base = _UOM.get(m.group("container").lower())
+        # Only a count-like container ("1 pack (250 g)") means "N of <content>".
+        # "500 (g)" would resolve to a weight base and is left for the normal path.
+        if base and base[0] == "pc":
+            raw = f"{m.group('count') or 1} x {m.group('content')}"
+
+    m = _SUFFIX_MULT.match(raw)
+    if m:
+        raw = f"{m.group('mult')} x {m.group('body')}"
+    return raw
+
+
 def parse_pack(raw: str | None) -> tuple[float | None, str, int | None] | None:
     """Parse a `unit` string into ``(pack_size, pack_uom, pack_count)``.
 
@@ -76,6 +122,8 @@ def parse_pack(raw: str | None) -> tuple[float | None, str, int | None] | None:
     """
     if not raw or not raw.strip():
         return None
+
+    raw = _normalize(raw.strip())
 
     total = 0.0
     count = 0.0
@@ -131,12 +179,28 @@ def per_unit_price(price, size, uom: str) -> float | None:
 
 
 def combo_from_pack(name: str, pack_count: int | None) -> bool:
-    """Whether a product is a combo/multipack. `pack_count > 1` when the unit string
-    parsed (the machine-generated, reliable signal); otherwise fall back to the
-    name regex for rows whose unit is empty or unparseable."""
+    """Whether a product is a combo — a MULTIPACK or a BUNDLE.
+
+    The name is consulted FIRST because `pack_count` cannot express a bundle. A
+    multipack ("12 x 250 ml") is 12 of one thing, and the count carries it. A bundle
+    ("Whey Ricotta 200g & Whole Wheat Sourdough 400g Combo") is ONE physical pack
+    holding two DIFFERENT products — pack_count is 1, so a count-first rule files it
+    under Main SKUs and compares a two-product bundle against single units in both
+    availability and per-unit price.
+
+    Brik Oven has exactly this on Zepto (two bundle SKUs, confirmed by the client
+    2026-08-25). They are not listed in any store yet, so nothing is currently
+    misfiled — this makes sure they land correctly when they are.
+
+    Verified no-op on the existing corpus: 478,279 rows across both marketplaces and
+    both public tables, zero reclassified — the two rules only ever disagree on a
+    bundle, and none had been captured before.
+    """
+    if is_combo_name(name):
+        return True
     if pack_count is not None:
         return pack_count > 1
-    return is_combo_name(name)
+    return False
 
 
 # ── self-check ─────────────────────────────────────────────────────────────────
@@ -159,6 +223,20 @@ if __name__ == "__main__":
         None: None,
         "assorted": None,
         "60 g + 100 ml": (None, "", 2),            # heterogeneous
+        # Zepto surface forms, normalized into the grammar (every distinct
+        # pack_raw seen across 11,661 real Zepto listing rows is one of these).
+        "1 pack (250 g)": (250.0, "g", 1),
+        "1 pack (200 g)": (200.0, "g", 1),
+        "1 pc (200 g)": (200.0, "g", 1),
+        "1 pack (45 g)": (45.0, "g", 1),
+        "1 pack (4 pcs)": (4.0, "pc", 4),          # container holds a COUNT
+        "330 g X 2": (660.0, "g", 2),              # suffix multiplier
+        "150 g X 2": (300.0, "g", 2),
+        # The prefix form must NOT be caught by the suffix rule (it ends in a UOM).
+        "12 x 250 ml": (3000.0, "ml", 12),
+        # A parenthesis on a non-count container stays unparseable rather than
+        # being silently reinterpreted.
+        "500 g (approx)": None,
     }
     for raw, want in cases.items():
         got = parse_pack(raw)
@@ -173,10 +251,15 @@ if __name__ == "__main__":
     assert per_unit_price(60, 0, "ml") is None
     assert per_unit_price(60, 675, "") is None            # heterogeneous → no basis
 
-    # combo resolution: pack_count wins, name is the fallback
+    # combo resolution: a combo NAME wins, else pack_count, else not a combo
     assert combo_from_pack("Single Bottle", 1) is False
     assert combo_from_pack("Bombay Banta Masala Soda", 12) is True     # name misses it
     assert combo_from_pack("Something Pack of 6", None) is True        # unit unparsed
     assert combo_from_pack("Plain Soda", None) is False
+    # A BUNDLE: one pack, two different products. pack_count=1 would say "not a
+    # combo"; the name is the only signal that can identify it.
+    assert combo_from_pack(
+        "Brik Oven Whey Ricotta Cheese (200g) & Brik Oven Whole Wheat "
+        "Sourdough Bread (400g) Combo", 1) is True
 
     print("pack.py: all self-checks passed")

@@ -23,7 +23,8 @@ export const CityDrawer = ({ city, kind = "main", onClose, onSelectStore }) => {
 	const range = data?.active_range ?? 0;
 	const oos = stores.reduce((a, s) => a + s.skus_out_of_stock, 0);
 	const missing = stores.reduce((a, s) => a + s.skus_not_listed, 0);
-
+	// Both readings, side by side — see AvailabilityExplorer for why neither replaces
+	// the other.
 	const shown = useMemo(() => {
 		const needle = q.trim().toLowerCase();
 		return [...stores]

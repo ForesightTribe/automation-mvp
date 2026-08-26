@@ -5,7 +5,8 @@ so everything above the platform layer — `orchestrator.py` (keyword scrape),
 `targeted.py` (own-SKU scrape) and `explorer/` — stays marketplace-agnostic:
 
     open_session(browser, lat, lon)                          -> session | None
-    search(session, keyword, cap, *, lat, lon, merchant_id, follow_similarity)
+    search(session, keyword, cap, *, lat, lon, merchant_id, follow_similarity,
+           [include_oos] if search_includes_oos)
                                      -> {products, total_results, merchant_id, ok, error}
     close_session(session)                                   -> None
     parse(raw)                                               -> classified result
@@ -68,6 +69,13 @@ class Provider:
     result_cap: int = 48
     brand_cap: int = 60
 
+    # Whether this marketplace's `search()` accepts `include_oos` — i.e. whether it
+    # keeps sold-out products in a SEPARATE block that must be asked for. Zepto does
+    # (OOS_SEARCH_WIDGET); Blinkit returns sold-out items inline, already flagged, so
+    # it has no such parameter and must never be passed one. Declared here rather than
+    # probed at the call site so no caller has to branch on a marketplace name.
+    search_includes_oos: bool = False
+
     # ── Pacing, per marketplace ──────────────────────────────────────────────
     # These were module constants in orchestrator.py, tuned for Blinkit, which has
     # no volume cap: 5 workers at 0.05 s between stores and no gap between searches.
@@ -115,6 +123,7 @@ _PROVIDERS: dict[str, Provider] = {
         parse=ze_parser.parse,
         result_cap=ze_ep.RESULT_CAP,
         brand_cap=ze_ep.BRAND_RESULT_CAP,
+        search_includes_oos=True,
         # All measured on a residential IP — see docs/zepto_handover.md. 12 s is the
         # floor: 6 s was tested and is SLOWER end to end, because a hard block costs
         # more than a scheduled pause.

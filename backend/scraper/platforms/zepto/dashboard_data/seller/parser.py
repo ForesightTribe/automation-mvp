@@ -209,6 +209,52 @@ def parse_product_perf(
     ]
 
 
+def parse_product_city(
+    by_city: dict[str, list[dict]],
+    city_names: dict[str, str],
+    tenant_id: str,
+    scrape_job_id: str | None,
+    day: str,
+) -> list[dict]:
+    """`fetch_product_performance_by_city` -> one row per SKU per city per day.
+
+    Day grain, not window grain: the caller scrapes a day at a time, so `date`
+    is a single day and the key needs no end date. `city_id` IS part of the key —
+    without it each city's call would overwrite the last and only the final city
+    would survive.
+    """
+    d = date.fromisoformat(day)
+    rows: list[dict] = []
+    for city_id, products in by_city.items():
+        for p in products:
+            rows.append(
+                {
+                    "upsert_key": make_upsert_key(
+                        tenant_id,
+                        "zepto",
+                        "seller_product_city_daily",
+                        city_id,
+                        p["productVariantId"],
+                        d.isoformat(),
+                    ),
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+                    "date": d,
+                    "city_id": city_id,
+                    "city_name": city_names.get(city_id),
+                    "product_variant_id": p["productVariantId"],
+                    "product_name": p.get("productName"),
+                    "sku_name": p.get("skuName"),
+                    "category_name": p.get("categoryName"),
+                    "subcategory_name": p.get("subcategoryName"),
+                    "gmv": float(p.get("gmv") or 0),
+                    "qty_sold": int(p.get("qtySold") or 0),
+                    "scraped_at": now_ist(),
+                }
+            )
+    return rows
+
+
 def _f(v) -> float | None:
     """Zepto sends every number as a string, and uses "" for absent rather than
     null (e.g. lifetime_budget on a campaign with none)."""

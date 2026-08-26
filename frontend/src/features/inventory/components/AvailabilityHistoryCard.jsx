@@ -15,7 +15,8 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed
 export const AvailabilityHistoryCard = ({ kind = "main" }) => {
 	const { data, isLoading, error, refetch } = useAvailabilityHistory(kind);
 	const rows = data?.points ?? [];
-	const option = useMemo(() => availabilityTrendOption(data?.points ?? []), [data]);
+
+	const option = useMemo(() => availabilityTrendOption(rows), [rows]);
 
 	const columns = [
 		{ key: "week", label: "Week", render: (r) => formatDate(r.week) },

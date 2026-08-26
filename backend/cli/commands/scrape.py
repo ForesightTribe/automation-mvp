@@ -20,6 +20,7 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     fetch_sales_overview as zepto_fetch_sales_overview,
     fetch_sales_by_city as zepto_fetch_sales_by_city,
     fetch_product_performance as zepto_fetch_product_performance,
+    fetch_product_performance_by_city as zepto_fetch_product_perf_by_city,
     capture_ads_headers as zepto_capture_ads_headers,
     fetch_ad_campaigns as zepto_fetch_ad_campaigns,
     fetch_ads_tabular as zepto_fetch_ads_tabular,
@@ -27,6 +28,7 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
 from scraper.platforms.zepto.dashboard_data.seller.parser import (
     parse_sales_daily as parse_zepto_sales_daily,
     parse_product_perf as parse_zepto_product_perf,
+    parse_product_city as parse_zepto_product_city,
     parse_sales_by_city as parse_zepto_sales_by_city,
     parse_ad_campaigns as parse_zepto_ad_campaigns,
     parse_ad_tabular_campaigns as parse_zepto_ad_tabular_campaigns,
@@ -764,10 +766,41 @@ async def _scrape_zepto_sales(
                     by_city, city_names, ids, tenant_id, job_id, date_from, date_to
                 )
 
+            # SKU x city x day — the only source that carries city AND category
+            # on one row, which is what the Analytics category-x-city heatmap
+            # needs. One call per city per day, so it reuses the same short
+            # `targets` list as the city split above rather than sweeping all
+            # 138 every run.
+            product_city_rows: list[dict] = []
+            pc_targets = targets if targets is not None else ids["city_ids"]
+            if pc_targets:
+                with console.status("[cyan]Fetching product breakdown by city...[/cyan]") as status:
+                    for i, day in enumerate(days, 1):
+                        status.update(
+                            f"[cyan]Product-by-city {day} ({i}/{len(days)}), "
+                            f"{len(pc_targets)} cities...[/cyan]"
+                        )
+                        try:
+                            by_city_products = await zepto_fetch_product_perf_by_city(
+                                storage_state, day, day, ids, pc_targets
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Zepto product-performance by city failed for {day}: {e}"
+                            )
+                            continue
+                        product_city_rows.extend(
+                            parse_zepto_product_city(
+                                by_city_products, city_names, tenant_id, job_id, day
+                            )
+                        )
+                        if i < len(days):
+                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+
             written = 0
             if save:
                 written = await zepto_save_sales_results(
-                    db, daily_rows, product_rows, city_rows
+                    db, daily_rows, product_rows, city_rows, product_city_rows
                 )
                 await complete_scrape_job(db, job_id, written)
             else:

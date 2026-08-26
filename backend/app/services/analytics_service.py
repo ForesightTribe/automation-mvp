@@ -290,6 +290,19 @@ async def get_trends(
     ).all()
     ad_map = {d: (sp, sa, im) for d, sp, sa, im in ad_rows}
 
+    # Zepto ads live in their own table, so without this the Overview's ad chart
+    # reads "no ad data" for a Zepto-only client that is in fact spending daily.
+    # Added into the Blinkit figures, not over them: with both marketplaces
+    # selected a day carries the spend of both.
+    if zepto_ads.wants_zepto(marketplaces):
+        for d, (sp, sa, im) in (
+            await zepto_ads.trend_series(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            b_sp, b_sa, b_im = ad_map.get(d, (0.0, 0.0, 0))
+            ad_map[d] = (b_sp + sp, b_sa + sa, b_im + im)
+
     sale_rows = (
         await session.execute(
             select(
@@ -562,7 +575,7 @@ async def get_city_category(
             .order_by(revenue.desc())
         )
     ).all()
-    return [
+    out = [
         {
             "city": name_by_id[cid],
             "category": cat,
@@ -571,3 +584,16 @@ async def get_city_category(
         }
         for cid, cat, rev, units in cells
     ]
+
+    # Zepto's cells come from `zepto_seller_product_city_daily`, which is scraped
+    # one city at a time — no single Zepto response carries city and category
+    # together. Appended rather than merged by city name: Zepto reports
+    # "BLR - Bengaluru" where Blinkit reports "Bengaluru", and combining them
+    # would need a mapping that does not exist yet (see get_sales_by_city).
+    if zepto_analytics.wants_zepto(marketplaces):
+        out.extend(
+            await zepto_analytics.city_category(
+                session, tenant_id=tenant_id, start=start, end=end, limit=limit
+            )
+        )
+    return out

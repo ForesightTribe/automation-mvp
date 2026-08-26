@@ -71,6 +71,35 @@ def store_headers(store_id: str, secondary_ids: tuple[str, ...] = ()) -> dict:
 # widgetId is PRODUCT_GRID. There may be SEVERAL such widgets in one response.
 PRODUCT_GRID_WIDGET = "PRODUCT_GRID"
 
+# Sold-out results live in their OWN widget, not inline in the grid — Zepto groups
+# them under "Some items are temporarily out of stock" (see the layout sketch below,
+# where this widget was documented from day one but never collected).
+#
+# Reading only PRODUCT_GRID silently deleted every out-of-stock row before it
+# reached the database, which is why `in_stock` was true on all 13,922 stored Zepto
+# rows while the live API was returning `outOfStock: true` with `availableQuantity:
+# 0` the whole time. Measured 2026-08-24: one Bengaluru store returned 9 Brik Oven
+# products, 7 of them sold out, and we stored 2. A stockout became indistinguishable
+# from "never listed here".
+#
+# An allow-list is still required — a Zepto response also carries sponsored
+# placements (PREMIUM_CONTEXTUAL_ADS_V2) and, past the section break, recommendation
+# carousels; taking everything the way the Blinkit parser does would feed both into
+# organic rank and SoV. So the list is deliberate, and `_extract_products` now WARNS
+# on any unrecognised widget that carries items, because the cost of this bug was not
+# the missing widget, it was that dropping it was silent.
+OOS_SEARCH_WIDGET = "OOS_SEARCH_WIDGET"
+PRODUCT_WIDGETS = frozenset({PRODUCT_GRID_WIDGET, OOS_SEARCH_WIDGET})
+
+# Widgets that carry products we deliberately do NOT collect. Listed explicitly so
+# the "unrecognised widget" warning stays meaningful: a warning that fires on every
+# store for a known exclusion is noise, and noise is how the next real one gets
+# ignored. Only a widget in neither set is worth waking someone for.
+#
+# PREMIUM_CONTEXTUAL_ADS_V2 is sponsored placement — real products, paid position.
+# Collecting it would feed ads into organic rank and share of voice.
+EXCLUDED_PRODUCT_WIDGETS = frozenset({"PREMIUM_CONTEXTUAL_ADS_V2"})
+
 # A search response is NOT just its PRODUCT_GRIDs. The layout is sectioned, and
 # a HEADER_WIDGET titled "Similar Products" starts a recommendation carousel that
 # the page renders as a separate block:

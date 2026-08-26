@@ -25,6 +25,7 @@ from app.models.search import (
     SkuSnapshot,
     TenantLocation,
 )
+from app.services import zepto_products
 from app.utils.time import now_ist
 from scraper.utils.pack import per_unit_price
 from app.schemas.common import Page
@@ -76,6 +77,41 @@ def cover_status(frontend_qty: int, units: int, days_of_cover: float | None) -> 
 
 def _avg_price(revenue: float, units: int) -> float | None:
     return round(revenue / units, 2) if units else None
+
+
+def _list_row(
+    *,
+    item_id: str,
+    item_name: str | None,
+    category: str | None,
+    revenue: float,
+    units_sold: int,
+    last_sold,
+    backend_qty: int,
+    frontend_qty: int,
+    window_days: int,
+) -> ProductListRow:
+    """Build one list row from window sales + current stock.
+
+    Shared by the Blinkit and Zepto branches so cover, status and average price
+    are computed identically for both — the two differ in where the numbers come
+    from, never in what they mean.
+    """
+    avg_daily, cover = cover_metrics(frontend_qty, units_sold, window_days)
+    return ProductListRow(
+        item_id=item_id,
+        item_name=item_name,
+        category=category,
+        units_sold=units_sold,
+        revenue=revenue,
+        avg_price=_avg_price(revenue, units_sold),
+        last_sold=last_sold,
+        backend_qty=backend_qty,
+        frontend_qty=frontend_qty,
+        avg_daily_units=avg_daily,
+        days_of_cover=cover,
+        status=cover_status(frontend_qty, units_sold, cover),
+    )
 
 
 async def _latest_stock_map(
@@ -172,26 +208,36 @@ async def get_products(
 
     rows: list[ProductListRow] = []
     for item_id, name, cat, rev, units, last in sale_rows:
-        units = int(units)
-        rev = round(float(rev), 2)
         backend, frontend = stock_map.get(item_id, (0, 0))
-        avg_daily, cover = cover_metrics(frontend, units, window_days)
         rows.append(
-            ProductListRow(
+            _list_row(
                 item_id=item_id,
                 item_name=name,
                 category=cat,
-                units_sold=units,
-                revenue=rev,
-                avg_price=_avg_price(rev, units),
+                revenue=round(float(rev), 2),
+                units_sold=int(units),
                 last_sold=last,
                 backend_qty=backend,
                 frontend_qty=frontend,
-                avg_daily_units=avg_daily,
-                days_of_cover=cover,
-                status=cover_status(frontend, units, cover),
+                window_days=window_days,
             )
         )
+
+    # Zepto rows come from one table carrying both sales and stock, so they need
+    # no stock join — but they go through the same `_list_row` so cover, status
+    # and average price mean the same thing on both marketplaces. The Blinkit
+    # query above already returned nothing when `marketplaces=["zepto"]`, so
+    # there is no double counting when both are selected.
+    if zepto_products.wants_zepto(marketplaces):
+        for z in await zepto_products.list_agg(
+            session,
+            tenant_id=tenant_id,
+            start=period.start,
+            end=period.end,
+            search=search,
+            category=category,
+        ):
+            rows.append(_list_row(**z, window_days=window_days))
 
     # Summary reflects the search/category/window scope (pre status-filter).
     summary = ProductListSummary(
@@ -217,6 +263,51 @@ async def get_products(
 
 
 # --- Detail ----------------------------------------------------------------
+
+async def _zepto_detail(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    period: Period,
+) -> dict | None:
+    """Product 360 for a Zepto SKU, in the same shape the Blinkit branch returns.
+
+    `facilities` and `potential_loss` come back empty/None because Zepto
+    publishes neither — the UI hides those sections rather than drawing an empty
+    panel. `cities` is brand-level (see `zepto_products.cities`), so it is only
+    attached when there is more than one city to compare; with a single city it
+    would just restate the page total under a misleading heading.
+    """
+    d = await zepto_products.detail_agg(
+        session, tenant_id=tenant_id, item_id=item_id,
+        start=period.start, end=period.end,
+    )
+    if d is None:
+        return None
+
+    frontend_now = d.pop("frontend_qty", 0)
+    units = d["units_sold"]
+    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+
+    city_rows = await zepto_products.cities(
+        session, tenant_id=tenant_id, start=period.start, end=period.end
+    )
+    cities = (
+        [CityShare(**c) for c in city_rows] if len(city_rows) > 1 else []
+    )
+
+    return {
+        **d,
+        "marketplace": zepto_products.SLUG,
+        "period_days": period.length_days,
+        "avg_price": _avg_price(d["revenue"], units),
+        "avg_daily_units": avg_daily,
+        "days_of_cover": cover,
+        "status": cover_status(frontend_now, units, cover),
+        "cities": cities,
+    }
+
 
 async def get_product_detail(
     session: AsyncSession,
@@ -248,6 +339,13 @@ async def get_product_detail(
     ).one()
 
     if count == 0:
+        # Not a Blinkit SKU in this window. `item_id` is a Zepto
+        # `product_variant_id` when the row came from the Zepto branch of the
+        # list, so try there before 404-ing.
+        if zepto_products.wants_zepto(marketplaces):
+            return await _zepto_detail(
+                session, tenant_id=tenant_id, item_id=item_id, period=period
+            )
         return None  # no sales for this SKU in the window -> 404 at the route
 
     rev = round(float(rev), 2)
@@ -371,6 +469,7 @@ async def get_product_detail(
         "item_id": item_id,
         "item_name": name,
         "category": cat,
+        "marketplace": "blinkit",
         "period_days": period.length_days,
         "units_sold": units,
         "revenue": rev,

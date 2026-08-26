@@ -967,3 +967,65 @@ Not designed here. Recorded so the public work doesn't foreclose it.
 
 **Ordering constraint:** campaign automations depend on private data, which depends
 on auth. Public data depends on none of them, which is why it goes first.
+
+---
+
+## PO Management — an unscraped surface (recon note, 2026-08-26)
+
+**Status: exists, never touched. No endpoints known, no data collected.**
+
+Everything we scrape from Zepto's dashboard lives on one host:
+
+```
+fcc.zepto.co.in/brand-analytics-web/...    sales overview, product performance
+fcc.zepto.co.in/ads-bff/...                campaigns, keywords, products, breakdowns
+```
+
+There is a **second app** on a different host that nothing here reads:
+
+```
+brands.zepto.co.in/vendor/po/lifecycle
+brands.zepto.co.in/vendor/po/asn
+brands.zepto.co.in/vendor/po/grn
+brands.zepto.co.in/vendor/po/returns
+brands.zepto.co.in/vendor/payments
+brands.zepto.co.in/vendor/accounts-receivable
+```
+
+### Why this matters
+
+Three dashboard sections were previously written off as "Zepto publishes no
+equivalent". Two of those conclusions were wrong, and both rest on this module:
+
+| Section | Previous conclusion | Actual status |
+|---|---|---|
+| Products → PO history | "Zepto has no purchase-order concept" | **Wrong.** POs exist; we have not scraped them |
+| Overview → PO value (MoM) | "impossible" | **Buildable**, once `/vendor/po` is scraped |
+| Overview → Fill rate (MoM) | "impossible — no scorecard" | **Possibly derivable.** GRN is received-vs-ordered, which is what a fill rate measures. Zepto publishes no *scorecard page*, but the underlying quantity may be there. **Unverified** — do not build against this until an actual GRN response has been read |
+
+The error in each case was the same: our tables were empty because nothing
+scraped the source, and that emptiness was reported as the source not existing.
+**Absence in our data is not evidence of absence at the platform.** Check Zepto
+before asserting Zepto lacks something — that mistake was made five times on
+2026-08-26 alone (stockouts, purchasable-only search, `stock_on_hand`, the city
+dimension, and this).
+
+### Before building
+
+1. **Recon first.** Load each `/vendor/po/*` page in a real browser session and
+   capture the network calls — the same method that produced the ads scraper.
+   Record actual request/response shapes here before designing tables.
+2. **Auth is probably shared** — same login as the seller dashboard
+   (`cli auth zepto-seller`), but a different host may mean a different token or
+   WAF posture. `ads-bff` already needs a live browser for its WAF token while
+   `brand-analytics-web` does not, so do not assume.
+3. **Do not assume the grain.** Blinkit splits POs into `blinkit_pos` (header) +
+   `blinkit_po_items` (lines). Zepto's shape is unknown; let the response decide.
+
+### Related: the Atom subscription has lapsed
+
+The dashboard shows **"Renew Zepto atom"** and the Live Monitor is locked
+(observed 2026-08-26). Watch for analytics fields silently going null if any of
+what we scrape sits behind that subscription. Note that `stock_on_hand` was
+*wrongly* documented as Atom-gated — it is populated on ~92% of rows — so the
+actual Atom boundary is not yet understood.

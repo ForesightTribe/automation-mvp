@@ -74,6 +74,31 @@ _AD_ATC = func.coalesce(func.sum(Ad.atc), 0)
 _AD_UNITS = func.coalesce(func.sum(Ad.windowed_orders), 0)
 
 
+async def trend_series(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> dict[date, tuple[float, float, int]]:
+    """date -> (spend, ad_revenue, impressions), for callers that build a daily
+    series: the Overview ad chart and the Reports marketing ledger.
+
+    Only `zepto_ad_campaign_daily` is read. The keyword, product and breakdown
+    tables carry the *same* spend sliced differently — summing across them
+    reports roughly three times the real figure.
+    """
+    rows = (
+        await session.execute(
+            select(
+                Ad.date,
+                func.coalesce(func.sum(Ad.spend), 0.0),
+                _AD_SALES,
+                func.coalesce(func.sum(Ad.impressions), 0),
+            )
+            .where(*_conds(tenant_id, start, end))
+            .group_by(Ad.date)
+        )
+    ).all()
+    return {d: (float(sp), float(rev), int(im)) for d, sp, rev, im in rows}
+
+
 async def summary_agg(
     session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
 ) -> tuple[float, int, float, int, int, int]:
