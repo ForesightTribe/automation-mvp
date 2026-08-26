@@ -87,23 +87,43 @@ def reconcile(tenant: str = _TENANT, live: bool = _LIVE,
 @app.command("set-advertiser")
 def set_advertiser(
     tenant: str = _TENANT,
-    id: int = typer.Option(..., "--id", help="Advertiser (ad-account) id — capture it from a Blinkit dashboard PUT payload"),
+    id: str = typer.Option(
+        ..., "--id",
+        help="The ad-account id. Blinkit: the integer advertiser_id from a dashboard "
+             "PUT payload. Zepto: the brand UUID (run `cm advertiser -m zepto` to read it)."),
     platform: str = _MARKETPLACE,
 ):
-    """Store a tenant's advertiser account id (live writes send this). Capture it once from
-    a real dashboard budget/bid PUT (DevTools → Network → the request body's advertiser_id)."""
+    """Store a tenant's ad-account id.
+
+    Two marketplaces, two meanings — the id's shape decides which column it lands in:
+
+    
+    * Blinkit — an INTEGER that live writes SEND. It appears in no read API, so a
+      stored value is the only source and a stale one spends real money on the wrong
+      account. Capture it once from a real dashboard budget/bid PUT
+      (DevTools → Network → the request body's advertiser_id).
+    * Zepto — a brand UUID that live writes CHECK. It arrives in the login response,
+      so it is never sent; storing it lets us assert the session belongs to the
+      account we expect before writing.
+    """
     async def _run():
         await repo.set_advertiser(uuid.UUID(tenant), id, platform)
-        console.print(f"[green]Stored advertiser {id}[/green] for tenant {tenant} ({platform}). "
-                      "Live writes will now send it.")
+        sends = "send" if id.strip().isdigit() else "verify against"
+        console.print(f"[green]Stored ad account {id}[/green] for tenant {tenant} "
+                      f"({platform}). Live writes will {sends} it.")
 
     asyncio.run(_run())
 
 
 @app.command("advertiser")
 def advertiser(tenant: str = _TENANT, platform: str = _MARKETPLACE):
-    """Show the advertiser writes will use (the STORED value) vs. what Blinkit's code would
-    derive (often a stale fallback). Read-only. Opens the session to read the derived value."""
+    """Show the ad account writes will use (STORED) vs. what the marketplace reports
+    (DERIVED). Read-only — it opens a session to read the derived value.
+
+    On Blinkit a difference is a warning: the derived value is often a stale hardcoded
+    fallback, and the stored one is what writes actually send. On Zepto the derived
+    value is authoritative (it comes from the login response) — so if nothing is
+    stored yet, this is where you read the brand id to store."""
     from campaign_manager.marketplaces import get_adapter
 
     async def _run():
@@ -115,22 +135,30 @@ def advertiser(tenant: str = _TENANT, platform: str = _MARKETPLACE):
             try:
                 derived = await a.resolve_advertiser(client)
             finally:
-                await browser.close()
-                await pw.stop()
+                # Zepto returns (None, None, client) — it needs no persistent browser.
+                if browser is not None:
+                    await browser.close()
+                if pw is not None:
+                    await pw.stop()
         except Exception as e:
-            console.print(f"[yellow]couldn't read Blinkit-derived id: {e}[/yellow]")
+            console.print(f"[yellow]couldn't read the marketplace-derived id: {e}[/yellow]")
 
         if stored is None:
-            console.print("[red]No stored advertiser[/red] — live writes will refuse. "
-                          f"Set it: [bold]cm set-advertiser -t {tenant} --id <n>[/bold]")
+            hint = derived if derived is not None else "<value>"
+            console.print("[red]No stored ad account[/red] — live writes will refuse. "
+                          f"Set it: [bold]cm set-advertiser -t {tenant} "
+                          f"-m {platform} --id {hint}[/bold]")
         else:
             console.print(f"stored (writes will use) = [bold]{stored}[/bold]")
         armed = await repo.get_armed(uuid.UUID(tenant), platform)
         console.print("LIVE writes: " + ("[yellow]⚡ ARMED[/yellow]" if armed
                                           else "[dim]dry (disarmed)[/dim]"))
         if derived is not None:
-            flag = "" if derived == stored else "  [yellow]← differs from stored (likely a stale fallback)[/yellow]"
-            console.print(f"Blinkit-derived            = {derived}{flag}")
+            same = str(derived) == str(stored)
+            flag = "" if same else (
+                "  [yellow]← differs from stored[/yellow]"
+                + ("" if platform != "blinkit" else " (likely a stale fallback)"))
+            console.print(f"{platform}-derived{' ' * max(1, 18 - len(platform))}= {derived}{flag}")
 
     asyncio.run(_run())
 

@@ -196,7 +196,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
-    logs.session_ok(run_id, dry_run=dry_run)
+    logs.session_ok(run_id, dry_run=dry_run, platform=platform)
 
     # Live runs must pass the account guardrail (B3) before any write.
     if not dry_run:

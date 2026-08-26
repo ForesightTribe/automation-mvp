@@ -53,7 +53,7 @@ async def run(tenant_id: uuid.UUID, *, days: int = DEFAULT_DAYS,
         logs.run_summary(run_id, "sync_campaigns", dry_run=False,
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
-    logs.session_ok(run_id, dry_run=False)
+    logs.session_ok(run_id, dry_run=False, platform=platform)
 
     try:
         campaigns = await adapter.list_campaigns(client, days=days)

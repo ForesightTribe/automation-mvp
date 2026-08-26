@@ -43,7 +43,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
-    logs.session_ok(run_id, dry_run=dry_run)
+    logs.session_ok(run_id, dry_run=dry_run, platform=platform)
 
     if not dry_run:
         try:

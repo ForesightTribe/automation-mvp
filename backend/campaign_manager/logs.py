@@ -77,8 +77,12 @@ def note(run_id: str, msg: str, *, dry_run: bool = False, level: str = "info") -
     _emit(level, "note", dry_run, msg, run_id=run_id)
 
 
-def session_ok(run_id: str, *, dry_run: bool) -> None:
-    _emit("info", "session.ok", dry_run, "Blinkit session loaded", run_id=run_id)
+def session_ok(run_id: str, *, dry_run: bool, platform: str = "blinkit") -> None:
+    # `platform` defaults for the callers that predate a second marketplace. It said
+    # "Blinkit session loaded" unconditionally, which is actively misleading in a
+    # Zepto run — the one line that tells you WHOSE account you are about to touch.
+    _emit("info", "session.ok", dry_run, f"{platform} session loaded",
+          run_id=run_id, platform=platform)
 
 
 def live_armed(run_id: str, *, advertiser: int) -> None:
