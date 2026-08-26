@@ -49,6 +49,13 @@ from campaign_manager.marketplaces.zepto.transport import setup  # noqa: F401  (
 # opaque 400. Ours to mirror, not to argue with.
 MIN_BUDGET = ep.MIN_DAILY_BUDGET
 
+# Resuming is a dedicated endpoint that flips the campaign back on with its own
+# budget and bids intact — nothing is re-submitted, so no budget is required and
+# nothing is silently overwritten. Blinkit declares True, where resume IS a full
+# campaign re-submission. `writes.py` reads this to decide whether a resume must
+# carry a budget; without it a Zepto resume is refused as "budget is None".
+RESUME_RESUBMITS = False
+
 _STATUS_FROM_ZEPTO = {
     ep.STATUS_ACTIVE: "running",
     ep.STATUS_PAUSED: "paused",
@@ -320,3 +327,13 @@ def set_advertiser(client, advertiser_id) -> None:
 async def resolve_advertiser(client):
     """What a write would be scoped to. Derived, not stored."""
     return client.brand_id
+
+
+def campaign_name(detail: dict) -> str | None:
+    """The campaign's name out of a raw detail. Zepto calls it `campaign_name`."""
+    return (detail or {}).get("campaign_name")
+
+
+def resume_overwrites(detail: dict, budget: float | None) -> dict | None:
+    """Nothing is overwritten by a Zepto resume — see RESUME_RESUBMITS."""
+    return None

@@ -214,17 +214,37 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     return bool(resp.get("status") or resp.get("success"))
 
 
+def _status_detail(target: str, budget: float | None) -> str:
+    """What a status write is doing, for the log line.
+
+    `budget` is None on a marketplace whose resume carries none, so it is only
+    mentioned when there is one — and never formatted with `:g`, which raises on
+    None and would turn a successful write into a crash while reporting itself.
+    """
+    if target == "running" and budget is not None:
+        return f"status={target} budget={_money(budget)}"
+    return f"status={target}"
+
+
 async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                        dry_run: bool, recent_writes: int = 0, allow_draft: bool = False,
                        budget: float | None = None, overwrites: dict | None = None) -> bool:
     """Guardrailed campaign start/stop. Returns True if applied (or would-apply in dry-run).
 
-    The two directions are NOT symmetric and this function is where that lives:
-      - `paused` is a bodiless DELETE — cheap and safe.
-      - `running` is a RESTART, a FULL campaign re-submission that rewrites budget,
-        keywords, bids and dates. It therefore requires a budget and inherits the budget
-        bounds guardrail; `overwrites` (AD10) is the diff of everything it will replace,
-        logged so a silently-reverted bid is visible rather than discovered weeks later.
+    The two directions are NOT symmetric, and HOW asymmetric depends on the
+    marketplace — which is why the adapter declares it via `RESUME_RESUBMITS`
+    rather than this function assuming:
+
+      - `paused` is cheap and safe everywhere (Blinkit: a bodiless DELETE;
+        Zepto: a dedicated pause endpoint).
+      - `running` on **Blinkit** is a RESTART: a FULL campaign re-submission that
+        rewrites budget, keywords, bids and dates. It therefore REQUIRES a budget
+        and inherits the budget bounds guardrail; `overwrites` (AD10) is the diff
+        of everything it will replace, logged so a silently-reverted bid is visible
+        rather than discovered weeks later.
+      - `running` on **Zepto** is an idempotent flip that restores the campaign's
+        own budget and bids. Nothing is re-submitted, so demanding a budget would
+        refuse every legitimate resume as "budget is None".
     """
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       what="status", old=current, new=target)
@@ -239,9 +259,11 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                              passed=False, reason=reason)
         return False
 
-    # A restart writes a budget, so it passes the same bounds check a budget write does
-    # rather than sneaking a value past it (AD14 of the original draft; §5.3).
-    if target == "running":
+    # A RESTART writes a budget, so it passes the same bounds check a budget write
+    # does rather than sneaking a value past it (AD14 of the original draft; §5.3).
+    # Defaults to True so Blinkit — and any adapter that has not thought about it —
+    # keeps the stricter behaviour.
+    if target == "running" and getattr(adapter, "RESUME_RESUBMITS", True):
         bad = budget_out_of_bounds(budget)
         if bad:
             logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
@@ -259,13 +281,15 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                                fields=overwrites)
 
     if dry_run:
-        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True)
+        # Same detail the live branch reports. A dry run that says only "would
+        # apply" tells a reviewer nothing about WHAT it would apply.
+        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True,
+                          detail=_status_detail(target, budget))
         return True
 
-    # LIVE — the single real Blinkit status mutation.
+    # LIVE — the single real status mutation.
     resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
     ok = bool(resp.get("status") or resp.get("success"))
-    detail = f"status={target}" + (f" budget=₹{budget:g}" if target == "running" else "")
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=detail)
+                      detail=_status_detail(target, budget))
     return ok
