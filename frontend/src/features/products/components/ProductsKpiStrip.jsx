@@ -1,5 +1,5 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 /**
  * KPI strip for the Products list. Reads the `summary` block the list endpoint
@@ -12,9 +12,9 @@ export const ProductsKpiStrip = ({ summary }) => {
 	const s = summary ?? {};
 	const tiles = [
 		{ label: "Active SKUs", value: formatNumber(s.active_skus) },
-		{ label: "Revenue", value: formatCompactCurrency(s.revenue) },
+		{ label: "Revenue", value: formatCurrency(s.revenue) },
 		{ label: "Units sold", value: formatNumber(s.units_sold) },
-		{ label: "Avg price/unit", value: formatCompactCurrency(s.avg_price) },
+		{ label: "Avg price/unit", value: formatCurrency(s.avg_price) },
 		{ label: "Out of stock", value: formatNumber(s.out_of_stock) },
 		{ label: "Low cover", value: formatNumber(s.low_cover) },
 	];

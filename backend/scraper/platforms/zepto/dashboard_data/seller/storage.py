@@ -9,6 +9,10 @@ from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import (
+    ZeptoASN,
+    ZeptoGRN,
+    ZeptoPO,
+    ZeptoPOItem,
     ZeptoAdCampaignDaily,
     ZeptoAdBreakdownDaily,
     ZeptoAdKeywordDaily,
@@ -135,3 +139,31 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
 def _update_cols(model) -> list[str]:
     pk = {"id", "upsert_key"}
     return [c.name for c in model.__table__.columns if c.name not in pk]
+
+
+async def save_po_results(
+    session: AsyncSession,
+    pos: list[dict],
+    grns: list[dict],
+    asns: list[dict],
+    po_items: list[dict] | None = None,
+) -> dict[str, int]:
+    """Upsert the PO-management tables. Returns rows written per table.
+
+    A PO is keyed on its own id (not id+date), so re-scraping an overlapping
+    window UPDATES status and received quantity in place — which is the point:
+    a PO issued today is PENDING_ACKNOWLEDGEMENT and receives stock over the
+    following weeks, and we want the current state, not a row per observation.
+    """
+    await _upsert(session, ZeptoPO, pos)
+    await _upsert(session, ZeptoGRN, grns)
+    await _upsert(session, ZeptoASN, asns)
+    await _upsert(session, ZeptoPOItem, po_items or [])
+    await session.commit()
+    written = {"pos": len(pos), "grns": len(grns), "asns": len(asns),
+               "po_items": len(po_items or [])}
+    logger.info(
+        f"Zepto PO saved — pos:{written['pos']} grns:{written['grns']} "
+        f"asns:{written['asns']} items:{written['po_items']}"
+    )
+    return written

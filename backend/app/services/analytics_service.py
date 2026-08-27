@@ -556,8 +556,17 @@ async def get_city_category(
             .limit(limit)
         )
     ).all()
+    # No Blinkit cities does NOT mean no cells — a Zepto-only client has none
+    # here but may have plenty below. Returning early would skip the Zepto
+    # branch entirely and leave the heatmap blank for exactly those clients.
     if not top_rows:
-        return []
+        return (
+            await zepto_analytics.city_category(
+                session, tenant_id=tenant_id, start=start, end=end, limit=limit
+            )
+            if zepto_analytics.wants_zepto(marketplaces)
+            else []
+        )
     name_by_id = {cid: (cname or cid) for cid, cname, _ in top_rows}
     top_ids = list(name_by_id)
 

@@ -290,12 +290,16 @@ async def _zepto_detail(
     units = d["units_sold"]
     avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
 
-    city_rows = await zepto_products.cities(
-        session, tenant_id=tenant_id, start=period.start, end=period.end
-    )
-    cities = (
-        [CityShare(**c) for c in city_rows] if len(city_rows) > 1 else []
-    )
+    # Genuinely per-SKU now that `zepto_seller_product_city_daily` exists, so no
+    # "only show it if there are 2+ cities" guard: a single city is a real
+    # answer here, not the brand total wearing a per-SKU label.
+    cities = [
+        CityShare(**c)
+        for c in await zepto_products.cities(
+            session, tenant_id=tenant_id, item_id=item_id,
+            start=period.start, end=period.end,
+        )
+    ]
 
     return {
         **d,
@@ -506,6 +510,19 @@ async def get_product_pos(
             select(func.count()).select_from(POItem).where(*cond)
         )
     ).scalar_one()
+
+    # No Blinkit PO lines for this item does NOT mean no PO history — a Zepto
+    # SKU has none here but may have plenty in `zepto_po_items`. Returning early
+    # would leave the tab permanently empty for Zepto clients.
+    if total == 0 and zepto_products.wants_zepto(None):
+        z_rows, z_total = await zepto_products.po_lines(
+            session, tenant_id=tenant_id, item_id=item_id,
+            offset=pagination.offset, limit=pagination.limit,
+        )
+        if z_total:
+            return Page.build(
+                [ProductPoRow(**r) for r in z_rows], z_total, pagination
+            )
 
     rows = (
         await session.execute(

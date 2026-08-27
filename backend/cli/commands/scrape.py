@@ -21,6 +21,10 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     fetch_sales_by_city as zepto_fetch_sales_by_city,
     fetch_product_performance as zepto_fetch_product_performance,
     fetch_product_performance_by_city as zepto_fetch_product_perf_by_city,
+    fetch_pos as zepto_fetch_pos,
+    fetch_grns as zepto_fetch_grns,
+    fetch_asns as zepto_fetch_asns,
+    fetch_po_items as zepto_fetch_po_items,
     capture_ads_headers as zepto_capture_ads_headers,
     fetch_ad_campaigns as zepto_fetch_ad_campaigns,
     fetch_ads_tabular as zepto_fetch_ads_tabular,
@@ -29,6 +33,10 @@ from scraper.platforms.zepto.dashboard_data.seller.parser import (
     parse_sales_daily as parse_zepto_sales_daily,
     parse_product_perf as parse_zepto_product_perf,
     parse_product_city as parse_zepto_product_city,
+    parse_pos as parse_zepto_pos,
+    parse_grns as parse_zepto_grns,
+    parse_asns as parse_zepto_asns,
+    parse_po_items as parse_zepto_po_items,
     parse_sales_by_city as parse_zepto_sales_by_city,
     parse_ad_campaigns as parse_zepto_ad_campaigns,
     parse_ad_tabular_campaigns as parse_zepto_ad_tabular_campaigns,
@@ -38,6 +46,7 @@ from scraper.platforms.zepto.dashboard_data.seller.parser import (
 )
 from scraper.platforms.zepto.dashboard_data.seller.storage import (
     save_sales_results as zepto_save_sales_results,
+    save_po_results as zepto_save_po_results,
     save_ad_results as zepto_save_ad_results,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
@@ -1863,6 +1872,109 @@ async def _scrape_zepto_ads(
             raise typer.Exit(1)
         except typer.Exit:
             raise
+        except Exception as e:
+            if job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
+            raise typer.Exit(1)
+
+
+# ── Zepto PO Management ────────────────────────────────────────────────────────
+
+@app.command("zepto-po")
+def scrape_zepto_po(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 30 days ago)"),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: today)"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
+):
+    """Fetch Zepto purchase orders, goods receipts and shipping notices.
+
+    Three endpoints on the `/vendor` app (same host and session as the sales
+    scrape, no browser needed): what Zepto ordered, what shipped, what arrived.
+    `grn_qty / po_qty` is the fill rate — the figure Blinkit's seller scorecard
+    reports and the only route to one for Zepto.
+
+    Windows here are inclusive of TODAY by default, unlike the sales scrape:
+    POs are forward-looking (an order issued today expires in three weeks), so
+    stopping at yesterday would miss the ones that most need acting on.
+    """
+    asyncio.run(_scrape_zepto_po(tenant_id, date_from, date_to, save))
+
+
+async def _scrape_zepto_po(
+    tenant_id: str, date_from: str | None, date_to: str | None, save: bool
+) -> None:
+    date_to = date_to or _date.today().isoformat()
+    date_from = date_from or (_date.today() - timedelta(days=30)).isoformat()
+
+    async with AsyncSessionLocal() as db:
+        job_id = None
+        try:
+            with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
+                storage_state = await ensure_healthy_session(
+                    db, tenant_id, "zepto_seller", zepto_seller_validate
+                )
+            console.print("[green]Session healthy.[/green]")
+
+            job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")
+
+            # Each endpoint is fetched independently: Zepto returned a 500 on
+            # asn/filter on 2026-08-27 and aborting the run discarded 74 POs and
+            # 72 GRNs that had already come back. One flaky endpoint should cost
+            # its own data, not the whole scrape.
+            async def _try(label, coro):
+                try:
+                    return await coro
+                except Exception as e:
+                    logger.warning(f"Zepto {label} failed, continuing without it: {e}")
+                    console.print(f"[yellow]{label} failed — continuing[/yellow]")
+                    return []
+
+            with console.status(f"[cyan]Fetching POs {date_from}..{date_to}...[/cyan]"):
+                raw_pos = await _try("po/filter", zepto_fetch_pos(storage_state, date_from, date_to))
+            with console.status(f"[cyan]Fetching GRNs {date_from}..{date_to}...[/cyan]"):
+                raw_grns = await _try("grn/filter", zepto_fetch_grns(storage_state, date_from, date_to))
+            with console.status(f"[cyan]Fetching ASNs {date_from}..{date_to}...[/cyan]"):
+                raw_asns = await _try("asn/filter", zepto_fetch_asns(storage_state, date_from, date_to))
+
+            pos = parse_zepto_pos(raw_pos, tenant_id, job_id)
+            grns = parse_zepto_grns(raw_grns, tenant_id, job_id)
+            asns = parse_zepto_asns(raw_asns, tenant_id, job_id)
+
+            # Line items: one GET per PO. Carries unit_price (cost) and mrp,
+            # which appear on no other Zepto endpoint, plus per-SKU fill rate.
+            po_ids = [p["po_id"] for p in pos]
+            with console.status(f"[cyan]Fetching line items for {len(po_ids)} POs...[/cyan]"):
+                raw_items = await zepto_fetch_po_items(storage_state, po_ids)
+            po_items = parse_zepto_po_items(raw_items, tenant_id, job_id)
+
+            written = 0
+            if save:
+                counts = await zepto_save_po_results(db, pos, grns, asns, po_items)
+                written = sum(counts.values())
+                await complete_scrape_job(db, job_id, written)
+            else:
+                await complete_scrape_job(db, job_id)
+
+            ordered = sum(p["total_qty"] or 0 for p in pos)
+            received = sum(g["grn_qty"] or 0 for g in grns)
+            po_value = sum(p["total_value"] or 0.0 for p in pos)
+
+            console.print("")
+            console.print(f"[bold]Zepto PO Management ({date_from} to {date_to})[/bold]")
+            console.print(f"  POs: {len(pos)}   units ordered: {ordered:,}   value: Rs {po_value:,.0f}")
+            console.print(f"  GRNs: {len(grns)}   units received: {received:,}")
+            console.print(f"  ASNs: {len(asns)}")
+            console.print(f"  PO line items: {len(po_items)}")
+
+            # Fill rate from GRN rows, where ordered and received sit together.
+            po_q = sum(g["po_qty"] or 0 for g in grns)
+            grn_q = sum(g["grn_qty"] or 0 for g in grns)
+            if po_q:
+                console.print(f"  [bold]Fill rate: {grn_q:,}/{po_q:,} = {100 * grn_q / po_q:.1f}%[/bold]")
+            if save:
+                console.print(f"  Saved to DB: {written} rows")
         except Exception as e:
             if job_id:
                 await fail_scrape_job(db, job_id, str(e))

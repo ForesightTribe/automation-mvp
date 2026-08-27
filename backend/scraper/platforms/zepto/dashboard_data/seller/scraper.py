@@ -1,4 +1,5 @@
 import asyncio
+from datetime import date, timedelta
 
 import httpx
 from playwright.async_api import async_playwright
@@ -207,6 +208,177 @@ async def _get_with_auth_fallback(storage_state: dict, url: str, params: dict, l
 
     resp.raise_for_status()
     return resp.json()["data"]
+
+
+async def _post_with_auth_fallback(
+    storage_state: dict, url: str, body: dict, label: str
+) -> dict:
+    """POST twin of `_get_with_auth_fallback`, for the /vendor PO endpoints.
+
+    Same auth, same host, same 401/403-only fallback rule — the PO app just
+    takes a JSON body instead of query params. Kept as its own function rather
+    than adding a `method` flag so neither call site can accidentally send the
+    wrong shape.
+    """
+    auth = _extract_auth(storage_state)
+    if not auth:
+        raise RuntimeError("Saved session is missing the auth or WAF-token cookie")
+    jwt, waf_token = auth
+
+    async def _send(j, w):
+        async with httpx.AsyncClient() as client:
+            return await client.post(
+                url, headers=_headers_for(j, w), json=body, timeout=30
+            )
+
+    resp = await _send(jwt, waf_token)
+    if resp.status_code >= 400:
+        if classify_sales_error(resp.status_code) == "auth":
+            logger.warning(f"{label} got {resp.status_code}, attempting browser fallback...")
+            recaptured = await _recapture_auth_via_browser(storage_state)
+            if not recaptured:
+                raise RuntimeError(
+                    "Session appears genuinely dead — re-login required "
+                    "(browser fallback could not capture fresh auth headers)"
+                )
+            jwt, waf_token = recaptured
+            resp = await _send(jwt, waf_token)
+        else:
+            resp.raise_for_status()
+
+    resp.raise_for_status()
+    return resp.json()["data"]
+
+
+async def _fetch_po_paged(
+    storage_state: dict, api: str, body: dict, list_key: str, label: str
+) -> list[dict]:
+    """Page through one PO-app endpoint until `hasNext` is false.
+
+    All three (po/grn/asn) share this shape: offset/limit in, `{list_key: [...],
+    total, hasNext}` out. PO_MAX_PAGES bounds the loop so a misreported
+    `hasNext` cannot spin forever.
+    """
+    out: list[dict] = []
+    for page in range(ep.PO_MAX_PAGES):
+        payload = {**body, "offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE}
+        data = await _post_with_auth_fallback(
+            storage_state, f"{ep.BASE_URL}{api}", payload, f"{label} p{page + 1}"
+        )
+        rows = data.get(list_key) or []
+        out.extend(rows)
+        if not data.get("hasNext"):
+            break
+        await asyncio.sleep(0.4)
+    logger.info(f"Zepto {label}: {len(out)} row(s)")
+    return out
+
+
+def _po_window(date_from: str, date_to: str) -> tuple[str, str]:
+    """Zepto's PO filters take IST day boundaries expressed in UTC — the browser
+    sends 18:30 of the previous day through 18:29:59.999 of the end day. Sending
+    plain dates returns a window shifted by 5h30m, quietly dropping the first
+    and last few hours of orders."""
+    start = f"{(date.fromisoformat(date_from) - timedelta(days=1)).isoformat()}T18:30:00.000Z"
+    end = f"{date_to}T18:29:59.999Z"
+    return start, end
+
+
+async def fetch_pos(
+    storage_state: dict, date_from: str, date_to: str
+) -> list[dict]:
+    """Purchase-order headers for the window. Line items are NOT included —
+    the response carries `itemsCount` only; the lines sit behind a per-PO
+    detail call that has not been captured."""
+    start, end = _po_window(date_from, date_to)
+    return await _fetch_po_paged(
+        storage_state, ep.PO_FILTER_API,
+        {
+            "vendorCodes": [], "locationCodes": [],
+            "poStartDate": start, "poEndDate": end,
+            # Empty = every status. The browser sends one value because the UI
+            # is on a tab; see the warning in endpoints.py.
+            "statusList": [], "ids": [],
+            "scheduledStartDate": None, "scheduledEndDate": None,
+            "expiryStartDate": None, "expiryEndDate": None,
+        },
+        "poList", f"po/filter [{date_from}..{date_to}]",
+    )
+
+
+async def fetch_grns(
+    storage_state: dict, date_from: str, date_to: str
+) -> list[dict]:
+    """Goods-receipt notes — what Zepto actually took in. `poQty` vs `grnQty`
+    on each row is the fill rate."""
+    start, end = _po_window(date_from, date_to)
+    return await _fetch_po_paged(
+        storage_state, ep.GRN_FILTER_API,
+        {
+            "vendorCodes": [], "locationCodes": [],
+            "grnStartDate": start, "grnEndDate": end,
+            "statusList": [], "grnNos": [], "poIds": [],
+        },
+        "grnList", f"grn/filter [{date_from}..{date_to}]",
+    )
+
+
+async def fetch_asns(
+    storage_state: dict, date_from: str, date_to: str
+) -> list[dict]:
+    """Advance shipping notices — what the vendor declared as sent."""
+    start, end = _po_window(date_from, date_to)
+    return await _fetch_po_paged(
+        storage_state, ep.ASN_FILTER_API,
+        {
+            "vendorCodes": [], "locationCodes": [],
+            "asnStartDate": start, "asnEndDate": end,
+            "statusList": [], "asnNos": [], "extAsnNos": [],
+            "poIds": [], "trackingId": "",
+        },
+        "asnList", f"asn/filter [{date_from}..{date_to}]",
+    )
+
+
+async def fetch_po_items(
+    storage_state: dict, po_ids: list[str]
+) -> dict[str, list[dict]]:
+    """Line items for each PO. Returns {po_id: [item, ...]}.
+
+    One GET per PO — the filter endpoint gives `itemsCount` but not the lines.
+    74 POs is 74 calls, which is fine on the vendor API (no WAF challenge, no
+    volume cap observed, unlike the public search endpoint).
+
+    A PO whose call fails is skipped with a warning rather than aborting the run:
+    a single bad PO should not cost the other 73.
+    """
+    out: dict[str, list[dict]] = {}
+    for i, po_id in enumerate(po_ids, 1):
+        rows: list[dict] = []
+        try:
+            for page in range(ep.PO_MAX_PAGES):
+                data = await _get_with_auth_fallback(
+                    storage_state,
+                    f"{ep.BASE_URL}{ep.PO_ITEMS_API.format(po_id=po_id)}",
+                    {"offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE},
+                    f"po/{po_id}/items p{page + 1}",
+                )
+                rows.extend(data.get("poItems") or [])
+                if not data.get("hasNext"):
+                    break
+        except Exception as e:
+            logger.warning(f"Zepto po items failed for {po_id}: {e}")
+            continue
+        if rows:
+            out[po_id] = rows
+        if i < len(po_ids):
+            await asyncio.sleep(0.4)
+
+    logger.info(
+        f"Zepto po items: {sum(len(v) for v in out.values())} line(s) "
+        f"across {len(out)}/{len(po_ids)} POs"
+    )
+    return out
 
 
 async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str, ids: dict) -> dict:

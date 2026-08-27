@@ -482,3 +482,228 @@ class ZeptoSellerProductCityDaily(SQLModel, table=True):
     qty_sold: int = 0
 
     scraped_at: datetime = Field(default_factory=now_ist)
+
+
+# ── PO Management ────────────────────────────────────────────────────────────
+# Zepto's supply-chain side: what Zepto ordered, what shipped, what arrived.
+# Scraped from the `/vendor` app on fcc.zepto.co.in (see endpoints.py), which
+# accepts the same saved session as the analytics endpoints.
+#
+# Three tables, not one, for the same reason the ad tables are separate: a PO,
+# its shipment and its receipt are three different grains, and one row of each
+# can exist without the others (a PO with no ASN yet, a GRN against a PO from
+# before the scrape window). Merging them would need nullable everything and
+# make `sum(qty)` meaningless.
+
+
+class ZeptoPO(SQLModel, table=True):
+    """One row per purchase order — the header, not its line items.
+
+    Zepto's `/api/v1/po/filter` returns `itemsCount` but not the lines
+    themselves; those sit behind a per-PO detail call that has not been
+    captured. So this supports "how much did Zepto order, and did it arrive",
+    but NOT the per-SKU PO history that Blinkit's `blinkit_po_items` backs.
+
+    `total_grn_qty` over `total_qty` is the fill rate — the same quantity
+    Blinkit's seller scorecard reports, and the only route to a Zepto fill rate
+    given Zepto publishes no scorecard page.
+    """
+
+    __tablename__ = "zepto_po"
+
+    __table_args__ = (
+        Index("idx_zpo_tenant_date", "tenant_id", "po_date"),
+        Index("idx_zpo_status", "tenant_id", "status"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    po_id: str                       # Zepto's own id, e.g. "P5363881"
+    vin_po_no: str | None = None
+    status: str | None = None        # PENDING_ACKNOWLEDGEMENT, OPEN_TO_FULFILL, …
+
+    vendor_code: str | None = None
+    vendor: str | None = None
+    vendor_relation_type: str | None = None
+
+    location_code: str | None = None
+    location: str | None = None
+    mh_code: str | None = None
+    # Zepto's prefixed form ("BLR - Bengaluru"), left uncleaned to match the
+    # seller portal and the other Zepto city columns.
+    city: str | None = None
+
+    po_date: date | None = None
+    scheduled_date: date | None = None
+    expiry_date: date | None = None
+
+    items_count: int | None = None
+    total_qty: int | None = None
+    total_asn_qty: int | None = None
+    total_grn_qty: int | None = None
+    total_value: float | None = None
+
+    payment_terms: str | None = None
+    source: str | None = None
+    entity_code: str | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoGRN(SQLModel, table=True):
+    """One row per goods-receipt note — what Zepto actually received.
+
+    `po_qty` and `grn_qty` sit on the same row, so fill rate is readable
+    directly per receipt (observed 201/202 = 99.5% on 20-Aug-2026) without
+    joining back to the PO.
+    """
+
+    __tablename__ = "zepto_grn"
+
+    __table_args__ = (
+        Index("idx_zgrn_tenant_date", "tenant_id", "grn_date"),
+        Index("idx_zgrn_po", "tenant_id", "po_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    grn_no: str
+    asn_no: str | None = None
+    ext_asn_no: str | None = None
+    po_id: str | None = None
+    vin_po_no: str | None = None
+    status: str | None = None
+
+    vendor_code: str | None = None
+    vendor_name: str | None = None
+    location_code: str | None = None
+    location: str | None = None
+
+    po_qty: int | None = None
+    asn_qty: int | None = None
+    grn_qty: int | None = None
+    remaining_qty: int | None = None
+    po_value: float | None = None
+    grn_value: float | None = None
+
+    grn_date: date | None = None
+    entity_code: str | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoASN(SQLModel, table=True):
+    """One row per advance shipping notice — what the vendor said was sent.
+
+    Sits between the PO and the GRN: `po_qty` -> `asn_qty` -> `grn_qty` shows
+    where a shortfall happened (never shipped, or shipped and not received).
+    """
+
+    __tablename__ = "zepto_asn"
+
+    __table_args__ = (
+        Index("idx_zasn_tenant_date", "tenant_id", "asn_date"),
+        Index("idx_zasn_po", "tenant_id", "po_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    asn_no: str
+    ext_asn_no: str | None = None
+    po_id: str | None = None
+    vin_po_no: str | None = None
+    status: str | None = None
+
+    vendor_code: str | None = None
+    vendor_name: str | None = None
+    location_code: str | None = None
+    external_location_code: str | None = None
+    location: str | None = None
+
+    po_qty: int | None = None
+    asn_qty: int | None = None
+    grn_qty: int | None = None
+    remaining_qty: int | None = None
+    po_value: float | None = None
+    asn_value: float | None = None
+
+    asn_date: date | None = None
+    entity_code: str | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoPOItem(SQLModel, table=True):
+    """One row per SKU per purchase order — the PO's line items.
+
+    From `/api/v1/po/{po_id}/items`, one call per PO. The list endpoint returns
+    `itemsCount` but not the lines, so this is a second pass over the POs already
+    scraped.
+
+    Two things live here and nowhere else in the system:
+
+    * **Cost price** (`unit_price`, e.g. Rs 53.33 against an Rs 80 MRP) — the
+      margin Zepto takes. No other Zepto endpoint reports it.
+    * **Per-SKU fill rate** (`grn_qty` / `po_qty`). The GRN table gives fill rate
+      per delivery; this gives it per product, which is what showed that two SKUs
+      were halved while two others in the SAME delivery were accepted in full
+      (GrnCode56384162, 22-Aug-2026).
+
+    `product_variant_id` is Zepto's `pvId`, the SAME id `zepto_seller_product_perf`
+    keys on — so PO lines join to the Products page directly, with no name
+    matching and no `sku_map` bridge.
+    """
+
+    __tablename__ = "zepto_po_items"
+
+    __table_args__ = (
+        Index("idx_zpoi_tenant_po", "tenant_id", "po_id"),
+        Index("idx_zpoi_pv", "tenant_id", "product_variant_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    po_id: str
+    line_id: str | None = None       # Zepto's per-line uuid
+    status: str | None = None        # NO_UPDATES, …
+
+    sku_code: str | None = None
+    sku_name: str | None = None
+    # Zepto's `pvId` — joins to zepto_seller_product_perf.product_variant_id.
+    product_variant_id: str | None = None
+    ean_no: str | None = None
+    hsn_code: str | None = None
+    brand: str | None = None
+
+    po_qty: int | None = None
+    asn_qty: int | None = None
+    grn_qty: int | None = None
+    remaining_qty: int | None = None
+
+    # What Zepto PAYS per unit, against the `mrp` it sells at.
+    unit_price: float | None = None
+    mrp: float | None = None
+    total_value: float | None = None
+    cgst: float | None = None
+    sgst: float | None = None
+    igst: float | None = None
+    cess: float | None = None
+
+    scheduled_date: date | None = None
+    scraped_at: datetime = Field(default_factory=now_ist)

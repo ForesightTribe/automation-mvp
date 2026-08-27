@@ -3,7 +3,7 @@ import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { salesStockOption } from "../../../components/charts/options";
 import {
-	formatCompactCurrency,
+	formatCurrency,
 	formatDate,
 	formatNumber,
 } from "../../../lib/format";
@@ -23,7 +23,7 @@ const COLUMNS = [
 		label: "Revenue",
 		align: "right",
 		render: (r) =>
-			r.revenue === null ? "—" : formatCompactCurrency(r.revenue),
+			r.revenue === null ? "—" : formatCurrency(r.revenue),
 	},
 	{
 		key: "frontend_qty",

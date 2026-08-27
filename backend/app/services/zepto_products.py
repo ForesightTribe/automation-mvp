@@ -28,13 +28,14 @@ neither, so `get_product_pos` and `potential_loss` stay Blinkit-only rather
 than returning an empty list that reads as "no POs" instead of "no such data".
 """
 import uuid
-from datetime import date
+from datetime import date, datetime, time
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
-from app.models.zepto_seller import ZeptoSellerSalesCityDaily as CityDaily
+from app.models.zepto_seller import ZeptoSellerProductCityDaily as ProdCity
+from app.models.zepto_seller import ZeptoPO, ZeptoPOItem
 
 # Which marketplace slug routes to these tables.
 SLUG = "zepto"
@@ -221,32 +222,117 @@ async def detail_agg(
 
 
 async def cities(
-    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    start: date,
+    end: date,
 ) -> list[dict]:
-    """Units/revenue per city for the window.
+    """Units/revenue per city **for one SKU**.
 
-    Brand-level, not per-SKU: `zepto_seller_sales_city_daily` has no product
-    dimension, so this is the same split for every SKU on the page. The caller
-    decides whether that is worth showing — it is not a per-SKU city breakdown
-    the way Blinkit's is, and labelling it as one would misrepresent it.
+    Reads `zepto_seller_product_city_daily`, which is scraped one call per city
+    because no single Zepto response carries city and product together. Before
+    that table existed this could only be answered at brand level, so the card
+    was left empty rather than showing the brand split under a per-SKU heading.
+
+    Returns [] for a window scraped before the per-city breakdown was added —
+    the card then says so instead of implying the SKU sold nowhere.
     """
     rows = (
         await session.execute(
             select(
-                CityDaily.city_name,
-                func.coalesce(func.sum(CityDaily.units), 0),
-                func.coalesce(func.sum(CityDaily.gmv), 0.0),
+                ProdCity.city_name,
+                func.coalesce(func.sum(ProdCity.qty_sold), 0),
+                func.coalesce(func.sum(ProdCity.gmv), 0.0),
             )
             .where(
-                CityDaily.tenant_id == tenant_id,
-                CityDaily.date >= start,
-                CityDaily.date <= end,
+                ProdCity.tenant_id == tenant_id,
+                ProdCity.product_variant_id == item_id,
+                ProdCity.date >= start,
+                ProdCity.date <= end,
             )
-            .group_by(CityDaily.city_name)
-            .order_by(func.coalesce(func.sum(CityDaily.gmv), 0.0).desc())
+            .group_by(ProdCity.city_name)
+            .order_by(func.coalesce(func.sum(ProdCity.gmv), 0.0).desc())
         )
     ).all()
     return [
         {"city": city, "units_sold": int(u), "revenue": round(float(r), 2)}
         for city, u, r in rows
     ]
+
+
+async def po_lines(
+    session: AsyncSession, *, tenant_id: uuid.UUID, item_id: str,
+    offset: int = 0, limit: int = 10,
+) -> tuple[list[dict], int]:
+    """(rows, total) of PO lines for one SKU, newest order first.
+
+    Joined to `zepto_po` for the header fields the row needs — order date,
+    status and warehouse — which the line itself does not carry.
+
+    Matched on `product_variant_id`, which is Zepto's `pvId` and the SAME id
+    `zepto_seller_product_perf` keys on. So this needs no name matching and no
+    `sku_map` bridge, unlike Blinkit where the private and public id systems
+    share no key.
+
+    Field names mirror Blinkit's `ProductPoRow` so the same table renders both:
+    `unit_price` -> cost_price, `grn_qty` -> received_qty, and so on.
+    """
+    conds = [
+        ZeptoPOItem.tenant_id == tenant_id,
+        ZeptoPOItem.product_variant_id == item_id,
+    ]
+    total = (
+        await session.execute(
+            select(func.count()).select_from(ZeptoPOItem).where(*conds)
+        )
+    ).scalar_one()
+
+    rows = (
+        await session.execute(
+            select(
+                ZeptoPOItem.po_id,
+                ZeptoPO.status,
+                ZeptoPO.po_date,
+                ZeptoPO.location,
+                ZeptoPOItem.po_qty,
+                ZeptoPOItem.grn_qty,
+                ZeptoPOItem.remaining_qty,
+                ZeptoPOItem.unit_price,
+                ZeptoPOItem.total_value,
+            )
+            .join(
+                ZeptoPO,
+                (ZeptoPO.tenant_id == ZeptoPOItem.tenant_id)
+                & (ZeptoPO.po_id == ZeptoPOItem.po_id),
+                isouter=True,
+            )
+            .where(*conds)
+            .order_by(ZeptoPO.po_date.desc().nullslast(), ZeptoPOItem.po_id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+
+    return (
+        [
+            {
+                "po_number": po_id,
+                "po_state": status,
+                # The schema wants a datetime; the PO carries a calendar day.
+                "issue_date": (
+                    datetime.combine(po_date, time.min) if po_date else None
+                ),
+                "facility_name": location,
+                "units_ordered": po_qty,
+                "received_qty": grn_qty,
+                "remaining_quantity": remaining_qty,
+                "cost_price": unit_price,
+                "total_amount": total_value,
+            }
+            for (po_id, status, po_date, location, po_qty, grn_qty,
+                 remaining_qty, unit_price, total_value) in rows
+        ],
+        int(total),
+    )

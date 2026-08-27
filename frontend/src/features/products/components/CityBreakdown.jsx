@@ -2,7 +2,7 @@ import { useMemo } from "react";
 import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { rankedBarOption } from "../../../components/charts/options";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 const COLUMNS = [
 	{ key: "city", label: "City" },
@@ -16,7 +16,7 @@ const COLUMNS = [
 		key: "revenue",
 		label: "Revenue",
 		align: "right",
-		render: (r) => formatCompactCurrency(r.revenue),
+		render: (r) => formatCurrency(r.revenue),
 	},
 ];
 

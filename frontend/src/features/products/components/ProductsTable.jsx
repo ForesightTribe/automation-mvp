@@ -1,6 +1,6 @@
 import { useNavigate } from "react-router-dom";
 import { StatusBadge } from "./StatusBadge";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { formatCurrency, formatNumber } from "../../../lib/format";
 
 // Fixed sort direction per column (backend sorts each key one way: bigger-better
 // for money/units, smaller-first for cover so the at-risk SKUs surface).
@@ -109,10 +109,10 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 								{formatNumber(r.units_sold)}
 							</td>
 							<td className={`${CELL} tabular-nums text-content`}>
-								{formatCompactCurrency(r.revenue)}
+								{formatCurrency(r.revenue)}
 							</td>
 							<td className={`${CELL} tabular-nums text-content`}>
-								{formatCompactCurrency(r.avg_price)}
+								{formatCurrency(r.avg_price)}
 							</td>
 							<td className={`${CELL} tabular-nums text-content`}>
 								{formatNumber(r.frontend_qty)}

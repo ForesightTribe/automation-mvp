@@ -4,9 +4,10 @@ each metric to a single marketplace."""
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import distinct, func, select
+from sqlalchemy import distinct, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.zepto_seller import ZeptoGRN, ZeptoPO
 from app.models.blinkit_seller import (
     BlinkitSOH,
     BlinkitPO,
@@ -257,6 +258,104 @@ async def get_monthly_trends(
         )
     ).all()
     po_map = {m: (float(amt), int(cnt)) for m, amt, cnt in po_rows}
+
+    # ── Zepto: on-shelf availability ─────────────────────────────────────────
+    # Different plane from the Blinkit figure above, and worth being explicit
+    # about: `blinkit_soh` is warehouse stock the platform reports to us, while
+    # this counts SHELVES across 163 stores that we scraped ourselves. Both
+    # answer "is it available", but Blinkit's is a supplier-side view and this is
+    # a shopper-side one, so the two are not strictly comparable in one chart.
+    #
+    # Raw SQL because it needs DISTINCT ON (product, store) — one row per shelf,
+    # newest first — which is the same rule every Inventory read uses. Counting
+    # raw rows would inflate any day scraped twice (26-Aug was, by ~45%).
+    osa_rows = (
+        await session.execute(
+            text(
+                """
+                WITH latest AS (
+                    SELECT DISTINCT ON (scraped_at::date, platform_product_id, merchant_id)
+                           scraped_at::date AS d, in_stock
+                    FROM sku_snapshots
+                    WHERE mp_slug = 'zepto'
+                      AND tenant_id = :tid
+                      AND merchant_id <> ''
+                      AND scraped_at >= :start
+                    ORDER BY scraped_at::date, platform_product_id, merchant_id,
+                             scraped_at DESC
+                ),
+                daily AS (
+                    SELECT d,
+                           100.0 * count(*) FILTER (WHERE in_stock) / count(*) AS pct
+                    FROM latest GROUP BY d
+                )
+                SELECT to_char(d, 'YYYY-MM') AS ym, avg(pct) AS osa
+                FROM daily GROUP BY 1
+                """
+            ),
+            {"tid": tenant_id, "start": start},
+        )
+    ).all()
+    for ym, pct in osa_rows:
+        if pct is None:
+            continue
+        # Average with Blinkit's when a tenant has both, same as fill rate.
+        osa_map[ym] = (osa_map[ym] + float(pct)) / 2 if ym in osa_map else float(pct)
+
+    # ── Zepto ────────────────────────────────────────────────────────────────
+    # Zepto publishes no seller scorecard, so its fill rate is computed from the
+    # GRN rows, where ordered and received sit on the same row. That is the same
+    # quantity Blinkit's scorecard reports, arrived at from the raw receipts
+    # instead of the platform's own summary.
+    #
+    # NOT read from `zepto_po.total_grn_qty`: Zepto returns that null on every PO
+    # header (verified 2026-08-27, 74 POs), so the field exists but never fills.
+    #
+    # This function is tenant-wide and ignores the marketplace picker, so for a
+    # client on BOTH platforms these merge into one bar. Quantities are summed
+    # before dividing rather than averaging two percentages — a weighted figure
+    # is the honest one, but the combined bar is still a blend of two different
+    # supply relationships. Revisit if a dual-platform client appears.
+    # Bound once and reused: building the same expression twice emits different
+    # bind parameters, and Postgres then rejects the GROUP BY as not matching.
+    grn_month = func.to_char(func.date_trunc("month", ZeptoGRN.grn_date), "YYYY-MM")
+    z_grn = (
+        await session.execute(
+            select(
+                grn_month,
+                func.coalesce(func.sum(ZeptoGRN.po_qty), 0),
+                func.coalesce(func.sum(ZeptoGRN.grn_qty), 0),
+            )
+            .where(
+                ZeptoGRN.tenant_id == tenant_id,
+                ZeptoGRN.grn_date >= start,
+                ZeptoGRN.po_qty > 0,
+            )
+            .group_by(grn_month)
+        )
+    ).all()
+    for month, ordered, received in z_grn:
+        if not ordered:
+            continue
+        pct = 100.0 * float(received) / float(ordered)
+        # Average with Blinkit's if both exist; otherwise Zepto stands alone.
+        fr_map[month] = (fr_map[month] + pct) / 2 if month in fr_map else pct
+
+    zpo_month = func.to_char(func.date_trunc("month", ZeptoPO.po_date), "YYYY-MM")
+    z_po = (
+        await session.execute(
+            select(
+                zpo_month,
+                func.coalesce(func.sum(ZeptoPO.total_value), 0.0),
+                func.count(),
+            )
+            .where(ZeptoPO.tenant_id == tenant_id, ZeptoPO.po_date >= start)
+            .group_by(zpo_month)
+        )
+    ).all()
+    for month, amount, count in z_po:
+        prev = po_map.get(month, (0.0, 0))
+        po_map[month] = (prev[0] + float(amount), prev[1] + int(count))
 
     out = []
     for ym in spine:
