@@ -19,7 +19,6 @@ from app.models.zepto_seller import (
     ZeptoAdProductDaily,
     ZeptoSellerProductCityDaily,
     ZeptoSellerProductPerf,
-    ZeptoSellerSalesCityDaily,
     ZeptoSellerSalesDaily,
 )
 from app.utils.logger import logger
@@ -29,24 +28,21 @@ async def save_sales_results(
     session: AsyncSession,
     daily: list[dict],
     products: list[dict],
-    cities: list[dict] | None = None,
     product_cities: list[dict] | None = None,
 ) -> int:
-    cities = cities or []
     # SKU x city x day. A finer grain than `products` (SKU x day, all cities)
     # and deliberately its own table — see ZeptoSellerProductCityDaily. The two
     # hold the same money at different resolutions; never sum across them.
     product_cities = product_cities or []
     await _upsert(session, ZeptoSellerSalesDaily, daily)
     await _upsert(session, ZeptoSellerProductPerf, products)
-    await _upsert(session, ZeptoSellerSalesCityDaily, cities)
     await _upsert(session, ZeptoSellerProductCityDaily, product_cities)
     await session.commit()
     logger.info(
         f"Zepto seller sales saved — days:{len(daily)} products:{len(products)} "
-        f"city-days:{len(cities)} product-city-days:{len(product_cities)}"
+        f"product-city-days:{len(product_cities)}"
     )
-    return len(daily) + len(products) + len(cities) + len(product_cities)
+    return len(daily) + len(products) + len(product_cities)
 
 
 async def save_ad_results(

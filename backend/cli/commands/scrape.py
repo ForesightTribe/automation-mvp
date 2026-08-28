@@ -18,7 +18,6 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     validate as zepto_seller_validate,
     discover_ids as zepto_discover_ids,
     fetch_sales_overview as zepto_fetch_sales_overview,
-    fetch_sales_by_city as zepto_fetch_sales_by_city,
     fetch_product_performance as zepto_fetch_product_performance,
     fetch_product_performance_by_city as zepto_fetch_product_perf_by_city,
     fetch_pos as zepto_fetch_pos,
@@ -37,7 +36,6 @@ from scraper.platforms.zepto.dashboard_data.seller.parser import (
     parse_grns as parse_zepto_grns,
     parse_asns as parse_zepto_asns,
     parse_po_items as parse_zepto_po_items,
-    parse_sales_by_city as parse_zepto_sales_by_city,
     parse_ad_campaigns as parse_zepto_ad_campaigns,
     parse_ad_tabular_campaigns as parse_zepto_ad_tabular_campaigns,
     parse_ad_keywords as parse_zepto_ad_keywords,
@@ -757,23 +755,13 @@ async def _scrape_zepto_sales(
 
             daily_rows = parse_zepto_sales_daily(data, ids, tenant_id, job_id, date_from, date_to)
 
-            # Per-city split. Zepto has no city breakdown in a single response
-            # (`viewType=CITY` is rejected), so this is one call per city — but
-            # only for cities already known to sell, which on this account is
-            # one of 138. `--all-cities` re-sweeps everything to catch a new
-            # one; worth running occasionally, not daily.
-            city_rows: list[dict] = []
+            # Which cities to ask for. Zepto has no city breakdown in a single
+            # response, so a split means one call per city — but only for cities
+            # already known to sell, which on this account is two of 138.
+            # `--all-cities` re-sweeps everything to catch a new one; worth
+            # running occasionally, not daily (Hosur went unnoticed for weeks).
             city_names = {c["cityID"]: c["cityName"] for c in ids.get("city_list", [])}
             targets = None if all_cities else await _zepto_known_cities(db, tenant_id)
-            if targets is None or targets:
-                label = "all 138 cities" if targets is None else f"{len(targets)} known city/cities"
-                with console.status(f"[cyan]Fetching sales by city ({label})...[/cyan]"):
-                    by_city = await zepto_fetch_sales_by_city(
-                        storage_state, date_from, date_to, ids, targets
-                    )
-                city_rows = parse_zepto_sales_by_city(
-                    by_city, city_names, ids, tenant_id, job_id, date_from, date_to
-                )
 
             # SKU x city x day — the only source that carries city AND category
             # on one row, which is what the Analytics category-x-city heatmap
@@ -809,18 +797,19 @@ async def _scrape_zepto_sales(
             written = 0
             if save:
                 written = await zepto_save_sales_results(
-                    db, daily_rows, product_rows, city_rows, product_city_rows
+                    db, daily_rows, product_rows, product_city_rows
                 )
                 await complete_scrape_job(db, job_id, written)
             else:
                 await complete_scrape_job(db, job_id)
 
-            if city_rows:
+            # City summary now comes from the per-SKU city rows, the only
+            # place the split is stored since sales_city_daily was dropped.
+            if product_city_rows:
                 by_name: dict[str, float] = {}
-                for r in city_rows:
-                    by_name[r["city_name"] or r["city_id"]] = (
-                        by_name.get(r["city_name"] or r["city_id"], 0) + r["gmv"]
-                    )
+                for r in product_city_rows:
+                    key = r["city_name"] or r["city_id"]
+                    by_name[key] = by_name.get(key, 0) + r["gmv"]
                 top = sorted(by_name.items(), key=lambda kv: -kv[1])[:3]
                 console.print(
                     "  Cities: "
@@ -1578,7 +1567,7 @@ async def _zepto_known_cities(db, tenant_id: str) -> list[str]:
     rows = (
         await db.execute(
             text(
-                "SELECT DISTINCT city_id FROM zepto_seller_sales_city_daily "
+                "SELECT DISTINCT city_id FROM zepto_seller_product_city_daily "
                 "WHERE tenant_id = :t"
             ),
             {"t": tenant_id},

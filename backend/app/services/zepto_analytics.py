@@ -22,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
 from app.models.zepto_seller import ZeptoSellerProductCityDaily as ProdCity
-from app.models.zepto_seller import ZeptoSellerSalesCityDaily as CityDaily
 from app.models.zepto_seller import ZeptoSellerSalesDaily as Daily
 
 # Which marketplace slug routes to these tables.
@@ -192,18 +191,18 @@ async def sales_by_city(
     rows = (
         await session.execute(
             select(
-                CityDaily.city_id,
-                func.max(CityDaily.city_name),
-                func.coalesce(func.sum(CityDaily.gmv), 0.0),
-                func.coalesce(func.sum(CityDaily.units), 0),
+                ProdCity.city_id,
+                func.max(ProdCity.city_name),
+                func.coalesce(func.sum(ProdCity.gmv), 0.0),
+                func.coalesce(func.sum(ProdCity.qty_sold), 0),
             )
             .where(
-                CityDaily.tenant_id == tenant_id,
-                CityDaily.date >= start,
-                CityDaily.date <= end,
+                ProdCity.tenant_id == tenant_id,
+                ProdCity.date >= start,
+                ProdCity.date <= end,
             )
-            .group_by(CityDaily.city_id)
-            .order_by(func.coalesce(func.sum(CityDaily.gmv), 0.0).desc())
+            .group_by(ProdCity.city_id)
+            .order_by(func.coalesce(func.sum(ProdCity.gmv), 0.0).desc())
         )
     ).all()
     return [

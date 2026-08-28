@@ -387,48 +387,6 @@ class ZeptoAdBreakdownDaily(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
-class ZeptoSellerSalesCityDaily(SQLModel, table=True):
-    """One row per city per day — GMV and units for the brand in that city.
-
-    Zepto's Sales Analytics has no city breakdown in its response: asking for
-    `viewType=CITY` is rejected outright (strict `oneof` validation on the
-    parameter). The only way to get a city split is to ask for one city at a
-    time — `cityIds` accepts a single id and returns that city's full daily
-    series — so this table is filled by looping cities rather than by one call.
-
-    That loop is cheap in practice, not expensive. A sweep of all 138 cities on
-    21-Aug-2026 found sales in exactly ONE (Bengaluru, GMV Rs 395,300 for 14-21
-    Aug, which equals the brand total to the rupee). So the daily scrape covers
-    the cities already known to sell, and a wider sweep only needs running
-    occasionally to catch a new one.
-
-    Separate from `ZeptoSellerSalesDaily`, which holds the same figures with no
-    city dimension. Kept apart rather than adding a nullable city column there,
-    so summing the brand table can never double-count a city split.
-    """
-
-    __tablename__ = "zepto_seller_sales_city_daily"
-
-    __table_args__ = (Index("idx_zsscd_tenant_date", "tenant_id", "date"),)
-
-    id: int | None = Field(default=None, primary_key=True)
-    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
-    platform: str = "zepto"
-    upsert_key: str = Field(unique=True)
-    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
-
-    date: date
-    brand_id: str
-    city_id: str
-    # Zepto prefixes these with an airport-style code ("BLR - Bengaluru").
-    city_name: str | None = None
-
-    gmv: float = 0.0
-    units: int = 0
-
-    scraped_at: datetime = Field(default_factory=now_ist)
-
-
 class ZeptoSellerProductCityDaily(SQLModel, table=True):
     """One row per tenant per SKU per **city** per day.
 
