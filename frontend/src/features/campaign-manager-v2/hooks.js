@@ -10,6 +10,7 @@ import {
 	getAdvertiser,
 	getBidRules,
 	getBudgetSchedules,
+	getBidContext,
 	getCampaignKeywords,
 	getCampaigns,
 	getHistory,
@@ -83,6 +84,16 @@ export const useCampaigns = () => {
 };
 
 /** Keywords already on a campaign — powers the bid form's keyword suggestions. */
+export const useBidContext = (campaignId) => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: [CAMPAIGNS, activeClientId, "bid-context", campaignId],
+		queryFn: () => getBidContext(activeClientId, campaignId),
+		enabled: Boolean(activeClientId && campaignId),
+		staleTime: 5 * 60 * 1000,
+	});
+};
+
 export const useCampaignKeywords = (campaignId) => {
 	const { activeClientId } = useClient();
 	return useQuery({

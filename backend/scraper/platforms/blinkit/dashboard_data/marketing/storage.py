@@ -10,6 +10,7 @@ from app.models.blinkit_marketing import (
     BlinkitAdCampaign,
     BlinkitAdCampaignDaily,
     BlinkitAdCampaignDetail,
+    BlinkitAdCampaignKeyword,
     BlinkitBrandCollection,
     BlinkitSponsoredSOV,
     BlinkitVisibilityPlan,
@@ -25,22 +26,25 @@ async def save_scrape_results(
     sov: list[dict],
     collections: list[dict],
     plans: list[dict],
+    keywords: list[dict] | None = None,
 ) -> int:
     await _upsert(session, BlinkitAdCampaign, campaigns)
     await _upsert(session, BlinkitAdCampaignDaily, daily)
     await _upsert(session, BlinkitAdCampaignDetail, detail)
+    await _upsert(session, BlinkitAdCampaignKeyword, keywords or [])
     await _upsert(session, BlinkitSponsoredSOV, sov)
     await _upsert(session, BlinkitBrandCollection, collections)
     await _upsert(session, BlinkitVisibilityPlan, plans)
     await session.commit()
 
     total = (
-        len(campaigns) + len(daily) + len(detail)
+        len(campaigns) + len(daily) + len(detail) + len(keywords or [])
         + len(sov) + len(collections) + len(plans)
     )
     logger.info(
         f"Blinkit marketing saved — campaigns:{len(campaigns)} daily:{len(daily)} "
-        f"detail:{len(detail)} sov:{len(sov)} collections:{len(collections)} plans:{len(plans)}"
+        f"detail:{len(detail)} keyword_bids:{len(keywords or [])} sov:{len(sov)} "
+        f"collections:{len(collections)} plans:{len(plans)}"
     )
     return total
 

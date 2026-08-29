@@ -82,6 +82,52 @@ async def read_bids(client, campaign_id: int) -> dict[str, int]:
     return bids_from_detail(detail or {})
 
 
+def _api_match(match_type: str | None) -> str:
+    """Our vocabulary → Blinkit's bid-range key. `apply_bid` sends BROAD as SMART, so the
+    floor has to be looked up under the SAME name or a BROAD rule would be checked against
+    the exact-match floor."""
+    m = (match_type or "EXACT").upper().replace("_MATCH", "")
+    return "SMART" if m == "BROAD" else m
+
+
+async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
+                          ) -> dict[tuple[str, str], int]:
+    """Blinkit's minimum bid per (keyword, match_type) for a campaign (a READ — safe).
+
+    This is the authority the bid engine clamps to. It is read LIVE rather than from the
+    nightly scrape because it is the number that decides what gets written to a real
+    account: the scraped copy is for the UI, this is for the write.
+
+    ONE request per campaign — the endpoint takes the whole keyword list — so a run costs
+    +1 call per campaign regardless of how many keywords it manages. Pass an
+    already-fetched `detail` to avoid re-reading it.
+
+    Returns {} on any failure, which the caller must read as "no floor known" and fall back
+    to the rule's own `min_bid`. Refusing to bid because a lookup failed would be worse
+    than bidding at the configured minimum.
+    """
+    if detail is None:
+        detail, _ = await client.get_campaign_detail(campaign_id)
+    detail = detail or {}
+    keywords = [k["keyword"] for k in (
+        (detail.get("campaign_targeting") or {}).get("keyword_targeting", {}).get("keywords", [])
+        or detail.get("keywords", []) or []
+    ) if k.get("keyword")]
+    if not keywords:
+        return {}
+
+    attrs = await client.get_keyword_attributes(
+        campaign_id, detail.get("campaign_type") or "", keywords)
+    floors: dict[tuple[str, str], int] = {}
+    for a in attrs or []:
+        kw = (a.get("keyword") or "").strip()
+        for api_match, rng in (a.get("bid_range") or {}).items():
+            if not isinstance(rng, dict) or rng.get("min") is None:
+                continue
+            floors[(kw, _api_match(api_match))] = int(rng["min"])
+    return floors
+
+
 async def read_products(client, campaign_id: int) -> list[dict]:
     """Campaign products (name + pid) — used to match the ad in live search (a READ)."""
     return await client.get_campaign_products(campaign_id)

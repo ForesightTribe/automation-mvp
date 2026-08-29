@@ -21,6 +21,21 @@ CAMPAIGN_DAILY_API = "/adservice/v1/campaigns/metrics-trends/{campaign_id}"
 # Per-campaign keyword / recommendation breakdown — append the campaign id.
 CAMPAIGN_REPORT_API = "/adservice/v1/campaigns/reports/{campaign_id}"
 
+# Per-campaign CONFIGURATION (not metrics): city targeting (`region_type`/`region_ids`),
+# the keyword list with its live bids, budget, pacing, spend-to-date — plus the account's
+# `min_cpm_config`. The campaign LIST carries none of this.
+CAMPAIGN_DETAIL_API = "/adservice/v1/campaigns/{campaign_id}"
+
+# Blinkit's published bid range PER KEYWORD — `bid_range.exact_match/.smart_match` with
+# {min, max, suggested_min, suggested_max, min_for_boost} plus `keyword_searches`. Takes a
+# comma-separated keyword list, so one request covers a whole campaign.
+# Query: keywords=a,b&campaign_type=<type>&campaign_id=<id>
+KEYWORD_ATTRIBUTES_API = "/adservice/v1/campaigns/keywords/attributes"
+
+# Keywords per attributes request. The endpoint has no documented cap; this keeps the URL
+# comfortably short for a campaign carrying dozens of long keywords.
+KEYWORD_ATTRIBUTES_CHUNK = 40
+
 # ── Campaign types included in POST request bodies ─────────────────────────────
 # Fallback only. Blinkit 400s the whole request if it is sent a type the advertiser
 # does not have enabled ("[...] are not enabled for given advertiser"), so the

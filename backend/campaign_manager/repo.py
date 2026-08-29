@@ -263,9 +263,21 @@ async def resolve_store(platform: str, *, city: str | None = None,
                         location_id: str | None = None) -> tuple[float | None, float | None, str] | None:
     """Resolve a bid rule's measurement point from the darkstore catalog: a specific
     store by `location_id` (merchant_id), or a representative active store in `city`.
-    Returns (lat, lon, label) or None if nothing matches."""
+    Returns (lat, lon, label) or None if nothing matches.
+
+    `city` may be OUR catalog name or the MARKETPLACE's own (V7.3) — a campaign's targeting
+    arrives as the latter, and the two disagree wherever our catalog groups cities that the
+    ad platform lists separately (Blinkit's `Gurugram` is inside our `hr-ncr`). Resolution
+    goes through the CANONICAL registry, and the stores themselves carry `city_id`, so the
+    grouped catalog names never have to be understood here:
+
+        1. `<platform>:ads` alias → canonical city → stores tagged with it;
+        2. a canonical city NAME match, for the names that need no alias;
+        3. the catalog's own `city` text, so a caller passing our name still works;
+        4. nothing — the caller asks the user to pick a store. Never a guess.
+    """
     from sqlalchemy import func
-    from app.models.search import MarketplaceLocation
+    from app.models.search import City, CityAlias, MarketplaceLocation
 
     async with AsyncSessionLocal() as db:
         q = select(MarketplaceLocation).where(
@@ -275,13 +287,83 @@ async def resolve_store(platform: str, *, city: str | None = None,
         if location_id:
             q = q.where(MarketplaceLocation.merchant_id == location_id)
         elif city:
-            q = q.where(func.lower(MarketplaceLocation.city) == city.lower())
+            key = city.strip().lower()
+            city_id = (await db.execute(
+                select(CityAlias.city_id).where(
+                    CityAlias.source == f"{platform}:ads",
+                    CityAlias.alias == key,
+                    CityAlias.is_active == True,  # noqa: E712
+                )
+            )).scalars().first()
+            if city_id is None:
+                city_id = (await db.execute(
+                    select(City.id).where(func.lower(City.name) == key)
+                )).scalars().first()
+            if city_id is not None:
+                q = q.where(MarketplaceLocation.city_id == city_id)
+            else:
+                q = q.where(func.lower(MarketplaceLocation.city) == key)
         # Deterministic representative store when a city matches several.
         row = (await db.execute(q.order_by(MarketplaceLocation.merchant_id).limit(1))).scalars().first()
         if not row:
             return None
         label = row.location_name or f"{row.city}/{row.merchant_id}"
         return row.lat, row.lon, label
+
+
+async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str = "blinkit"):
+    """What the bid-rule form needs to know about a campaign, from the DAILY SCRAPE (V7.4).
+
+    Returns (campaign_row, keyword_rows) or (None, []) when the campaign has never been
+    scraped with V7 in place — the caller then falls back to today's behaviour rather than
+    blocking, because a campaign created since the last scrape is a normal state, not an
+    error.
+
+    Reads only scraped tables, never Blinkit: this is served by the API on Render, which
+    has no browser (D2). The authoritative floor check happens at WRITE time on the VM.
+    """
+    from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
+
+    async with AsyncSessionLocal() as db:
+        campaign = (await db.execute(
+            select(BlinkitAdCampaign).where(
+                BlinkitAdCampaign.tenant_id == tenant_id,
+                BlinkitAdCampaign.platform == platform,
+                BlinkitAdCampaign.campaign_id == campaign_id,
+            )
+        )).scalars().first()
+        keywords = (await db.execute(
+            select(BlinkitAdCampaignKeyword).where(
+                BlinkitAdCampaignKeyword.tenant_id == tenant_id,
+                BlinkitAdCampaignKeyword.platform == platform,
+                BlinkitAdCampaignKeyword.campaign_id == campaign_id,
+            ).order_by(BlinkitAdCampaignKeyword.keyword,
+                       BlinkitAdCampaignKeyword.match_type)
+        )).scalars().all()
+    return campaign, list(keywords)
+
+
+async def get_keyword_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
+                            match_type: str = "EXACT", platform: str = "blinkit") -> int | None:
+    """Blinkit's published minimum bid for one keyword, or None when we have not scraped it.
+
+    None means "no opinion", never "no floor": a keyword the campaign does not carry yet has
+    no scraped row, and refusing to save a rule for it would block the exact case someone
+    is trying to set up.
+    """
+    from sqlalchemy import func
+    from app.models.blinkit_marketing import BlinkitAdCampaignKeyword
+
+    async with AsyncSessionLocal() as db:
+        return (await db.execute(
+            select(BlinkitAdCampaignKeyword.min_bid).where(
+                BlinkitAdCampaignKeyword.tenant_id == tenant_id,
+                BlinkitAdCampaignKeyword.platform == platform,
+                BlinkitAdCampaignKeyword.campaign_id == campaign_id,
+                func.lower(BlinkitAdCampaignKeyword.keyword) == (keyword or "").strip().lower(),
+                BlinkitAdCampaignKeyword.match_type == (match_type or "EXACT").upper(),
+            )
+        )).scalars().first()
 
 
 async def get_budget_schedule(schedule_id: int):
@@ -511,6 +593,10 @@ async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
     if not rows:
         return 0
 
+    # ⚠️ Deliberately excludes the detail-derived columns (region_type / cities / min_cpm /
+    # pacing_type / billed_amount / campaign_cpm, V7). This refresh reads only the campaign
+    # LIST, which carries none of them, so listing them here would blank a campaign's city
+    # targeting and budget floor every time someone clicked Refresh.
     updatable = {"name", "type", "status", "start_ts", "end_ts",
                  "infinite_campaign", "daily_budget", "scraped_at"}
     async with AsyncSessionLocal() as db:

@@ -12,7 +12,8 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn, SetBudgetIn,
+    BudgetScheduleUpdate, BidContextOut, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn,
+    SetBudgetIn,
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
@@ -99,9 +100,21 @@ async def list_bid_rules(client: ClientDep):
     return await svc.list_bid_rules(client.id)
 
 
+@router.get("/campaigns/{campaign_id}/bid-context", response_model=BidContextOut)
+async def get_bid_context(client: ClientDep, campaign_id: int):
+    """What the bid-rule form needs about a campaign: Blinkit's minimum bid per keyword and
+    the cities the campaign targets (V7.4). Served from the daily scrape — never 404s, since
+    a campaign scraped after its creation is a normal state, not an error."""
+    return await svc.get_bid_context(client.id, campaign_id)
+
+
 @router.post("/bid-rules", response_model=BidRuleOut, status_code=201)
 async def create_bid_rule(client: ClientDep, session: SessionDep, body: BidRuleIn):
-    return await svc.create_bid_rule(session, client.id, body)
+    try:
+        return await svc.create_bid_rule(session, client.id, body)
+    except EditError as e:
+        # A min_bid below Blinkit's published floor — same 400 mapping as an edit refusal.
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
 @router.patch("/bid-rules/{rule_id}", response_model=BidRuleOut)

@@ -43,6 +43,7 @@ from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
     parse_campaign,
     parse_campaign_daily,
     parse_campaign_detail,
+    parse_campaign_keywords,
     parse_sponsored_sov,
     parse_brand_collection,
     parse_visibility_plan,
@@ -116,8 +117,22 @@ async def _scrape_blinkit(
             with console.status(f"[cyan]Scraping Blinkit marketing {start}→{end}...[/cyan]"):
                 raw = await scrape(storage_state, start, end, limit=limit)
 
-            campaigns = [parse_campaign(c, tenant_id, job_id) for c in raw["campaigns"]]
+            campaign_detail = raw.get("campaign_detail") or {}
+            cities = raw.get("cities") or {}
+            campaigns = [
+                parse_campaign(c, tenant_id, job_id,
+                               detail=campaign_detail.get(c["id"]), cities=cities)
+                for c in raw["campaigns"]
+            ]
             type_by_id = {c["id"]: c.get("campaign_type") for c in raw["campaigns"]}
+
+            keyword_bids = [
+                row
+                for cid, attrs in (raw.get("keyword_attributes") or {}).items()
+                for row in parse_campaign_keywords(
+                    attrs, campaign_detail.get(cid) or {}, cid, tenant_id, job_id
+                )
+            ]
 
             daily = [
                 parse_campaign_daily(row, cid, type_by_id.get(cid), tenant_id, job_id)
@@ -139,7 +154,8 @@ async def _scrape_blinkit(
             plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
 
             if save:
-                await save_scrape_results(db, campaigns, daily, detail, sov, collections, plans)
+                await save_scrape_results(db, campaigns, daily, detail, sov, collections,
+                                          plans, keywords=keyword_bids)
                 await complete_scrape_job(db, job_id)
 
             console.print(
@@ -147,9 +163,12 @@ async def _scrape_blinkit(
                 f"  campaigns: {len(campaigns)}\n"
                 f"  daily rows: {len(daily)}\n"
                 f"  detail rows: {len(detail)}\n"
+                f"  keyword bid ranges: {len(keyword_bids)}\n"
                 f"  sov: {len(sov)}  collections: {len(collections)}  plans: {len(plans)}"
             )
             _print_campaigns(campaigns)
+            _print_targeting(campaigns)
+            _print_keyword_bids(keyword_bids)
             _print_daily(daily)
             _print_detail(detail)
             _print_sov(sov)
@@ -192,6 +211,89 @@ def _print_campaigns(campaigns: list) -> None:
         status_text = f"[{status_style}]{c['status']}[/{status_style}]" if status_style else c["status"]
         table.add_row(c["name"], c["type"], status_text)
     console.print(table)
+
+
+def _print_targeting(campaigns: list) -> None:
+    """City targeting + the budget/pacing facts, from the per-campaign detail call (V7).
+    Shows the CITY-targeted campaigns first — they are the ones the bid-rule form
+    auto-fills from, and the rare case worth eyeballing after a scrape."""
+    scoped = [c for c in campaigns if c.get("region_type")]
+    if not scoped:
+        console.print("\n[dim]No campaign targeting captured (detail calls returned nothing).[/dim]")
+        return
+    targeted = [c for c in scoped if c.get("cities")]
+    preview = (targeted + [c for c in scoped if not c.get("cities")])[:10]
+    console.print(
+        f"\n[bold cyan]Targeting & budget floor[/bold cyan] "
+        f"({len(targeted)} city-targeted of {len(scoped)}; showing {len(preview)})"
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Campaign")
+    table.add_column("Region")
+    table.add_column("Cities")
+    table.add_column("Pacing", style="dim")
+    table.add_column("Budget", justify="right")
+    table.add_column("Spent", justify="right")
+    table.add_column("min_cpm", justify="right")
+    for c in preview:
+        cities = ", ".join(x["name"] for x in (c.get("cities") or [])) or "—"
+        budget = c.get("daily_budget")
+        table.add_row(
+            (c.get("name") or "")[:34],
+            c.get("region_type") or "—",
+            cities[:40],
+            c.get("pacing_type") or "—",
+            "—" if budget is None else f"{budget:,.0f}",
+            f"{c.get('billed_amount') or 0:,.0f}",
+            "—" if c.get("min_cpm") is None else f"{c['min_cpm']:,}",
+        )
+    console.print(table)
+
+
+def _print_keyword_bids(rows: list) -> None:
+    """Blinkit's published bid range per keyword (V7). The interesting column is
+    `Min` — the floor a bid rule may not go under — and whether the live bid is under it."""
+    if not rows:
+        console.print("\n[dim]No keyword bid ranges captured.[/dim]")
+        return
+    exact = [r for r in rows if r["match_type"] == "EXACT"]
+    below = [
+        r for r in exact
+        if r.get("current_cpm") is not None and r.get("min_bid") is not None
+        and r["current_cpm"] < r["min_bid"]
+    ]
+    preview = (below + [r for r in exact if r not in below])[:15]
+    console.print(
+        f"\n[bold cyan]Keyword bid ranges[/bold cyan] "
+        f"(showing {len(preview)} of {len(exact)} EXACT, {len(rows)} rows all match types)"
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Campaign", style="dim")
+    table.add_column("Keyword")
+    table.add_column("Bid", justify="right")
+    table.add_column("Min", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Suggested", justify="right")
+    table.add_column("Searches", justify="right")
+    for r in preview:
+        bid = r.get("current_cpm")
+        under = bid is not None and r.get("min_bid") is not None and bid < r["min_bid"]
+        sugg = (
+            f"{r['suggested_min']:,}–{r['suggested_max']:,}"
+            if r.get("suggested_min") and r.get("suggested_max") else "—"
+        )
+        table.add_row(
+            str(r["campaign_id"]),
+            r["keyword"][:28],
+            "—" if bid is None else (f"[red]{bid:,}[/red]" if under else f"{bid:,}"),
+            f"{r['min_bid']:,}" if r.get("min_bid") is not None else "—",
+            f"{r['max_bid']:,}" if r.get("max_bid") is not None else "—",
+            sugg,
+            f"{r['keyword_searches']:,}" if r.get("keyword_searches") else "—",
+        )
+    console.print(table)
+    if below:
+        console.print(f"[yellow]{len(below)} live bid(s) sit below Blinkit's published minimum.[/yellow]")
 
 
 def _print_daily(rows: list) -> None:

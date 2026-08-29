@@ -1,6 +1,6 @@
 """Config sync: reconcile the DB to a source-of-truth workbook.
 
-One command reads `config.xlsx` (sheets: locations / brands / coverage) and makes
+One command reads `config.xlsx` (sheets: locations / brands / coverage / city_map) and makes
 the DB match it — upserting by default, deleting only with --prune. The workbook
 is the source of truth; scrapers never read it. Updates are infrequent, so this
 replaces the per-row add/remove CLI verbs.
@@ -14,6 +14,14 @@ Sheets
                     keyword_cap, brand_cap   (caps optional; own rows only)
   coverage  : which catalog locations each tenant scrapes
               cols: mp, tenant, city   (one row per marketplace+city covered)
+  city_map  : how a marketplace's own city names map onto the catalog (V7.3)
+              cols: source, alias, city, pincode_prefixes
+              Two row kinds: an ALIAS (source+alias+city) for a name that IS
+              one city, or a PREFIX row (city+pincode_prefixes) saying which
+              pincodes belong to it — that is how a grouped catalog name like
+              `hr-ncr` splits across several real cities.
+              Only EXCEPTIONS need a row — a marketplace city whose name already
+              equals a catalog city resolves without one (228 of Blinkit's 242).
 
 `mp` is optional and defaults to `blinkit`, so a pre-multi-marketplace workbook
 syncs unchanged. **Each marketplace has its own catalog** — a store's coordinate is
@@ -35,7 +43,7 @@ from sqlalchemy import text
 from sqlmodel import select
 
 from app.core.database import AsyncSessionLocal
-from app.models.search import MarketplaceLocation, TenantLocation
+from app.models.search import City, CityAlias, MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from scraper.utils.storage import _MP_NAMES, ensure_refs
 
@@ -112,6 +120,9 @@ def _read_config(path: str) -> dict:
         "locations": _read_sheet(wb, "locations"),
         "brands": _read_sheet(wb, "brands"),
         "coverage": _read_sheet(wb, "coverage"),
+        # Optional — an older workbook without it syncs as before (_read_sheet warns
+        # and returns []), and an absent sheet must never be read as "delete the map".
+        "city_map": _read_sheet(wb, "city_map"),
     }
 
 
@@ -268,6 +279,137 @@ async def _sync_coverage(db, rows, tenants, prune) -> dict:
     return {"added": added, "deleted": deleted}
 
 
+async def _sync_city_map(db, rows, prune) -> dict:
+    """Reconcile the `city_map` sheet into `city_aliases` and cities' pincode prefixes (V7.3).
+
+    The sheet carries TWO kinds of row, and the difference matters:
+
+      - **Alias** (`source` + `alias` + `city`) — a name that IS one city, on one surface.
+        `blinkit:catalog | aurangabad (maharashtra) | Aurangabad`.
+      - **Prefix** (`city` + `pincode_prefixes`, no source/alias) — which pincodes belong
+        to a city. This is how a GROUPED catalog name is handled: `hr-ncr` gets no alias at
+        all, because it is not one city. Its 77 stores each resolve by their own pincode,
+        which is what lets one bucket split into several cities (`up-ncr` → Noida AND
+        Ghaziabad). An alias could never express that.
+
+    Only exceptions belong here: a name that already equals a canonical city resolves
+    without a row (228 of Blinkit's 242). `scripts/blinkit_city_match.py` generates the
+    sheet.
+    """
+    cities = {c.slug: c for c in (await db.execute(select(City))).scalars().all()}
+    by_name = {(c.name or "").strip().lower(): c for c in cities.values()}
+
+    def _city(ref: str):
+        """A sheet's `city` cell — canonical slug or display name."""
+        key = ref.strip().lower()
+        return cities.get(key.replace(" ", "-")) or by_name.get(key) or cities.get(key)
+
+    alias_rows: dict[tuple, int] = {}
+    prefix_rows: dict[str, list] = {}
+    unknown: list[str] = []
+    for r in rows:
+        ref = _str(r.get("city"))
+        if not ref:
+            continue
+        city = _city(ref)
+        if city is None:
+            unknown.append(ref)
+            continue
+        # Excel turns "1220" into the number 1220 — read prefixes back as strings or a
+        # prefix match against a text pincode silently never fires.
+        prefixes = [str(p).strip() for p in _csv(r.get("pincode_prefixes"))]
+        if prefixes:
+            prefix_rows.setdefault(city.slug, []).extend(prefixes)
+        source, alias = _str(r.get("source")).lower(), _str(r.get("alias")).lower()
+        if source and alias:
+            alias_rows[(source, alias)] = city.id
+
+    if unknown:
+        raise ValueError(
+            f"city_map references unknown cities: {sorted(set(unknown))}. "
+            f"Run `cli cities seed` first, or fix the spelling."
+        )
+
+    # Prefixes from the sheet are AUTHORITATIVE over the derived ones — they exist
+    # precisely for the cities `cli cities seed` cannot derive, because no catalog name
+    # matches them.
+    updated_cities = 0
+    for slug, prefixes in prefix_rows.items():
+        want = sorted(set(prefixes))
+        if cities[slug].pincode_prefixes != want:
+            cities[slug].pincode_prefixes = want
+            updated_cities += 1
+
+    existing = {
+        (a.source, a.alias): a
+        for a in (await db.execute(select(CityAlias))).scalars().all()
+    }
+    added = updated = deleted = 0
+    for (source, alias), city_id in alias_rows.items():
+        cur = existing.get((source, alias))
+        if cur is None:
+            db.add(CityAlias(source=source, alias=alias, city_id=city_id, is_active=True))
+            added += 1
+        elif cur.city_id != city_id or not cur.is_active:
+            cur.city_id, cur.is_active = city_id, True
+            updated += 1
+    if prune:
+        for key, cur in existing.items():
+            if key not in alias_rows:
+                await db.delete(cur)
+                deleted += 1
+    await db.flush()
+    return {"added": added, "updated": updated + updated_cities, "deleted": deleted}
+
+
+async def _tag_store_cities(db, mps: set) -> dict:
+    """Give every store its canonical `city_id` (V7.3).
+
+    Resolution order, and the order is the whole design:
+
+      1. an ALIAS for this marketplace's catalog — an explicit human decision, so it wins;
+      2. an exact canonical NAME match — true for 228 of Blinkit's 242 cities;
+      3. the store's PINCODE. Last because it is derived, but it is the only thing that can
+         resolve a grouped catalog name (`hr-ncr`, `delhi ncr`), since those match no city
+         by name at all and cover several cities at once.
+
+    A store that matches nothing keeps `city_id = NULL` — the picker then simply does not
+    offer it, which is visible and recoverable. Guessing would silently measure a campaign's
+    ad position in the wrong city.
+    """
+    cities = (await db.execute(select(City))).scalars().all()
+    by_name = {(c.name or "").strip().lower(): c.id for c in cities}
+    by_prefix: dict[str, int] = {}
+    for c in cities:
+        for p in c.pincode_prefixes or []:
+            by_prefix[str(p)] = c.id
+    aliases = {
+        (a.source, a.alias): a.city_id
+        for a in (await db.execute(select(CityAlias))).scalars().all() if a.is_active
+    }
+
+    stores = (await db.execute(
+        select(MarketplaceLocation).where(MarketplaceLocation.mp_slug.in_(mps or [None]))
+    )).scalars().all()
+
+    tagged = 0
+    for s in stores:
+        name = (s.city or "").strip().lower()
+        city_id = aliases.get((f"{s.mp_slug}:catalog", name)) or by_name.get(name)
+        if city_id is None and s.pincode:
+            # Longest prefix first, so a 4-digit rule beats the 3-digit one it sits inside
+            # (2013 → Noida must win over any 201 → …).
+            for length in (4, 3):
+                city_id = by_prefix.get(s.pincode[:length])
+                if city_id:
+                    break
+        if city_id and s.city_id != city_id:
+            s.city_id = city_id
+            tagged += 1
+    await db.flush()
+    return {"updated": tagged}
+
+
 def _tenant_marketplaces(rows, tenants) -> dict:
     """tenant_id -> the marketplaces it covers, from the coverage sheet. Seeds a NEW
     watchlist row's `marketplaces`; existing rows are never rewritten from here."""
@@ -308,12 +450,16 @@ async def _do_sync(data, dry_run, prune) -> dict:
         loc = await _sync_locations(db, data["locations"], prune)
         brands = await _sync_brands(db, data["brands"], tenants, prune, tenant_mps)
         cov = await _sync_coverage(db, data["coverage"], tenants, prune)
+        cmap = await _sync_city_map(db, data.get("city_map") or [], prune)
+        # After aliases + prefixes exist, give every store its canonical city.
+        tagged = await _tag_store_cities(db, {_mp(r.get("mp")) for r in data["locations"]})
 
         if dry_run:
             await db.rollback()
         else:
             await db.commit()
-    return {"locations": loc, "brands": brands, "coverage": cov}
+    return {"locations": loc, "brands": brands, "coverage": cov, "city_map": cmap,
+            "store cities": tagged}
 
 
 # ── template ─────────────────────────────────────────────────────────────────
@@ -337,6 +483,19 @@ def _write_template(path: str) -> None:
     c.append(["mp", "tenant", "city"])
     c.append(["blinkit", "Dobra", "delhi"])
 
+    # Only EXCEPTIONS need a row — a marketplace city whose name already matches a
+    # catalog city resolves without one. `scripts/blinkit_city_match.py` generates it.
+    m = wb.create_sheet("city_map")
+    m.append(["source", "alias", "city", "pincode_prefixes"])
+    # An ALIAS row: a name that IS one city, on one surface.
+    m.append(["blinkit:catalog", "aurangabad (maharashtra)", "Aurangabad", ""])
+    m.append(["blinkit:seller", "Gurgaon", "Gurugram", ""])
+    # PREFIX rows: which pincodes belong to a city. A grouped catalog name like `hr-ncr`
+    # gets NO alias — it is not one city; its stores resolve individually by pincode.
+    m.append(["", "", "Gurugram", "122"])
+    m.append(["", "", "Noida", "2013"])
+    m.append(["", "", "Ghaziabad", "2010,2011"])
+
     wb.save(path)
 
 
@@ -348,7 +507,7 @@ def run_sync(
     prune: bool = typer.Option(False, "--prune", help="Also delete DB rows missing from the file"),
     template: bool = typer.Option(False, "--template", help="Write a starter workbook to --file and exit"),
 ):
-    """Reconcile the DB to the config workbook (locations + brands + coverage)."""
+    """Reconcile the DB to the config workbook (locations + brands + coverage + city_map)."""
     if template:
         _write_template(file)
         console.print(f"[green]Template written to[/green] {file}")
@@ -357,7 +516,7 @@ def run_sync(
     data = _read_config(file)
     console.print(
         f"[dim]Read {len(data['locations'])} locations, {len(data['brands'])} brands, "
-        f"{len(data['coverage'])} coverage rows from {file}[/dim]"
+        f"{len(data['coverage'])} coverage, {len(data['city_map'])} city_map rows from {file}[/dim]"
     )
     result = asyncio.run(_do_sync(data, dry_run, prune))
 
@@ -367,7 +526,7 @@ def run_sync(
     table.add_column("Added", justify="right")
     table.add_column("Updated", justify="right")
     table.add_column("Deleted", justify="right")
-    for section in ("locations", "brands", "coverage"):
+    for section in ("locations", "brands", "coverage", "city_map", "store cities"):
         s = result[section]
         table.add_row(section, str(s.get("added", 0)), str(s.get("updated", 0)), str(s.get("deleted", 0)))
     console.print(table)
