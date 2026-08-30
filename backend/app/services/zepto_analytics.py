@@ -222,10 +222,14 @@ async def city_category(
     """City x category revenue cells for the Analytics heatmap.
 
     Reads `zepto_seller_product_city_daily` — the only Zepto table carrying city
-    and category on one row. `zepto_seller_sales_city_daily` has no category and
-    `zepto_seller_product_perf` has no city, so neither can answer this on its
-    own, and joining them on date alone would attribute every SKU's revenue to
-    whichever cities sold that day rather than reading the real split.
+    and category on one row. `zepto_seller_product_perf` has no city, so it
+    cannot answer this on its own, and joining the two on date alone would
+    attribute every SKU's revenue to whichever cities sold that day rather than
+    reading the real split.
+
+    (A coarser `zepto_seller_sales_city_daily` — brand per city per day, no
+    category — was dropped in a3f7c92e51d8. It held the same money at a coarser
+    grain; all 14 of its rows were verified reproducible from this table.)
 
     Scoped to the top `limit` cities by revenue, mirroring the Blinkit version:
     the heatmap renders cities as rows, and there are more of them than fit.
