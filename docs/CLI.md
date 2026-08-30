@@ -139,9 +139,21 @@ python -m cli scrape blinkit --tenant <tenant_id> --no-save   # dry run, print o
 
 One pass fetches the campaign list, then for **each campaign** its **daily** metric
 series and its **keyword / recommendation breakdown**, plus sponsored SOV, brand
-collections, and visibility plans. Cost ≈ `1 + 2·N` API calls (N = campaign count),
-each covering the whole `--from`/`--to` window — so a 30-day backfill is one pass,
-not 30 runs.
+collections, and visibility plans. Each covers the whole `--from`/`--to` window — so a
+30-day backfill is one pass, not 30 runs.
+
+Since V7 it also pulls each campaign's **configuration**: city targeting, budget, pacing,
+spend-to-date, and Blinkit's published **bid range per keyword** (the floor a bid rule may
+not go under). Two extra calls per campaign — the keyword one takes the whole keyword list
+at once, so it does not grow with keyword count, and campaigns with no keyword targeting
+skip it entirely. Cost ≈ `2 + 4·N` (N = campaign count); ~14 min for 63 campaigns, up from
+~7.5. ⚠️ Unlike the metric pulls, configuration is fetched for **every** campaign including
+`DRAFT`/`SCHEDULED`/`UNDER_REVIEW` — those have no metrics but they do have keywords,
+cities and floors, and a just-created campaign is the one someone is about to automate.
+
+`--no-save` prints two extra tables for this: **Targeting & budget floor** (region, cities,
+pacing, budget, spend) and **Keyword bid ranges** (live bid vs Blinkit's min/max/suggested,
+flagging any live bid that sits below the published minimum).
 
 | Option             | Default    | Notes                                               |
 | ------------------ | ---------- | --------------------------------------------------- |

@@ -2,8 +2,9 @@
 
 > The single source of truth for the Campaign Manager: what it is, how it decides, what it
 > writes to the marketplace, and **exactly what happens in every edge case we know about**.
-> Replaces the earlier `campaign-manager-refactor.md`, `campaign-manager-v2-implementation.md`
-> and `campaign-activation.md`.
+> The **only** Campaign Manager doc. It describes the system as it is now — the v1 audit, the
+> v2 build plan and the activation design it grew out of were folded in and deleted 2026-08-29;
+> `git log -- docs/campaign-manager-*.md` has them if the history is ever needed.
 
 **Jump to:** [Edge-case reference](#9-edge-case-reference) · [Known gaps](#12-known-gaps--parked)
 · [Config](#10-configuration) · [Operating it](#11-operating-it)
@@ -89,7 +90,7 @@ campaign_manager/
     └── blinkit/
         ├── adapter.py        the marketplace mechanism (read_*/apply_*), status mapping
         ├── client.py         raw Blinkit API client
-        ├── live_position.py  consumer-search scrape (where our ad actually ranks)
+        ├── live_position.py  consumer-search API client (where our ad actually ranks)
         ├── positions.py      product matching → sponsored position
         └── restart.py        the RESTART payload builder
 ```
@@ -154,6 +155,22 @@ existing schedule as rules.
 
 `cm_run_log` is append-only and needs a retention policy eventually. Verbose narration goes to
 Cloud Logging, not the DB.
+
+### Tables it READS but does not own
+
+The campaign manager owns the `cm_*` tables above. It also reads three things filled by the daily
+Blinkit scrape and by `cli sync` — deliberately not copied into a `cm_*` table, because a second
+copy would drift from the one the scraper maintains.
+
+| Table | Holds | Filled by |
+|---|---|---|
+| `blinkit_ad_campaigns` | The campaign catalogue, plus its city targeting (`region_type`, `cities`), budget, `pacing_type` and spend-to-date | daily marketing scrape |
+| `blinkit_ad_campaign_keywords` | The marketplace's published bid range per (campaign, keyword, match type) — `min_bid`, `max_bid`, `suggested_*`, `keyword_searches` | daily marketing scrape |
+| `cities` · `city_aliases` · `marketplace_locations.city_id` | The canonical city registry — what turns a campaign's city targeting into a real store to measure at | `cli cities seed` + `cli sync` |
+
+⚠️ These are for the **UI**. The engine re-reads the bid floor live at write time (§7.6) — the
+scraped copy can be up to a day old, and it is the number that decides what gets written to a real
+account.
 
 ---
 
@@ -282,6 +299,39 @@ change, wait. Marketplace changes take time to show up; stacking raises overbids
 15-minute cadence this rarely fires; it exists for back-to-back runs, such as an edit
 triggering an immediate re-apply.
 
+### 7.2b Where the position comes from
+
+One **API request per (keyword, store)** — the engine does not load search pages.
+
+A single warm-up per run (homepage + one throwaway search) establishes a cleared session
+and captures the headers Blinkit attaches to its own `/v1/layout/search` request. After
+that every keyword is an in-page `fetch()` costing well under a second, and **the store is
+selected by the `lat`/`lon` headers**, so spanning several stores costs no more than one.
+
+Two properties the bid loop depends on:
+
+- **Results are cached per `(keyword, store)` for the run.** Several campaigns routinely
+  target the same keyword at the same store; the search results are identical, so only the
+  product match differs. A *failed* fetch is cached as the failure too — re-scraping a
+  keyword that just timed out only feeds the throttling that caused it.
+- **"Couldn't look" is distinct from "our ad isn't there."** A failed request raises (→
+  `error` row); an empty or organic-only result returns normally (→ `skip`). Collapsing
+  them would let a transport fault read as "we're not ranking" and be acted on.
+
+The transport — in-page fetch on a cleared session, Cloudflare-challenge detection, retry
+with backoff — is **shared with the public scraper** (`in_page_fetch`), not copied, so a
+Blinkit change is fixed once.
+
+> **Why it works this way.** Until 2026-08-22 this launched a Playwright driver and a
+> Chromium **per keyword**, then did two full `page.goto`s waiting on `networkidle`. That
+> cost 10–60s per keyword and made Blinkit see a dozen cold clients hitting the same search
+> from one IP within minutes. Eight of twelve keywords were lost to `Page.goto` timeouts and
+> run time climbed 87s → 524s across four runs, heading for the 15-minute job timeout —
+> past which the next fire is silently dropped by the overlap guard. There is also
+> deliberately **no DOM fallback**: it could not read `ads_campaign_id`, so everything it
+> returned was flagged organic, which `match_position` can only read as "skip". It never
+> once produced a usable bid decision.
+
 ### 7.3 Holding — "at target **or better**"
 
 Being better than target is a **success, not an error to correct.** Sponsored slots sit on a sparse
@@ -363,6 +413,75 @@ is gone in 200 impressions and the campaign goes ON_HOLD.
 ✅ The old "a flat ₹100/tick tops out near ₹2,900 per window" limitation is **gone** — the
 escalating raise (§7.2) reaches ₹10,000 in about 12 ticks, so an unbounded rule can now
 actually reach a high target inside a window.
+
+### 7.6b The marketplace's own floor
+
+`min_bid` has the mirror-image problem, and it is the one the client actually raised: **Blinkit
+sets its own minimum bid, per keyword.** It is not one number for the account — measured on Dobra,
+`mango` floors at ₹50, `soda` at ₹100, `slice` at ₹200 and `cocktail` at ₹400, *two of those inside
+one campaign*. A rule written weeks ago cannot know today's.
+
+`effective_floor` is the sibling of `resolve_ceiling` and is resolved at the same point, under the
+same rule — **`rule.min_bid` must not be read below that line**:
+
+```
+min_bid = max(rule.min_bid, marketplace_floor)   if the floor is known
+          else rule.min_bid
+```
+
+The two directions mean different things and both are respected. A rule's `min_bid` is the
+**client's** floor — a client who never wants to bid under ₹500 keeps that where Blinkit would
+allow ₹200. The marketplace floor is what the auction will actually accept: below it the write is
+refused or silently raised, so a rule set under it is not a cheap bid, it is an **ineffective** one.
+
+An unknown floor (`None`) falls back to the rule's own value. That covers a failed lookup and a
+keyword the campaign does not carry yet — refusing to bid because a *read* failed would be worse
+than bidding at the configured minimum.
+
+**Read live, not from the scrape.** The nightly copy in `blinkit_ad_campaign_keywords` feeds the
+setup form; the engine re-reads at write time because this is the number that decides what lands on
+a real account. It costs **one request per campaign per run** — the endpoint takes the whole keyword
+list at once (verified: 130 floors in a single call for a 65-keyword campaign), so it does not scale
+with keyword count.
+
+⚠️ It applies to the **end-of-window reset** too (§7.8). That write moves the bid *down*, so below
+the floor it is refused — and the keyword would sit at its high in-window bid all night.
+
+⚠️ `min_cpm_config`, which Blinkit returns alongside every campaign detail, is **not** this number.
+See §8.6.
+
+### 7.6c Where a rule measures — the city registry
+
+A bid rule reads its keyword's position at **one real dark store**, so it needs a city. That city
+used to be typed by hand, with nothing checking it against the campaign: a rule could measure in a
+city the campaign does not advertise in, and nothing anywhere would say so.
+
+The campaign now supplies it. `region_type` is `PAN_INDIA` or `CITY`; `region_ids` are resolved to
+names at scrape time. One city auto-fills, several become a dropdown, pan-India leaves the choice
+open.
+
+Turning that name into a store needed a shared vocabulary, because **the same place is spelled
+differently on every surface** — Blinkit's ads say `Gurugram`, Blinkit's *seller* dashboard says
+`Gurgaon`, our store catalog says `hr-ncr`, Zepto's says `delhi ncr`. The mismatch is per **surface**,
+not per marketplace, so translating source→source would need a rule per pair.
+
+Instead there is one canonical `cities` list, `city_aliases` keyed `<marketplace>:<surface>`, and —
+the part that makes it work — **each store carries its own `city_id`, derived from its pincode**.
+Grouped catalog names then stop mattering: `hr-ncr`'s 77 stores individually resolve to Gurugram,
+and Zepto's `delhi ncr` blob splits per store with no Zepto-specific rule at all.
+
+Resolution order, and the order is the design: **alias → canonical name → pincode**. Explicit human
+decisions beat derived ones; pincode is last but is the only thing that can split a grouped name. No
+match leaves `city_id` NULL and the store is simply not offered — visible and recoverable, unlike a
+guess that would silently measure in the wrong city.
+
+⚠️ A grouped name gets **no alias**, deliberately. `up-ncr` is not one city — it splits into Noida
+(`2013`) and Ghaziabad (`2010`,`2011`) by pincode, and an alias can only point at one city. Four
+digits, because `201xxx` alone cannot separate them.
+
+Maintenance is the ~14 exceptions in `config.xlsx`'s `city_map` sheet; the other 228 cities match by
+name. `cli cities seed` builds the list, `cli sync` applies the sheet and tags stores, `cli cities
+status` reports what still resolves to nothing.
 
 ### 7.7 Bounds are invariants
 
@@ -469,6 +588,34 @@ there, so gating on it would block every stop.
 The campaign manager **consumes** the same `(tenant, "blinkit")` session as the scrapers and owns no
 auth code of its own. Sessions live encrypted in the DB, not on disk. Engines call `ensure()`, so an
 expired session self-heals. See [platform-auth.md](platform-auth.md).
+
+### 8.6 The Blinkit API surface
+
+Authenticated calls to `https://brands.blinkit.com` via in-page `page.evaluate(fetch)` — Cloudflare
+blocks direct httpx even with valid cookies (an httpx attempt was written and reverted).
+
+| Method | Path | For |
+|---|---|---|
+| POST | `/adservice/v1/advertisers/campaigns` | The campaign list. ⚠️ Carries **no budget field at all** |
+| GET | `/adservice/v1/campaigns/{id}` | Detail: budget, keywords, pids, pacing, `region_type` + `region_ids`, `billed_amount`, `allowed_transitions` |
+| GET | `/adservice/v1/campaigns/keywords/attributes` | **The bid floor**, per keyword: `bid_range.{exact_match,smart_match}.{min,max,suggested_min,suggested_max,min_for_boost}` + `keyword_searches`. Takes a comma-separated list |
+| GET | `/adservice/v{2,3}/campaigns/config` | Enabled asset types, the city directory (`cities`, `states_and_cities`), `min_cpm_config` |
+| GET | `/adservice/v1/advertisers` | Advertiser id + name + `features` flags (`city_filter`, …) |
+| POST | `/adservice/v1/campaigns/reports/{id}` | Keyword report (position, impressions, cpm) |
+| PUT | `/adservice/v3/campaigns` | **The write** — budget, bids, and RESTART |
+| DELETE | `/adservice/v1/campaigns/{id}` | **Stop** — see §8.4; it does not delete |
+
+> ⚠️ **`min_cpm_config` is not a bid floor, despite the name.** It is a per-campaign-type table
+> (PRODUCT_LISTING 500, BRAND_BOOSTER 200, …) that Blinkit's dashboard feeds to its **budget**
+> validator. Bids far below it are accepted and held: 51 of 55 campaigns carry one, active
+> campaigns included, and 36 sub-₹500 bids we wrote ourselves (down to ₹226) read back unchanged.
+> The bid floor is per keyword, from `keywords/attributes` (§7.6b). This doc previously stated the
+> opposite; corrected 2026-08-26 after reading Blinkit's own dashboard JavaScript, which is also
+> where the undocumented endpoint came from (`scripts/blinkit_ui_bid_rules.py` downloads it).
+>
+> There is likewise **no minimum-budget field** anywhere — Blinkit's dashboard derives one in the
+> browser. We store the inputs (`min_cpm`, `pacing_type`, `billed_amount`, `campaign_cpm`) and let
+> the marketplace reject a too-low budget rather than reimplementing its rules.
 
 ---
 
@@ -632,9 +779,9 @@ Everything defaults to dry-run. `--live` is always explicit.
 
 ### What to watch first
 
-- **An `open` write that never confirms.** The most likely real-world failure: the marketplace
-  returns a `min_cpm_config` per campaign type (the client falls back to 500), so a `min_bid` below
-  that floor may be silently clamped or rejected.
+- **A `bounds` line naming the marketplace floor.** Expected and healthy — it means Blinkit's
+  minimum for that keyword is above the rule's `min_bid` and the engine bid at the floor (§7.6b).
+  Worth watching only if it appears on a keyword whose floor you thought you knew.
 - **`bounds` rows** appearing without an edit — would mean something else is moving the bid.
 - **`relax` rows** — how often targets turn out to be unreachable, and at what position.
 - **Failed `reset` rows** — how often the campaign is already dark at window close.
@@ -650,26 +797,30 @@ Everything defaults to dry-run. `--live` is always explicit.
 | Target becoming reachable **mid-window** | Not noticed until the next day. Re-testing means climbing back to the ceiling, which burns most of a window and usually finds nothing |
 | No acceptability floor on a relaxed target | A poor position is held cheaply rather than abandoned. "Below what rank is this worth paying for?" is a business call |
 | Drift parameters (7%, 90 min) | Educated guesses, unmeasured. Tune from real History rows |
-| Tiered position sourcing | Every keyword is scraped live every run. Fine until keyword count grows |
+| Tiered position sourcing | Every distinct (keyword, store) is fetched live every run. Now one cheap API request each rather than a browser launch, so the pressure is much lower |
 | Per-tenant guardrail bounds | Global defaults for now; revisit when a second tenant with a different budget scale lands |
 
 ### Known, not yet fixed
 
 | Gap | Consequence |
 |---|---|
-| **Marketplace CPM floor unverified** | If `min_bid` is below it, floor writes may be rejected. Shows as an `open` write that never confirms |
 | Reset schedule is `catchup=False` | A firing missed while the runner is down waits until tomorrow. Window-open covers it, so lower priority |
 | Reset and optimizer share the overlap-guard key `(job_type, tenant_id)` | A reset can be swallowed by an in-flight optimizer run. Harmless at ~30 s runs; bites around 20–30 keywords. Fix: a distinct job type, or include params in the guard |
 | Bid window scheduling is hour-granular | A 09:30 start rounds to the 09:00 hour; `_in_window` filters the early ticks, so it's cosmetic |
 | Stale boundary crons after expiry | Expiry fires a reset one-shot but leaves the now-inert boundary crons; the daily cleanup prunes them |
 | `cm_run_log` has no retention policy | Grows unbounded against a 500 MB quota |
-| `cm_campaign_catalog` not built | `cm.sync_campaign_data` is a stub; the optimizer fetches products live |
+| `cm_campaign_catalog` not built | `cm.sync_campaign_data` is a stub; the optimizer fetches products live. Not needed for bid floors or cities — those ride the daily scrape |
+| Drift is shipped at `CM_BID_DRIFT_PCT=0` | Cost minimisation is off. Before arming: confirm on real History rows that position is flat across wide bid ranges now the store is fixed per rule, then arm ONE keyword and measure |
+| Coworker's `ADVERTISER_ID = 234` is stale | Their v1 writes would hit the dead pre-split account (the real one is 19802). Ours sends the stored id. Needs coordinating, not silently changing |
+| Nine stores have no canonical city | Four `up-ncr` at `2032xx` (Bulandshahr-district, matching no ad-city), `pilkhuwa`, and three Zepto stores with **transposed pincodes** in the `locations` sheet (`120001`, `210305`×2). They are simply not offered as measurement points |
+| No `pytest` | Suites are standalone assert-based. Fine, but a team call eventually |
 
-### ⚠️ Never validated against the live marketplace
+### ⚠️ Validation status against the live marketplace
 
-Every check so far is unit tests and a fake-adapter simulation. The window-open floor, the
-end-of-window reset, drift, relaxation and bounds enforcement have **not** run against a real
-campaign yet.
+| | |
+|---|---|
+| ✅ Validated live | Budget write (₹205 → 574687, reverted). Bid floors read per keyword. City targeting resolved on real campaigns. The scrape's write path. |
+| ❌ Not yet | The bid **write** loop end to end — window-open floor, reset, drift, relaxation and bounds enforcement have still not run against a real campaign. Everything so far is unit tests plus a fake-adapter simulation. |
 
 ---
 
@@ -686,6 +837,8 @@ python -m campaign_manager.tests.test_budget_apply    # budget + activation deci
 python -m campaign_manager.tests.test_transitions     # status transition table
 python -m campaign_manager.tests.test_advertiser      # account guardrail
 python -m campaign_manager.tests.test_restart_payload # the RESTART body
+python -m campaign_manager.tests.test_bid_floor       # the marketplace floor + match-type mapping
+python -m campaign_manager.tests.test_live_position   # consumer-search position matching
 ```
 
 The decision logic is **pure** and tested without a browser. The orchestration — where the real bugs

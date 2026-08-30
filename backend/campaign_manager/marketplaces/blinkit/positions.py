@@ -60,15 +60,28 @@ def match_position(results: list[dict], product_names: list[str],
     return (None, False, True) if organic_match is not None else (None, False, False)
 
 
-async def resolve(keyword: str, lat: float, lon: float, *, product_names: list[str],
-                  product_pids: list[str], brand_name: str | None) -> tuple[float | None, str]:
-    """Scrape live positions and locate this campaign's product. Returns
-    (position | None, source-string). None = not found / organic-only → skip the bid."""
-    results = await get_live_positions(keyword, lat=lat, lon=lon)
+def locate(results: list[dict], keyword: str, lat: float, lon: float, *,
+           product_names: list[str], product_pids: list[str],
+           brand_name: str | None) -> tuple[float | None, str]:
+    """Find this campaign's product in an ALREADY-FETCHED result set. Returns
+    (position | None, source-string). None = not found / organic-only → skip the bid.
+
+    Split from the fetch so several campaigns targeting the same keyword at the same store
+    share one scrape: the search results are identical, only the product match differs."""
+    log = logger.bind(tag=f"cm.pos[{keyword}]")
     pos, is_sponsored, found = match_position(results, product_names, product_pids, brand_name)
     if pos is None:
         reason = "organic-only (not a sponsored ad)" if found else "product not in results"
-        logger.info(f"[cm.bid] {keyword!r} @ ({lat},{lon}): {reason} ({len(results)} results) — skip")
+        log.debug(f"@ ({lat},{lon}): {reason} ({len(results)} results) — skip")
         return None, reason
-    logger.info(f"[cm.bid] {keyword!r} @ ({lat},{lon}): sponsored pos {pos} ({len(results)} results)")
+    log.debug(f"@ ({lat},{lon}): sponsored pos {pos} ({len(results)} results)")
     return pos, f"live({len(results)} results)"
+
+
+async def resolve(keyword: str, lat: float, lon: float, *, product_names: list[str],
+                  product_pids: list[str], brand_name: str | None) -> tuple[float | None, str]:
+    """Fetch + locate in one call, with its own browser. Convenience for an ad-hoc lookup;
+    the bid loop fetches once per (keyword, location) and calls `locate` per campaign."""
+    results = await get_live_positions(keyword, lat=lat, lon=lon)
+    return locate(results, keyword, lat, lon, product_names=product_names,
+                  product_pids=product_pids, brand_name=brand_name)

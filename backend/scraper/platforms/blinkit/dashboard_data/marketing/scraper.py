@@ -2,6 +2,7 @@ import asyncio
 import json
 import re
 from datetime import date
+from urllib.parse import urlencode
 
 from playwright.async_api import async_playwright
 
@@ -76,10 +77,17 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
             await _log_advertiser(page, token)
 
             # ── Account-level pulls ────────────────────────────────────────────
+            # ONE config call serves two purposes: which campaign types may be requested,
+            # and the city id→name directory that turns a campaign's `region_ids` into
+            # names (V7). Resolving the names here is what spares us a city lookup table.
+            config = await _account_config(page, token)
+            cities = (config or {}).get("cities") or {}
+            logger.info(f"City directory: {len(cities)} cities")
+
             body = {
                 "from_date": from_str,
                 "to_date": to_str,
-                "campaign_types": await _enabled_campaign_types(page, token),
+                "campaign_types": _enabled_campaign_types(config),
             }
             campaigns_resp = await _post(page, ep.CAMPAIGNS_API, body, token)
             if campaigns_resp is None:
@@ -105,29 +113,61 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
             plans_resp = await _get(page, ep.VISIBILITY_PLANS_API, token)
             plans = (plans_resp or {}).get("data") or []
 
-            # ── Per-campaign pulls (daily series + keyword/asset breakdown) ─────
+            # ── Per-campaign pulls ──────────────────────────────────────────────
             # Every campaign is fetched — no skipping — so the data is complete.
             # Cloudflare is handled purely by pacing + 429 backoff in _fetch.
             # Referrer is set to the campaign page (some endpoints require it).
-            # Skip campaigns that have never run (draft/scheduled/under review) —
-            # no metrics to fetch. --limit just caps the count for a smoke test.
-            runnable = [
-                c for c in campaigns
+            # --limit just caps the count for a smoke test.
+            #
+            # TWO kinds of pull, with DIFFERENT eligibility (V7):
+            #   - METRICS (daily series + report) — only campaigns that have actually run.
+            #     A draft/scheduled/under-review campaign has none.
+            #   - CONFIGURATION (detail + keyword bid ranges) — EVERY campaign, drafts
+            #     included. They have keywords, city targeting and bid floors from the
+            #     moment they exist, and a just-created campaign is exactly the one someone
+            #     is about to automate; skipping it would make "it syncs tonight" false for
+            #     the only case that needs it.
+            targets = campaigns[:limit] if limit else campaigns
+            runnable_ids = {
+                c["id"] for c in campaigns
                 if _norm_status(c.get("campaign_status")) not in _NO_DATA_STATUSES
-            ]
-            skipped = len(campaigns) - len(runnable)
-            targets = runnable[:limit] if limit else runnable
-            if skipped:
-                logger.info(f"Skipping {skipped} not-yet-running campaign(s) {sorted(_NO_DATA_STATUSES)}")
+            }
+            no_metrics = len(campaigns) - len(runnable_ids)
+            if no_metrics:
+                logger.info(
+                    f"{no_metrics} campaign(s) {sorted(_NO_DATA_STATUSES)} — config only, no metrics"
+                )
             logger.info(f"Per-campaign pulls for {len(targets)}/{len(campaigns)} campaigns")
 
             daily: dict[int, list] = {}
             detail: dict[int, dict] = {}
+            campaign_detail: dict[int, dict] = {}
+            keyword_attributes: dict[int, list] = {}
             total = len(targets)
             for i, c in enumerate(targets, 1):
                 cid = c["id"]
                 logger.info(f"  campaign {i}/{total} (id {cid})")
                 referrer = f"{ep.BASE_URL}/diy/campaign/{cid}"
+
+                # Configuration — every campaign.
+                detail_resp = await _get(
+                    page, ep.CAMPAIGN_DETAIL_API.format(campaign_id=cid), token, referrer=referrer
+                )
+                # ⚠️ The campaign sits at data.CAMPAIGN, not at data — and the account's
+                # `min_cpm_config` is its SIBLING, not a field on it. Fold the config in so
+                # one object carries everything the parser needs.
+                data = (detail_resp or {}).get("data") or {}
+                cfg = data.get("campaign") or {}
+                if cfg:
+                    cfg = {**cfg, "min_cpm_config": data.get("min_cpm_config") or {}}
+                campaign_detail[cid] = cfg
+                keyword_attributes[cid] = await _fetch_keyword_attributes(
+                    page, cid, cfg, token, referrer
+                )
+
+                # Metrics — only campaigns that have run.
+                if cid not in runnable_ids:
+                    continue
                 daily[cid] = await _fetch_daily(page, cid, from_str, to_str, token, referrer)
                 report = await _post(
                     page,
@@ -137,18 +177,87 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
                     referrer=referrer,
                 )
                 detail[cid] = (report or {}).get("data") or {}
-            logger.info(f"Fetched daily + detail for {total} campaigns")
+            got_config = sum(1 for v in campaign_detail.values() if v)
+            logger.info(
+                f"Fetched config for {got_config}/{len(campaign_detail)} campaigns "
+                f"({sum(len(v) for v in keyword_attributes.values())} keyword bid ranges), "
+                f"metrics for {len(daily)}"
+            )
+            # A campaign whose detail call failed has its targeting/floor columns written
+            # NULL (the upsert replaces every updatable column, and a batch insert cannot
+            # carry per-row column sets). One campaign going blank for a day self-heals and
+            # costs nothing — the write-time check is the authority. ALL of them going
+            # blank means the endpoint changed shape, and that must not pass silently, so
+            # say so loudly rather than reporting a clean scrape over empty data.
+            if targets and not got_config:
+                logger.warning(
+                    f"Campaign detail returned nothing for all {len(targets)} campaigns — "
+                    "city targeting, budget floors and keyword bid ranges will be blanked. "
+                    "Check whether /adservice/v1/campaigns/{id} changed shape."
+                )
 
             return {
                 "campaigns": campaigns,
                 "daily": daily,
                 "detail": detail,
+                "campaign_detail": campaign_detail,
+                "keyword_attributes": keyword_attributes,
+                "cities": cities,
                 "sponsored_sov": sov,
                 "brand_collections": collections,
                 "visibility_plans": plans,
             }
         finally:
             await browser.close()
+
+
+def _keywords_from_detail(detail: dict) -> list[str]:
+    """The campaign's keyword names, out of its detail response.
+
+    Blinkit returns keywords in two places depending on the campaign — nested under
+    `campaign_targeting`, or at the top level — so read the nested one first and fall back.
+    Order is preserved and duplicates dropped, since the names go straight into a query
+    string."""
+    entries = (
+        (detail.get("campaign_targeting") or {}).get("keyword_targeting", {}).get("keywords", [])
+        or detail.get("keywords", []) or []
+    )
+    seen: dict[str, None] = {}
+    for kw in entries:
+        name = (kw.get("keyword") or "").strip()
+        if name:
+            seen.setdefault(name, None)
+    return list(seen)
+
+
+async def _fetch_keyword_attributes(
+    page, campaign_id: int, detail: dict, token: str, referrer: str
+) -> list:
+    """Blinkit's published bid range for each of a campaign's keywords (V7).
+
+    The endpoint takes a comma-separated keyword list, so a whole campaign costs ONE
+    request regardless of how many keywords it carries (chunked only to keep the URL
+    sane). A campaign with no keyword targeting — every PRODUCT_RECOMMENDATION campaign —
+    costs no request at all.
+    """
+    keywords = _keywords_from_detail(detail)
+    if not keywords:
+        return []
+
+    campaign_type = detail.get("campaign_type") or ""
+    out: list = []
+    for i in range(0, len(keywords), ep.KEYWORD_ATTRIBUTES_CHUNK):
+        chunk = keywords[i : i + ep.KEYWORD_ATTRIBUTES_CHUNK]
+        query = urlencode({
+            "keywords": ",".join(chunk),
+            "campaign_type": campaign_type,
+            "campaign_id": str(campaign_id),
+        })
+        resp = await _get(page, f"{ep.KEYWORD_ATTRIBUTES_API}?{query}", token, referrer=referrer)
+        data = (resp or {}).get("data") or {}
+        rows = data.get("keyword_attributes") or (resp or {}).get("keyword_attributes") or []
+        out.extend(rows)
+    return out
 
 
 async def _fetch_daily(
@@ -212,12 +321,23 @@ async def _log_advertiser(page, token: str) -> None:
     logger.info(f"Advertiser: {named}")
 
 
-async def _enabled_campaign_types(page, token: str) -> list[str]:
-    """Campaign types enabled for this advertiser, read from the same config call
-    the dashboard makes. Blinkit rejects the whole request with 400 if it is sent
-    a disabled type, so never send the full hardcoded list when this succeeds."""
+async def _account_config(page, token: str) -> dict:
+    """The account config the dashboard loads on start — enabled campaign types AND the
+    city id→name directory, in one call.
+
+    Deliberately still v2, not the v3 the dashboard has moved to: the two differ in which
+    asset types they list, and that set decides which campaigns the LIST call returns. A
+    change there would silently change what gets scraped, so it is not a free upgrade.
+    Both carry `cities`, which is all V7 needs from it."""
     resp = await _get(page, ep.CAMPAIGN_CONFIG_API, token)
-    objectives = (resp or {}).get("data", {}).get("objective_types") or []
+    return (resp or {}).get("data") or {}
+
+
+def _enabled_campaign_types(config: dict) -> list[str]:
+    """Campaign types enabled for this advertiser, out of an already-fetched config.
+    Blinkit rejects the whole request with 400 if it is sent a disabled type, so never
+    send the full hardcoded list when this succeeds."""
+    objectives = (config or {}).get("objective_types") or []
     types = sorted({t for o in objectives for t in (o.get("asset_types") or [])})
     if not types:
         logger.warning(

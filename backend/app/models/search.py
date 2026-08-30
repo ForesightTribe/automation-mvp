@@ -195,6 +195,79 @@ class MarketplaceLocation(SQLModel, table=True):
     lat: float | None = None
     lon: float | None = None
     is_active: bool = True
+    # The store's REAL city (V7.3), resolved from its pincode at sync time — which is why
+    # `city` above can stay exactly as the config workbook writes it, grouped names and all.
+    # `city` is still what the public scrapers and reports group by; this is the key that
+    # works ACROSS marketplaces and surfaces. A store in `hr-ncr` gets city_id=gurugram.
+    city_id: int | None = Field(default=None, foreign_key="cities.id")
+
+
+class City(SQLModel, table=True):
+    """The canonical list of cities — the one thing every other city name points at (V7.3).
+
+    Exists because the same place is spelled differently on every surface we read. Measured
+    2026-08-27: Blinkit's ad platform says `Gurugram`, Blinkit's SELLER dashboard says
+    `Gurgaon` (the same company disagreeing with itself), our store catalog says `hr-ncr`,
+    Zepto's catalog says `delhi ncr`, and Zepto's sales report says `BLR - Bengaluru`. Five
+    vocabularies, so translating each source into another source's names needs a rule per
+    pair, forever. One canonical registry needs one alias per name.
+
+    `slug` and `id` are OURS. Names are seeded from a marketplace's city directory because
+    it is a free, curated list of Indian q-commerce cities — but nothing is locked to it:
+    a display name can be corrected later (`Aurangabad` → `Chhatrapati Sambhaji Nagar`)
+    without touching a single alias, because aliases point at the id.
+
+    `pincode_prefixes` is how a store finds its own city. It is derived from our own store
+    data, not a memorised list: for a city whose catalog name already matches, its stores'
+    pincodes ARE its prefixes. That bootstraps the grouped cases — `hr-ncr` holds 77 stores
+    that are all `122xxx`, i.e. all Gurugram.
+    """
+
+    __tablename__ = "cities"
+
+    __table_args__ = (Index("idx_cities_slug", "slug"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    slug: str = Field(unique=True)
+    name: str = ""
+    state: str = ""
+    # Pincode prefixes belonging to this city, e.g. ["122"] for Gurugram. Length varies by
+    # need: 3 digits where a district is one city, 4 where one 3-digit block holds several
+    # (201xxx covers BOTH Noida 2013xx and Ghaziabad 2010–2011xx, so three would merge them).
+    pincode_prefixes: list | None = Field(default=None, sa_column=Column(JSON))
+    is_active: bool = True
+
+
+class CityAlias(SQLModel, table=True):
+    """One name, from one source, pointing at a canonical city (V7.3).
+
+    `source` is namespaced `<marketplace>:<surface>` — `blinkit:ads`, `blinkit:seller`,
+    `blinkit:catalog`, `zepto:catalog`, … — because the mismatch is per SURFACE, not per
+    marketplace: Blinkit's ads and seller dashboards name the same city differently, so a
+    per-marketplace key could not express it.
+
+    Only EXCEPTIONS need a row. A name that already equals a canonical city's name resolves
+    without one — 228 of our 242 active Blinkit catalog cities, so this table stays small
+    and hand-maintainable (it is edited in `config.xlsx`, sheet `city_map`).
+
+    ⚠️ DIRECTION-AWARE, never a symmetric string cleanup: our catalog says
+    `aurangabad (maharashtra)` where Blinkit says `Aurangabad`, but Blinkit ALSO lists
+    `Aurangabad (Bihar)` — a different city. Stripping parentheses in both directions would
+    merge them.
+    """
+
+    __tablename__ = "city_aliases"
+
+    __table_args__ = (
+        UniqueConstraint("source", "alias", name="uq_city_alias_source_alias"),
+        Index("idx_city_alias_city", "city_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    source: str = ""                                    # "<marketplace>:<surface>"
+    alias: str = ""                                     # stored lowercased
+    city_id: int = Field(foreign_key="cities.id")
+    is_active: bool = True
 
 
 class SkuMap(SQLModel, table=True):

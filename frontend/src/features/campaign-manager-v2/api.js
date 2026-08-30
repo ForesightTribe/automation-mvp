@@ -97,5 +97,11 @@ export const getCampaigns = (clientId) =>
 export const refreshCampaigns = (clientId) =>
 	api.post(`${base(clientId)}/campaigns/refresh`);
 
+// Blinkit's published bid range per keyword + the campaign's city targeting, from the
+// daily scrape (V7.4). Never 404s: an unscraped campaign returns empty fields, and the
+// form falls back to its pre-V7 behaviour rather than blocking.
+export const getBidContext = (clientId, campaignId) =>
+	api.get(`${base(clientId)}/campaigns/${campaignId}/bid-context`);
+
 export const getCampaignKeywords = (clientId, campaignId) =>
 	api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/keywords`);

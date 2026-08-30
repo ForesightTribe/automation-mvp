@@ -80,18 +80,22 @@ def _run(*, status: str, toggle: bool, now: datetime, current_budget: float = 50
     sched, rules = _schedule(toggle=toggle), [_rule()]
 
     orig = (budget.get_adapter, repo.get_budget_schedules, repo.write_run_log,
-            repo.get_advertiser, repo.recent_write_count, budget.now_ist)
+            repo.get_advertiser, repo.recent_write_count, budget.now_ist,
+            repo.get_tenant_name)
     budget.get_adapter = lambda platform: fake
     repo.get_budget_schedules = _async_const([(sched, rules)])
     repo.write_run_log = _async_noop
+    repo.get_tenant_name = _async_const("Test Tenant")
     repo.get_advertiser = _async_const(19802)
     repo.recent_write_count = _async_const(0)
+    repo.get_tenant_name = _async_const("Test Tenant")
     budget.now_ist = lambda: now
     try:
         asyncio.run(budget.run(_TENANT, dry_run=False))
     finally:
         (budget.get_adapter, repo.get_budget_schedules, repo.write_run_log,
-         repo.get_advertiser, repo.recent_write_count, budget.now_ist) = orig
+         repo.get_advertiser, repo.recent_write_count, budget.now_ist,
+         repo.get_tenant_name) = orig
     return fake.calls
 
 
@@ -174,16 +178,18 @@ def _run_activation(*, target: str, status: str, budget, current_budget: float =
     import campaign_manager.set_activation as sa
 
     fake = FakeAdapter(status, current_budget)
-    orig = (sa.get_adapter, repo.get_advertiser, repo.recent_write_count, repo.write_run_log)
+    orig = (sa.get_adapter, repo.get_advertiser, repo.recent_write_count, repo.write_run_log,
+            repo.get_tenant_name)
     sa.get_adapter = lambda platform: fake
     repo.get_advertiser = _async_const(19802)
     repo.recent_write_count = _async_const(0)
     repo.write_run_log = _async_noop
+    repo.get_tenant_name = _async_const("Test Tenant")
     try:
         asyncio.run(sa.run(_TENANT, CAMPAIGN, target, budget=budget, dry_run=False))
     finally:
-        (sa.get_adapter, repo.get_advertiser,
-         repo.recent_write_count, repo.write_run_log) = orig
+        (sa.get_adapter, repo.get_advertiser, repo.recent_write_count, repo.write_run_log,
+         repo.get_tenant_name) = orig
     return fake.calls
 
 

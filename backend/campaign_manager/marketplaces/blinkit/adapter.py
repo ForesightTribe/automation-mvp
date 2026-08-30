@@ -82,6 +82,52 @@ async def read_bids(client, campaign_id: int) -> dict[str, int]:
     return bids_from_detail(detail or {})
 
 
+def _api_match(match_type: str | None) -> str:
+    """Our vocabulary → Blinkit's bid-range key. `apply_bid` sends BROAD as SMART, so the
+    floor has to be looked up under the SAME name or a BROAD rule would be checked against
+    the exact-match floor."""
+    m = (match_type or "EXACT").upper().replace("_MATCH", "")
+    return "SMART" if m == "BROAD" else m
+
+
+async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
+                          ) -> dict[tuple[str, str], int]:
+    """Blinkit's minimum bid per (keyword, match_type) for a campaign (a READ — safe).
+
+    This is the authority the bid engine clamps to. It is read LIVE rather than from the
+    nightly scrape because it is the number that decides what gets written to a real
+    account: the scraped copy is for the UI, this is for the write.
+
+    ONE request per campaign — the endpoint takes the whole keyword list — so a run costs
+    +1 call per campaign regardless of how many keywords it manages. Pass an
+    already-fetched `detail` to avoid re-reading it.
+
+    Returns {} on any failure, which the caller must read as "no floor known" and fall back
+    to the rule's own `min_bid`. Refusing to bid because a lookup failed would be worse
+    than bidding at the configured minimum.
+    """
+    if detail is None:
+        detail, _ = await client.get_campaign_detail(campaign_id)
+    detail = detail or {}
+    keywords = [k["keyword"] for k in (
+        (detail.get("campaign_targeting") or {}).get("keyword_targeting", {}).get("keywords", [])
+        or detail.get("keywords", []) or []
+    ) if k.get("keyword")]
+    if not keywords:
+        return {}
+
+    attrs = await client.get_keyword_attributes(
+        campaign_id, detail.get("campaign_type") or "", keywords)
+    floors: dict[tuple[str, str], int] = {}
+    for a in attrs or []:
+        kw = (a.get("keyword") or "").strip()
+        for api_match, rng in (a.get("bid_range") or {}).items():
+            if not isinstance(rng, dict) or rng.get("min") is None:
+                continue
+            floors[(kw, _api_match(api_match))] = int(rng["min"])
+    return floors
+
+
 async def read_products(client, campaign_id: int) -> list[dict]:
     """Campaign products (name + pid) — used to match the ad in live search (a READ)."""
     return await client.get_campaign_products(campaign_id)
@@ -99,10 +145,50 @@ async def resolve_position(client, campaign_id: int, keyword: str, *, lat: float
     """Live sponsored position for the campaign's product on `keyword` (a READ — safe).
     Scrapes consumer search, then matches this campaign's product by pid/name/brand.
     Returns (position | None, source). None = product not found / organic-only → skip.
-    MP-specific matching lives in `positions.py`; the bid loop stays MP-agnostic."""
+    MP-specific matching lives in `positions.py`; the bid loop stays MP-agnostic.
+
+    Self-contained (own browser) — for a one-off lookup. A run with several keywords uses
+    `open_position_session` + `fetch_positions` + `locate_position` so one browser serves
+    them all and identical (keyword, location) pairs are scraped once."""
     from campaign_manager.marketplaces.blinkit import positions
     return await positions.resolve(keyword, lat, lon, product_names=product_names,
                                    product_pids=product_pids, brand_name=brand_name)
+
+
+# ── Batched position sourcing (one session per run) ─────────────────────────
+
+async def open_position_session(pw, lat: float | None = None, lon: float | None = None) -> dict:
+    """Open the consumer-side browser for a whole run and capture Blinkit's session-bound
+    search headers. One warm-up (two navigations) serves every keyword AND every store in
+    the run. The caller closes it with `close_position_session`."""
+    from campaign_manager.marketplaces.blinkit import live_position
+    kw = {k: v for k, v in (("lat", lat), ("lon", lon)) if v is not None}
+    return await live_position.open_session(pw, **kw)
+
+
+async def close_position_session(session: dict) -> None:
+    from campaign_manager.marketplaces.blinkit import live_position
+    await live_position.close_session(session)
+
+
+async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -> list[dict]:
+    """Raw search results for (keyword, store) on an open session — one API request, no
+    page navigation. The store is selected by the lat/lon HEADERS, so a run spanning
+    several stores costs no more than one at a single store.
+
+    Raises when the search could not be performed, so the caller can tell "our ad isn't
+    there" (empty list) from "we couldn't look" (error)."""
+    from campaign_manager.marketplaces.blinkit import live_position
+    return await live_position.search(session, keyword, lat, lon)
+
+
+def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
+                    product_names: list[str], product_pids: list[str],
+                    brand_name: str | None) -> tuple[float | None, str]:
+    """Match a campaign's product inside already-fetched results (pure, no I/O)."""
+    from campaign_manager.marketplaces.blinkit import positions
+    return positions.locate(results, keyword, lat, lon, product_names=product_names,
+                            product_pids=product_pids, brand_name=brand_name)
 
 
 async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,

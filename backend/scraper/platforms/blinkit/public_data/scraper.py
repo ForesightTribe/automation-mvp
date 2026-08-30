@@ -138,9 +138,14 @@ _RETRY_DELAYS = (0.5, 1.5, 3.0)
 _FETCH_TIMEOUT_S = 20.0
 
 
-async def _in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dict:
+async def in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dict:
     """In-page fetch with a hard per-attempt timeout + retry/backoff on transient
-    failures. Returns on the first 200; otherwise the last response after retries."""
+    failures. Returns on the first 200; otherwise the last response after retries.
+
+    PUBLIC on purpose: the campaign manager's live-position scrape calls this too. It is
+    the one place that knows how to get a request past Cloudflare (in-page fetch on a
+    cleared session, challenge detection, backoff) — duplicating it would mean fixing
+    Blinkit changes twice and discovering the second copy months later."""
     resp: dict = {"status": 0}
     payload = {"url": url, "h": headers, "b": body, "timeoutMs": int(_FETCH_TIMEOUT_S * 1000)}
     for delay in (0.0,) + _RETRY_DELAYS:
@@ -275,7 +280,7 @@ async def search(
     body: dict | None = ep.SEARCH_BODY
 
     while url and len(products) < cap:
-        resp = await _in_page_fetch(page, url, headers, body)
+        resp = await in_page_fetch(page, url, headers, body)
         if resp.get("status") != 200 or resp.get("body") is None:
             err_txt = resp.get("error", "")
             error = f"HTTP {resp.get('status')}" + (f" · {err_txt}" if err_txt else "")

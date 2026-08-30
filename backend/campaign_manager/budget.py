@@ -173,11 +173,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
               platform: str = "blinkit") -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = logs.new_run_id()
-    logs.run_start(run_id, "budget_scheduler", tenant_id, dry_run=dry_run, platform=platform)
+    started = now_ist()
+    logs.run_start(run_id, "budget_scheduler", tenant_id, dry_run=dry_run, platform=platform,
+                   tenant_name=await repo.get_tenant_name(tenant_id))
 
     schedules = await repo.get_budget_schedules(tenant_id, platform)
     if not schedules:
-        logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run,
+        logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=0)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
 
@@ -191,7 +193,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError:
         logs.session_expired(run_id, dry_run=dry_run)
-        logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run,
+        logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     logs.session_ok(run_id, dry_run=dry_run)
@@ -207,7 +209,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 await browser.close()
             if pw is not None:
                 await pw.stop()
-            logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run,
+            logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                              processed=0, applied=0, skipped=0, errors=1)
             return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
@@ -343,8 +345,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             await pw.stop()
 
     await repo.write_run_log(log_rows)
-    logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run,
-                     processed=processed, applied=applied, skipped=skipped, errors=errors)
+    logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
+                     processed=processed, applied=applied, skipped=skipped, errors=errors,
+                     seconds=(now_ist() - started).total_seconds())
     return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
 
 
