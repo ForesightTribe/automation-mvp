@@ -251,8 +251,8 @@ Separate tables — **nothing is written into any `blinkit_*` table**. Migration
 
 | Table | Grain |
 |---|---|
-| `zepto_seller_sales_daily` | one row per tenant per **day** — authoritative GMV/units |
-| `zepto_seller_product_perf` | one row per **SKU per day** |
+| `zepto_seller_sales_summary` | one row per tenant per **day** — authoritative GMV/units |
+| `zepto_seller_sales` | one row per **SKU per day** |
 
 Product rows are fetched one day at a time (like Blinkit's `_date_range` loop),
 which is what makes a per-day SKU/category trend possible. A daily production

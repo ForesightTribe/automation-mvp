@@ -1119,7 +1119,7 @@ them apart:
 
 Both produce one value repeated across every day of the batch. The obvious test —
 compare the same SKU-day scraped by two different jobs — is impossible here:
-`zepto_seller_product_perf` upserts on `(tenant, pvid, period)` with no job in
+`zepto_seller_sales` upserts on `(tenant, pvid, period)` with no job in
 the key, so a re-scrape UPDATES the row in place. Zero SKU-day pairs have ever
 had two rows. Confirmed by query, not assumed.
 

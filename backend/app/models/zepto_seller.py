@@ -25,10 +25,10 @@ from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
 
 
-class ZeptoSellerSalesDaily(SQLModel, table=True):
+class ZeptoSellerSalesSummary(SQLModel, table=True):
     """One row per tenant per calendar day — GMV and units for the brand."""
 
-    __tablename__ = "zepto_seller_sales_daily"
+    __tablename__ = "zepto_seller_sales_summary"
 
     __table_args__ = (Index("idx_zssd_tenant_date", "tenant_id", "date"),)
 
@@ -229,7 +229,7 @@ class ZeptoAdKeywordDaily(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
-class ZeptoSellerProductPerf(SQLModel, table=True):
+class ZeptoSellerSales(SQLModel, table=True):
     """One row per tenant per SKU per scraped window.
 
     ⚠️ THREE columns here are NOT facts about `period_start`/`period_end` —
@@ -254,7 +254,7 @@ class ZeptoSellerProductPerf(SQLModel, table=True):
     has ever had two rows to compare).
     """
 
-    __tablename__ = "zepto_seller_product_perf"
+    __tablename__ = "zepto_seller_sales"
 
     __table_args__ = (
         Index("idx_zspp_tenant_period", "tenant_id", "period_start", "period_end"),
@@ -295,7 +295,7 @@ class ZeptoAdProductDaily(SQLModel, table=True):
     From `/metrics/tabular` with view=product_table — the Analytics page's
     Product Performance tab. Answers "which SKUs is the ad spend going to",
     which no other Zepto endpoint reports: the campaigns endpoint stops at
-    campaign level and `zepto_seller_product_perf` covers organic sales, not ads.
+    campaign level and `zepto_seller_sales` covers organic sales, not ads.
 
     `campaign_category` is part of the key. No product was observed under more
     than one ad type, but categories were (Cheese ran under both sponsored
@@ -407,7 +407,7 @@ class ZeptoAdBreakdownDaily(SQLModel, table=True):
 class ZeptoSellerProductCityDaily(SQLModel, table=True):
     """One row per tenant per SKU per **city** per day.
 
-    A finer grain than `ZeptoSellerProductPerf`, not a replacement: that table is
+    A finer grain than `ZeptoSellerSales`, not a replacement: that table is
     SKU x day summed over every city, this one splits the same money by city.
     **Never sum across the two** — they hold the same rupees at different
     resolutions, exactly like the four `zepto_ad_*` tables.
@@ -636,7 +636,7 @@ class ZeptoPOItem(SQLModel, table=True):
       were halved while two others in the SAME delivery were accepted in full
       (GrnCode56384162, 22-Aug-2026).
 
-    `product_variant_id` is Zepto's `pvId`, the SAME id `zepto_seller_product_perf`
+    `product_variant_id` is Zepto's `pvId`, the SAME id `zepto_seller_sales`
     keys on — so PO lines join to the Products page directly, with no name
     matching and no `sku_map` bridge.
     """
@@ -660,7 +660,7 @@ class ZeptoPOItem(SQLModel, table=True):
 
     sku_code: str | None = None
     sku_name: str | None = None
-    # Zepto's `pvId` — joins to zepto_seller_product_perf.product_variant_id.
+    # Zepto's `pvId` — joins to zepto_seller_sales.product_variant_id.
     product_variant_id: str | None = None
     ean_no: str | None = None
     hsn_code: str | None = None

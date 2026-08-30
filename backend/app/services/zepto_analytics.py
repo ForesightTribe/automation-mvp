@@ -20,9 +20,9 @@ from datetime import date
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
+from app.models.zepto_seller import ZeptoSellerSales as Prod
 from app.models.zepto_seller import ZeptoSellerProductCityDaily as ProdCity
-from app.models.zepto_seller import ZeptoSellerSalesDaily as Daily
+from app.models.zepto_seller import ZeptoSellerSalesSummary as Daily
 
 # Which marketplace slug routes to these tables.
 SLUG = "zepto"
@@ -222,7 +222,7 @@ async def city_category(
     """City x category revenue cells for the Analytics heatmap.
 
     Reads `zepto_seller_product_city_daily` — the only Zepto table carrying city
-    and category on one row. `zepto_seller_product_perf` has no city, so it
+    and category on one row. `zepto_seller_sales` has no city, so it
     cannot answer this on its own, and joining the two on date alone would
     attribute every SKU's revenue to whichever cities sold that day rather than
     reading the real split.

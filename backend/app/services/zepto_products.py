@@ -3,7 +3,7 @@
 Kept out of `product_service.py` for the same reason `zepto_analytics` is kept
 out of `analytics_service`: the sources are shaped differently. Blinkit joins
 sales (`blinkit_seller_sales`) to a separate stock snapshot (`blinkit_soh`);
-Zepto carries both on one row of `zepto_seller_product_perf`, one row per SKU
+Zepto carries both on one row of `zepto_seller_sales`, one row per SKU
 per day.
 
 These functions return **raw aggregates**, not `ProductListRow` objects, so
@@ -33,7 +33,7 @@ from datetime import date, datetime, time
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
+from app.models.zepto_seller import ZeptoSellerSales as Prod
 from app.models.zepto_seller import ZeptoSellerProductCityDaily as ProdCity
 from app.models.zepto_seller import ZeptoPO, ZeptoPOItem
 
@@ -272,7 +272,7 @@ async def po_lines(
     status and warehouse — which the line itself does not carry.
 
     Matched on `product_variant_id`, which is Zepto's `pvId` and the SAME id
-    `zepto_seller_product_perf` keys on. So this needs no name matching and no
+    `zepto_seller_sales` keys on. So this needs no name matching and no
     `sku_map` bridge, unlike Blinkit where the private and public id systems
     share no key.
 

@@ -15,7 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.blinkit_seller import BlinkitSellerSale
-from app.models.zepto_seller import ZeptoSellerProductPerf
+from app.models.zepto_seller import ZeptoSellerSales
 from app.models.search import SkuMap, SkuSnapshot
 from app.models.tenant import TenantWatchlist
 from app.utils.time import now_ist
@@ -70,14 +70,14 @@ async def build_map(session: AsyncSession, tenant_id: uuid.UUID) -> dict:
         *priv,
         *(await session.execute(
             select(
-                ZeptoSellerProductPerf.product_variant_id,
+                ZeptoSellerSales.product_variant_id,
                 # `product_name`, NOT `sku_name`. sku_name carries the pack
                 # ("… 400.0 GRAM") which the public listing omits, so matching on
                 # it fails every row. product_name is already the pack-free form
                 # the shopper app uses, so the two normalise identically.
-                ZeptoSellerProductPerf.product_name,
+                ZeptoSellerSales.product_name,
             )
-            .where(ZeptoSellerProductPerf.tenant_id == tenant_id)
+            .where(ZeptoSellerSales.tenant_id == tenant_id)
             .distinct()
         )).all(),
     ]

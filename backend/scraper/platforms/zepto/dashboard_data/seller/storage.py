@@ -19,8 +19,8 @@ from app.models.zepto_seller import (
     ZeptoAdKeywordDaily,
     ZeptoAdProductDaily,
     ZeptoSellerProductCityDaily,
-    ZeptoSellerProductPerf,
-    ZeptoSellerSalesDaily,
+    ZeptoSellerSales,
+    ZeptoSellerSalesSummary,
 )
 from app.utils.logger import logger
 
@@ -35,8 +35,8 @@ async def save_sales_results(
     # and deliberately its own table — see ZeptoSellerProductCityDaily. The two
     # hold the same money at different resolutions; never sum across them.
     product_cities = product_cities or []
-    await _upsert(session, ZeptoSellerSalesDaily, daily)
-    await _upsert(session, ZeptoSellerProductPerf, products)
+    await _upsert(session, ZeptoSellerSalesSummary, daily)
+    await _upsert(session, ZeptoSellerSales, products)
     await _upsert(session, ZeptoSellerProductCityDaily, product_cities)
     await session.commit()
     logger.info(
@@ -79,7 +79,7 @@ async def save_ad_results(
 
 # Columns a re-scrape must never blank out.
 #
-# `zepto_seller_product_perf` rows are keyed on the SALES date, but these three
+# `zepto_seller_sales` rows are keyed on the SALES date, but these three
 # columns are not facts about that date — they carry the same value on every day
 # of the window a scrape covered, because they describe the moment of the CALL.
 # Re-scraping an older window returns null for them, and a plain upsert then
@@ -116,7 +116,7 @@ async def save_ad_results(
 # has ever had two rows to compare. That needs a live experiment; see
 # docs/zepto.md. This guard is the containment until then.
 _KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
-    "zepto_seller_product_perf": (
+    "zepto_seller_sales": (
         "stock_on_hand",
         "week_on_week_growth",
         "month_on_month_growth",

@@ -25,8 +25,8 @@ from datetime import date
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
-from app.models.zepto_seller import ZeptoSellerSalesDaily as Daily
+from app.models.zepto_seller import ZeptoSellerSales as Prod
+from app.models.zepto_seller import ZeptoSellerSalesSummary as Daily
 
 SLUG = "zepto"
 
@@ -88,7 +88,7 @@ async def sales_daily(
 ) -> dict[date, float]:
     """date -> total revenue, from Zepto's own brand totals.
 
-    `zepto_seller_sales_daily` rather than summing the per-SKU table: it is a
+    `zepto_seller_sales_summary` rather than summing the per-SKU table: it is a
     separate endpoint and therefore an independent figure. The two have agreed
     to the rupee on every day scraped so far, and a disagreement would mean the
     per-day product loop dropped something — worth surfacing, not papering over.

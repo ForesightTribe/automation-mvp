@@ -44,7 +44,7 @@ RTV_FILTER_API = "/vendor/api/v2/rtv/filter"
 # endpoint reports `itemsCount` but not the lines themselves, so this is a second
 # pass over the POs already fetched. Carries `unitPrice` (what Zepto pays) and
 # `mrp`, which appear on no other Zepto endpoint, and `pvId` — the same id
-# `zepto_seller_product_perf` keys on, so lines join to Products directly.
+# `zepto_seller_sales` keys on, so lines join to Products directly.
 PO_ITEMS_API = "/api/v1/po/{po_id}/items"
 GRN_ITEMS_API = "/api/v1/grn/{grn_no}/items"
 
