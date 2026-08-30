@@ -232,9 +232,26 @@ class ZeptoAdKeywordDaily(SQLModel, table=True):
 class ZeptoSellerProductPerf(SQLModel, table=True):
     """One row per tenant per SKU per scraped window.
 
-    `stock_on_hand` is nullable and has been null for every row observed so far —
-    Stock View is gated behind the "Zepto Atom" subscription on this account, so
-    the field is returned but never populated. Kept because the API sends it.
+    ⚠️ THREE columns here are NOT facts about `period_start`/`period_end` —
+    `stock_on_hand`, `week_on_week_growth`, `month_on_month_growth`. They carry
+    the same value on every day of the window a scrape covered, because they
+    describe the moment of the CALL: one scrape on 19-Aug wrote `stock_on_hand`
+    727 to all 28 sales-days it touched; a later scrape wrote 466.
+
+    Re-scraping an older window returns null for them, which a plain upsert used
+    to write over a real reading. Guarded by `_KEEP_IF_NULL` in
+    `seller/storage.py` (COALESCE on conflict) since 2026-08-28.
+
+    Everything else on this row IS a fact about the date, `available_stores` and
+    `sales_contribution` included — both vary day to day within a single scrape
+    job (18/34 SKU-jobs), exactly like `gmv`. An earlier version of this note
+    listed them as snapshots; that was wrong. See docs/zepto.md.
+
+    The three snapshot columns will eventually move to a table keyed on the
+    scrape JOB rather than the sales date. Not built yet: whether the two growth
+    columns are scrape-time readings or window-level aggregates is unproven, and
+    stored data cannot settle it (the upsert overwrites in place, so no SKU-day
+    has ever had two rows to compare).
     """
 
     __tablename__ = "zepto_seller_product_perf"

@@ -1029,3 +1029,154 @@ The dashboard shows **"Renew Zepto atom"** and the Live Monitor is locked
 what we scrape sits behind that subscription. Note that `stock_on_hand` was
 *wrongly* documented as Atom-gated — it is populated on ~92% of rows — so the
 actual Atom boundary is not yet understood.
+
+---
+
+## `stock_on_hand` — what it means, and what is still unknown (2026-08-28)
+
+Zepto's product-performance response carries `stockOnHand` alongside the sales
+figures. It is NOT a fact about the date on the row, and treating it as one has
+already cost data. This section separates what is measured from what is guessed.
+
+### PROVEN
+
+**1. It is a snapshot of scrape time, not of the sales date.**
+One scrape on 19-Aug covered 28 different sales-days (17-Jul..13-Aug) and wrote
+the *same* value to all 28 rows:
+
+```
+Whole Wheat Sourdough   28 days, 1 distinct value [727..727]
+Sour Cream              28 days, 1 distinct value [245..245]
+Artisinal Sourdough     28 days, 1 distinct value [120..120]
+```
+
+Across batches, the same SKU:
+
+```
+scraped 19-Aug 20:00 -> 727   written to days 17-Jul..13-Aug
+scraped 26-Aug 14:00 -> 466   written to days 14-Aug..25-Aug
+```
+
+So a row dated 17-Jul carries stock measured on 19-Aug. The sales date on the
+row is irrelevant to the value.
+
+**2. Asking for an older day returns null, and a plain upsert destroyed it.**
+
+```
+batch scraped 19-Aug   203 of 228 rows with stock (89%)
+batch scraped 26-Aug    65 of  95 rows with stock (68%)
+batch scraped 27-Aug     0 of  16 rows with stock ( 0%)
+```
+
+The 27-Aug rows were re-scrapes of 21-Aug and 26-Aug for an unrelated city
+sweep. Both days had stock before and none after. The value cannot be recovered:
+the moment has passed. Guarded since 2026-08-28 by `_KEEP_IF_NULL` in
+`seller/storage.py`.
+
+**3. Exactly THREE columns are snapshots — measured per scrape job.**
+
+For each column, count the (scrape_job, sku) groups whose value varies across
+the days that job covered. A snapshot cannot vary; a fact about the day must.
+
+    stock_on_hand           0/14   constant within a job   SNAPSHOT
+    week_on_week_growth     0/33   constant within a job   SNAPSHOT
+    month_on_month_growth   0/34   constant within a job   SNAPSHOT
+    available_stores       18/34   varies by day           FACT
+    sales_contribution     18/34   varies by day           FACT
+    gmv / qty_sold         18/34   varies by day           FACT
+
+Seen directly — one SKU, one job, stock frozen while availability moves daily:
+
+    1ad01b68  2026-07-17  avail=12.64  stock=19
+    1ad01b68  2026-07-18  avail=24.71  stock=19
+    1ad01b68  2026-07-21  avail= 1.15  stock=19
+    1ad01b68  2026-07-23  avail= 0.00  stock=19
+
+⚠️ This CORRECTS an earlier version of this section, which claimed
+`available_stores` was a snapshot on the strength of one observation:
+
+    21-Aug   ALL 88.52%   Bengaluru 88.52%   Hosur 0%
+    27-Aug   ALL 55.98%   Bengaluru 55.98%
+
+That comparison spanned six days AND two scrape jobs, so it could not separate
+"changed over time" from "differs per sales-day". The per-job test above does,
+and the answer is the latter. `available_stores` and `sales_contribution` belong
+with sales and were removed from the `_KEEP_IF_NULL` guard on 2026-08-28.
+
+**3b. The batch grain is `scrape_job_id`, not a truncated timestamp.**
+
+Populated on all 339 rows, 4 distinct jobs. Do NOT bucket by hour: two genuinely
+separate jobs already share one hour bucket (27-Aug 11:15:09 and 11:17:05), and
+hour-truncation would silently merge them.
+
+**3c. What the growth columns MEAN is still unproven.**
+
+"Constant within a job" has two possible causes, and stored data cannot tell
+them apart:
+
+  (a) a scrape-time reading — growth as of the moment of the call
+  (b) a window-level aggregate — growth for the requested window vs the prior one
+
+Both produce one value repeated across every day of the batch. The obvious test —
+compare the same SKU-day scraped by two different jobs — is impossible here:
+`zepto_seller_product_perf` upserts on `(tenant, pvid, period)` with no job in
+the key, so a re-scrape UPDATES the row in place. Zero SKU-day pairs have ever
+had two rows. Confirmed by query, not assumed.
+
+Settling it needs a live experiment: scrape one window twice hours apart, and a
+second window in the same session, writing the raw responses to a FILE rather
+than the database (the upsert would collapse them on arrival). Until then the
+two growth columns must not be moved into a stock table.
+
+
+**4. Blinkit does not have this problem.** `blinkit_soh` is keyed on
+`(item, facility, date)`, scraped on that date, holding that date's real figure —
+52,612 rows, zero nulls. Blinkit also returns the facility *in the response*, so
+one call covers every facility; Zepto takes the city as a *filter*, so a split
+costs one call per city. That asymmetry is structural, not an implementation
+choice.
+
+### INFERRED, NOT PROVEN
+
+**Whether `stock_on_hand` is city-scoped or brand-wide.**
+
+Evidence for city-scoped: on 21-Aug the Hosur row exists (`gmv` 220, two units
+sold) but reports `stockOnHand: null` rather than the brand's 348. A brand-wide
+field would be unaffected by the filter and should have returned 348.
+
+Why that is not conclusive: `null` may equally mean "not computed under this
+filter". And `ALL == Bengaluru` exactly (348 = 348), which fits both "brand-wide"
+and "per-city summed, where Hosur contributes zero".
+
+**This cannot be settled on this account.** Querying ten cities individually
+returns *zero product rows* for nine of them — the endpoint only returns SKUs
+with sales in that city, and Brik Oven sells in one. There is no second city
+holding stock to compare against.
+
+    city                rows   stockOnHand
+    ALL 138 CITIES        10          348
+    BLR - Bengaluru       10          348
+    Karimnagar             0       no-row
+    Agra                   0       no-row
+    ... 7 more             0       no-row
+
+Resolving it needs a genuinely multi-city client.
+
+### CONSEQUENCE FOR THE SCHEMA
+
+Because the dimensionality is undetermined, the snapshot table records **the city
+filter we sent**, not an assumed semantic:
+
+    queried_city_id   -- the cityIds value used for this call
+
+That column is honest under every possibility: per-city, brand-wide (rows for
+different cities simply repeat the same number, which is itself the answer), or
+something else. No assumption is baked in, and nothing is lost.
+
+`'*'` and `NULL` were both rejected for the all-cities case. `NULL` is fatal —
+NULLs are DISTINCT in a unique index, so it would silently permit duplicate
+all-cities rows (the same trap `c8f4e91a37d2` documents for `uq_jobs_active`).
+`'*'` is a magic value in a column that otherwise holds UUIDs and breaks any join
+to a city table. The nil UUID `00000000-0000-0000-0000-000000000000` is used
+instead: valid, NOT NULL, never a real city id, and the sentinel Zepto's own API
+uses for an absent id.
