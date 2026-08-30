@@ -201,7 +201,11 @@ def parse_product_perf(
             "available_stores": p.get("availableStores"),
             "week_on_week_growth": p.get("weekOnWeekGrowth"),
             "month_on_month_growth": p.get("monthOnMonthGrowth"),
-            # Null on every row observed so far — Stock View is subscription-gated.
+            # A SCRAPE-TIME SNAPSHOT, not a fact about period_start. Holds the
+            # same value on every day of the window (measured: 0/14 SKU-jobs
+            # vary). Re-scraping an old window returns null, which the
+            # COALESCE guard in storage.py stops from overwriting a real
+            # reading. See docs/zepto.md.
             "stock_on_hand": p.get("stockOnHand"),
             "scraped_at": now_ist(),
         }

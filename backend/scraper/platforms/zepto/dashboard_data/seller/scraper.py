@@ -250,6 +250,55 @@ async def _post_with_auth_fallback(
     return resp.json()["data"]
 
 
+# Retry wrapper for the PO-app endpoints.
+#
+# These are slow and variable — measured 2026-08-30, asn/filter returned in
+# anywhere from 4.8s to 21s for the SAME 31-day window. When Zepto's own
+# upstream exceeds its gateway timeout the gateway answers 500, so the failure
+# arrives as a server error rather than a client timeout. Roughly 4 failures in
+# 18 attempts that day, randomly distributed: not the window size (a 31-day
+# window succeeded 5/5), not the payload (every variant worked), not the call
+# order (it failed alone and succeeded after po+grn).
+#
+# Without this, one blip discarded an entire dataset. `_scrape_zepto_po`'s
+# `_try` guard catches the exception so a flaky endpoint cannot kill the whole
+# run — correct, but it has no retry, so a single 500 wrote ZERO ASNs while the
+# API held 76. Silent except for one warning line.
+#
+# Only 5xx is retried. A 4xx will not fix itself, and auth errors already have
+# their own browser fallback inside _post_with_auth_fallback.
+#
+# The waits are deliberately long. The endpoint does not fail in isolated blips:
+# measured the same day, four consecutive attempts each timed out at ~23s and
+# the whole 103s stretch failed, then the next two calls succeeded in 15.7s and
+# 5.2s. So a bad patch outlasts a short backoff. 5/15/45 spans ~160s of waiting
+# plus ~90s of attempts, which cleared it in testing.
+#
+# This makes a bad run slow, not fatal, and a PO scrape is not latency-critical.
+# A total failure still costs only the ASN dataset for that run: the upsert
+# writes nothing when the list is empty, so previously stored ASNs survive.
+_PO_RETRY_WAITS_S = (5, 15, 45)
+
+
+async def _post_5xx_retry(
+    storage_state: dict, url: str, payload: dict, label: str
+) -> dict:
+    last: Exception | None = None
+    for attempt, wait in enumerate((*_PO_RETRY_WAITS_S, None)):
+        try:
+            return await _post_with_auth_fallback(storage_state, url, payload, label)
+        except httpx.HTTPStatusError as e:
+            if e.response.status_code < 500 or wait is None:
+                raise
+            last = e
+            logger.warning(
+                f"{label} got {e.response.status_code} "
+                f"(attempt {attempt + 1}), retrying in {wait}s"
+            )
+            await asyncio.sleep(wait)
+    raise last  # unreachable; the final iteration re-raises
+
+
 async def _fetch_po_paged(
     storage_state: dict, api: str, body: dict, list_key: str, label: str
 ) -> list[dict]:
@@ -262,7 +311,7 @@ async def _fetch_po_paged(
     out: list[dict] = []
     for page in range(ep.PO_MAX_PAGES):
         payload = {**body, "offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE}
-        data = await _post_with_auth_fallback(
+        data = await _post_5xx_retry(
             storage_state, f"{ep.BASE_URL}{api}", payload, f"{label} p{page + 1}"
         )
         rows = data.get(list_key) or []
