@@ -2,6 +2,7 @@ import { Card } from "../../../components/ui/Card";
 import { DeltaBadge } from "../../../components/ui/DeltaBadge";
 import {
 	formatCompactCurrency,
+	formatCurrency,
 	formatNumber,
 	formatPercent,
 } from "../../../lib/format";
@@ -62,6 +63,11 @@ export const MarketplaceCard = ({ row }) => {
 
 	const m = (key) => row[key] ?? {};
 	const isFull = row.data_scope === "full";
+	// Zepto's figures are small enough that "Rs 9.1K" hides the detail people
+	// actually reconcile against Zepto's own dashboard, which prints exact
+	// rupees. Blinkit keeps the compact form — its numbers run to crores and
+	// would overflow the tile in full.
+	const money = row.slug === "zepto" ? formatCurrency : formatCompactCurrency;
 
 	return (
 		<Card>
@@ -71,7 +77,7 @@ export const MarketplaceCard = ({ row }) => {
 					<>
 						<MetricRow
 							label="Revenue"
-							value={formatCompactCurrency(m("revenue").value)}
+							value={money(m("revenue").value)}
 							delta={m("revenue").delta_pct}
 						/>
 						<MetricRow
@@ -81,7 +87,7 @@ export const MarketplaceCard = ({ row }) => {
 						/>
 						<MetricRow
 							label="Ad spend"
-							value={formatCompactCurrency(m("ad_spend").value)}
+							value={money(m("ad_spend").value)}
 							delta={m("ad_spend").delta_pct}
 						/>
 						<MetricRow
