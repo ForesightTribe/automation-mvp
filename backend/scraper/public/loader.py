@@ -50,21 +50,17 @@ def _dt(v):
 
 
 def _json(v):
-    """Staged JSON blob -> the object the sa.JSON column expects.
+    """Staged JSON blob -> what asyncpg's COPY wants for a json column: a STRING.
 
-    Staging writes these as a TEXT string; asyncpg's COPY needs the decoded
-    object. NULL and unparseable both become None rather than raising — a
-    malformed blob on one row must not fail a 20k-row load, and the row's real
-    data is in its columns regardless.
+    Not the decoded object. COPY encodes a json column as text, so handing it a
+    dict raises `descriptor 'encode' for 'str' objects doesn't apply to a 'dict'`
+    and rolls back the whole file. `search_listings.extra` has always passed the
+    staged string straight through — this mirrors it rather than inventing a
+    second convention.
     """
     if not v:
         return None
-    if isinstance(v, (dict, list)):
-        return v
-    try:
-        return json.loads(v)
-    except (TypeError, ValueError):
-        return None
+    return v if isinstance(v, str) else json.dumps(v)
 
 
 async def _raw(db: AsyncSession):

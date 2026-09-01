@@ -34,7 +34,10 @@ DASHBOARD = "public_skus"
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining brands
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session stale, re-open
-_PACING = 0.05
+# Pacing is PER MARKETPLACE and comes off the provider — see providers.py. The old
+# module-level 0.05 was Blinkit's, applied to every platform: on Zepto it drove 169
+# stores in ~1 minute, which trips a 429 by store 60 and the LOGIN_REQUIRED gate by
+# store 138. The keyword orchestrator already read these; this one did not.
 
 
 def _brand_query(brand_slug: str, aliases: list[str]) -> str:
@@ -68,11 +71,20 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
 
 
 async def _worker(
-    wid, provider, browser, seed, queue, brands, done, stg, stats, total, tid, job_id,
+    wid, provider, browser, seed, queue, brands, done, stg, stats, total, tid,
+    job_id, misses,
 ) -> None:
     """One concurrent worker: own browser context + session, pulling stores off the
     shared queue until empty. Per store, runs each own brand's query and stages its
-    own-brand listings. Holds no DB session — see scraper/public/staging.py."""
+    own-brand listings. Holds no DB session — see scraper/public/staging.py.
+
+    `misses` is a shared list (safe to append without a lock — no `await` happens
+    between the check and the append) collecting every (location, brand) pair that
+    gave up. `run_targeted` runs one backlog pass over them after the main queue
+    drains, exactly as the keyword orchestrator does. Without it a store that
+    failed twice is simply absent from the run, and `--resume` cannot recover it
+    either — resume skips stores that HAVE rows, so a failed store stays skipped.
+    """
     session = await provider.open_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
@@ -110,10 +122,55 @@ async def _worker(
                     res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
                 store_fetch += time.monotonic() - _t
 
+                # Unconditional, and BEFORE the failure branch: a marketplace that
+                # rate-limits per connection counts the blocked request too, so
+                # skipping the gap on a failure is how a run digs itself deeper.
+                if provider.search_gap_s:
+                    await asyncio.sleep(provider.search_gap_s)
+
+                # A BLOCK IS NOT A FAILURE — it means "come back shortly". Without
+                # this the run treats a rate limit exactly like a 404: counts an
+                # error, moves to the next store, and keeps hammering. That is how
+                # a Zepto run produced 95 errors across 169 stores in one minute —
+                # every request after the first block was doomed and sent anyway.
+                # Mirrors the keyword orchestrator: wait, rebuild, retry once.
+                if res.get("blocked") and provider.probe_every_s:
+                    waits = 0
+                    while waits < provider.max_block_waits:
+                        waits += 1
+                        logger.warning(
+                            f"w{wid} {loc.city} brand '{query}' BLOCKED — waiting "
+                            f"{provider.probe_every_s}s "
+                            f"({waits}/{provider.max_block_waits})"
+                        )
+                        await asyncio.sleep(provider.probe_every_s)
+                        await provider.close_session(session)
+                        session = await provider.open_session(browser, loc.lat, loc.lon)
+                        if session:
+                            break
+                    if not session:
+                        logger.warning(f"worker {wid}: still blocked after {waits} "
+                                       f"waits — exiting")
+                        return
+                    stats["errors"] += 1
+                    stale = 0
+                    try:
+                        res = await provider.search(
+                            session, query, brand_cap,
+                            lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                        )
+                    except Exception as e:
+                        res = {"ok": False, "products": [],
+                               "error": f"{type(e).__name__}: {e}"}
+                    if provider.search_gap_s:
+                        await asyncio.sleep(provider.search_gap_s)
+
                 if not res.get("ok"):
                     store_fail += 1
                     stale += 1
                     stats["errors"] += 1
+                    # Recorded, not dropped — the backlog pass gets one more look.
+                    misses.append((loc, brand_slug, aliases, brand_cap))
                     logger.warning(
                         f"w{wid} {loc.city} brand '{query}' failed: "
                         f"{res.get('error') or 'no result'}"
@@ -151,7 +208,78 @@ async def _worker(
                 f"{store_rows} skus  [fetch {store_fetch:5.1f}s stage {store_db:4.1f}s]  "
                 f"| {stats['rows']} rows, {stats['errors']} err"
             )
-            await asyncio.sleep(_PACING)
+            await asyncio.sleep(provider.store_gap_s)
+    finally:
+        if session:
+            await provider.close_session(session)
+
+
+async def _retry_worker(
+    wid, provider, browser, seed, queue, stg, stats, tid, job_id,
+) -> None:
+    """Second-pass worker for the backlog `run_targeted` builds from the main
+    pass's misses. Pulls one (location, brand) pair at a time — every pair here
+    already failed during the main pass, so this is exactly one more attempt each,
+    not another escalation. A pair that fails here is genuinely left out of the run
+    and is reported by name at the end.
+
+    Mirrors `orchestrator._retry_worker`; the two scrape paths should behave the
+    same way under failure, and until now only the keyword one had a backlog pass.
+    """
+    session = await provider.open_session(browser, seed[0], seed[1])
+    if not session:
+        logger.warning(f"backlog worker {wid}: could not open session — exiting")
+        return
+    try:
+        while True:
+            try:
+                loc, brand_slug, aliases, brand_cap = queue.get_nowait()
+            except asyncio.QueueEmpty:
+                break
+
+            query = _brand_query(brand_slug, aliases)
+            try:
+                res = await provider.search(
+                    session, query, brand_cap,
+                    lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                )
+            except Exception as e:
+                res = {"ok": False, "products": [],
+                       "error": f"{type(e).__name__}: {e}"}
+            if provider.search_gap_s:
+                await asyncio.sleep(provider.search_gap_s)
+
+            if res.get("blocked") and provider.probe_every_s:
+                # One wait, one look — this pair already had its fair shot.
+                # Compounding waits here just delays the rest of the backlog.
+                await asyncio.sleep(provider.probe_every_s)
+                await provider.close_session(session)
+                session = await provider.open_session(browser, loc.lat, loc.lon)
+                stats["errors"] += 1
+                if not session:
+                    logger.warning(f"backlog worker {wid}: still blocked — exiting")
+                    return
+                stats.setdefault("unrecovered", []).append(
+                    (loc.merchant_id, brand_slug))
+                continue
+
+            if not res.get("ok") or not res["products"]:
+                stats["errors"] += 1
+                stats.setdefault("unrecovered", []).append(
+                    (loc.merchant_id, brand_slug))
+                continue
+
+            cls = classify_products(res["products"], brand_slug, aliases,
+                                    competitors=[])
+            if not cls["listings"]:
+                continue
+            n = await staging.save_skus(
+                stg, cls["listings"], brand_slug, tid, job_id,
+                merchant_id=res.get("merchant_id", ""),
+                city=loc.city, lat=loc.lat, lon=loc.lon,
+            )
+            stats["rows"] += n
+            stats["recovered"] = stats.get("recovered", 0) + 1
     finally:
         if session:
             await provider.close_session(session)
@@ -205,6 +333,8 @@ async def run_targeted(
     summary["job_id"] = job_id
     summary["staging_file"] = stg["path"].name
     stats = {"rows": 0, "errors": 0, "skipped": 0, "processed": 0}
+    # (location, brand_slug, aliases, brand_cap) pairs the main pass gave up on.
+    misses: list[tuple] = []
     total = len(locations)
     queue: asyncio.Queue = asyncio.Queue()
     for loc in locations:
@@ -230,11 +360,36 @@ async def run_targeted(
                 tasks = [
                     asyncio.create_task(_worker(
                         w, provider, browser, seed, queue, brands, done,
-                        stg, stats, total, tid, job_id,
+                        stg, stats, total, tid, job_id, misses,
                     ))
                     for w in range(1, n_workers + 1)
                 ]
                 await asyncio.gather(*tasks)
+
+                # Backlog pass: one more look at everything the main pass gave up
+                # on, now that the main queue is drained (so this cannot starve
+                # stores still waiting their first attempt). Same browser, so no
+                # new launch overhead. Mirrors the keyword orchestrator.
+                if misses:
+                    logger.info(
+                        f"targeted: main pass done — {len(misses)} misses, "
+                        f"running one backlog pass to close them"
+                    )
+                    retry_queue: asyncio.Queue = asyncio.Queue()
+                    for item in misses:
+                        retry_queue.put_nowait(item)
+                    retry_tasks = [
+                        asyncio.create_task(_retry_worker(
+                            w, provider, browser, seed, retry_queue,
+                            stg, stats, tid, job_id,
+                        ))
+                        for w in range(1, min(n_workers, len(misses)) + 1)
+                    ]
+                    await asyncio.gather(*retry_tasks)
+                    logger.info(
+                        f"targeted: backlog pass done — "
+                        f"{stats.get('recovered', 0)}/{len(misses)} recovered"
+                    )
             finally:
                 await browser.close()
         staging.update_stats(stg, stats, total)
@@ -247,12 +402,27 @@ async def run_targeted(
     finally:
         staging.close(stg)
 
+    unrecovered = stats.get("unrecovered", [])
     summary.update(rows=stats["rows"], errors=stats["errors"],
-                   skipped=stats["skipped"], status="success")
+                   skipped=stats["skipped"], status="success",
+                   recovered=stats.get("recovered", 0),
+                   unrecovered=len(unrecovered))
     logger.info(
         f"targeted: tenant {tid} done — {stats['rows']} sku rows, "
         f"{stats['errors']} errors, {stats['skipped']} skipped"
     )
+    # An error COUNT is not actionable: "95 errors across 169 stores" does not say
+    # which 95, and `--resume` cannot help (it skips stores that HAVE rows, so a
+    # failed store stays skipped). Name them.
+    if unrecovered:
+        logger.warning(
+            f"targeted: {len(unrecovered)} (store, brand) pair(s) still missing "
+            f"after the backlog pass — these stores have NO rows in this run:"
+        )
+        for merchant_id, brand_slug in unrecovered[:20]:
+            logger.warning(f"    {merchant_id}  {brand_slug}")
+        if len(unrecovered) > 20:
+            logger.warning(f"    ... and {len(unrecovered) - 20} more")
     logger.info(
         f"targeted: staged to {stg['path'].name} — NOT yet in the database. "
         f"Push it with:  python -m cli scrape load"

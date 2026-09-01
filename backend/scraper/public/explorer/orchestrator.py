@@ -42,7 +42,10 @@ DEFAULT_BRAND_CAP = 60
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a location → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches → session likely stale, re-open
-_PACING = 0.05          # polite gap between locations (seconds)
+# Fallback only — the real gap comes off the provider (see providers.py), because
+# it is per marketplace. Blinkit tolerates 0.05 s between locations; Zepto's
+# limiter is per connection and that pace trips it within a minute.
+_PACING = 0.05
 _TICK_S = 1.5           # how often live progress is flushed to explorer_runs
 
 
@@ -168,6 +171,13 @@ def _sku_row(base: dict, row: dict) -> dict:
 
 async def _safe_search(provider: Provider, session: dict, keyword: str, cap: int,
                        loc: MarketplaceLocation, follow_similarity: bool = False) -> dict:
+    """Every explorer search goes through here, which is why the per-marketplace
+    gap lives here rather than at each call site.
+
+    The gap is UNCONDITIONAL — in a `finally`, so it fires on a failed search too.
+    A marketplace that rate-limits per connection counts the blocked request as
+    well, so skipping the gap on failure is how a run digs itself deeper.
+    """
     try:
         return await provider.search(
             session, keyword, cap, lat=loc.lat, lon=loc.lon,
@@ -175,6 +185,9 @@ async def _safe_search(provider: Provider, session: dict, keyword: str, cap: int
         )
     except Exception as e:
         return {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
+    finally:
+        if provider.search_gap_s:
+            await asyncio.sleep(provider.search_gap_s)
 
 
 async def _reopen(provider: Provider, browser, session: dict,
@@ -279,7 +292,7 @@ async def _worker(wid: int, provider: Provider, browser, seed: tuple, queue: asy
                 )
 
             stats["processed"] += 1
-            await asyncio.sleep(_PACING)
+            await asyncio.sleep(provider.store_gap_s)
     finally:
         if session:
             await provider.close_session(session)
