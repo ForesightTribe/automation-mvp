@@ -25,6 +25,7 @@ from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
 from scraper.public import staging
+from scraper.public.orchestrator import _clamp_workers
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.search_result import classify_products
@@ -209,7 +210,9 @@ async def run_targeted(
     for loc in locations:
         queue.put_nowait(loc)
     seed = (locations[0].lat, locations[0].lon)
-    n_workers = max(1, min(workers, total))
+    # Shared with the keyword orchestrator — a marketplace whose limiter is per
+    # connection must not be handed a pool it cannot use.
+    n_workers = _clamp_workers(workers, total, provider)
 
     # All DB reads are done — the scrape stages to SQLite and touches no database.
     # Release the pooled connection so it isn't held idle across the scrape and dropped

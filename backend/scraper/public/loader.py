@@ -20,6 +20,7 @@ local parent id is remapped to the real one.
 See `staging.py` for why any of this exists.
 """
 import asyncio
+import json
 import uuid
 from pathlib import Path
 
@@ -46,6 +47,24 @@ def _chunks(rows: list, n: int = CHUNK):
 
 def _dt(v):
     return staging.parse_dt(v)
+
+
+def _json(v):
+    """Staged JSON blob -> the object the sa.JSON column expects.
+
+    Staging writes these as a TEXT string; asyncpg's COPY needs the decoded
+    object. NULL and unparseable both become None rather than raising — a
+    malformed blob on one row must not fail a 20k-row load, and the row's real
+    data is in its columns regardless.
+    """
+    if not v:
+        return None
+    if isinstance(v, (dict, list)):
+        return v
+    try:
+        return json.loads(v)
+    except (TypeError, ValueError):
+        return None
 
 
 async def _raw(db: AsyncSession):
@@ -194,7 +213,7 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
             "product_name", "merchant_id", "merchant_type", "city", "lat", "lon",
             "scraped_at", "price", "mrp", "discount_pct",
             "pack_raw", "pack_size", "pack_uom", "pack_count",
-            "in_stock", "inventory", "rating", "is_combo",
+            "in_stock", "inventory", "rating", "is_combo", "extra", "variant_id",
         ], [(
             tid, job_id, r["mp_slug"], r["brand_slug"], r["platform_product_id"],
             r["product_name"], r["merchant_id"] or "", r["merchant_type"] or "",
@@ -203,6 +222,11 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
             r["pack_raw"] or "", r["pack_size"], r["pack_uom"] or "", r["pack_count"],
             bool(r["in_stock"]), r["inventory"], r["rating"],
             bool(r["is_combo"]),
+            # Staged as a JSON string; the column is sa.JSON, so hand it the
+            # parsed object. `_row` keys are NULL on files staged before these
+            # columns existed — see the top-up in staging.py.
+            _json(r["extra"] if "extra" in r.keys() else None),
+            (r["variant_id"] if "variant_id" in r.keys() else None) or None,
         ) for r in skus])
         if skus:
             logger.info(f"loader: {len(skus):,} sku rows copied")

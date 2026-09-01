@@ -68,17 +68,29 @@ class Provider:
     result_cap: int = 48
     brand_cap: int = 60
 
-    # ── Pacing, per marketplace ──────────────────────────────────────────────
-    # These were module constants in orchestrator.py, tuned for Blinkit, which has
-    # no volume cap: 5 workers at 0.05 s between stores and no gap between searches.
-    # Zepto enforces a per-IP VOLUME cap and dies after ONE search at that rate, so
-    # the numbers cannot be shared. Each marketplace now supplies its own from its
-    # endpoints.py, measured rather than guessed.
+    # ── Pacing and concurrency, per marketplace ──────────────────────────────
+    # These were module constants in orchestrator.py, tuned for Blinkit, which
+    # tolerates 5 workers at 0.05 s between stores and no gap between searches.
+    # Zepto's limiter is per CONNECTION, so those numbers cannot be shared. Each
+    # marketplace supplies its own from its endpoints.py, measured rather than
+    # guessed.
     #
     # Defaults below reproduce Blinkit's previous behaviour exactly, so a provider
     # that sets none of them behaves as before.
     search_gap_s: float = 0.0        # after every search, within a store
     store_gap_s: float = 0.05        # after every store  (the old _PACING)
+    # Ceiling on the worker pool, whatever the caller asks for.
+    #
+    # **None means no ceiling** — that is what keeps Blinkit exactly as it was.
+    # Defaulting this to 5 looked harmless and was not: it silently capped
+    # `--workers 8` on Blinkit, which previously ran 8. A default that changes
+    # existing behaviour is not a default.
+    #
+    # Zepto sets 1. Its limiter is per connection, so parallelism inside one IP
+    # buys nothing: measured 1 worker at 791 products/min against 4 workers at
+    # 807 — a 1.02x return for 4x the requests, 76% of them wasted. Scale Zepto
+    # with IPs, not workers.
+    max_workers: int | None = None
     # Rest BEFORE the wall rather than crashing into it. None = no scheduled rest,
     # which is right for a marketplace with no volume cap.
     pause_every: int | None = None   # searches per worker before a scheduled rest
@@ -115,15 +127,18 @@ _PROVIDERS: dict[str, Provider] = {
         parse=ze_parser.parse,
         result_cap=ze_ep.RESULT_CAP,
         brand_cap=ze_ep.BRAND_RESULT_CAP,
-        # All measured on a residential IP — see docs/zepto_handover.md. 12 s is the
-        # floor: 6 s was tested and is SLOWER end to end, because a hard block costs
-        # more than a scheduled pause.
+        # Re-measured from scratch 31-Aug-2026 and validated on a full-city run:
+        # 169 stores x 9 keywords = 1,521 requests in 56.6 min, 100% success, zero
+        # blocks. 2 s pacing, one worker, no scheduled rests — the previous 12 s /
+        # 5-worker / 15-minute-rest settings came from a volume cap that does not
+        # exist. See zepto-cm-exp/public_scraper/JOURNAL.md.
         search_gap_s=ze_ep.SEARCH_GAP_S,
         store_gap_s=ze_ep.STORE_GAP_S,
         pause_every=ze_ep.PAUSE_EVERY,
         pause_s=ze_ep.PAUSE_S,
         probe_every_s=ze_ep.PROBE_EVERY_S,
         max_block_waits=len(ze_ep.RECOVERY_WAITS_S),
+        max_workers=ze_ep.MAX_WORKERS,
     ),
 }
 

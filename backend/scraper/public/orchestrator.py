@@ -38,6 +38,43 @@ _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session l
 _JITTER_FRAC = 0.15     # ± spread on the block-recovery wait, so workers stop retrying in lockstep
 
 
+def _clamp_workers(requested: int, total: int, provider) -> int:
+    """Pool size, never above what the marketplace can actually use.
+
+    A marketplace whose limiter is per CONNECTION gains nothing from parallelism
+    inside one IP — Zepto measured 1 worker at 791 products/min against 4 workers
+    at 807, a 1.02x return that wasted 76% of its requests. Without this clamp
+    `--workers 5` would quietly do that and look like it was working.
+
+    Warns rather than failing: the run is still correct, just narrower than asked
+    for, and a silent downgrade is how surprises get built into a schedule.
+
+    `max_workers = None` means no ceiling, which is how Blinkit keeps its existing
+    behaviour — including honouring a `--workers` above its usual 5.
+    """
+    n = max(1, min(requested, total))
+    cap = getattr(provider, "max_workers", None)
+    if not cap or n <= cap:
+        return n
+
+    if cap == 1:
+        # The marketplace is single-worker by design, so --workers is not a knob
+        # here at all. Informational: the default is 5 and nobody chose it, so a
+        # warning on every run would be noise about a decision the user did not
+        # make.
+        logger.info(
+            f"{provider.slug}: --workers does not apply (rate limit is per "
+            f"connection, not per worker) — running single-worker"
+        )
+    else:
+        logger.warning(
+            f"{provider.slug}: --workers {requested} reduced to {cap} — beyond "
+            f"that, workers share one budget and waste requests rather than "
+            f"adding throughput"
+        )
+    return cap
+
+
 def _jittered(base_s: float) -> float:
     """`base_s` ± `_JITTER_FRAC`. All 5 workers hit the same block within seconds of
     each other (they run the same keyword list at the same pace), so an un-jittered
@@ -424,7 +461,7 @@ async def run_tenant(
     for loc in locations:
         queue.put_nowait(loc)
     seed = (locations[0].lat, locations[0].lon)
-    n_workers = max(1, min(workers, total))
+    n_workers = _clamp_workers(workers, total, provider)
 
     # Every DB read is done — the scrape stages to SQLite and touches no database.
     # Release the pooled connection now: held open across a ~1.5h scrape it goes idle,
