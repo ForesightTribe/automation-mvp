@@ -114,9 +114,21 @@ async def _worker(
                     # only ~18 own products as `basic`, the rest as similarity;
                     # own-only classification discards non-own padding. A provider
                     # without that distinction may ignore the flag.
+                    #
+                    # `merchant_id` is REQUIRED, not optional. On a marketplace that
+                    # binds by store id (Zepto), omitting it makes the engine resolve
+                    # the store from the coordinate instead — and the catalogue's
+                    # grid-found coordinates are lattice nodes up to ~2 km from the
+                    # actual store, so many of them resolve to the SAME neighbouring
+                    # store. Measured: 169 locations collapsed onto 61 stores, each
+                    # re-staging its catalogue up to 8 times — 748 rows of which 474
+                    # were duplicates, and 108 stores never scraped at all. The
+                    # keyword orchestrator has always passed it; this path did not.
                     res = await provider.search(
                         session, query, brand_cap,
-                        lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                        lat=loc.lat, lon=loc.lon,
+                        merchant_id=loc.merchant_id,
+                        follow_similarity=True,
                     )
                 except Exception as e:
                     res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
@@ -152,12 +164,18 @@ async def _worker(
                         logger.warning(f"worker {wid}: still blocked after {waits} "
                                        f"waits — exiting")
                         return
-                    stats["errors"] += 1
+                    stats["blocked"] = stats.get("blocked", 0) + 1
                     stale = 0
                     try:
+                        # Rebuilding the session reset its bound store, so the
+                        # retry must re-bind explicitly — without it the retry
+                        # would silently target whatever the fresh session
+                        # resolved from the seed coordinate.
                         res = await provider.search(
                             session, query, brand_cap,
-                            lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                            lat=loc.lat, lon=loc.lon,
+                            merchant_id=loc.merchant_id,
+                            follow_similarity=True,
                         )
                     except Exception as e:
                         res = {"ok": False, "products": [],
@@ -193,9 +211,22 @@ async def _worker(
                 if not listings:
                     continue
                 _t = time.monotonic()
+                # Guard the silent failure directly: if the response came back
+                # bound to a different store than we asked for, the rows describe
+                # somebody else's shelf and must not be filed under this one.
+                got = res.get("merchant_id", "")
+                if got and loc.merchant_id and got != loc.merchant_id:
+                    stats["errors"] += 1
+                    logger.warning(
+                        f"w{wid} {loc.city}: asked store {loc.merchant_id[:8]} but "
+                        f"got {got[:8]} — dropping {len(listings)} rows rather than "
+                        f"filing them under the wrong store"
+                    )
+                    continue
+
                 n = await staging.save_skus(
                     stg, listings, brand_slug, tid, job_id,
-                    merchant_id=res.get("merchant_id", ""),
+                    merchant_id=loc.merchant_id or got,
                     city=loc.city, lat=loc.lat, lon=loc.lon,
                 )
                 store_db += time.monotonic() - _t
@@ -239,9 +270,12 @@ async def _retry_worker(
 
             query = _brand_query(brand_slug, aliases)
             try:
+                # Bind by store id, same as the main pass — see the note there.
                 res = await provider.search(
                     session, query, brand_cap,
-                    lat=loc.lat, lon=loc.lon, follow_similarity=True,
+                    lat=loc.lat, lon=loc.lon,
+                    merchant_id=loc.merchant_id,
+                    follow_similarity=True,
                 )
             except Exception as e:
                 res = {"ok": False, "products": [],
@@ -269,13 +303,22 @@ async def _retry_worker(
                     (loc.merchant_id, brand_slug))
                 continue
 
+            got = res.get("merchant_id", "")
+            if got and loc.merchant_id and got != loc.merchant_id:
+                stats["errors"] += 1
+                logger.warning(
+                    f"backlog w{wid}: asked store {loc.merchant_id[:8]} but got "
+                    f"{got[:8]} — dropping rather than mis-filing"
+                )
+                continue
+
             cls = classify_products(res["products"], brand_slug, aliases,
                                     competitors=[])
             if not cls["listings"]:
                 continue
             n = await staging.save_skus(
                 stg, cls["listings"], brand_slug, tid, job_id,
-                merchant_id=res.get("merchant_id", ""),
+                merchant_id=loc.merchant_id or got,
                 city=loc.city, lat=loc.lat, lon=loc.lon,
             )
             stats["rows"] += n
@@ -403,13 +446,21 @@ async def run_targeted(
         staging.close(stg)
 
     unrecovered = stats.get("unrecovered", [])
+    blocked = stats.get("blocked", 0)
     summary.update(rows=stats["rows"], errors=stats["errors"],
                    skipped=stats["skipped"], status="success",
-                   recovered=stats.get("recovered", 0),
+                   blocked=blocked, recovered=stats.get("recovered", 0),
                    unrecovered=len(unrecovered))
+    # A block that we waited out and recovered from is NOT an error — reporting it
+    # as one made a healthy run look broken ("9 errors" when nothing was lost).
+    # Three separate numbers, because they mean three different things:
+    #   blocked      we hit a rate limit and waited; usually costs time, not data
+    #   errors       a request genuinely failed
+    #   unrecovered  data actually missing from this run  <- the one that matters
     logger.info(
         f"targeted: tenant {tid} done — {stats['rows']} sku rows, "
-        f"{stats['errors']} errors, {stats['skipped']} skipped"
+        f"{blocked} blocked (waited out), {stats['errors']} errors, "
+        f"{len(unrecovered)} unrecovered, {stats['skipped']} skipped"
     )
     # An error COUNT is not actionable: "95 errors across 169 stores" does not say
     # which 95, and `--resume` cannot help (it skips stores that HAVE rows, so a
