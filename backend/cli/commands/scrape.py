@@ -20,6 +20,7 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     fetch_sales_overview as zepto_fetch_sales_overview,
     fetch_product_performance as zepto_fetch_product_performance,
     fetch_product_performance_by_city as zepto_fetch_product_perf_by_city,
+    NoDataYet as ZeptoNoDataYet,
     fetch_pos as zepto_fetch_pos,
     fetch_grns as zepto_fetch_grns,
     fetch_asns as zepto_fetch_asns,
@@ -944,6 +945,15 @@ async def _scrape_zepto_sales(
             raise typer.Exit(1)
         except typer.Exit:
             raise
+        except ZeptoNoDataYet as e:
+            # Not a failure — Zepto simply has not computed that day yet. The
+            # job is completed with zero records rather than marked failed, so
+            # `cli status` does not report a broken scrape for something that is
+            # only a matter of timing.
+            if job_id:
+                await complete_scrape_job(db, job_id, {})
+            console.print(f"[yellow]Nothing to scrape yet: {escape(str(e))}[/yellow]")
+            raise typer.Exit(0)
         except Exception as e:
             if job_id:
                 await fail_scrape_job(db, job_id, str(e))

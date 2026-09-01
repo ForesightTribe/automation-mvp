@@ -207,7 +207,11 @@ async def _get_with_auth_fallback(storage_state: dict, url: str, params: dict, l
             resp.raise_for_status()  # not auth-shaped — surface the real error, no fallback
 
     resp.raise_for_status()
-    return resp.json()["data"]
+    # `data` is null — not an error object — when a filter window matches
+    # nothing (verified 2026-08-31: grn/filter for 30..31 Aug returned
+    # HTTP 200 `{"success":true,"data":null}`). Returning {} lets callers
+    # read an empty list instead of raising AttributeError on None.
+    return resp.json().get("data") or {}
 
 
 async def _post_with_auth_fallback(
@@ -247,7 +251,11 @@ async def _post_with_auth_fallback(
             resp.raise_for_status()
 
     resp.raise_for_status()
-    return resp.json()["data"]
+    # `data` is null — not an error object — when a filter window matches
+    # nothing (verified 2026-08-31: grn/filter for 30..31 Aug returned
+    # HTTP 200 `{"success":true,"data":null}`). Returning {} lets callers
+    # read an empty list instead of raising AttributeError on None.
+    return resp.json().get("data") or {}
 
 
 # Retry wrapper for the PO-app endpoints.
@@ -430,6 +438,15 @@ async def fetch_po_items(
     return out
 
 
+class NoDataYet(RuntimeError):
+    """Zepto accepted the request but has not computed that date range yet.
+
+    Distinct from a failure: the session is fine, the parameters are fine, the
+    day simply is not ready. Callers should report it as "try later", not as a
+    broken scrape.
+    """
+
+
 async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str, ids: dict) -> dict:
     """Real GMV/Units data from Zepto's Sales Analytics — direct API call,
     no browser, using freshly-discovered tenant IDs (see discover_ids)."""
@@ -447,6 +464,31 @@ async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str
     data = await _get_with_auth_fallback(
         storage_state, f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}", params, "Sales-overview"
     )
+
+    # Zepto computes a day on a lag — its own dashboard footer says "Last
+    # updated on <date> 8:17 am", i.e. once each morning. Ask for a day it has
+    # not processed and the response is structurally different: the `headers`
+    # block carrying the totals is ABSENT, and every point in `metrics` is null.
+    #
+    #   2026-08-28   headers present   gmv Rs 64,280   {"Brik Oven": 64280}
+    #   2026-08-29   headers present   gmv Rs 54,275   {"Brik Oven": 54275}
+    #   2026-08-30   headers ABSENT    gmv None        {"Brik Oven": null}
+    #
+    # (measured 2026-08-31 08:2x — the 30th was still not ready the next
+    # morning, and Zepto's own dashboard showed nothing for it either.)
+    #
+    # Reading data["headers"] blind raised a bare KeyError('headers'), which
+    # surfaced as `Scrape failed: 'headers'` — no indication that the only
+    # problem was asking too early. The CLI defaults --to to yesterday for this
+    # reason; this path is reached when that default is overridden.
+    if "headers" not in data:
+        raise NoDataYet(
+            f"Zepto has not computed {date_from}..{date_to} yet — the response "
+            f"carries no totals and every value is null. Zepto refreshes once a "
+            f"morning, so a day is usually ready the following afternoon. "
+            f"Re-run later, or scrape up to yesterday instead."
+        )
+
     gmv = data["headers"]["gmv"]["value"]
     units = data["headers"]["units"]["value"]
     daily = data["metrics"]["gmv"]["data"]
