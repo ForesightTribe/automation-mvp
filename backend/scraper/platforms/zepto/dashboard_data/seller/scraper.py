@@ -9,32 +9,49 @@ from scraper.utils.browser import create_browser_context
 from app.utils.logger import logger
 
 
-def _extract_auth(storage_state: dict) -> tuple[str, str] | None:
-    """Pull the JWT and WAF token straight out of the saved cookies — no
-    browser needed. Confirmed live (DevTools + captured requests) that
-    Zepto's frontend sends these cookie values verbatim as the `authorization`
-    and `x-aws-waf-token` headers on every API call, so replaying them here
-    is equivalent to what the real page does."""
-    jwt = None
+def _extract_auth(session: dict) -> tuple[str, str | None] | None:
+    """Get the JWT (and a WAF token if one is available) out of a saved session.
+
+    TWO SHAPES, because two auth systems are live during the migration:
+
+    * `platform_auth` (`auth_service.ensure(db, tenant, "zepto")`) stores the JWT
+      in `raw` and leaves `storage_state` EMPTY — the token travels in a header,
+      so there is nothing to project into a browser. No WAF token at all.
+    * the older `zepto_seller` login saved a Playwright storage state, and the
+      JWT/WAF arrived as cookies.
+
+    ⚠️ The WAF token is now OPTIONAL. `/brand-analytics-web/*` and `/api/v1/po/*`
+    were measured on 2026-09-01 returning HTTP 200 with NO `x-aws-waf-token` at
+    all — the old code REFUSED to start without one, so a session missing that
+    cookie was rejected over a header the API never asked for. Only `/ads-bff/*`
+    genuinely needs it (and then also `waf-enabled: false`, or CloudFront answers
+    429, which reads like rate limiting and is not).
+    """
+    jwt = session.get("jwt")
+    if jwt:
+        return jwt, None
+
     waf_token = None
-    for c in storage_state.get("cookies", []):
+    for c in session.get("cookies", []):
         name = c.get("name", "")
         if name.endswith("_AUTH_TOKEN"):
             jwt = c.get("value")
         elif name == "aws-waf-token":
             waf_token = c.get("value")
-    if not jwt or not waf_token:
+    if not jwt:
         return None
     return jwt, waf_token
 
 
-def _headers_for(jwt: str, waf_token: str) -> dict:
-    return {
+def _headers_for(jwt: str, waf_token: str | None = None) -> dict:
+    h = {
         "authorization": jwt,
-        "x-aws-waf-token": waf_token,
         "x-proxy-target": "brand-analytics",
         "accept": "application/json",
     }
+    if waf_token:
+        h["x-aws-waf-token"] = waf_token
+    return h
 
 
 async def validate(storage_state: dict) -> tuple[bool, str | None]:

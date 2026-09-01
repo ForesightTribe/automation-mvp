@@ -815,8 +815,19 @@ async def _scrape_zepto_sales(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                storage_state = await ensure_healthy_session(db, tenant_id, "zepto_seller", zepto_seller_validate)
+            # `ensure()` = load -> probe -> refresh -> re-login, doing the least
+            # work that yields a session known to work — the same call Blinkit
+            # makes. It replaces the old `zepto_seller` path, which stopped the
+            # run and asked a human to type the OTP. The Zepto seller account is
+            # shared, so it gets evicted mid-run routinely; self-healing matters
+            # more here than anywhere else.
+            #
+            # The JWT lives in `raw`, not in cookies: platform_auth leaves
+            # `storage_state` empty because the token travels in a header.
+            with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+                storage_state = {
+                    "jwt": (await auth_service.ensure(db, tenant_id, "zepto")).raw["jwt"]
+                }
             console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
@@ -2012,10 +2023,13 @@ async def _scrape_zepto_po(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                storage_state = await ensure_healthy_session(
-                    db, tenant_id, "zepto_seller", zepto_seller_validate
-                )
+            # See the note on the sales scrape: same self-healing `ensure()`.
+            # `/api/v1/po/*` needs only the JWT — measured 2026-09-01 returning
+            # 200 with no WAF token.
+            with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+                storage_state = {
+                    "jwt": (await auth_service.ensure(db, tenant_id, "zepto")).raw["jwt"]
+                }
             console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")
