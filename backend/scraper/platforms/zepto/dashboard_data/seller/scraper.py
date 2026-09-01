@@ -6,6 +6,10 @@ from playwright.async_api import async_playwright
 
 from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
 from scraper.utils.browser import create_browser_context
+# The WAF token is anonymous proof-of-browser, so the minting logic is shared
+# rather than duplicated. It lives with the campaign manager because that is
+# where /ads-bff/* was first reverse-engineered.
+from campaign_manager.marketplaces.zepto.transport import mint_waf_token
 from app.utils.logger import logger
 
 
@@ -681,36 +685,47 @@ _ADS_HEADER_KEYS = frozenset(
 )
 
 
-async def capture_ads_headers(storage_state: dict) -> dict:
-    """Load the ads page in a browser and keep the headers off its first
-    ads-bff call. Raises if none appear — usually a dead session."""
-    captured: dict = {}
+async def capture_ads_headers(session: dict) -> dict:
+    """Headers for `/ads-bff/*`: the account's JWT plus a freshly minted WAF token.
 
-    async with async_playwright() as p:
-        browser, context = await create_browser_context(p, headless=True, storage_state=storage_state)
-        page = await context.new_page()
+    This used to drive a logged-in browser to the ads page and steal the headers
+    off its first ads-bff request — which needed session COOKIES, and so broke the
+    moment auth moved to platform_auth, where the JWT travels in a header and
+    `storage_state` is empty.
 
-        async def on_request(request):
-            if "/ads-bff/" in request.url and not captured:
-                captured.update(request.headers)
+    The two credentials are independent, which is what makes the browser
+    unnecessary here:
 
-        page.on("request", on_request)
-        try:
-            await page.goto(f"https://brands.zepto.co.in{ep.ADS_PAGE}", wait_until="domcontentloaded", timeout=45_000)
-            if not captured:
-                await asyncio.sleep(12)
-        except Exception as e:
-            logger.warning(f"Ads page load warning: {e}")
-        finally:
-            await browser.close()
+    * the JWT says WHO — it comes from the stored session
+    * the WAF token says "a real browser" and nothing about identity, so an
+      ANONYMOUS page load earns a valid one (see transport.mint_waf_token)
 
-    headers = {k: v for k, v in captured.items() if k.lower() in _ADS_HEADER_KEYS}
-    if "authorization" not in headers or "x-aws-waf-token" not in headers:
-        raise RuntimeError(
-            "Could not capture ads-bff auth headers — session is probably dead, re-login required"
-        )
-    logger.info("Zepto ads headers captured")
-    return headers
+    ⚠️ `waf-enabled: false` is required alongside the token, not optional. Send
+    the token without it and CloudFront answers 429 — which reads like rate
+    limiting and is not.
+
+    Unlike the sales and PO endpoints, `/ads-bff/*` genuinely does need the WAF
+    token; those were measured returning 200 without one.
+    """
+    auth = _extract_auth(session)
+    if not auth:
+        raise RuntimeError("Saved session carries no JWT — re-login required")
+    jwt, waf_token = auth
+
+    if not waf_token:
+        # platform_auth sessions carry no WAF cookie; mint one. ~10s, anonymous.
+        waf_token = await mint_waf_token()
+
+    logger.info("Zepto ads headers ready (jwt + waf)")
+    return {
+        "authorization": jwt,
+        "x-aws-waf-token": waf_token,
+        "waf-enabled": "false",
+        "accept": "application/json, text/plain, */*",
+        "content-type": "application/json",
+        "origin": "https://brands.zepto.co.in",
+        "referer": "https://brands.zepto.co.in/",
+    }
 
 
 async def fetch_ad_campaigns(

@@ -1744,7 +1744,12 @@ async def _scrape_zepto_ads(
         job_id = None
         try:
             with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                storage_state = await ensure_healthy_session(db, tenant_id, "zepto_seller", zepto_seller_validate)
+                # Same self-healing `ensure()` as the sales and PO scrapes.
+                # `/ads-bff/*` also needs a WAF token, which `capture_ads_headers`
+                # mints anonymously — it proves "browser", not "user".
+                storage_state = {
+                    "jwt": (await auth_service.ensure(db, tenant_id, "zepto")).raw["jwt"]
+                }
             console.print("[green]Session healthy.[/green]")
 
             with console.status("[cyan]Discovering brand...[/cyan]"):
