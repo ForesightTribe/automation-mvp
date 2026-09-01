@@ -522,23 +522,8 @@ _ADS_HEADER_KEYS = frozenset(
 )
 
 
-async def capture_ads_headers(client) -> dict:
-    """Headers for `/ads-bff/*` — the client already holds both credentials.
-
-    This used to drive a logged-in browser to the ads page and steal the headers
-    off its first ads-bff request, which needed session COOKIES. platform_auth
-    stores none: the JWT travels in a header.
-
-    Unlike Sales Analytics, `/ads-bff/*` genuinely needs the WAF token AND
-    `waf-enabled: false` — either alone gets a 429, which reads like rate
-    limiting and is not. `headers(brand_analytics=False)` sends that pair.
-    """
-    logger.info("Zepto ads headers ready (jwt + waf)")
-    return client.headers(brand_analytics=False)
-
-
 async def fetch_ad_campaigns(
-    headers: dict, brand_id: str, date_from: str, date_to: str, category: str
+    client, brand_id: str, date_from: str, date_to: str, category: str
 ) -> list[dict]:
     """Every campaign in one category for a window, following pagination.
 
@@ -548,48 +533,46 @@ async def fetch_ad_campaigns(
     by_id: dict = {}
     total = None
     page = 1
-    async with httpx.AsyncClient() as client:
-        while True:
-            # `page`, 1-based. Verified by elimination: offset / skip / page_no
-            # / pageNumber / page_number are all silently ignored and return
-            # page 1 again, which is how the first version of this loop spun to
-            # offset=920 and drew a 429.
-            params = {
-                "selectedBrand": brand_id,
-                "brand_id": brand_id,
-                "from_date": date_from,
-                "to_date": date_to,
-                "categoryType": category,
-                "page": page,
-            }
-            resp = await client.get(
-                f"{ep.BASE_URL}{ep.ADS_CAMPAIGNS_API}", headers=headers, params=params, timeout=30
-            )
-            if resp.status_code == 202:
-                raise RuntimeError(
-                    "ads-bff answered 202 (WAF challenge) — the captured token was rejected; retry the header capture"
-                )
-            resp.raise_for_status()
-            data = resp.json()["data"] or {}
-            rows = data.get("campaigns") or []
-            if total is None:
-                total = data.get("total_count") or 0
+    while True:
+        # `page`, 1-based. Verified by elimination: offset / skip / page_no
+        # / pageNumber / page_number are all silently ignored and return
+        # page 1 again, which is how the first version of this loop spun to
+        # offset=920 and drew a 429.
+        params = {
+            "selectedBrand": brand_id,
+            "brand_id": brand_id,
+            "from_date": date_from,
+            "to_date": date_to,
+            "categoryType": category,
+            "page": page,
+        }
+        # Through the client: a 202/429 re-mints the WAF token and retries,
+        # a 401 re-logs in and retries. This loop used to raise on 202 and
+        # ask a human to re-run.
+        resp = await client.request(
+            "GET", ep.ADS_CAMPAIGNS_API, params=params, retry_writes=False
+        )
+        resp.raise_for_status()
+        data = resp.json()["data"] or {}
+        rows = data.get("campaigns") or []
+        if total is None:
+            total = data.get("total_count") or 0
 
-            # Bound the loop on total_count and on actually seeing new ids —
-            # NOT on has_next alone. `has_next` stayed true even once every
-            # campaign had been returned, so trusting it spun to offset=920
-            # and drew a 429. Duplicate ids mean the offset param is being
-            # ignored, in which case paging further is pointless.
-            before = len(by_id)
-            for r in rows:
-                cid = r.get("campaign_id")
-                if cid is not None:
-                    by_id[cid] = r
-            if not rows or len(by_id) == before or len(by_id) >= total:
-                break
+        # Bound the loop on total_count and on actually seeing new ids —
+        # NOT on has_next alone. `has_next` stayed true even once every
+        # campaign had been returned, so trusting it spun to offset=920
+        # and drew a 429. Duplicate ids mean the offset param is being
+        # ignored, in which case paging further is pointless.
+        before = len(by_id)
+        for r in rows:
+            cid = r.get("campaign_id")
+            if cid is not None:
+                by_id[cid] = r
+        if not rows or len(by_id) == before or len(by_id) >= total:
+            break
 
-            page += 1
-            await asyncio.sleep(1.5)
+        page += 1
+        await asyncio.sleep(1.5)
 
     out = list(by_id.values())
     if total and len(out) < total:
@@ -628,7 +611,7 @@ def _has_metrics(c: dict) -> bool:
 
 
 async def fetch_ad_daily_metrics(
-    headers: dict, brand_id: str, date_from: str, date_to: str, category: str
+    client, brand_id: str, date_from: str, date_to: str, category: str
 ) -> dict[str, list[dict]]:
     """Per-day brand-level ad metrics for one category.
 
@@ -642,29 +625,23 @@ async def fetch_ad_daily_metrics(
     per-campaign time series that we have found.
     """
     series: dict[str, list[dict]] = {}
-    async with httpx.AsyncClient() as client:
-        for metric in ep.ADS_METRIC_NAMES:
-            body = {
-                "from": f"{date_from} 00:00:00",
-                "to": f"{date_to} 23:59:59",
-                "interval": "day",
-                "campaign_category": category,
-                "metrics": [metric],
-                "breakdown": True,
-                "brand_id": brand_id,
-            }
-            resp = await client.post(
-                f"{ep.BASE_URL}{ep.ADS_METRICS_API}",
-                headers={**headers, "content-type": "application/json"},
-                json=body,
-                timeout=30,
-            )
-            if resp.status_code == 202:
-                raise RuntimeError("ads-bff answered 202 (WAF challenge) — retry the header capture")
-            resp.raise_for_status()
-            m = ((resp.json().get("data") or {}).get("metrics") or {}).get(metric) or {}
-            series[metric] = m.get("interval_breakdown") or []
-            await asyncio.sleep(1.5)
+    for metric in ep.ADS_METRIC_NAMES:
+        body = {
+            "from": f"{date_from} 00:00:00",
+            "to": f"{date_to} 23:59:59",
+            "interval": "day",
+            "campaign_category": category,
+            "metrics": [metric],
+            "breakdown": True,
+            "brand_id": brand_id,
+        }
+        resp = await client.request(
+            "POST", ep.ADS_METRICS_API, json=body, retry_writes=False
+        )
+        resp.raise_for_status()
+        m = ((resp.json().get("data") or {}).get("metrics") or {}).get(metric) or {}
+        series[metric] = m.get("interval_breakdown") or []
+        await asyncio.sleep(1.5)
 
     days = max((len(v) for v in series.values()), default=0)
     logger.info(f"Zepto ad daily metrics [{category}] [{date_from}..{date_to}]: {days} days")
@@ -672,7 +649,7 @@ async def fetch_ad_daily_metrics(
 
 
 async def fetch_ads_tabular(
-    headers: dict,
+    client,
     brand_id: str,
     date_from: str,
     date_to: str,
@@ -701,36 +678,32 @@ async def fetch_ads_tabular(
     """
     out: list[dict] = []
     page = 1
-    async with httpx.AsyncClient() as client:
-        while True:
-            body = {
-                "from": f"{date_from} 00:00:00",
-                "to": f"{date_to} 23:59:59",
-                "view": view,
-                "size": ep.ADS_TABULAR_PAGE_SIZE,
-                "page": page,
-                "campaign_category": category,
-                "brand_id": brand_id,
-            }
-            resp = await client.post(
-                f"{ep.BASE_URL}{ep.ADS_TABULAR_API}",
-                headers={**headers, "content-type": "application/json"},
-                json=body,
-                timeout=30,
-            )
-            if resp.status_code == 202:
-                raise RuntimeError("ads-bff answered 202 (WAF challenge) — retry the header capture")
-            resp.raise_for_status()
-            data = resp.json().get("data") or {}
-            rows = data.get("rows") or []
-            out.extend(rows)
-            total = data.get("total_count") or 0
-            # Bounded by total_count, not has_next — the campaigns endpoint's
-            # has_next stayed true forever and spun a loop to 92 requests.
-            if not rows or len(out) >= total:
-                break
-            page += 1
-            await asyncio.sleep(1.5)
+    while True:
+        body = {
+            "from": f"{date_from} 00:00:00",
+            "to": f"{date_to} 23:59:59",
+            "view": view,
+            "size": ep.ADS_TABULAR_PAGE_SIZE,
+            "page": page,
+            "campaign_category": category,
+            "brand_id": brand_id,
+        }
+        resp = await client.request(
+            "POST", ep.ADS_TABULAR_API, json=body, retry_writes=False
+        )
+        # A 202 that survives the client has already been retried with a
+        # re-minted token, so it is a real failure rather than a stale one.
+        resp.raise_for_status()
+        data = resp.json().get("data") or {}
+        rows = data.get("rows") or []
+        out.extend(rows)
+        total = data.get("total_count") or 0
+        # Bounded by total_count, not has_next — the campaigns endpoint's
+        # has_next stayed true forever and spun a loop to 92 requests.
+        if not rows or len(out) >= total:
+            break
+        page += 1
+        await asyncio.sleep(1.5)
 
     logger.info(f"Zepto ads {view} [{date_from}..{date_to}]: {len(out)} rows")
     return out

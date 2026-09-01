@@ -21,7 +21,6 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     fetch_grns as zepto_fetch_grns,
     fetch_asns as zepto_fetch_asns,
     fetch_po_items as zepto_fetch_po_items,
-    capture_ads_headers as zepto_capture_ads_headers,
     fetch_ad_campaigns as zepto_fetch_ad_campaigns,
     fetch_ads_tabular as zepto_fetch_ads_tabular,
 )
@@ -1754,10 +1753,11 @@ async def _scrape_zepto_ads(
             brand_id = ids["brand_id"]
             console.print(f"[green]Brand:[/green] {ids['brand_name']}")
 
-            # ads-bff will not take the stored WAF token; harvest a live one.
-            with console.status("[cyan]Capturing ads headers (browser)...[/cyan]"):
-                headers = await zepto_capture_ads_headers(storage_state)
-            console.print("[green]Ads headers captured.[/green]")
+            # No header-capture step any more: the client holds the JWT and the
+            # WAF token and refreshes each on its own failure signal. The name
+            # `headers` survives only because the fetchers still take it
+            # positionally.
+            headers = storage_state
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_ads", platform="zepto")
 
