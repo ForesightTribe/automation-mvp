@@ -1,9 +1,14 @@
-"""Client-scoped Blinkit scorecard. Mounted under /clients/{client_id}/scorecard.
+"""Client-scoped seller scorecard. Mounted under /clients/{client_id}/scorecard.
 
 Scorecard data is weekly snapshots (keyed on `from_date_ist`), so these endpoints
 navigate by week — `?from=` selects a week, defaulting to the latest. `/weeks`
-lists the choices for the page's week picker. There's no marketplace scoping
-(Blinkit is the only platform with a seller scorecard)."""
+lists the choices for the page's week picker.
+
+`?marketplace=` is OPTIONAL and rarely needed. Left out, the service picks the
+platform this tenant actually has data for: Blinkit if it publishes a scorecard
+for them, Zepto otherwise (where the same figures are derived from the PO tables
+because Zepto publishes none). Callers that never send it keep their old
+behaviour exactly."""
 from datetime import date
 
 from fastapi import APIRouter, HTTPException, Query, status
@@ -23,8 +28,14 @@ router = APIRouter()
 
 
 @router.get("/weeks", response_model=list[date])
-async def weeks(session: SessionDep, client: ClientDep):
-    return await scorecard_service.get_weeks(session, tenant_id=client.id)
+async def weeks(
+    session: SessionDep,
+    client: ClientDep,
+    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+):
+    return await scorecard_service.get_weeks(
+        session, tenant_id=client.id, marketplace=marketplace
+    )
 
 
 @router.get("/weekly", response_model=ScorecardWeeklyOut)
@@ -32,9 +43,10 @@ async def weekly(
     session: SessionDep,
     client: ClientDep,
     from_date: date | None = Query(None, alias="from", description="Defaults to latest"),
+    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
 ):
     data = await scorecard_service.get_weekly(
-        session, tenant_id=client.id, from_date=from_date
+        session, tenant_id=client.id, from_date=from_date, marketplace=marketplace
     )
     if not data:
         raise HTTPException(
@@ -48,9 +60,10 @@ async def trend(
     session: SessionDep,
     client: ClientDep,
     weeks: int = Query(12, ge=1, le=104, description="Number of recent weeks"),
+    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
 ):
     return await scorecard_service.get_trend(
-        session, tenant_id=client.id, weeks=weeks
+        session, tenant_id=client.id, weeks=weeks, marketplace=marketplace
     )
 
 
@@ -60,9 +73,11 @@ async def key_skus(
     client: ClientDep,
     pagination: PaginationDep,
     from_date: date | None = Query(None, alias="from", description="Defaults to latest"),
+    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
 ):
     return await scorecard_service.get_key_skus(
-        session, tenant_id=client.id, pagination=pagination, from_date=from_date
+        session, tenant_id=client.id, pagination=pagination, from_date=from_date,
+        marketplace=marketplace,
     )
 
 
@@ -72,9 +87,11 @@ async def facilities(
     client: ClientDep,
     pagination: PaginationDep,
     from_date: date | None = Query(None, alias="from", description="Defaults to latest"),
+    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
 ):
     return await scorecard_service.get_facilities(
-        session, tenant_id=client.id, pagination=pagination, from_date=from_date
+        session, tenant_id=client.id, pagination=pagination, from_date=from_date,
+        marketplace=marketplace,
     )
 
 
@@ -84,7 +101,9 @@ async def facility_pos(
     client: ClientDep,
     pagination: PaginationDep,
     facility_id: str,
+    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
 ):
     return await scorecard_service.get_facility_pos(
-        session, tenant_id=client.id, facility_id=facility_id, pagination=pagination
+        session, tenant_id=client.id, facility_id=facility_id, pagination=pagination,
+        marketplace=marketplace,
     )

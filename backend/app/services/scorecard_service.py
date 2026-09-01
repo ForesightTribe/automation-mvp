@@ -1,10 +1,22 @@
-"""Client-scoped Blinkit scorecard: weekly brand health, key SKUs at risk,
+"""Client-scoped seller scorecard: weekly brand health, key SKUs at risk,
 facility-level fill performance, and the multi-week trend.
 
 Scorecard data is **weekly snapshots** keyed on `from_date_ist` (not daily), so
-this page navigates by week rather than reading the global date range. Blinkit is
-the only platform that publishes a seller scorecard, so there's no marketplace
-scoping here."""
+this page navigates by week rather than reading the global date range.
+
+TWO PLATFORMS, TWO ORIGINS
+--------------------------
+Blinkit PUBLISHES a scorecard, so its numbers are scraped into
+`blinkit_scorecard_*` and read straight back. Zepto publishes none, so
+`zepto_scorecard` DERIVES the same figures from the PO tables at read time. The
+response shapes match, so the page does not care which it got — see that module
+for what Zepto can and cannot supply (`manufacturer_rank` is the one gap).
+
+`marketplace=` selects explicitly. Left unset it AUTO-DETECTS: Blinkit when this
+tenant has Blinkit scorecard rows, Zepto otherwise. That keeps every existing
+caller on exactly the path it had before — Blinkit tenants are unaffected — while
+a Zepto-only tenant like Brik Oven gets a working page with no frontend change.
+"""
 import uuid
 from datetime import date
 
@@ -20,7 +32,29 @@ from app.models.blinkit_seller import (
 )
 from app.schemas.common import Page
 from app.schemas.scorecard import FacilityPoRow, FacilityRow, KeySkuRow
+from app.services import zepto_scorecard
 from app.services.analytics_service import _metric
+
+
+async def _platform(
+    session: AsyncSession, tenant_id: uuid.UUID, marketplace: str | None
+) -> str:
+    """Which platform's scorecard this tenant should see.
+
+    Explicit wins. Otherwise Blinkit if it has any scraped scorecard week for
+    this tenant, else Zepto — so a Blinkit tenant never silently switches to
+    derived numbers just because Zepto POs exist alongside.
+    """
+    if marketplace:
+        return marketplace
+    has_blinkit = (
+        await session.execute(
+            select(func.count())
+            .select_from(BlinkitScorecardWeekly)
+            .where(BlinkitScorecardWeekly.tenant_id == tenant_id)
+        )
+    ).scalar_one()
+    return "blinkit" if has_blinkit else "zepto"
 
 # Overall-snapshot keys repacked as growth metrics for the KPI strip.
 _OVERALL_METRIC_KEYS = (
@@ -43,9 +77,11 @@ async def _latest_from(session: AsyncSession, model, tenant_id: uuid.UUID):
 
 
 async def get_weeks(
-    session: AsyncSession, *, tenant_id: uuid.UUID
+    session: AsyncSession, *, tenant_id: uuid.UUID, marketplace: str | None = None
 ) -> list[date]:
     """Available scorecard weeks, newest first — powers the page's week picker."""
+    if await _platform(session, tenant_id, marketplace) == "zepto":
+        return await zepto_scorecard.get_weeks(session, tenant_id=tenant_id)
     return list(
         (
             await session.execute(
@@ -59,10 +95,15 @@ async def get_weeks(
 
 
 async def get_weekly(
-    session: AsyncSession, *, tenant_id: uuid.UUID, from_date: date | None = None
+    session: AsyncSession, *, tenant_id: uuid.UUID, from_date: date | None = None,
+    marketplace: str | None = None,
 ) -> dict | None:
     """The selected (or latest) week plus growth vs the immediately-preceding
     week. Two rows at most: the target week and the one before it."""
+    if await _platform(session, tenant_id, marketplace) == "zepto":
+        return await zepto_scorecard.get_weekly(
+            session, tenant_id=tenant_id, from_date=from_date
+        )
     rows = (
         await session.execute(
             select(BlinkitScorecardWeekly)
@@ -101,10 +142,15 @@ async def get_weekly(
 
 
 async def get_trend(
-    session: AsyncSession, *, tenant_id: uuid.UUID, weeks: int = 12
+    session: AsyncSession, *, tenant_id: uuid.UUID, weeks: int = 12,
+    marketplace: str | None = None,
 ) -> list[dict]:
     """Per-week overall metrics across the last `weeks` snapshots, oldest first —
     feeds the fill-rate / potential-loss trend chart."""
+    if await _platform(session, tenant_id, marketplace) == "zepto":
+        return await zepto_scorecard.get_trend(
+            session, tenant_id=tenant_id, weeks=weeks
+        )
     rows = (
         await session.execute(
             select(
@@ -141,7 +187,12 @@ async def get_key_skus(
     tenant_id: uuid.UUID,
     pagination: Pagination,
     from_date: date | None = None,
+    marketplace: str | None = None,
 ) -> Page[KeySkuRow]:
+    if await _platform(session, tenant_id, marketplace) == "zepto":
+        return await zepto_scorecard.get_key_skus(
+            session, tenant_id=tenant_id, pagination=pagination, from_date=from_date
+        )
     target = from_date or await _latest_from(session, BlinkitScorecardKeySku, tenant_id)
     if target is None:
         return Page.build([], 0, pagination)
@@ -173,7 +224,12 @@ async def get_facilities(
     tenant_id: uuid.UUID,
     pagination: Pagination,
     from_date: date | None = None,
+    marketplace: str | None = None,
 ) -> Page[FacilityRow]:
+    if await _platform(session, tenant_id, marketplace) == "zepto":
+        return await zepto_scorecard.get_facilities(
+            session, tenant_id=tenant_id, pagination=pagination, from_date=from_date
+        )
     target = from_date or await _latest_from(session, BlinkitScorecardFacility, tenant_id)
     if target is None:
         return Page.build([], 0, pagination)
@@ -205,10 +261,16 @@ async def get_facility_pos(
     tenant_id: uuid.UUID,
     facility_id: str,
     pagination: Pagination,
+    marketplace: str | None = None,
 ) -> Page[FacilityPoRow]:
     """POs behind a facility's fill loss — the supply story drill-down. Joined on
     `facility_id`; newest issue date first. Not week-scoped (a poor scorecard
     week traces back to POs issued before it)."""
+    if await _platform(session, tenant_id, marketplace) == "zepto":
+        return await zepto_scorecard.get_facility_pos(
+            session, tenant_id=tenant_id, facility_id=facility_id,
+            pagination=pagination,
+        )
     cond = [
         BlinkitPO.tenant_id == tenant_id,
         BlinkitPO.facility_id == facility_id,
