@@ -8,14 +8,10 @@ from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
 from platform_auth import service as auth_service
+from campaign_manager.marketplaces.zepto.transport import setup as zepto_setup
 from platform_auth.errors import AuthError
-from scraper.platforms.zepto.dashboard_data.seller.session_health import (
-    ensure_healthy_session,
-    SessionUnhealthy,
-)
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.zepto.dashboard_data.seller.scraper import (
-    validate as zepto_seller_validate,
     discover_ids as zepto_discover_ids,
     fetch_sales_overview as zepto_fetch_sales_overview,
     fetch_product_performance as zepto_fetch_product_performance,
@@ -815,19 +811,17 @@ async def _scrape_zepto_sales(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            # `ensure()` = load -> probe -> refresh -> re-login, doing the least
-            # work that yields a session known to work — the same call Blinkit
-            # makes. It replaces the old `zepto_seller` path, which stopped the
-            # run and asked a human to type the OTP. The Zepto seller account is
-            # shared, so it gets evicted mid-run routinely; self-healing matters
-            # more here than anywhere else.
+            # One client for the whole run, built the same way the Zepto budget
+            # automation builds it (campaign_manager/marketplaces/zepto/transport).
+            # `setup()` = ensure() the session, then mint a WAF token.
             #
-            # The JWT lives in `raw`, not in cookies: platform_auth leaves
-            # `storage_state` empty because the token travels in a header.
+            # It recovers PER CALL, not just at pre-flight: 401 -> re-login,
+            # 202/429 -> re-mint. That distinction matters here more than
+            # anywhere — the Zepto account is shared, and on 2026-09-01 the
+            # session was evicted three times in ten minutes. A run that only
+            # authenticates at the start dies halfway through.
             with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-                storage_state = {
-                    "jwt": (await auth_service.ensure(db, tenant_id, "zepto")).raw["jwt"]
-                }
+                _, _, storage_state = await zepto_setup(str(tenant_id))
             console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
@@ -950,9 +944,15 @@ async def _scrape_zepto_sales(
                 _write_zepto_sales_xlsx(save_xlsx, data, products, date_from, date_to, ids)
                 console.print(f"[green]Saved:[/green] {save_xlsx}")
 
-        except SessionUnhealthy as e:
-            console.print(f"[red]Session not usable: {escape(str(e))}[/red]")
-            console.print("[yellow]Run `cli auth zepto-seller --tenant <id>` to re-login.[/yellow]")
+        except AuthError as e:
+            # platform_auth already tried to re-login and could not. Usually the
+            # circuit breaker: repeated evictions on a shared account trip it, and
+            # `auth reset` clears it once the other person has stopped.
+            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
+            console.print(
+                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
+                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
+            )
             raise typer.Exit(1)
         except typer.Exit:
             raise
@@ -1744,12 +1744,9 @@ async def _scrape_zepto_ads(
         job_id = None
         try:
             with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                # Same self-healing `ensure()` as the sales and PO scrapes.
-                # `/ads-bff/*` also needs a WAF token, which `capture_ads_headers`
-                # mints anonymously — it proves "browser", not "user".
-                storage_state = {
-                    "jwt": (await auth_service.ensure(db, tenant_id, "zepto")).raw["jwt"]
-                }
+                # Same shared client. `/ads-bff/*` is the one surface that
+                # genuinely needs the WAF token, which the client already holds.
+                _, _, storage_state = await zepto_setup(str(tenant_id))
             console.print("[green]Session healthy.[/green]")
 
             with console.status("[cyan]Discovering brand...[/cyan]"):
@@ -1983,9 +1980,15 @@ async def _scrape_zepto_ads(
             else:
                 console.print("  [yellow]--no-save: nothing written[/yellow]")
 
-        except SessionUnhealthy as e:
-            console.print(f"[red]Session not usable: {escape(str(e))}[/red]")
-            console.print("[yellow]Run `cli auth zepto-seller --tenant <id>` to re-login.[/yellow]")
+        except AuthError as e:
+            # platform_auth already tried to re-login and could not. Usually the
+            # circuit breaker: repeated evictions on a shared account trip it, and
+            # `auth reset` clears it once the other person has stopped.
+            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
+            console.print(
+                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
+                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
+            )
             raise typer.Exit(1)
         except typer.Exit:
             raise
@@ -2028,13 +2031,9 @@ async def _scrape_zepto_po(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            # See the note on the sales scrape: same self-healing `ensure()`.
-            # `/api/v1/po/*` needs only the JWT — measured 2026-09-01 returning
-            # 200 with no WAF token.
+            # Same shared client as the sales scrape — see the note there.
             with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-                storage_state = {
-                    "jwt": (await auth_service.ensure(db, tenant_id, "zepto")).raw["jwt"]
-                }
+                _, _, storage_state = await zepto_setup(str(tenant_id))
             console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")

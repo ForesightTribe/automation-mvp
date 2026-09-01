@@ -2,86 +2,9 @@ import asyncio
 from datetime import date, timedelta
 
 import httpx
-from playwright.async_api import async_playwright
 
 from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
-from scraper.utils.browser import create_browser_context
-# The WAF token is anonymous proof-of-browser, so the minting logic is shared
-# rather than duplicated. It lives with the campaign manager because that is
-# where /ads-bff/* was first reverse-engineered.
-from campaign_manager.marketplaces.zepto.transport import mint_waf_token
 from app.utils.logger import logger
-
-
-def _extract_auth(session: dict) -> tuple[str, str | None] | None:
-    """Get the JWT (and a WAF token if one is available) out of a saved session.
-
-    TWO SHAPES, because two auth systems are live during the migration:
-
-    * `platform_auth` (`auth_service.ensure(db, tenant, "zepto")`) stores the JWT
-      in `raw` and leaves `storage_state` EMPTY — the token travels in a header,
-      so there is nothing to project into a browser. No WAF token at all.
-    * the older `zepto_seller` login saved a Playwright storage state, and the
-      JWT/WAF arrived as cookies.
-
-    ⚠️ The WAF token is now OPTIONAL. `/brand-analytics-web/*` and `/api/v1/po/*`
-    were measured on 2026-09-01 returning HTTP 200 with NO `x-aws-waf-token` at
-    all — the old code REFUSED to start without one, so a session missing that
-    cookie was rejected over a header the API never asked for. Only `/ads-bff/*`
-    genuinely needs it (and then also `waf-enabled: false`, or CloudFront answers
-    429, which reads like rate limiting and is not).
-    """
-    jwt = session.get("jwt")
-    if jwt:
-        return jwt, None
-
-    waf_token = None
-    for c in session.get("cookies", []):
-        name = c.get("name", "")
-        if name.endswith("_AUTH_TOKEN"):
-            jwt = c.get("value")
-        elif name == "aws-waf-token":
-            waf_token = c.get("value")
-    if not jwt:
-        return None
-    return jwt, waf_token
-
-
-def _headers_for(jwt: str, waf_token: str | None = None) -> dict:
-    h = {
-        "authorization": jwt,
-        "x-proxy-target": "brand-analytics",
-        "accept": "application/json",
-    }
-    if waf_token:
-        h["x-aws-waf-token"] = waf_token
-    return h
-
-
-async def validate(storage_state: dict) -> tuple[bool, str | None]:
-    """Cheap, browser-free check: is this saved session still accepted by
-    Zepto's API? Deliberately avoids launching a browser at all — a headless
-    page load was observed (live) to trigger AWS WAF's bot-challenge flow,
-    so routine health checks use a single plain HTTP request instead, which
-    looks like any other API call rather than a fresh browser session."""
-    auth = _extract_auth(storage_state)
-    if not auth:
-        return False, "Saved session is missing the auth or WAF-token cookie"
-    jwt, waf_token = auth
-
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get(f"{ep.BASE_URL}{ep.USER_INFO_API}", headers=_headers_for(jwt, waf_token), timeout=15)
-    except Exception as e:
-        return False, f"{type(e).__name__}: {e}"
-
-    if resp.status_code == 200:
-        logger.info("Zepto seller session validation: OK")
-        return True, None
-
-    error = f"HTTP {resp.status_code}: {resp.text[:200]}"
-    logger.warning(f"Zepto seller session validation failed: {error}")
-    return False, error
 
 
 # ── ID discovery ─────────────────────────────────────────────────────────────
@@ -94,19 +17,13 @@ async def validate(storage_state: dict) -> tuple[bool, str | None]:
 # newly-added cities/brands/categories. Both calls are plain httpx, no
 # browser, same as validate() above.
 
-async def discover_ids(storage_state: dict) -> dict:
-    auth = _extract_auth(storage_state)
-    if not auth:
-        raise RuntimeError("Saved session is missing the auth or WAF-token cookie")
-    jwt, waf_token = auth
-    headers = _headers_for(jwt, waf_token)
-
-    async with httpx.AsyncClient() as client:
-        city_resp, brand_resp = await client.get(
-            f"{ep.BASE_URL}{ep.CITY_LIST_API}", headers=headers, timeout=15
-        ), await client.get(
-            f"{ep.BASE_URL}{ep.BRAND_CATEGORY_MAPPING_API}", headers=headers, timeout=15
-        )
+async def discover_ids(client) -> dict:
+    city_resp = await client.request(
+        "GET", ep.CITY_LIST_API, brand_analytics=True, retry_writes=False
+    )
+    brand_resp = await client.request(
+        "GET", ep.BRAND_CATEGORY_MAPPING_API, brand_analytics=True, retry_writes=False
+    )
     city_resp.raise_for_status()
     brand_resp.raise_for_status()
 
@@ -150,83 +67,30 @@ async def discover_ids(storage_state: dict) -> dict:
 # daily behavior, given the WAF-challenge risk observed from browser page
 # loads on this site.
 
-async def _recapture_auth_via_browser(storage_state: dict) -> tuple[str, str] | None:
-    captured: dict = {}
+async def _get_with_auth_fallback(client, url: str, params: dict, label: str) -> dict:
+    """GET one Sales-Analytics endpoint through the shared Zepto client.
 
-    async with async_playwright() as p:
-        browser, context = await create_browser_context(p, headless=True, storage_state=storage_state)
-        page = await context.new_page()
+    The client owns recovery, and it distinguishes the two failures that look
+    alike but are not:
 
-        async def on_request(request):
-            if "fcc.zepto.co.in" in request.url and not captured:
-                hdrs = dict(request.headers)
-                if hdrs.get("authorization") and hdrs.get("x-aws-waf-token"):
-                    captured.update(hdrs)
+      401       identity gone   -> re-login (bounded, see MAX_REAUTH_PER_RUN)
+      202/429   browser proof gone -> re-mint the WAF token
 
-        page.on("request", on_request)
-        try:
-            await page.goto(
-                f"https://brands.zepto.co.in{ep.SALES_ANALYTICS_PAGE}",
-                wait_until="domcontentloaded",
-                timeout=30_000,
-            )
-            if not captured:
-                await asyncio.sleep(3)
-        except Exception as e:
-            logger.warning(f"Browser fallback page load warning: {e}")
-        finally:
-            await browser.close()
+    This replaces a browser-relaunch fallback that could only fix the first and
+    burned ~15s doing it. It also matters more than it used to: on a shared Zepto
+    account the session is evicted mid-run routinely — three times in ten minutes
+    on 2026-09-01 — so recovering per-CALL rather than per-RUN is the difference
+    between finishing and dying halfway.
 
-    if not captured:
-        return None
-    return captured["authorization"], captured["x-aws-waf-token"]
-
-
-def classify_sales_error(status_code: int) -> str:
-    """Auth-shaped failures (401/403) are the only ones a browser fallback
-    could plausibly fix — everything else (bad params, rate limit, server
-    error, timeout) needs a different response, not a browser touch."""
-    if status_code in (401, 403):
-        return "auth"
-    return "other"
-
-
-async def _get_with_auth_fallback(storage_state: dict, url: str, params: dict, label: str) -> dict:
-    """Shared GET-with-fallback logic for every Sales Analytics call: try
-    browser-free first, and only if it comes back 401/403 (auth-shaped),
-    retry once via a live browser header re-capture. Any other error surfaces
-    immediately — no fallback, since a browser touch can't fix a bad
-    parameter, a rate limit, a server error, or a timeout."""
-    auth = _extract_auth(storage_state)
-    if not auth:
-        raise RuntimeError("Saved session is missing the auth or WAF-token cookie")
-    jwt, waf_token = auth
-
-    async with httpx.AsyncClient() as client:
-        resp = await client.get(url, headers=_headers_for(jwt, waf_token), params=params, timeout=30)
-
+    `brand_analytics=True` sends `x-proxy-target` and NO WAF token; these paths
+    were measured returning 200 without one.
+    """
+    path = url.replace(ep.BASE_URL, "", 1)
+    resp = await client.request(
+        "GET", path, brand_analytics=True, params=params, retry_writes=False
+    )
     if resp.status_code >= 400:
-        error_kind = classify_sales_error(resp.status_code)
-        if error_kind == "auth":
-            logger.warning(f"{label} got {resp.status_code}, attempting browser fallback re-capture...")
-            recaptured = await _recapture_auth_via_browser(storage_state)
-            if recaptured:
-                jwt, waf_token = recaptured
-                async with httpx.AsyncClient() as client:
-                    resp = await client.get(url, headers=_headers_for(jwt, waf_token), params=params, timeout=30)
-                if resp.status_code >= 400:
-                    raise RuntimeError(
-                        f"Session appears genuinely dead — re-login required "
-                        f"(browser fallback also failed: HTTP {resp.status_code})"
-                    )
-            else:
-                raise RuntimeError(
-                    "Session appears genuinely dead — re-login required "
-                    "(browser fallback could not capture fresh auth headers)"
-                )
-        else:
-            resp.raise_for_status()  # not auth-shaped — surface the real error, no fallback
-
+        logger.debug(f"{label}: HTTP {resp.status_code}")
     resp.raise_for_status()
     # `data` is null — not an error object — when a filter window matches
     # nothing (verified 2026-08-31: grn/filter for 30..31 Aug returned
@@ -235,47 +99,20 @@ async def _get_with_auth_fallback(storage_state: dict, url: str, params: dict, l
     return resp.json().get("data") or {}
 
 
-async def _post_with_auth_fallback(
-    storage_state: dict, url: str, body: dict, label: str
-) -> dict:
-    """POST twin of `_get_with_auth_fallback`, for the /vendor PO endpoints.
+async def _post_with_auth_fallback(client, url: str, body: dict, label: str) -> dict:
+    """POST twin of the above, for the /vendor PO endpoints.
 
-    Same auth, same host, same 401/403-only fallback rule — the PO app just
-    takes a JSON body instead of query params. Kept as its own function rather
-    than adding a `method` flag so neither call site can accidentally send the
-    wrong shape.
+    `retry_writes=False`: these are filter/search POSTs and idempotent in
+    practice, but the flag is about intent — a timeout is never safe to replay
+    blindly, because the call may have landed and only the answer was lost.
     """
-    auth = _extract_auth(storage_state)
-    if not auth:
-        raise RuntimeError("Saved session is missing the auth or WAF-token cookie")
-    jwt, waf_token = auth
-
-    async def _send(j, w):
-        async with httpx.AsyncClient() as client:
-            return await client.post(
-                url, headers=_headers_for(j, w), json=body, timeout=30
-            )
-
-    resp = await _send(jwt, waf_token)
+    path = url.replace(ep.BASE_URL, "", 1)
+    resp = await client.request(
+        "POST", path, brand_analytics=True, json=body, retry_writes=False
+    )
     if resp.status_code >= 400:
-        if classify_sales_error(resp.status_code) == "auth":
-            logger.warning(f"{label} got {resp.status_code}, attempting browser fallback...")
-            recaptured = await _recapture_auth_via_browser(storage_state)
-            if not recaptured:
-                raise RuntimeError(
-                    "Session appears genuinely dead — re-login required "
-                    "(browser fallback could not capture fresh auth headers)"
-                )
-            jwt, waf_token = recaptured
-            resp = await _send(jwt, waf_token)
-        else:
-            resp.raise_for_status()
-
+        logger.debug(f"{label}: HTTP {resp.status_code}")
     resp.raise_for_status()
-    # `data` is null — not an error object — when a filter window matches
-    # nothing (verified 2026-08-31: grn/filter for 30..31 Aug returned
-    # HTTP 200 `{"success":true,"data":null}`). Returning {} lets callers
-    # read an empty list instead of raising AttributeError on None.
     return resp.json().get("data") or {}
 
 
@@ -310,12 +147,12 @@ _PO_RETRY_WAITS_S = (5, 15, 45)
 
 
 async def _post_5xx_retry(
-    storage_state: dict, url: str, payload: dict, label: str
+    client: dict, url: str, payload: dict, label: str
 ) -> dict:
     last: Exception | None = None
     for attempt, wait in enumerate((*_PO_RETRY_WAITS_S, None)):
         try:
-            return await _post_with_auth_fallback(storage_state, url, payload, label)
+            return await _post_with_auth_fallback(client, url, payload, label)
         except httpx.HTTPStatusError as e:
             if e.response.status_code < 500 or wait is None:
                 raise
@@ -329,7 +166,7 @@ async def _post_5xx_retry(
 
 
 async def _fetch_po_paged(
-    storage_state: dict, api: str, body: dict, list_key: str, label: str
+    client: dict, api: str, body: dict, list_key: str, label: str
 ) -> list[dict]:
     """Page through one PO-app endpoint until `hasNext` is false.
 
@@ -341,7 +178,7 @@ async def _fetch_po_paged(
     for page in range(ep.PO_MAX_PAGES):
         payload = {**body, "offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE}
         data = await _post_5xx_retry(
-            storage_state, f"{ep.BASE_URL}{api}", payload, f"{label} p{page + 1}"
+            client, f"{ep.BASE_URL}{api}", payload, f"{label} p{page + 1}"
         )
         rows = data.get(list_key) or []
         out.extend(rows)
@@ -363,14 +200,14 @@ def _po_window(date_from: str, date_to: str) -> tuple[str, str]:
 
 
 async def fetch_pos(
-    storage_state: dict, date_from: str, date_to: str
+    client: dict, date_from: str, date_to: str
 ) -> list[dict]:
     """Purchase-order headers for the window. Line items are NOT included —
     the response carries `itemsCount` only; the lines sit behind a per-PO
     detail call that has not been captured."""
     start, end = _po_window(date_from, date_to)
     return await _fetch_po_paged(
-        storage_state, ep.PO_FILTER_API,
+        client, ep.PO_FILTER_API,
         {
             "vendorCodes": [], "locationCodes": [],
             "poStartDate": start, "poEndDate": end,
@@ -385,13 +222,13 @@ async def fetch_pos(
 
 
 async def fetch_grns(
-    storage_state: dict, date_from: str, date_to: str
+    client: dict, date_from: str, date_to: str
 ) -> list[dict]:
     """Goods-receipt notes — what Zepto actually took in. `poQty` vs `grnQty`
     on each row is the fill rate."""
     start, end = _po_window(date_from, date_to)
     return await _fetch_po_paged(
-        storage_state, ep.GRN_FILTER_API,
+        client, ep.GRN_FILTER_API,
         {
             "vendorCodes": [], "locationCodes": [],
             "grnStartDate": start, "grnEndDate": end,
@@ -402,12 +239,12 @@ async def fetch_grns(
 
 
 async def fetch_asns(
-    storage_state: dict, date_from: str, date_to: str
+    client: dict, date_from: str, date_to: str
 ) -> list[dict]:
     """Advance shipping notices — what the vendor declared as sent."""
     start, end = _po_window(date_from, date_to)
     return await _fetch_po_paged(
-        storage_state, ep.ASN_FILTER_API,
+        client, ep.ASN_FILTER_API,
         {
             "vendorCodes": [], "locationCodes": [],
             "asnStartDate": start, "asnEndDate": end,
@@ -419,7 +256,7 @@ async def fetch_asns(
 
 
 async def fetch_po_items(
-    storage_state: dict, po_ids: list[str]
+    client: dict, po_ids: list[str]
 ) -> dict[str, list[dict]]:
     """Line items for each PO. Returns {po_id: [item, ...]}.
 
@@ -436,7 +273,7 @@ async def fetch_po_items(
         try:
             for page in range(ep.PO_MAX_PAGES):
                 data = await _get_with_auth_fallback(
-                    storage_state,
+                    client,
                     f"{ep.BASE_URL}{ep.PO_ITEMS_API.format(po_id=po_id)}",
                     {"offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE},
                     f"po/{po_id}/items p{page + 1}",
@@ -468,7 +305,7 @@ class NoDataYet(RuntimeError):
     """
 
 
-async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str, ids: dict) -> dict:
+async def fetch_sales_overview(client: dict, date_from: str, date_to: str, ids: dict) -> dict:
     """Real GMV/Units data from Zepto's Sales Analytics — direct API call,
     no browser, using freshly-discovered tenant IDs (see discover_ids)."""
     params = {
@@ -483,7 +320,7 @@ async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str
         "aggregationLevel": "DAY",
     }
     data = await _get_with_auth_fallback(
-        storage_state, f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}", params, "Sales-overview"
+        client, f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}", params, "Sales-overview"
     )
 
     # Zepto computes a day on a lag — its own dashboard footer says "Last
@@ -518,7 +355,7 @@ async def fetch_sales_overview(storage_state: dict, date_from: str, date_to: str
 
 
 async def fetch_sales_by_city(
-    storage_state: dict,
+    client: dict,
     date_from: str,
     date_to: str,
     ids: dict,
@@ -552,7 +389,7 @@ async def fetch_sales_by_city(
         }
         try:
             out[city_id] = await _get_with_auth_fallback(
-                storage_state,
+                client,
                 f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}",
                 params,
                 f"Sales-by-city[{city_id[:8]}]",
@@ -569,7 +406,7 @@ async def fetch_sales_by_city(
 
 
 async def fetch_product_performance(
-    storage_state: dict, date_from: str, date_to: str, ids: dict, limit: int = 50
+    client: dict, date_from: str, date_to: str, ids: dict, limit: int = 50
 ) -> list[dict]:
     """Per-SKU breakdown from Zepto's Sales Analytics — GMV, units, sales
     share, growth, and conversion metrics per product.
@@ -596,7 +433,7 @@ async def fetch_product_performance(
         "offset": 0,
     }
     data = await _get_with_auth_fallback(
-        storage_state, f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}", params, "Product-performance"
+        client, f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}", params, "Product-performance"
     )
     # Without `viewType` the response covers the whole catalog, so it includes
     # products with no sales in the window (gmv/qtySold come back null). Those
@@ -608,7 +445,7 @@ async def fetch_product_performance(
 
 
 async def fetch_product_performance_by_city(
-    storage_state: dict,
+    client: dict,
     date_from: str,
     date_to: str,
     ids: dict,
@@ -648,7 +485,7 @@ async def fetch_product_performance_by_city(
         }
         try:
             data = await _get_with_auth_fallback(
-                storage_state,
+                client,
                 f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}",
                 params,
                 f"Product-performance/city[{city_id[:8]}]",
@@ -685,47 +522,19 @@ _ADS_HEADER_KEYS = frozenset(
 )
 
 
-async def capture_ads_headers(session: dict) -> dict:
-    """Headers for `/ads-bff/*`: the account's JWT plus a freshly minted WAF token.
+async def capture_ads_headers(client) -> dict:
+    """Headers for `/ads-bff/*` — the client already holds both credentials.
 
     This used to drive a logged-in browser to the ads page and steal the headers
-    off its first ads-bff request — which needed session COOKIES, and so broke the
-    moment auth moved to platform_auth, where the JWT travels in a header and
-    `storage_state` is empty.
+    off its first ads-bff request, which needed session COOKIES. platform_auth
+    stores none: the JWT travels in a header.
 
-    The two credentials are independent, which is what makes the browser
-    unnecessary here:
-
-    * the JWT says WHO — it comes from the stored session
-    * the WAF token says "a real browser" and nothing about identity, so an
-      ANONYMOUS page load earns a valid one (see transport.mint_waf_token)
-
-    ⚠️ `waf-enabled: false` is required alongside the token, not optional. Send
-    the token without it and CloudFront answers 429 — which reads like rate
-    limiting and is not.
-
-    Unlike the sales and PO endpoints, `/ads-bff/*` genuinely does need the WAF
-    token; those were measured returning 200 without one.
+    Unlike Sales Analytics, `/ads-bff/*` genuinely needs the WAF token AND
+    `waf-enabled: false` — either alone gets a 429, which reads like rate
+    limiting and is not. `headers(brand_analytics=False)` sends that pair.
     """
-    auth = _extract_auth(session)
-    if not auth:
-        raise RuntimeError("Saved session carries no JWT — re-login required")
-    jwt, waf_token = auth
-
-    if not waf_token:
-        # platform_auth sessions carry no WAF cookie; mint one. ~10s, anonymous.
-        waf_token = await mint_waf_token()
-
     logger.info("Zepto ads headers ready (jwt + waf)")
-    return {
-        "authorization": jwt,
-        "x-aws-waf-token": waf_token,
-        "waf-enabled": "false",
-        "accept": "application/json, text/plain, */*",
-        "content-type": "application/json",
-        "origin": "https://brands.zepto.co.in",
-        "referer": "https://brands.zepto.co.in/",
-    }
+    return client.headers(brand_analytics=False)
 
 
 async def fetch_ad_campaigns(
