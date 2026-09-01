@@ -15,6 +15,21 @@ from campaign_manager import config, logs
 
 # ── Pure guardrail logic (unit-tested, no I/O) ──────────────────────────────
 
+def _money(v) -> str:
+    """Render a budget the way it will actually be SENT.
+
+    `--budget` is a float, so a target of 700 logs as "700.0" unless formatted —
+    noise in the one line a human reads to approve a money change. Adapters round
+    to int before sending, so show the int.
+    """
+    if v is None:
+        return "unknown"
+    try:
+        return f"₹{int(round(float(v)))}"
+    except (TypeError, ValueError):
+        return f"₹{v}"
+
+
 def budget_out_of_bounds(target, *, min_budget: float | None = None,
                          max_budget: float | None = None) -> str | None:
     """Return a reason string if `target` is outside sane bounds, else None."""
@@ -94,15 +109,26 @@ def status_transition_denied(current: str | None, target: str, *,
 
 # ── Live-write arming (B3 account guardrail) ────────────────────────────────
 
-async def arm_live(adapter, client, run_id: str, advertiser: int | None) -> int:
-    """Gate a LIVE run on the account guardrail: the tenant's STORED advertiser must exist
-    (Blinkit doesn't expose it, so it can't be derived). Sets it on the client so every
-    write sends that exact account, and returns it. Raises RuntimeError (→ refused run) if
-    none is stored. Never called in dry-run."""
+async def arm_live(adapter, client, run_id: str,
+                   advertiser: int | str | None) -> int | str:
+    """Gate a LIVE run on the account guardrail. Never called in dry-run.
+
+    The tenant's stored ad account must exist, and the adapter decides what to do
+    with it — the two marketplaces mean different things by "account":
+
+    * **Blinkit** SENDS it. The advertiser id is in no read API, so a stored value
+      is the only source, and a stale one spends real money on the wrong account.
+    * **Zepto** CHECKS it. The brand id comes from the login response, so the
+      adapter asserts the live session matches and refuses if it does not.
+
+    Either way, refusing to run beats writing to an account we cannot identify.
+    """
     if advertiser is None:
         raise RuntimeError(
-            "no advertiser stored for this tenant — capture it from a Blinkit dashboard PUT "
-            "and run `cm set-advertiser -t <id> --id <n>`. Refusing live write.")
+            "no ad account stored for this tenant — run "
+            "`cm set-advertiser -t <id> -m <marketplace> --id <value>` first "
+            "(Blinkit: the integer advertiser id from a dashboard PUT; "
+            "Zepto: the brand UUID from `cm advertiser`). Refusing live write.")
     adapter.set_advertiser(client, advertiser)
     logs.live_armed(run_id, advertiser=advertiser)
     return advertiser
@@ -121,7 +147,16 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
                              passed=False, reason="no-op (already at target)")
         return False
-    reason = budget_out_of_bounds(target)
+    # A marketplace may impose its own floor/ceiling, which is stricter than our
+    # config bounds and not ours to argue with — Zepto publishes a ₹500 daily-budget
+    # minimum in its own metadata. The ADAPTER declares it (mechanism); this policy
+    # enforces it, so an out-of-range target is skipped with a readable reason
+    # instead of failing later as an opaque 400 from the marketplace.
+    reason = budget_out_of_bounds(
+        target,
+        min_budget=getattr(adapter, "MIN_BUDGET", None),
+        max_budget=getattr(adapter, "MAX_BUDGET", None),
+    )
     if reason:
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
                              passed=False, reason=reason)
@@ -134,14 +169,19 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
     logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=True)
 
     if dry_run:
-        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True)
+        # Pass the SAME detail the live branch does. Without it a dry run printed
+        # "would apply  — not sent" with no numbers, which is backwards: the dry run
+        # is precisely when a human needs to see what would change, and `write.intent`
+        # (which carries old→new) is DEBUG.
+        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True,
+                          detail=f"{_money(current)} → {_money(target)}")
         return True
 
-    # LIVE — the single real Blinkit budget mutation.
+    # LIVE — the single real budget mutation.
     resp = await adapter.apply_budget(client, campaign_id, target)
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=f"budget=₹{target}")
+                      detail=f"{_money(current)} → {_money(target)}")
     return ok
 
 
@@ -174,17 +214,37 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     return bool(resp.get("status") or resp.get("success"))
 
 
+def _status_detail(target: str, budget: float | None) -> str:
+    """What a status write is doing, for the log line.
+
+    `budget` is None on a marketplace whose resume carries none, so it is only
+    mentioned when there is one — and never formatted with `:g`, which raises on
+    None and would turn a successful write into a crash while reporting itself.
+    """
+    if target == "running" and budget is not None:
+        return f"status={target} budget={_money(budget)}"
+    return f"status={target}"
+
+
 async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                        dry_run: bool, recent_writes: int = 0, allow_draft: bool = False,
                        budget: float | None = None, overwrites: dict | None = None) -> bool:
     """Guardrailed campaign start/stop. Returns True if applied (or would-apply in dry-run).
 
-    The two directions are NOT symmetric and this function is where that lives:
-      - `paused` is a bodiless DELETE — cheap and safe.
-      - `running` is a RESTART, a FULL campaign re-submission that rewrites budget,
-        keywords, bids and dates. It therefore requires a budget and inherits the budget
-        bounds guardrail; `overwrites` (AD10) is the diff of everything it will replace,
-        logged so a silently-reverted bid is visible rather than discovered weeks later.
+    The two directions are NOT symmetric, and HOW asymmetric depends on the
+    marketplace — which is why the adapter declares it via `RESUME_RESUBMITS`
+    rather than this function assuming:
+
+      - `paused` is cheap and safe everywhere (Blinkit: a bodiless DELETE;
+        Zepto: a dedicated pause endpoint).
+      - `running` on **Blinkit** is a RESTART: a FULL campaign re-submission that
+        rewrites budget, keywords, bids and dates. It therefore REQUIRES a budget
+        and inherits the budget bounds guardrail; `overwrites` (AD10) is the diff
+        of everything it will replace, logged so a silently-reverted bid is visible
+        rather than discovered weeks later.
+      - `running` on **Zepto** is an idempotent flip that restores the campaign's
+        own budget and bids. Nothing is re-submitted, so demanding a budget would
+        refuse every legitimate resume as "budget is None".
     """
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       what="status", old=current, new=target)
@@ -199,9 +259,11 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                              passed=False, reason=reason)
         return False
 
-    # A restart writes a budget, so it passes the same bounds check a budget write does
-    # rather than sneaking a value past it (AD14 of the original draft; §5.3).
-    if target == "running":
+    # A RESTART writes a budget, so it passes the same bounds check a budget write
+    # does rather than sneaking a value past it (AD14 of the original draft; §5.3).
+    # Defaults to True so Blinkit — and any adapter that has not thought about it —
+    # keeps the stricter behaviour.
+    if target == "running" and getattr(adapter, "RESUME_RESUBMITS", True):
         bad = budget_out_of_bounds(budget)
         if bad:
             logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
@@ -219,13 +281,15 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                                fields=overwrites)
 
     if dry_run:
-        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True)
+        # Same detail the live branch reports. A dry run that says only "would
+        # apply" tells a reviewer nothing about WHAT it would apply.
+        logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True,
+                          detail=_status_detail(target, budget))
         return True
 
-    # LIVE — the single real Blinkit status mutation.
+    # LIVE — the single real status mutation.
     resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
     ok = bool(resp.get("status") or resp.get("success"))
-    detail = f"status={target}" + (f" budget=₹{budget:g}" if target == "running" else "")
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=detail)
+                      detail=_status_detail(target, budget))
     return ok

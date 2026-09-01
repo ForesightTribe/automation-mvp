@@ -10,6 +10,12 @@ B3: live writes send the tenant's STORED advertiser id (set on the client by
 `get_advertiser_id()` derivation (which falls back to a possibly-stale hardcoded id).
 """
 from campaign_manager.marketplaces.blinkit import restart
+
+# Resuming a Blinkit campaign is a RESTART: a full re-submission that rewrites
+# budget, keywords, bids and dates. So a resume needs a budget, and `writes.py`
+# subjects it to the same bounds guardrail as a budget write. Zepto declares False —
+# its activate is an idempotent flip that restores the campaign's own values.
+RESUME_RESUBMITS = True
 from campaign_manager.marketplaces.blinkit.client import setup, setup_with_state  # noqa: F401  (session bootstrap)
 from campaign_manager.marketplaces.blinkit.live_position import get_live_positions
 
@@ -316,3 +322,14 @@ async def read_restart_context(client, campaign_id: int) -> dict:
     """What a restart would overwrite, for the AD9 audit line (a READ — safe)."""
     _, _, detail = await read_campaign(client, campaign_id)
     return detail
+
+
+def campaign_name(detail: dict) -> str | None:
+    """The campaign's name out of a raw detail. Blinkit calls it `name`."""
+    return (detail or {}).get("name")
+
+
+def resume_overwrites(detail: dict, budget: float | None) -> dict | None:
+    """What a RESTART will silently rewrite (AD10) — logged before it happens, so a
+    reverted bid is visible now rather than discovered weeks later."""
+    return restart.overwrites(detail, budget=budget or 0)

@@ -43,7 +43,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
-    logs.session_ok(run_id, dry_run=dry_run)
+    logs.session_ok(run_id, dry_run=dry_run, platform=platform)
 
     if not dry_run:
         try:
@@ -59,19 +59,26 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
     applied = skipped = errors = 0
     try:
         current, current_budget, detail = await adapter.read_campaign(client, campaign_id)
-        name = detail.get("name")
+        # Field naming differs per marketplace ("name" vs "campaign_name"), so ask
+        # the adapter rather than guessing here.
+        name = (adapter.campaign_name(detail)
+                if hasattr(adapter, "campaign_name") else detail.get("name"))
 
         # A restart writes a budget; fall back to what the campaign already had rather than
         # inventing one. `writes.apply_status` rejects the write outright if this is still
         # unusable, so an unknown budget fails loudly instead of guessing.
         # Only a restart carries a budget — a stop is a bodiless DELETE, so passing one
         # there would be a meaningless argument that reads as if it did something.
+        # Only a marketplace whose RESUME RE-SUBMITS the campaign needs a budget to
+        # start one. Zepto's activate restores the campaign's own, so passing a
+        # budget there would be a meaningless argument that reads as if it did
+        # something — and demanding one would refuse every legitimate resume.
+        resubmits = getattr(adapter, "RESUME_RESUBMITS", True)
         target_budget = ((budget if budget is not None else current_budget)
-                         if status == "running" else None)
+                         if status == "running" and resubmits else None)
         overwrites = None
-        if status == "running":
-            from campaign_manager.marketplaces.blinkit import restart
-            overwrites = restart.overwrites(detail, budget=target_budget or 0)
+        if status == "running" and hasattr(adapter, "resume_overwrites"):
+            overwrites = adapter.resume_overwrites(detail, target_budget)
 
         logs.decision(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       verdict=f"target {status}",

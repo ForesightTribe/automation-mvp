@@ -346,7 +346,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
-    logs.session_ok(run_id, dry_run=dry_run)
+    logs.session_ok(run_id, dry_run=dry_run, platform=platform)
 
     # Live runs must pass the account guardrail (B3) before any write.
     if not dry_run:
@@ -793,7 +793,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
         logs.run_summary(run_id, "bid_reset", dry_run=dry_run, unit="keywords",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
-    logs.session_ok(run_id, dry_run=dry_run)
+    logs.session_ok(run_id, dry_run=dry_run, platform=platform)
 
     if not dry_run:
         try:

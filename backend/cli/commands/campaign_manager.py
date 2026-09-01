@@ -27,21 +27,40 @@ def _dry(live: bool) -> bool:
 _TENANT = typer.Option(..., "--tenant", "-t", help="Tenant UUID")
 _LIVE = typer.Option(
     False, "--live/--dry-run",
-    help="--live actually writes to Blinkit; --dry-run (default) computes + logs but writes nothing.",
+    help="--live actually writes to the marketplace; --dry-run (default) computes + logs "
+    "but writes nothing.",
+)
+# REQUIRED on every command, deliberately. With two marketplaces live, a default
+# means a mistyped or forgotten flag silently drives the WRONG account — and these
+# commands move real budget. Being made to say `-m blinkit` is cheap; discovering
+# you paused Zepto campaigns when you meant Blinkit is not.
+#
+# Existing SCHEDULES are unaffected: jobs/types.py fills in `blinkit` when a stored
+# schedule has no marketplace param, so nothing already in job_schedules has to be
+# rewritten. The requirement binds humans typing commands, not rows in the DB.
+#
+# `--platform` stays accepted as an alias so older scripts and muscle memory keep
+# working; `--marketplace` matches the public scrape commands and is the name to use.
+_MARKETPLACE = typer.Option(
+    ..., "--marketplace", "-m", "--platform",
+    help="Which marketplace to drive: blinkit | zepto. Required — no default, "
+    "because these commands write to real ad accounts.",
 )
 
 
 @app.command("budget-scheduler")
-def budget_scheduler(tenant: str = _TENANT, live: bool = _LIVE):
+def budget_scheduler(tenant: str = _TENANT, live: bool = _LIVE,
+                     marketplace: str = _MARKETPLACE):
     """Apply budget rules for the current IST slot (dry-run unless --live)."""
     from campaign_manager import budget
-    asyncio.run(budget.run(uuid.UUID(tenant), dry_run=_dry(live)))
+    asyncio.run(budget.run(uuid.UUID(tenant), dry_run=_dry(live), platform=marketplace))
 
 
 @app.command("bid-optimizer")
 def bid_optimizer(
     tenant: str = _TENANT,
     live: bool = _LIVE,
+    marketplace: str = _MARKETPLACE,
     reset: bool = typer.Option(
         False, "--reset",
         help="End-of-window mode: de-escalate closed-window keywords to their min_bid "
@@ -52,36 +71,59 @@ def bid_optimizer(
     """Run one bid-optimizer pass (dry-run unless --live). `--reset` runs the end-of-window
     de-escalation instead of optimization."""
     from campaign_manager import bid
-    asyncio.run(bid.run(uuid.UUID(tenant), dry_run=_dry(live), reset=reset))
+    asyncio.run(bid.run(uuid.UUID(tenant), dry_run=_dry(live), reset=reset,
+                        platform=marketplace))
 
 
 @app.command("reconcile")
-def reconcile(tenant: str = _TENANT, live: bool = _LIVE):
+def reconcile(tenant: str = _TENANT, live: bool = _LIVE,
+              marketplace: str = _MARKETPLACE):
     """Compile a tenant's rules into job_schedules (dry-run unless --live)."""
     from campaign_manager import reconciler
-    asyncio.run(reconciler.reconcile(uuid.UUID(tenant), dry_run=_dry(live)))
+    asyncio.run(reconciler.reconcile(uuid.UUID(tenant), dry_run=_dry(live),
+                                     platform=marketplace))
 
 
 @app.command("set-advertiser")
 def set_advertiser(
     tenant: str = _TENANT,
-    id: int = typer.Option(..., "--id", help="Advertiser (ad-account) id — capture it from a Blinkit dashboard PUT payload"),
-    platform: str = typer.Option("blinkit", "--platform"),
+    id: str = typer.Option(
+        ..., "--id",
+        help="The ad-account id. Blinkit: the integer advertiser_id from a dashboard "
+             "PUT payload. Zepto: the brand UUID (run `cm advertiser -m zepto` to read it)."),
+    platform: str = _MARKETPLACE,
 ):
-    """Store a tenant's advertiser account id (live writes send this). Capture it once from
-    a real dashboard budget/bid PUT (DevTools → Network → the request body's advertiser_id)."""
+    """Store a tenant's ad-account id.
+
+    Two marketplaces, two meanings — the id's shape decides which column it lands in:
+
+    
+    * Blinkit — an INTEGER that live writes SEND. It appears in no read API, so a
+      stored value is the only source and a stale one spends real money on the wrong
+      account. Capture it once from a real dashboard budget/bid PUT
+      (DevTools → Network → the request body's advertiser_id).
+    * Zepto — a brand UUID that live writes CHECK. It arrives in the login response,
+      so it is never sent; storing it lets us assert the session belongs to the
+      account we expect before writing.
+    """
     async def _run():
         await repo.set_advertiser(uuid.UUID(tenant), id, platform)
-        console.print(f"[green]Stored advertiser {id}[/green] for tenant {tenant} ({platform}). "
-                      "Live writes will now send it.")
+        sends = "send" if id.strip().isdigit() else "verify against"
+        console.print(f"[green]Stored ad account {id}[/green] for tenant {tenant} "
+                      f"({platform}). Live writes will {sends} it.")
 
     asyncio.run(_run())
 
 
 @app.command("advertiser")
-def advertiser(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platform")):
-    """Show the advertiser writes will use (the STORED value) vs. what Blinkit's code would
-    derive (often a stale fallback). Read-only. Opens the session to read the derived value."""
+def advertiser(tenant: str = _TENANT, platform: str = _MARKETPLACE):
+    """Show the ad account writes will use (STORED) vs. what the marketplace reports
+    (DERIVED). Read-only — it opens a session to read the derived value.
+
+    On Blinkit a difference is a warning: the derived value is often a stale hardcoded
+    fallback, and the stored one is what writes actually send. On Zepto the derived
+    value is authoritative (it comes from the login response) — so if nothing is
+    stored yet, this is where you read the brand id to store."""
     from campaign_manager.marketplaces import get_adapter
 
     async def _run():
@@ -93,28 +135,36 @@ def advertiser(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "-
             try:
                 derived = await a.resolve_advertiser(client)
             finally:
-                await browser.close()
-                await pw.stop()
+                # Zepto returns (None, None, client) — it needs no persistent browser.
+                if browser is not None:
+                    await browser.close()
+                if pw is not None:
+                    await pw.stop()
         except Exception as e:
-            console.print(f"[yellow]couldn't read Blinkit-derived id: {e}[/yellow]")
+            console.print(f"[yellow]couldn't read the marketplace-derived id: {e}[/yellow]")
 
         if stored is None:
-            console.print("[red]No stored advertiser[/red] — live writes will refuse. "
-                          f"Set it: [bold]cm set-advertiser -t {tenant} --id <n>[/bold]")
+            hint = derived if derived is not None else "<value>"
+            console.print("[red]No stored ad account[/red] — live writes will refuse. "
+                          f"Set it: [bold]cm set-advertiser -t {tenant} "
+                          f"-m {platform} --id {hint}[/bold]")
         else:
             console.print(f"stored (writes will use) = [bold]{stored}[/bold]")
         armed = await repo.get_armed(uuid.UUID(tenant), platform)
         console.print("LIVE writes: " + ("[yellow]⚡ ARMED[/yellow]" if armed
                                           else "[dim]dry (disarmed)[/dim]"))
         if derived is not None:
-            flag = "" if derived == stored else "  [yellow]← differs from stored (likely a stale fallback)[/yellow]"
-            console.print(f"Blinkit-derived            = {derived}{flag}")
+            same = str(derived) == str(stored)
+            flag = "" if same else (
+                "  [yellow]← differs from stored[/yellow]"
+                + ("" if platform != "blinkit" else " (likely a stale fallback)"))
+            console.print(f"{platform}-derived{' ' * max(1, 18 - len(platform))}= {derived}{flag}")
 
     asyncio.run(_run())
 
 
 @app.command("arm")
-def arm(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platform")):
+def arm(tenant: str = _TENANT, platform: str = _MARKETPLACE):
     """⚠️ CUTOVER: arm a tenant for LIVE writes. Requires an advertiser set. Reconciles
     immediately so the tenant's scheduled runs carry --live, and the API's set-budget/reset
     write for real. Reverse with `cm disarm`."""
@@ -136,7 +186,7 @@ def arm(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platfo
 
 
 @app.command("disarm")
-def disarm(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platform")):
+def disarm(tenant: str = _TENANT, platform: str = _MARKETPLACE):
     """Disarm a tenant → back to DRY. Reconciles so the schedules drop --live."""
     async def _run():
         tid = uuid.UUID(tenant)
@@ -153,11 +203,13 @@ def set_budget(
     tenant: str = _TENANT,
     campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
     budget: float = typer.Option(..., "--budget", help="Daily budget (₹)"),
+    marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
 ):
     """One-off: set a campaign's daily budget now (dry-run unless --live)."""
     from campaign_manager import set_budget as sb
-    asyncio.run(sb.run(uuid.UUID(tenant), campaign, budget, dry_run=_dry(live)))
+    asyncio.run(sb.run(uuid.UUID(tenant), campaign, budget, dry_run=_dry(live),
+                       platform=marketplace))
 
 
 @app.command("set-activation")
@@ -165,6 +217,7 @@ def set_activation(
     tenant: str = _TENANT,
     campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
     status: str = typer.Option(..., "--status", help="running (start/resume) or paused (stop)"),
+    marketplace: str = _MARKETPLACE,
     budget: float | None = typer.Option(
         None, "--budget",
         help="Daily budget (₹) to restart with. Resume only — Blinkit's RESTART sets the "
@@ -181,13 +234,14 @@ def set_activation(
     """
     from campaign_manager import set_activation as sa
     asyncio.run(sa.run(uuid.UUID(tenant), campaign, status,
-                       budget=budget, dry_run=_dry(live)))
+                       budget=budget, dry_run=_dry(live), platform=marketplace))
 
 
 @app.command("stop")
 def stop(
     tenant: str = _TENANT,
     campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
+    marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
 ):
     """Stop a campaign now (dry-run unless --live). Shorthand for `set-activation --status paused`.
@@ -196,7 +250,8 @@ def stop(
     bids while stopped, and `cm restart` brings it back.
     """
     from campaign_manager import set_activation as sa
-    asyncio.run(sa.run(uuid.UUID(tenant), campaign, "paused", dry_run=_dry(live)))
+    asyncio.run(sa.run(uuid.UUID(tenant), campaign, "paused", dry_run=_dry(live),
+                       platform=marketplace))
 
 
 @app.command("restart")
@@ -205,6 +260,7 @@ def restart(
     campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
     budget: float | None = typer.Option(
         None, "--budget", help="Daily budget (₹) to restart with; omit to reuse the current one."),
+    marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
 ):
     """Restart a stopped campaign now (dry-run unless --live). Shorthand for
@@ -215,14 +271,15 @@ def restart(
     start date is reset to today. The run logs exactly what it will overwrite first.
     """
     from campaign_manager import set_activation as sa
-    asyncio.run(sa.run(uuid.UUID(tenant), campaign, "running", budget=budget, dry_run=_dry(live)))
+    asyncio.run(sa.run(uuid.UUID(tenant), campaign, "running", budget=budget,
+                       dry_run=_dry(live), platform=marketplace))
 
 
 @app.command("status")
 def status(
     tenant: str = _TENANT,
     campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
-    platform: str = typer.Option("blinkit", "--platform"),
+    platform: str = _MARKETPLACE,
 ):
     """Show a campaign's live state — status, budget, keyword bids, dates. READ ONLY.
 
@@ -231,7 +288,6 @@ def status(
     and after is how you confirm nothing was silently reverted.
     """
     from campaign_manager.marketplaces import get_adapter
-    from campaign_manager.marketplaces.blinkit import restart as restart_mod
 
     async def _run():
         adapter = get_adapter(platform)
@@ -239,27 +295,47 @@ def status(
         try:
             state, budget, detail = await adapter.read_campaign(client, campaign)
         finally:
-            await browser.close()
-            await pw.stop()
+            # Zepto returns (None, None, client) — it needs no persistent browser.
+            # Closing unguarded crashed here before Zepto existed to expose it.
+            if browser is not None:
+                await browser.close()
+            if pw is not None:
+                await pw.stop()
 
-        t = Table(title=f"Campaign {campaign} — {detail.get('name') or '?'}")
+        name = detail.get("name") or detail.get("campaign_name") or "?"
+        t = Table(title=f"Campaign {campaign} — {name}  ({platform})")
         t.add_column("Field"); t.add_column("Value")
         t.add_row("status", f"[bold]{state}[/bold] ({detail.get('status')})")
         t.add_row("daily budget", f"₹{budget}" if budget is not None else "—")
-        t.add_row("allowed next", str(detail.get("allowed_transitions") or "—"))
-        t.add_row("pids", restart_mod.extract_pids(detail) or "—")
-        for kw in restart_mod.extract_keywords(detail):
-            cpm = kw["bids"][0]["cpm"] if kw["bids"] else "—"
-            t.add_row(f"  bid · {kw['keyword']}", f"₹{cpm}")
-        t.add_row("start / end", f"{detail.get('start_ts')} → {detail.get('end_ts')}")
-        t.add_row("infinite", str(detail.get("infinite_campaign")))
+
+        # Keyword bids come from the adapter, which both marketplaces implement —
+        # the raw detail shapes differ completely.
+        for kw, bid in (adapter.bids_from_detail(detail) or {}).items():
+            t.add_row(f"  bid · {kw}", f"₹{bid}")
+
+        if platform == "blinkit":
+            from campaign_manager.marketplaces.blinkit import restart as restart_mod
+            t.add_row("allowed next", str(detail.get("allowed_transitions") or "—"))
+            t.add_row("pids", restart_mod.extract_pids(detail) or "—")
+            t.add_row("start / end", f"{detail.get('start_ts')} → {detail.get('end_ts')}")
+            t.add_row("infinite", str(detail.get("infinite_campaign")))
+        else:
+            cfg = detail.get("campaign_configs") or {}
+            pids = [a.get("product_variant_id")
+                    for a in (detail.get("ad_assets_pla") or [])]
+            t.add_row("products", ", ".join(p for p in pids if p) or "—")
+            t.add_row("targeting", f"city={cfg.get('city_targeting')} "
+                                   f"bid={cfg.get('bid_targeting')} "
+                                   f"product={cfg.get('product_targeting')}")
+            t.add_row("start / end", f"{detail.get('start_date')} → "
+                                     f"{detail.get('end_date') or '—'}")
         console.print(t)
 
     asyncio.run(_run())
 
 
 @app.command("sync-campaign-data")
-def sync_campaign_data(tenant: str = _TENANT):
+def sync_campaign_data(tenant: str = _TENANT, marketplace: str = _MARKETPLACE):
     """Refresh campaign_data_cache (keywords + products) for a tenant. [V-later]"""
     typer.echo(f"cm sync-campaign-data is a stub (tenant={tenant}).")
 
@@ -267,6 +343,7 @@ def sync_campaign_data(tenant: str = _TENANT):
 @app.command("sync-campaigns")
 def sync_campaigns(
     tenant: str = _TENANT,
+    marketplace: str = _MARKETPLACE,
     days: int = typer.Option(
         None, "--days",
         help="Look-back window for the campaign list (default 90, floored at 30 — a "
@@ -280,7 +357,7 @@ def sync_campaigns(
     scrape, or to see current statuses before starting / stopping something.
     """
     from campaign_manager import sync_campaigns as sync
-    r = asyncio.run(sync.run(uuid.UUID(tenant),
+    r = asyncio.run(sync.run(uuid.UUID(tenant), platform=marketplace,
                              days=days if days is not None else sync.DEFAULT_DAYS))
     if r["errors"]:
         console.print("[red]Sync failed — catalogue left unchanged. See the log above.[/red]")
@@ -309,7 +386,7 @@ def add_budget_schedule(
     default_budget: float = typer.Option(..., "--default-budget", help="Fallback budget when no rule matches (₹)"),
     name: str = typer.Option(None, "--name", help="Human label"),
     campaign_name: str = typer.Option("", "--campaign-name", help="Campaign name (for logs/UI)"),
-    platform: str = typer.Option("blinkit", "--platform"),
+    platform: str = _MARKETPLACE,
     stop_after_window: bool = typer.Option(
         False, "--stop-after-window",
         help="Also STOP the campaign when a window ends (and restart it at the next "
@@ -411,7 +488,7 @@ def add_bid(
     lon: float = typer.Option(None, "--lon", help="Store longitude — manual override"),
     location: str = typer.Option(None, "--location", help="Store label (for logs/UI)"),
     brand: str = typer.Option(None, "--brand", help="Brand name — fallback product match"),
-    platform: str = typer.Option("blinkit", "--platform"),
+    platform: str = _MARKETPLACE,
 ):
     """Create a keyword bid rule (recurring daily window, or a --once single-date span).
 
@@ -475,7 +552,7 @@ def set_stop_after_window(
 
 
 @rules_app.command("list")
-def list_rules(tenant: str = _TENANT, platform: str = typer.Option("blinkit", "--platform")):
+def list_rules(tenant: str = _TENANT, platform: str = _MARKETPLACE):
     """List a tenant's budget schedules (+ rules) and bid rules."""
     async def _run():
         tid = uuid.UUID(tenant)

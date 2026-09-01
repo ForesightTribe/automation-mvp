@@ -95,8 +95,22 @@ async def get_tenant_name(tenant_id: uuid.UUID) -> str | None:
         return None
 
 
-async def get_advertiser(tenant_id: uuid.UUID, platform: str = "blinkit") -> int | None:
-    """The stored advertiser (ad-account) id for a tenant, or None if not configured."""
+async def get_advertiser(tenant_id: uuid.UUID,
+                         platform: str = "blinkit") -> int | str | None:
+    """The stored ad-account identity for a tenant, or None if not configured.
+
+    TWO columns, because marketplaces disagree about the shape of an ad account:
+
+    * **Blinkit** — an integer `advertiser_id` that appears in NO read API. It has
+      to be captured once from a dashboard write and SENT with every live write; a
+      stale value spends real money on the wrong account (that is B3).
+    * **Zepto** — a brand UUID in `account_ref`. It arrives in the login response,
+      so it is never sent; it is stored only to ASSERT that the live session belongs
+      to the account we think it does.
+
+    Returns whichever is populated. An `int` means "send this"; a `str` means
+    "check against this".
+    """
     from app.models.campaign_manager_v2 import CmPlatformAccount
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
@@ -105,11 +119,21 @@ async def get_advertiser(tenant_id: uuid.UUID, platform: str = "blinkit") -> int
                 CmPlatformAccount.platform == platform,
             )
         )).scalars().first()
-        return int(row.advertiser_id) if row else None
+        if row is None:
+            return None
+        if row.advertiser_id is not None:
+            return int(row.advertiser_id)
+        return row.account_ref or None
 
 
-async def set_advertiser(tenant_id: uuid.UUID, advertiser_id: int, platform: str = "blinkit") -> None:
-    """Upsert the tenant's advertiser id (set once at onboarding from a dashboard PUT)."""
+async def set_advertiser(tenant_id: uuid.UUID, account: int | str,
+                         platform: str = "blinkit") -> None:
+    """Upsert the tenant's ad-account identity (set once at onboarding).
+
+    The column follows the id's own shape rather than the marketplace name: an
+    integer lands in `advertiser_id`, anything else in `account_ref`. Keeping the
+    integer column typed is what lets Blinkit's write path stay unchanged.
+    """
     from app.models.campaign_manager_v2 import CmPlatformAccount
     async with AsyncSessionLocal() as db:
         row = (await db.execute(
@@ -118,12 +142,15 @@ async def set_advertiser(tenant_id: uuid.UUID, advertiser_id: int, platform: str
                 CmPlatformAccount.platform == platform,
             )
         )).scalars().first()
+        numeric = isinstance(account, int) or str(account).strip().isdigit()
+        fields = ({"advertiser_id": int(account), "account_ref": None} if numeric
+                  else {"advertiser_id": None, "account_ref": str(account).strip()})
         if row:
-            row.advertiser_id = int(advertiser_id)
+            for k, v in fields.items():
+                setattr(row, k, v)
             row.updated_at = now_ist()
         else:
-            db.add(CmPlatformAccount(tenant_id=tenant_id, platform=platform,
-                                     advertiser_id=int(advertiser_id)))
+            db.add(CmPlatformAccount(tenant_id=tenant_id, platform=platform, **fields))
         await db.commit()
 
 
@@ -142,8 +169,8 @@ async def get_armed(tenant_id: uuid.UUID, platform: str = "blinkit") -> bool:
 
 async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str = "blinkit") -> bool:
     """Arm/disarm a tenant for LIVE writes. Returns False (no-op) if the tenant has no
-    advertiser configured — arming without one is meaningless (live writes would refuse),
-    so the caller should set the advertiser first."""
+    account row — arming without one is meaningless (live writes would refuse), so the
+    caller should set the account first."""
     from app.models.campaign_manager_v2 import CmPlatformAccount
     async with AsyncSessionLocal() as db:
         row = (await db.execute(

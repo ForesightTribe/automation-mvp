@@ -86,10 +86,19 @@ The things that bite:
 - **Sessions are not files** — they live encrypted in Supabase, so there is nothing
   to copy to the VM. Same `DATABASE_URL` + `ENCRYPTION_KEY` = it just works. A wrong
   `ENCRYPTION_KEY` fails quietly.
-- **Logins need no browser and no human** — both Blinkit dashboards authenticate over
-  plain HTTP, and the OTP/magic link is read from the auth inbox. `cli auth login
-  <platform> -t <uuid>`. Scrapers call `ensure()` and get a working session, so an
-  expired one self-heals. See [docs/platform-auth.md](docs/platform-auth.md).
+- **Logins need no browser and no human** — all three dashboards (2× Blinkit, Zepto)
+  authenticate over plain HTTP, and the OTP/magic link is read from the auth inbox.
+  `cli auth login <platform> -t <uuid>`. Scrapers call `ensure()` and get a working
+  session, so an expired one self-heals. Every `cli auth` command is generic over the
+  registry — adding Zepto needed no CLI change. See
+  [docs/platform-auth.md](docs/platform-auth.md).
+- **⚠️ Zepto breaks two assumptions the rest of auth is built on.** It **cannot refresh**
+  (no endpoint exists; its JWT dies at **local midnight IST**), so it is the one platform
+  whose *login* is scheduled — `auth.login`, 00:05 IST, and `refresh-all` correctly
+  reports it `not_refreshable`. And it permits **one session per user**: a new login
+  revokes the previous one, so our login evicts a human's dashboard and theirs kills our
+  session mid-run. Trust `auth probe`, never `expires_at` alone. The Zepto schedule stays
+  **disabled** until the client provisions a service user.
 - **Anything scheduled needs the full interpreter path** and an explicit output
   redirect — cron/systemd never run `activate` and have no terminal, so a bare
   `python` fails with `ModuleNotFoundError` and unredirected output vanishes.
@@ -346,7 +355,9 @@ python -m cli tenant list
 # Platform auth — no browser, no human (see docs/platform-auth.md)
 python -m cli auth platforms                                  # registry + mail-rule status
 python -m cli auth credentials set blinkit -t <uuid> --email ops@brand.com [--password]
+python -m cli auth credentials set zepto   -t <uuid> --email ops@brand.com --password  # Zepto NEEDS one
 python -m cli auth login blinkit -t <uuid> [--manual]         # unattended by default
+python -m cli auth login zepto   -t <uuid>                    # same command, any platform
 python -m cli auth probe   blinkit -t <uuid>                  # is the session ACTUALLY alive
 python -m cli auth refresh blinkit -t <uuid>                  # extend, no email
 python -m cli auth refresh-all -t <uuid>                      # what the auth.refresh job runs

@@ -15,6 +15,7 @@ are the values already in the table, so nothing needs migrating.
 from platform_auth.errors import PlatformNotWired, UnknownPlatform
 from platform_auth.marketplaces.blinkit import marketing as blinkit_marketing
 from platform_auth.marketplaces.blinkit import seller as blinkit_seller
+from platform_auth.marketplaces.zepto import console as zepto_console
 from platform_auth.types import Authenticator, SecretKind
 
 AUTHENTICATORS: dict[str, Authenticator] = {
@@ -44,16 +45,26 @@ AUTHENTICATORS: dict[str, Authenticator] = {
         refresh=blinkit_seller.refresh,
         refreshable=True,
     ),
-    # Placeholders — see docs/zepto.md. Listed so `cli auth platforms` shows the
-    # roadmap and so selecting one fails with a real message.
+    # ONE console, not two: brands.zepto.co.in covers ads and sales alike, so the
+    # marketplace needs a single slug where Blinkit needs two.
     "zepto": Authenticator(
         slug="zepto",
-        name="Zepto Brand Console",
+        name="Zepto Brand Console (brands.zepto.co.in)",
         marketplace="zepto",
         secret_kind=SecretKind.OTP,
         needs_password=True,           # email + password, unlike either Blinkit dashboard
-        wired=False,
+        wired=True,
+        start_login=zepto_console.start_login,
+        complete_login=zepto_console.complete_login,
+        probe=zepto_console.probe,
+        # No refresh endpoint exists: `refreshToken` is null in every response and
+        # the JWT dies at local midnight IST. A fresh OTP is required daily, which
+        # is why Zepto is the one platform whose LOGIN is scheduled — see
+        # docs/platform-auth.md.
+        refreshable=False,
     ),
+    # Placeholder — see docs/zepto.md. Listed so `cli auth platforms` shows the
+    # roadmap and so selecting it fails with a real message.
     "instamart": Authenticator(
         slug="instamart",
         name="Swiggy Instamart Seller",

@@ -156,7 +156,22 @@ class CmPlatformAccount(SQLModel, table=True):
     id: int | None = Field(default=None, primary_key=True)
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
     platform: str = "blinkit"
-    advertiser_id: int
+    # NULLABLE since Zepto (migration c8f4e91a37d2): not every marketplace hides its
+    # ad account. Blinkit exposes the advertiser id in NO read API, so it must be
+    # captured once and stored — a stale value there writes real money to a dead
+    # account. Zepto returns its account in the login response, so there is nothing
+    # to store and this stays null.
+    advertiser_id: int | None = None
+    # For marketplaces whose account id is not an int (Zepto's is a UUID). Used as an
+    # ASSERTION rather than a value to send: `adapter.set_advertiser` refuses the
+    # write unless the live session's accounts contain it. Derivable AND checkable
+    # beats storing-and-trusting.
+    #
+    # ⚠️ This field and its migration must move together. Adding it to the model
+    # first makes every SELECT here ask for a column that does not exist, which
+    # breaks every `cm` operation instantly — the same ordering that broke arming
+    # once before. Migration first, model second.
+    account_ref: str | None = None
     # Cutover switch (V5): OFF by default — the whole automated loop runs dry until this
     # is armed. When True, the reconciler stamps `live=true` on the tenant's engine
     # schedules and the API's set-budget/reset pass live, so scheduled + UI actions
