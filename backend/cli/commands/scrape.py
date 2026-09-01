@@ -1371,11 +1371,18 @@ def load_staged(
 
     if file:
         try:
-            targets = [{"path": staging.resolve(file)}]
+            path = staging.resolve(file)
         except (FileNotFoundError, ValueError) as e:
             console.print(f"[red]{escape(str(e))}[/red]")
             console.print("[dim]List them with `python -m cli scrape staged`.[/dim]")
             raise typer.Exit(1)
+        # Carry the run row and counts, not just the path. Without them --dry-run
+        # renders every column as "?" / 0 for a --file target no matter what the
+        # file holds — which reads as "this file is empty" and invites discarding
+        # a good run. The load itself only needs the path; the preview needs the
+        # rest to be worth anything.
+        targets = [next((r for r in staging.all_runs() if r["path"] == path),
+                        {"path": path})]
     else:
         targets = list(reversed(staging.pending()))   # oldest first
         if not targets:

@@ -392,6 +392,18 @@ def pending(kind: str | None = None, tenant_id=None, mp_slug: str | None = None)
     return [r for r in _runs(kind, tenant_id, mp_slug) if not r["loaded_at"]]
 
 
+def all_runs(kind: str | None = None, tenant_id=None,
+             mp_slug: str | None = None) -> list[dict]:
+    """Every staging file with its run row and counts — loaded ones included.
+
+    `pending()` deliberately hides loaded files, which is right for "what is left
+    to push" but wrong for "tell me about THIS file": a --file target may well be
+    one that is already loaded, and showing it as unknown/empty is worse than
+    showing it as loaded.
+    """
+    return _runs(kind, tenant_id, mp_slug)
+
+
 def resumable(kind: str, tenant_id, mp_slug: str = DEFAULT_MP) -> dict | None:
     """The newest unloaded, unfinished run for this tenant+kind+marketplace — what
     --resume continues. Mirrors the old `_latest_incomplete_job` DB query.
