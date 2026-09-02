@@ -57,6 +57,13 @@ class ProductListRow(BaseModel):
     item_id: str
     item_name: str | None
     category: str | None
+    # Which marketplace produced this row. The table needs it per ROW, not per
+    # page: with both platforms selected the list interleaves them, so a
+    # page-level flag would mislabel half the rows. Used to hide the
+    # frontend/backend stock split on Zepto, which reports one figure and no
+    # split — rendering "98 / 0" there reads as an empty back room rather than
+    # "not reported".
+    marketplace: str = "blinkit"
     units_sold: int
     revenue: float
     avg_price: float | None

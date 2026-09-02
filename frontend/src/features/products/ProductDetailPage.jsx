@@ -95,11 +95,18 @@ export const ProductDetailPage = () => {
 					    panel reading "no data" where the platform simply doesn't
 					    publish that dimension sends people hunting for a scrape
 					    that was never missing. */}
+					{/* Stock by facility is Blinkit-only. Zepto reports one stock
+					    figure per SKU with no facility dimension, so the card could
+					    never do anything but explain its own emptiness — which reads
+					    as missing data. Drop the card and let City breakdown take the
+					    full width instead. */}
 					<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-						<FacilityStock
-							facilities={data.facilities}
-							marketplace={data.marketplace}
-						/>
+						{data.marketplace !== "zepto" && (
+							<FacilityStock
+								facilities={data.facilities}
+								marketplace={data.marketplace}
+							/>
+						)}
 						<CityBreakdown
 							cities={data.cities}
 							marketplace={data.marketplace}

@@ -90,6 +90,7 @@ def _list_row(
     backend_qty: int,
     frontend_qty: int,
     window_days: int,
+    marketplace: str = "blinkit",
 ) -> ProductListRow:
     """Build one list row from window sales + current stock.
 
@@ -111,6 +112,7 @@ def _list_row(
         avg_daily_units=avg_daily,
         days_of_cover=cover,
         status=cover_status(frontend_qty, units_sold, cover),
+        marketplace=marketplace,
     )
 
 
@@ -237,7 +239,9 @@ async def get_products(
             search=search,
             category=category,
         ):
-            rows.append(_list_row(**z, window_days=window_days))
+            rows.append(
+                _list_row(**z, window_days=window_days, marketplace="zepto")
+            )
 
     # Summary reflects the search/category/window scope (pre status-filter).
     summary = ProductListSummary(

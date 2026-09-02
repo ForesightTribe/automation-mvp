@@ -82,7 +82,11 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 						<SortHead label="Units" sortKey="units" />
 						<SortHead label="Revenue" sortKey="revenue" />
 						<SortHead label="Avg. Price" sortKey="price" />
-						<th className={HEAD}>Stock (FE/BE)</th>
+						<th className={HEAD}>
+							{rows.length && rows.every((r) => r.marketplace === "zepto")
+								? "Stock"
+								: "Stock (FE/BE)"}
+						</th>
 						<SortHead label="Cover" sortKey="cover" />
 						<th className={HEAD}>Status</th>
 					</tr>
@@ -114,12 +118,19 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 							<td className={`${CELL} tabular-nums text-content`}>
 								{formatCurrency(r.avg_price)}
 							</td>
+							{/* Zepto reports ONE stock figure with no frontend/backend
+							    split, so "98 / 0" there reads as an empty back room
+							    rather than "not reported". Show the bare number
+							    instead. Per row, not per page: with both platforms
+							    selected the list interleaves them. */}
 							<td className={`${CELL} tabular-nums text-content`}>
 								{formatNumber(r.frontend_qty)}
-								<span className="text-content-subtle">
-									{" "}
-									/ {formatNumber(r.backend_qty)}
-								</span>
+								{r.marketplace !== "zepto" && (
+									<span className="text-content-subtle">
+										{" "}
+										/ {formatNumber(r.backend_qty)}
+									</span>
+								)}
 							</td>
 							<td className={`${CELL} tabular-nums text-content`}>
 								{coverLabel(r.days_of_cover)}
