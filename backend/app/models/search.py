@@ -154,6 +154,16 @@ class SkuSnapshot(SQLModel, table=True):
     # Combo/multipack vs singular main SKU — combos are stocked selectively, so the
     # availability views separate them (default view = main SKUs only).
     is_combo: bool = False
+    # The marketplace's variant id, where it has one distinct from the product id.
+    # An identity, not detail: `platform_product_id` holds only one of the two, and
+    # the variant is what dedupe keys on. NULL on marketplaces without the concept.
+    variant_id: str | None = None
+    # Marketplace-specific detail, own-brand rows only. This table is 6-17x smaller
+    # than `search_listings` (own SKUs, not every SERP row), so a JSON blob costs
+    # ~10 MB per national run here against ~85 MB there — which is why the richness
+    # lands on this table and the keyword table stays lean. Promote a key to a real
+    # column when a query needs it; backfilling ~25k rows is cheap.
+    extra: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
 
 class MarketplaceLocation(SQLModel, table=True):

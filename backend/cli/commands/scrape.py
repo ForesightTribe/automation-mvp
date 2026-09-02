@@ -1046,7 +1046,7 @@ def scrape_public(
     keyword: str = typer.Option(..., "--keyword", "-k", help="Search keyword (e.g. 'cola', 'sunflower oil')"),
     brand: str = typer.Option(..., "--brand", "-b", help="Brand slug for classification (e.g. 'dobra')"),
     city: str = typer.Option("bengaluru", "--city", "-c", help="City slug (see scraper/utils/cities.py)"),
-    platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | zepto | instamart | all"),
+    platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | instamart | all"),
     all_zones: bool = typer.Option(False, "--all-zones", help="Scrape all zones defined for the city"),
     aliases: Optional[str] = typer.Option(None, "--aliases", help="Comma-separated brand name aliases (e.g. 'dobra,dobra cola')"),
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — required to --save (per-tenant storage)"),
@@ -1075,19 +1075,35 @@ async def _scrape_public(
     from scraper.utils.cities import CITIES, PLATFORM_CITIES
     from scraper.platforms.blinkit.public_data import scraper as bl_scraper, parser as bl_parser, storage as bl_storage
     from scraper.platforms.instamart.public_data import scraper as im_scraper, parser as im_parser, storage as im_storage
-    from scraper.platforms.zepto.public_data import scraper as ze_scraper, parser as ze_parser, storage as ze_storage
 
     city = CITIES.get(city_slug)
     if not city:
         console.print(f"[red]Unknown city slug '{city_slug}'. Check scraper/utils/cities.py for valid slugs.[/red]")
         raise typer.Exit(1)
 
+    # Zepto is deliberately NOT here. This command writes straight to Postgres,
+    # which is the opposite of the local-first staging path Zepto is built on
+    # (scrape -> SQLite -> `cli scrape load`), and ad-hoc one-off queries are
+    # already served by the Explorer. Supporting it here would mean a second,
+    # divergent write path for the same data.
+    SUPPORTED = {"blinkit", "instamart"}
+
     platforms_to_run = (
-        [p for p in ["blinkit", "zepto", "instamart"] if p in city["platforms"]]
+        [p for p in ["blinkit", "instamart"] if p in city["platforms"]]
         if platform == "all"
         else [platform]
     )
-    invalid = [p for p in platforms_to_run if p not in {"blinkit", "zepto", "instamart"}]
+    if "zepto" in platforms_to_run:
+        console.print(
+            "[red]zepto is not supported by this command.[/red]\n"
+            "  It writes directly to Postgres; the Zepto public scrape is "
+            "local-first.\n"
+            "  Use  [cyan]cli scrape public-run -m zepto --city <city>[/cyan]  "
+            "for a real run,\n"
+            "  or the Explorer for an ad-hoc one-off."
+        )
+        raise typer.Exit(1)
+    invalid = [p for p in platforms_to_run if p not in SUPPORTED]
     if invalid:
         console.print(f"[red]Unknown platform(s): {', '.join(invalid)}[/red]")
         raise typer.Exit(1)
@@ -1095,7 +1111,6 @@ async def _scrape_public(
     scrapers = {
         "blinkit":   (bl_scraper, bl_parser, bl_storage),
         "instamart": (im_scraper, im_parser, im_storage),
-        "zepto":     (ze_scraper, ze_parser, ze_storage),
     }
 
     if save and not tenant_id:
@@ -1172,12 +1187,12 @@ def _validate_marketplace(mp: str) -> str:
 def public_run(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape (blinkit)"),
+    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape: blinkit | zepto"),
     cap: int = typer.Option(None, "--cap", help="Max products per search (default: tenant keyword_cap, else the platform floor)"),
     keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run on this marketplace (skip already-scraped stores)"),
-    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). ~5–6 is a good balance."),
+    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). ~5–6 for Blinkit. Ignored on Zepto, which is single-worker by design."),
     no_load: bool = typer.Option(False, "--no-load", help="Stage only; don't push to the database afterwards"),
 ):
     """Orchestrate a tenant's full watchlist (keywords × locations), all sourced
@@ -1298,11 +1313,11 @@ async def _public_run(
 def public_skus(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape (blinkit)"),
+    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape: blinkit | zepto"),
     cap: int = typer.Option(None, "--brand-cap", help="Override brand_cap for this run (default: per-tenant, else the platform floor)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run on this marketplace (skip scraped stores)"),
-    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size)."),
+    workers: int = typer.Option(5, "--workers", "-w", help="Concurrent browser workers (pool size). Ignored on Zepto, which is single-worker by design."),
     no_load: bool = typer.Option(False, "--no-load", help="Stage only; don't push to the database afterwards"),
 ):
     """Targeted own-SKU scrape: search each tenant's brand name, paginate its whole
@@ -1509,11 +1524,18 @@ def load_staged(
 
     if file:
         try:
-            targets = [{"path": staging.resolve(file)}]
+            path = staging.resolve(file)
         except (FileNotFoundError, ValueError) as e:
             console.print(f"[red]{escape(str(e))}[/red]")
             console.print("[dim]List them with `python -m cli scrape staged`.[/dim]")
             raise typer.Exit(1)
+        # Carry the run row and counts, not just the path. Without them --dry-run
+        # renders every column as "?" / 0 for a --file target no matter what the
+        # file holds — which reads as "this file is empty" and invites discarding
+        # a good run. The load itself only needs the path; the preview needs the
+        # rest to be worth anything.
+        targets = [next((r for r in staging.all_runs() if r["path"] == path),
+                        {"path": path})]
     else:
         targets = list(reversed(staging.pending()))   # oldest first
         if not targets:

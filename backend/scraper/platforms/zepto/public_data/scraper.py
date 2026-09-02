@@ -1,29 +1,38 @@
 """Zepto public search scraper.
 
-Flow: open one browser session per location, resolve that coordinate to its dark
-store ONCE, then run many keyword searches by replaying the session-bound headers.
-The session is reused across keywords — the browser warmup is paid once per
-location, not once per search.
+Flow: open one browser session, then run many searches by replaying the
+session-bound headers, swapping the store-id headers per store. The browser
+warmup is paid once, not once per search.
 
 `scraper.py` returns raw extracted fields; `parser.py` types/classifies them.
 
-TWO THINGS THAT MAKE ZEPTO DIFFERENT FROM BLINKIT
--------------------------------------------------
-1. A search binds to a store by HEADER, not by coordinate. Sending lat/lon is
+THREE THINGS THAT MAKE ZEPTO DIFFERENT FROM BLINKIT
+---------------------------------------------------
+1. **A search binds to a store by HEADER, not by coordinate.** Sending lat/lon is
    accepted and silently ignored: you get a valid 200 carrying a generic catalog.
    The provider interface hands us lat/lon, so `_make_session` resolves it to a
-   store id via get_page once, caches it on the session, and every search replays
-   that. Resolving per search would spend get_page's separate, independently
-   rate-limited budget on every call.
+   store once and caches it; every caller that already knows the store passes
+   `merchant_id` instead, which costs nothing.
 
-2. Zepto enforces a per-IP VOLUME cap, not just a rate. Blinkit's transient 403s
-   self-resolve on backoff; Zepto's blocks are real, and retrying into one
-   prolongs it. So `_replay_fetch` retries transport failures but returns
-   immediately on a block status, and the caller is expected to back off.
-   See endpoints.py for the measurements behind every tunable.
+2. **Three failure modes, three remedies.** See `endpoints.py`. The one that
+   matters: a `202` session is dead FOREVER, so it is re-minted immediately
+   rather than waited on. `299`/`429` clear themselves in ~60 s and are simply
+   retried by the caller.
+
+3. **The WAF pass expires after 4-6 minutes** and nothing on the page refreshes
+   it. `_ensure_pass` re-mints on a timer, in place, so a long run never
+   discovers the expiry as a wall of 202s.
+
+A BLOCK IS NEVER AN EMPTY RESULT
+--------------------------------
+`search()` returns `ok=False` on any non-200. It must never return an empty
+product list for a blocked request: the caller would record "this store has no
+products" — a plausible, well-formed, wrong answer, and exactly the class of bug
+that made the previous build's data untrustworthy.
 """
 import asyncio
 import json
+import time
 from typing import Any
 
 from playwright.async_api import async_playwright
@@ -34,6 +43,7 @@ from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.cities import CITIES
 from scraper.utils.search_result import HEADERS_COMMON
 from scraper.platforms.zepto.public_data import endpoints as ep
+from scraper.platforms.zepto.public_data import packs
 
 
 # ── Extraction ───────────────────────────────────────────────────────────────
@@ -48,7 +58,7 @@ def _num(v, divisor: int = 1):
 
 def _extract_product(item: dict) -> dict | None:
     """One search item -> flat raw dict in the SHARED key names the provider
-    contract requires. None for anything without a product payload.
+    contract requires.
 
     Translating Zepto's vocabulary into the shared names happens here, never in a
     caller — that is the contract in scraper/public/providers.py.
@@ -63,19 +73,26 @@ def _extract_product(item: dict) -> dict | None:
         return None
 
     rat = pv.get("ratingSummary") or {}
-    # availableQuantity lives on productResponse itself, alongside price/mrp —
-    # NOT on productVariant. Reading it off `pv` silently returned None for
-    # every row (confirmed: 577/577 existing sku_snapshots rows have inventory
-    # IS NULL), which in turn made `in_stock` always default to True below.
+    # availableQuantity lives on productResponse, NOT on productVariant. Reading
+    # it off `pv` silently returned None for every row in the previous build,
+    # which in turn made `in_stock` always default to True.
     qty = pr.get("availableQuantity")
     # position is 0-BASED in the payload; the shared contract is 1-based.
     pos_raw = item.get("position")
     position = (pos_raw + 1) if isinstance(pos_raw, int) else None
 
-    images = prod.get("images")
+    images = pv.get("images") or prod.get("images")
     image_url = ""
     if isinstance(images, list) and images and isinstance(images[0], dict):
         image_url = images[0].get("path") or ""
+
+    # Pack size, normalised HERE rather than in parser.py. `targeted.py` (the
+    # own-SKU scrape) calls search() and never calls parse(), so normalising in
+    # the parser would fix the keyword scrape and silently leave sku_snapshots
+    # broken. `unit` is a shared-contract key, so the engine owns the translation.
+    raw_unit = pv.get("formattedPacksize") or ""
+    uom = pv.get("unitOfMeasure") or ""
+    canon_unit = packs.canonical_unit(pv.get("packsize"), uom, raw_unit)
 
     return {
         "product_id": str(prod.get("id") or pr.get("id") or ""),
@@ -85,74 +102,72 @@ def _extract_product(item: dict) -> dict | None:
         "price": _num(pr.get("discountedSellingPrice") or pr.get("sellingPrice"),
                       ep.PRICE_DIVISOR),
         "mrp": _num(pv.get("mrp") or pr.get("mrp"), ep.PRICE_DIVISOR),
-        "unit": pv.get("formattedPacksize") or "",
+        # The shared `unit` key, in pack.py's grammar so `pack_fields()` works.
+        # Falls back to Zepto's raw string when nothing is derivable, which
+        # `pack_fields` then stores as pack_raw with empty derived columns.
+        "unit": canon_unit or raw_unit,
+        # Zepto's original, verbatim. A normaliser fix is a backfill from this,
+        # never a re-scrape.
+        "unit_raw": raw_unit,
+        # Zepto's own COMBO marker, or a multipack multiplier in the string.
+        # Independent of whether the size parsed.
+        "is_combo_hint": packs.is_combo(uom, raw_unit),
         "inventory": qty,
-        # Zepto states this explicitly (`outOfStock`) rather than leaving it to
-        # be inferred from quantity — more direct, and doesn't depend on `qty`
-        # being present. Missing the field defaults to in-stock, same fallback
-        # as before, for whatever fraction of responses might omit it.
+        # Zepto states this explicitly rather than leaving it to be inferred from
+        # quantity — more direct, and it does not depend on `qty` being present.
         "in_stock": not pr.get("outOfStock", False),
         "rating": _num(rat.get("averageRating")),
         "rating_count": rat.get("totalRatings"),
         "position": position,
-        # Zepto is store-grain: each product names its fulfilling store (Q4).
+        # Zepto is store-grain: each product names its fulfilling store.
         "merchant_id": str(pr.get("storeId") or ""),
         # No express/longtail tiering on Zepto — the column would be a constant.
         "merchant_type": "",
         "image_url": image_url,
-        "category": {"l0": None, "l1": None,
+        "category": {"l0": pr.get("primaryCategoryName"),
+                     "l1": pr.get("primarySubcategoryName"),
                      "l2": (prod.get("l3CategoryIds") or [None])[0]},
+        # Own-SKU rows carry these into sku_snapshots.extra. Deliberately NOT
+        # promoted onto search_listings: at ~212k rows per national run the cost
+        # is real, and Phase 0 found every ads/ranking field zeroed for
+        # anonymous clients (is_fly_wheel_ad False on 557/557).
+        "extra": {
+            "brand_id": prod.get("brandId"),
+            "country_of_origin": prod.get("countryOfOrigin"),
+            "manufacturer": prod.get("manufacturerName"),
+            "super_saver_price": _num(pr.get("superSaverSellingPrice"),
+                                      ep.PRICE_DIVISOR),
+            "discount_percent": pr.get("discountPercent"),
+            "max_allowed_qty": pv.get("maxAllowedQuantity"),
+            "shelf_life_hours": pv.get("shelfLifeInHours"),
+            "fssai": pv.get("fssaiLicense"),
+            "atlas_score": (pr.get("meta") or {}).get("atlasScore"),
+            "semantic_score": (pr.get("meta") or {}).get("semanticScore"),
+            "query_bucket": (pr.get("meta") or {}).get("query_matching_bucket"),
+        },
     }
 
 
-def _extract_products(body: dict, include_oos: bool = False) -> tuple[list[dict], bool]:
+def _extract_products(body: dict) -> tuple[list[dict], bool]:
     """(products, hit_break) for one response page.
-
-    `include_oos` adds the sold-out widget (see ep.PRODUCT_WIDGETS). It is OFF by
-    default because the two scrapes want different answers from the same response:
-    the targeted own-catalogue scrape needs the stockouts (a sold-out SKU is a supply
-    problem, and dropping it makes the store look like it never stocked the product),
-    while the keyword scrape measures rank and share of voice, where sold-out items
-    sit in a separate below-the-fold block and are not part of the organic ranking.
-    Turning it on unconditionally would silently move every SoV number.
 
     `or []`, NOT a .get default: Zepto sends "layout": null on a page past the end
     of the results. The key IS present, so .get("layout", []) hands back None and
     iterating it raises — a bug that spent two days being misread as a rate-limit
     block, because the exception was swallowed and the store reported as throttled.
-    See docs/zepto_phase0_handover.md.
 
     `hit_break` is True when a section header ended the results. The caller must
     then STOP PAGING: once a response runs out of real matches, later pages
-    continue the recommendation carousel rather than the search, and a 9-result
-    query produced positions into the 60s.
+    continue the recommendation carousel rather than the search.
     """
     out: list[dict] = []
     for w in (body.get(ep.LAYOUT_KEY) or []):
         wid = w.get("widgetId")
-        # A section header ends the search results — what follows is a "Similar
-        # Products" carousel, not ranks. See SECTION_BREAK_WIDGETS.
         if wid in ep.SECTION_BREAK_WIDGETS:
             return out, True
-        wanted = ep.PRODUCT_WIDGETS if include_oos else {ep.PRODUCT_GRID_WIDGET}
-        resolver = ((w.get("data") or {}).get("resolver") or {}).get("data") or {}
-        if wid not in wanted:
-            # Loud, because the cost of the OOS_SEARCH_WIDGET bug was not the missing
-            # widget — it was that dropping it left no trace anywhere, so a whole
-            # class of product looked like it had never existed. A new Zepto widget
-            # carrying real items must announce itself, not vanish.
-            n = len(resolver.get("items") or [])
-            if (
-                n
-                and wid not in ep.PRODUCT_WIDGETS
-                and wid not in ep.EXCLUDED_PRODUCT_WIDGETS
-            ):
-                logger.warning(
-                    f"Zepto: unrecognised widget {wid!r} carrying {n} product(s) — "
-                    f"dropped. Add it to endpoints.PRODUCT_WIDGETS if these are real "
-                    f"results."
-                )
+        if wid != ep.PRODUCT_GRID_WIDGET:
             continue
+        resolver = ((w.get("data") or {}).get("resolver") or {}).get("data") or {}
         for it in (resolver.get("items") or []):
             p = _extract_product(it)
             if p:
@@ -160,35 +175,29 @@ def _extract_products(body: dict, include_oos: bool = False) -> tuple[list[dict]
     return out, False
 
 
-def _pagination(page_no: int, collected: int, cap: int) -> int | None:
-    """Next page number, or None to stop.
-
-    Zepto pages by a body field rather than a next_url, and returns no total, so
-    the stop conditions are the cap, MAX_PAGES, or an empty page (handled by the
-    caller). Observed page size is 12-27, so a search normally costs 2-3 requests.
-    """
-    if collected >= cap or page_no + 1 >= ep.MAX_PAGES:
-        return None
-    return page_no + 1
-
-
 # ── Fetch ────────────────────────────────────────────────────────────────────
 
-# Zepto has no Cloudflare-class challenge (Q3), so Blinkit's in-page fetch() is
-# not needed. Raw httpx IS blocked, but headers captured from a real browser
-# session replay fine through Playwright's request context — ~0.33s per call
-# versus ~3s for a page reload. The provider interface is identical either way;
-# that is the point of D2.
+def _classify(status: int) -> str:
+    if status == 200:
+        return "ok"
+    if status == ep.GATE_STATUS:
+        return "gate"
+    if status == ep.CHALLENGE_STATUS:
+        return "challenge"
+    if status == ep.RATE_STATUS:
+        return "rate"
+    return f"http{status}"
 
-async def _replay_fetch(session: dict, url: str, headers: dict, body: dict) -> dict:
+
+async def _fetch(session: dict, url: str, headers: dict, body: dict) -> dict:
     """POST with a hard per-attempt timeout, retrying TRANSPORT failures only.
 
-    A block status returns immediately and is never retried: Zepto's cap is real,
-    and retrying into an active block extends it. The timeout is enforced twice —
-    the request's own, plus an asyncio.wait_for around it — so a wedged context can
-    never hang a worker.
+    A blocked status returns immediately and is never retried here: the remedy
+    differs per mechanism and belongs to the caller. The timeout is enforced
+    twice — the request's own, plus an asyncio.wait_for around it — so a wedged
+    context can never hang a worker.
     """
-    resp: dict = {"status": 0}
+    resp: dict = {"status": 0, "kind": "error"}
     for delay in (0.0,) + ep.RETRY_DELAYS:
         if delay:
             await asyncio.sleep(delay)
@@ -200,23 +209,30 @@ async def _replay_fetch(session: dict, url: str, headers: dict, body: dict) -> d
                 timeout=ep.FETCH_TIMEOUT_S + 5,
             )
         except asyncio.TimeoutError:
-            resp = {"status": 0, "error": "request timeout (context wedged)"}
+            resp = {"status": 0, "kind": "error",
+                    "error": "request timeout (context wedged)"}
             continue
         except Exception as e:
-            resp = {"status": 0, "error": str(e)[:120]}
+            resp = {"status": 0, "kind": "error", "error": str(e)[:120]}
             continue
 
-        if r.status in ep.BLOCK_STATUSES:
-            return {"status": r.status, "body": None, "blocked": True,
-                    "error": f"HTTP {r.status} (rate limited)"}
-        if r.status == 200:
+        kind = _classify(r.status)
+        if kind == "ok":
             try:
-                return {"status": 200, "body": await r.json()}
+                return {"status": 200, "kind": "ok", "body": await r.json()}
             except Exception:
                 # A 200 that will not parse is not a result. Keep retrying.
-                resp = {"status": 200, "body": None, "error": "non-JSON body"}
+                resp = {"status": 200, "kind": "error", "error": "non-JSON body"}
                 continue
-        resp = {"status": r.status, "body": None, "error": f"HTTP {r.status}"}
+        # Keep the body: `error_code` names the mechanism for free, and the
+        # previous build discarding it is why two mechanisms went undiagnosed.
+        detail = ""
+        try:
+            detail = (await r.text())[:200]
+        except Exception:
+            pass
+        return {"status": r.status, "kind": kind, "body": None,
+                "error": f"HTTP {r.status} {detail}".strip()}
     return resp
 
 
@@ -267,8 +283,7 @@ async def _resolve_store(session: dict, lat: float,
 
     Zepto binds searches by store id and the provider interface hands us a
     coordinate, so this bridges the two. Doing it per search would spend
-    get_page's separate rate-limit budget on every call — which is exactly how an
-    earlier version ran out of get_page budget while search was perfectly healthy.
+    get_page's separate rate-limit budget on every call.
     """
     try:
         r = await session["context"].request.get(
@@ -284,6 +299,33 @@ async def _resolve_store(session: dict, lat: float,
         return "", ()
 
 
+async def _mint_pass(session: dict) -> bool:
+    """Re-mint the AWS WAF pass IN PLACE by re-navigating the session's own page.
+
+    The pass is the `aws-waf-token` cookie and lives 4-6 minutes; nothing on the
+    page refreshes it (`window.AwsWafIntegration` is absent). Re-navigating puts a
+    fresh cookie in the same context, so the session object stays valid and the
+    caller never has to know. Rebuilding the whole context would also work and
+    costs far more.
+    """
+    try:
+        await session["page"].goto(ep.HOMEPAGE_URL,
+                                   wait_until="domcontentloaded", timeout=30000)
+        await session["page"].wait_for_timeout(2500)
+        session["minted_at"] = time.monotonic()
+        return True
+    except Exception as e:
+        logger.debug(f"Zepto: pass re-mint failed: {e}")
+        return False
+
+
+async def _ensure_pass(session: dict) -> None:
+    """Re-mint before the pass can expire mid-search, rather than discovering it
+    as a wall of 202s."""
+    if time.monotonic() - session.get("minted_at", 0) >= ep.PASS_REFRESH_S:
+        await _mint_pass(session)
+
+
 async def _make_session(browser, lat: float, lon: float) -> dict | None:
     """Isolated context on `browser`, warmed up, headers captured, coordinate
     resolved to a store. Returns the session dict or None."""
@@ -297,6 +339,7 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
         lambda: page.goto(ep.HOMEPAGE_URL, wait_until="domcontentloaded",
                           timeout=30000))
     session["gp_headers"] = gp_headers
+    session["minted_at"] = time.monotonic()
 
     headers, raw_body = await _capture(
         page, ep.SEARCH_PATH,
@@ -313,18 +356,15 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
     except Exception:
         session["body"] = dict(ep.SEARCH_BODY)
 
-    # Best-effort only. A caller that passes merchant_id per search never needs
+    # Best effort only. A caller that passes merchant_id per search never needs
     # this, and get_page has its own rate-limit budget — failing the whole session
-    # here killed a worker for the rest of the run, losing 20% of a 5-worker pool
-    # permanently. An unresolved store is fine; search() will set one.
+    # here would kill a worker for the rest of the run.
     sid, secondaries = await _resolve_store(session, lat, lon)
     if not sid:
         logger.debug(f"Zepto: no store resolved at {lat},{lon} — session opens "
                      f"anyway; search() must supply merchant_id")
     session["store_id"] = sid
     session["secondary_ids"] = secondaries
-    # Which coordinate the cached store belongs to. search() re-resolves when it is
-    # handed a different one — see the note there.
     session["coord"] = (lat, lon)
     return session
 
@@ -363,25 +403,22 @@ async def search(
     lat: float | None = None, lon: float | None = None,
     merchant_id: str | None = None,
     follow_similarity: bool = False,
-    include_oos: bool = False,
 ) -> dict:
     """One keyword search in an open session, paging up to `cap`.
 
-    RE-TARGETING. The worker pool opens one session per worker from a seed
-    coordinate and then walks many stores through it, so the session's store must
-    follow the store it is handed. Without that, every store in the run returns the
-    SEED store's catalog — the Q2 silent failure: a valid 200 carrying the wrong
+    RE-TARGETING. The caller walks many stores through one session, so the
+    session's store must follow the store it is handed. Without that, every store
+    in the run returns the SEED store's catalog — a valid 200 carrying the wrong
     store's data, with nothing in the response to say so.
 
-    Prefer `merchant_id`: the caller is iterating catalog rows, so it already knows
-    the store id and no lookup is needed. Falling back to `lat`/`lon` costs a
-    get_page per store, and get_page has its OWN rate-limit budget — draining it
-    while search is healthy is a failure mode this project has already hit once.
+    Prefer `merchant_id`: the caller is iterating catalog rows, so it already
+    knows the store id and no lookup is needed. Falling back to `lat`/`lon` costs
+    a get_page per store against a separate budget.
 
     `follow_similarity` is accepted and unused: Zepto has no basic->similarity
-    relevance switch (Q6), so there is no tail to follow.
+    relevance switch, so there is no tail to follow.
 
-    Returns {products, total_results, merchant_id, ok, error, blocked}.
+    Returns {products, total_results, merchant_id, ok, error, blocked, kind}.
     """
     if merchant_id and merchant_id != session.get("store_id"):
         # Free: the catalog row IS the store. No get_page, no second budget.
@@ -393,11 +430,13 @@ async def search(
         sid, secondaries = await _resolve_store(session, lat, lon)
         if not sid:
             return {"products": [], "total_results": 0, "merchant_id": "",
-                    "ok": False, "blocked": False,
+                    "ok": False, "blocked": False, "kind": "error",
                     "error": f"no store resolved at {lat},{lon}"}
         session["store_id"] = sid
         session["secondary_ids"] = secondaries
         session["coord"] = (lat, lon)
+
+    await _ensure_pass(session)
 
     headers = {**session["headers"],
                **ep.store_headers(session["store_id"], session["secondary_ids"])}
@@ -405,26 +444,34 @@ async def search(
 
     products: list[dict] = []
     seen: set[str] = set()
-    ok, error, blocked = False, "", False
+    ok, error, blocked, kind = False, "", False, "ok"
     page_no: int | None = 0
 
     while page_no is not None and len(products) < cap:
         body = ep.search_body(keyword, page_no, session.get("body"))
-        resp = await _replay_fetch(session, url, headers, body)
-        if resp.get("blocked"):
-            blocked = True
-            error = resp.get("error", "blocked")
-            break
-        if resp.get("status") != 200 or resp.get("body") is None:
+        resp = await _fetch(session, url, headers, body)
+
+        if resp["kind"] == "challenge":
+            # TERMINAL for this pass. Re-mint in place and retry once; waiting
+            # would never help, which is the bug this rewrite exists to fix.
+            if await _mint_pass(session):
+                resp = await _fetch(session, url, headers, body)
+
+        if resp["kind"] != "ok":
+            kind = resp["kind"]
             error = resp.get("error") or f"HTTP {resp.get('status')}"
+            blocked = kind in ("gate", "rate", "challenge")
             logger.debug(f"Zepto search '{keyword}': {error}")
             break
-        ok = True
 
-        page_rows, hit_break = _extract_products(resp["body"], include_oos)
+        ok = True
+        page_rows, hit_break = _extract_products(resp["body"])
         if not page_rows:
             break  # genuinely nothing more for this term
-        # Keep the FIRST sighting — it carries the true (best) rank.
+
+        # Keep the FIRST sighting — it carries the true (best) rank. Dedupe is
+        # mandatory even within one page: a 30-item page carried 3 duplicates,
+        # and page 1 repeated 29% of page 0.
         for p in page_rows:
             pid = p.get("variant_id") or p.get("product_id")
             if pid:
@@ -434,21 +481,26 @@ async def search(
             products.append(p)
 
         # The results ended inside this page — anything further is the "Similar
-        # Products" carousel, so there is no next page of search results to fetch.
-        page_no = None if hit_break else _pagination(page_no, len(products), cap)
+        # Products" carousel, so there is no next page of search results.
+        if hit_break or page_no + 1 >= ep.MAX_PAGES or len(products) >= cap:
+            page_no = None
+        else:
+            page_no += 1
+            await asyncio.sleep(ep.SEARCH_GAP_S)
 
     products = products[:cap]
     # Fall back to running order where Zepto gave no position.
     for i, p in enumerate(products, 1):
         if p.get("position") is None:
             p["position"] = i
+
     return {
         "products": products,
         "total_results": len(products),
         # The session's store IS the merchant here — unlike Blinkit, where it has
         # to be read back off the products because one response spans several.
         "merchant_id": session.get("store_id", ""),
-        "ok": ok, "error": error, "blocked": blocked,
+        "ok": ok, "error": error, "blocked": blocked, "kind": kind,
     }
 
 

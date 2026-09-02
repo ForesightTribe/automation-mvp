@@ -94,7 +94,16 @@ CREATE TABLE IF NOT EXISTS sku_snapshots (
     city          TEXT, lat REAL, lon REAL, scraped_at TEXT,
     price         REAL, mrp REAL, discount_pct REAL,
     pack_raw      TEXT, pack_size REAL, pack_uom TEXT, pack_count INTEGER,
-    in_stock      INTEGER, inventory INTEGER, rating REAL, is_combo INTEGER
+    in_stock      INTEGER, inventory INTEGER, rating REAL, is_combo INTEGER,
+    -- Marketplace-specific detail, own-brand rows only. This table is 6-17x
+    -- smaller than search_listings (own SKUs, not every SERP row), so a JSON
+    -- blob costs ~10 MB per national run here against ~85 MB there — which is
+    -- why the richness lands on this table and not the keyword one.
+    extra         TEXT,
+    -- An identity, not detail: Zepto has both a product id and a variant id,
+    -- platform_product_id holds only one, and the variant is the dedupe key.
+    -- NULL for marketplaces with no variant concept.
+    variant_id    TEXT
 );
 
 -- Resume reads these: (keyword, lat, lon) for the keyword scrape, (lat, lon) for skus.
@@ -127,6 +136,10 @@ def _connect(path: Path) -> sqlite3.Connection:
                   ("pack_uom", "TEXT"), ("pack_count", "INTEGER")]
     _add_missing(conn, "search_listings", _pack_cols)
     _add_missing(conn, "sku_snapshots", _pack_cols)
+    # Same forward-compat rule: a file staged before these existed gains them as
+    # NULL, and the loader COPYs that straight through.
+    _add_missing(conn, "sku_snapshots",
+                 [("extra", "TEXT"), ("variant_id", "TEXT")])
     conn.commit()
     return conn
 
@@ -296,15 +309,25 @@ async def save_skus(stg: dict, listings: list[dict], brand_slug: str, tenant_id,
                (tenant_id, job_id, mp_slug, brand_slug, platform_product_id,
                 product_name, merchant_id, merchant_type, city, lat, lon, scraped_at,
                 price, mrp, discount_pct, pack_raw, pack_size, pack_uom, pack_count,
-                in_stock, inventory, rating, is_combo)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                in_stock, inventory, rating, is_combo, extra, variant_id)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(tid, jid, stg["mp_slug"], brand_slug, l.get("product_id") or "",
               l.get("name", ""), l.get("merchant_id") or merchant_id,
               l.get("merchant_type") or "", city, lat, lon, scraped_at,
               l.get("price"), l.get("mrp"), l.get("discount_pct"),
-              _pk["pack_raw"], _pk["pack_size"], _pk["pack_uom"], _pk["pack_count"],
+              # pack_raw prefers the marketplace's ORIGINAL string where the
+              # engine normalised `unit` into pack.py's grammar — otherwise the
+              # audit trail would record our rewrite instead of what was served.
+              l.get("unit_raw") or _pk["pack_raw"],
+              _pk["pack_size"], _pk["pack_uom"], _pk["pack_count"],
               int(bool(l.get("in_stock", True))), l.get("inventory"), l.get("rating"),
-              int(combo_from_pack(l.get("name", ""), _pk["pack_count"])))
+              # `is_combo_hint` is the marketplace's own marker (e.g. Zepto's
+              # COMBO uom, or a multiplier the size parse could not use). Falls
+              # back to pack_count, then to the name regex.
+              int(bool(l.get("is_combo_hint"))
+                  or combo_from_pack(l.get("name", ""), _pk["pack_count"])),
+              json.dumps(l["extra"]) if l.get("extra") else None,
+              l.get("variant_id") or None)
              for l in listings for _pk in (pack_fields(l.get("unit")),)],
         )
         conn.commit()
@@ -367,6 +390,18 @@ def list_runs(kind: str | None = None, tenant_id=None, mp_slug: str | None = Non
 def pending(kind: str | None = None, tenant_id=None, mp_slug: str | None = None) -> list[dict]:
     """Runs not yet pushed to Postgres, newest first."""
     return [r for r in _runs(kind, tenant_id, mp_slug) if not r["loaded_at"]]
+
+
+def all_runs(kind: str | None = None, tenant_id=None,
+             mp_slug: str | None = None) -> list[dict]:
+    """Every staging file with its run row and counts — loaded ones included.
+
+    `pending()` deliberately hides loaded files, which is right for "what is left
+    to push" but wrong for "tell me about THIS file": a --file target may well be
+    one that is already loaded, and showing it as unknown/empty is worse than
+    showing it as loaded.
+    """
+    return _runs(kind, tenant_id, mp_slug)
 
 
 def resumable(kind: str, tenant_id, mp_slug: str = DEFAULT_MP) -> dict | None:
