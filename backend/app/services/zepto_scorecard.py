@@ -109,6 +109,34 @@ where tenant_id = :t
 group by 1
 """
 
+# Category fill. Zepto's GRN carries no category, and neither do the PO lines —
+# but `product_variant_id` is the SAME id `zepto_seller_sales` keys on, so the
+# category comes across by joining on it. No name matching, no sku_map bridge.
+#
+# Grouped on SUBcategory, matching sales_by_category: `categoryName` is one broad
+# bucket for this account ("Dairy, Bread & Eggs" covers every SKU), so grouping on
+# it yields a single useless row. Subcategory is the level that distinguishes.
+_WEEKLY_CATEGORIES = """
+select date_trunc('week', p.po_date)::date as from_date,
+       coalesce(s.subcategory_name, s.category_name, 'Uncategorized') as proxy_category,
+       count(distinct i.product_variant_id) as skus,
+       sum(i.po_qty)                        as total_po_quantity,
+       sum(coalesce(i.grn_qty, 0))          as total_grn_quantity,
+       round((100.0 * sum(coalesce(i.grn_qty, 0))
+              / nullif(sum(i.po_qty), 0))::numeric, 2)             as fill_rate,
+       round(sum((i.po_qty - coalesce(i.grn_qty, 0)) * i.unit_price)::numeric, 2)
+                                                                    as potential_loss
+from zepto_po_items i
+join zepto_po p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
+left join (select distinct product_variant_id, subcategory_name, category_name
+           from zepto_seller_sales where tenant_id = :t) s
+  on s.product_variant_id = i.product_variant_id
+where i.tenant_id = :t and i.grn_qty is not null
+group by 1, 2
+order by 1 desc, total_po_quantity desc
+"""
+
+
 # The ship-vs-accept split. Only rows with BOTH an ASN and a GRN can answer it,
 # so this is scoped to matched deliveries rather than all receipts.
 _WEEKLY_SPLIT = """
@@ -139,6 +167,20 @@ async def _weeks_map(session: AsyncSession, tenant_id: uuid.UUID) -> dict[date, 
                 out[row["from_date"]].update(
                     {k: v for k, v in row.items() if k != "from_date"}
                 )
+    return out
+
+
+async def _categories(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> dict[date, list[dict]]:
+    """Per-week category rows, keyed by week start."""
+    out: dict[date, list[dict]] = {}
+    for row in (
+        await session.execute(text(_WEEKLY_CATEGORIES), {"t": tenant_id})
+    ).mappings():
+        out.setdefault(row["from_date"], []).append(
+            {k: v for k, v in row.items() if k != "from_date"}
+        )
     return out
 
 
@@ -198,6 +240,12 @@ async def get_weekly(
     cur = weeks[cur_key]
     prev = weeks.get(prev_key, {}) if prev_key else {}
 
+    cats = (await _categories(session, tenant_id)).get(cur_key, [])
+    # Blinkit's "best category" is its best-RANKED one; with no rank available the
+    # honest analogue is the best-performing one we can see — highest fill among
+    # categories that actually had orders.
+    best = max(cats, key=lambda c: c["fill_rate"] or 0) if cats else None
+
     return {
         "from_date": cur_key,
         "prev_from_date": prev_key,
@@ -206,8 +254,11 @@ async def get_weekly(
         # Zepto-only: where the shortfall happened.
         "ship_pct": cur.get("ship_pct"),
         "accept_pct": cur.get("accept_pct"),
-        "best_category": None,
-        "categories": [],
+        # Category comes from the PO lines joined to sales on product_variant_id —
+        # see _WEEKLY_CATEGORIES. Bucketed by the PO's week, not the receipt's,
+        # because the line items hang off the order.
+        "best_category": best,
+        "categories": cats,
     }
 
 
