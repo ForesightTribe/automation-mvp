@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/Button";
-import { useCampaignKeywords, useCreateBidRule, useUpdateBidRule } from "../hooks";
+import { useBidContext, useCampaignKeywords, useCreateBidRule, useUpdateBidRule } from "../hooks";
 import { CampaignPicker } from "./CampaignPicker";
 import { TimingFields, emptyTiming, timingFromRule, timingPayload } from "./TimingFields";
 
@@ -40,15 +40,54 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 	const update = useUpdateBidRule();
 	const mutation = isEdit ? update : create;
 	const { data: kwData } = useCampaignKeywords(campaign.id || null);
+	const { data: ctx } = useBidContext(campaign.id || null);
 	const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
 	const suggestions = (kwData ?? []).map((k) => k.keyword);
+
+	// Blinkit's published floor for the keyword being typed. It varies per keyword (₹50 on
+	// "mango", ₹400 on "cocktail"), so it can only be looked up once a keyword is chosen.
+	const floor = useMemo(() => {
+		const kw = f.keyword.trim().toLowerCase();
+		if (!kw) return null;
+		return (
+			(ctx?.keywords ?? []).find(
+				(k) => k.match_type === "EXACT" && k.keyword.toLowerCase() === kw,
+			) ?? null
+		);
+	}, [ctx, f.keyword]);
+
+	// Prefill the min bid with the floor the first time a keyword resolves to one. Only
+	// when the field is empty — never overwrite a number someone typed, and never on edit.
+	useEffect(() => {
+		if (floor?.min_bid != null && f.min_bid === "") {
+			setF((prev) => (prev.min_bid === "" ? { ...prev, min_bid: String(floor.min_bid) } : prev));
+		}
+	}, [floor, f.min_bid]);
+
+	// A campaign targeting cities decides where the rule measures; pan-India leaves the
+	// choice open. `scraped_at` null = never scraped with targeting in place, so fall back
+	// to the free-text field rather than claiming the campaign has no cities.
+	const cityOptions = ctx?.region_type === "CITY" ? (ctx.cities ?? []) : [];
+	const singleCity = cityOptions.length === 1 ? cityOptions[0] : null;
+
+	// Auto-fill the one city a single-city campaign targets — the client's actual ask.
+	useEffect(() => {
+		if (singleCity && !f.city && !f.location_id) {
+			setF((prev) => (prev.city ? prev : { ...prev, city: singleCity.name }));
+		}
+	}, [singleCity, f.city, f.location_id]);
+
+	const belowFloor =
+		floor?.min_bid != null && f.min_bid !== "" && Number(f.min_bid) < floor.min_bid;
 	// Max bid is optional — blank means "reach the target position whatever it costs".
 	// A measurement location is NOT optional: without one the engine silently falls back to
 	// a default Bengaluru store, so every rule ends up measuring somewhere nobody chose.
 	// On edit, a blank city is fine only when the rule already has a location to keep.
 	const hasLocation = Boolean(f.city || f.location_id || (isEdit && editing?.location_name));
-	const valid = campaign.id && f.keyword && f.min_bid && hasLocation;
+	// Blocked below the floor: the engine would raise the bid to it on the first write, so
+	// saving a lower number would quietly not mean what it says.
+	const valid = campaign.id && f.keyword && f.min_bid && hasLocation && !belowFloor;
 
 	const submit = (e) => {
 		e.preventDefault();
@@ -119,8 +158,36 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 			</div>
 
 			<div className="grid gap-4 sm:grid-cols-3">
-				<Field label="Min bid (₹)">
-					<input type="number" value={f.min_bid} onChange={set("min_bid")} placeholder="20" className={FIELD} />
+				<Field
+					label="Min bid (₹)"
+					hint={
+						floor?.min_bid != null
+							? `Blinkit's minimum for “${f.keyword}” is ₹${floor.min_bid}${
+									floor.suggested_min && floor.suggested_max
+										? ` · it suggests ₹${floor.suggested_min}–${floor.suggested_max}`
+										: ""
+								}`
+							: campaign.id && f.keyword
+								? ctx?.scraped_at
+									? "No published minimum for this keyword yet — it syncs after the next daily scrape."
+									: "This campaign hasn't been scraped yet; minimums sync nightly."
+								: undefined
+					}
+				>
+					<input
+						type="number"
+						value={f.min_bid}
+						onChange={set("min_bid")}
+						placeholder="20"
+						className={FIELD}
+						aria-invalid={belowFloor}
+					/>
+					{belowFloor && (
+						<span className="text-xs text-danger">
+							Below Blinkit's minimum of ₹{floor.min_bid} — it would be raised to ₹{floor.min_bid} on
+							the first write.
+						</span>
+					)}
 				</Field>
 				<Field label="Max bid (₹)" hint="Optional — leave blank to chase the target position with no ceiling">
 					<input type="number" value={f.max_bid} onChange={set("max_bid")} placeholder="No limit" className={FIELD} />
@@ -128,20 +195,45 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 				<Field
 					label="Measure in city *"
 					hint={
-						isEdit
-							? editing?.location_name
-								? `Currently: ${editing.location_name}. Enter a new city to change; leave blank to keep.`
-								: "Required — this rule has no measurement store yet."
-							: "Required — position is checked at one store here."
+						cityOptions.length
+							? singleCity
+								? `This campaign only targets ${singleCity.name}.${
+										singleCity.location_name ? ` Store: ${singleCity.location_name}.` : ""
+									}`
+								: "This campaign targets these cities — pick where to measure."
+							: isEdit
+								? editing?.location_name
+									? `Currently: ${editing.location_name}. Enter a new city to change; leave blank to keep.`
+									: "Required — this rule has no measurement store yet."
+								: "Required — position is checked at one store here."
 					}
 				>
-					<input
-						value={f.city}
-						onChange={set("city")}
-						placeholder="bengaluru"
-						className={FIELD}
-						aria-invalid={!hasLocation}
-					/>
+					{cityOptions.length ? (
+						// A city-targeted campaign can only be measured where it actually runs, so
+						// offer exactly its cities. One city auto-fills (see the effect above).
+						<select
+							value={f.city}
+							onChange={set("city")}
+							className={FIELD}
+							aria-invalid={!hasLocation}
+						>
+							<option value="">Select a city…</option>
+							{cityOptions.map((c) => (
+								<option key={c.id} value={c.name} disabled={!c.lat}>
+									{c.name}
+									{c.lat ? "" : " — no dark store in our catalog"}
+								</option>
+							))}
+						</select>
+					) : (
+						<input
+							value={f.city}
+							onChange={set("city")}
+							placeholder="bengaluru"
+							className={FIELD}
+							aria-invalid={!hasLocation}
+						/>
+					)}
 				</Field>
 			</div>
 

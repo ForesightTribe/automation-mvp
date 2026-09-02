@@ -19,6 +19,10 @@ export const MonthlyTrendChart = ({
 	color,
 	type = "line",
 	kind = "currency",
+	// All three metrics come from Blinkit seller tables. `emptyMessage` lets the
+	// caller say so when the selected marketplace has no such source, instead of
+	// "No data yet", which implies a scrape is merely pending.
+	emptyMessage = "No data yet.",
 }) => {
 	const { data, isLoading, error, refetch } = useMonthlyTrends();
 	const option = useMemo(
@@ -43,7 +47,7 @@ export const MonthlyTrendChart = ({
 				(hasData ? (
 					<EChart option={option} height={220} />
 				) : (
-					<EmptyState message="No data yet." />
+					<EmptyState message={emptyMessage} />
 				))}
 		</Card>
 	);

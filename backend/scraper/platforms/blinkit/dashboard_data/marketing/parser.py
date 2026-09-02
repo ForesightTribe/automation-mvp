@@ -7,10 +7,21 @@ def _day(date_ist: str) -> str:
     return (date_ist or "")[:10]
 
 
-def parse_campaign(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
+def parse_campaign(raw: dict, tenant_id: str, scrape_job_id: str,
+                   detail: dict | None = None, cities: dict | None = None) -> dict:
     """Campaign metadata only (metrics live in the daily/detail tables). Keyed on
-    campaign so re-scrapes overwrite the latest snapshot in place."""
-    return {
+    campaign so re-scrapes overwrite the latest snapshot in place.
+
+    `raw` is a row from the campaign LIST; `detail` is that campaign's configuration
+    response, which the list does not contain. Everything detail-derived is optional so a
+    campaign whose detail call failed still upserts its list fields rather than being
+    dropped — but note the columns then go NULL, since the upsert overwrites every
+    updatable column (a partial write would leave yesterday's values looking current).
+
+    `cities` is the account's `{id: name}` directory, used to resolve `region_ids` into
+    names here so nothing downstream needs a city lookup table.
+    """
+    row = {
         "upsert_key": make_upsert_key(tenant_id, "blinkit", "campaign", str(raw["id"])),
         "tenant_id": tenant_id,
         "scrape_job_id": scrape_job_id,
@@ -21,9 +32,128 @@ def parse_campaign(raw: dict, tenant_id: str, scrape_job_id: str) -> dict:
         "start_ts": raw.get("start_ts"),
         "end_ts": raw.get("end_ts"),
         "infinite_campaign": raw.get("infinite_campaign", False),
+        # ⚠️ Blinkit's campaign LIST has no budget field at all — this is NULL unless the
+        # detail call below supplies it.
         "daily_budget": raw.get("campaign_budget"),
         "scraped_at": now_ist(),
+        # ⚠️ These MUST be present on every row, even when there is no detail. The storage
+        # layer inserts the batch in one multi-row statement, and SQLAlchemy requires a
+        # uniform column set across it — a row missing these keys fails the whole insert
+        # with "explicitly rendered as a boundparameter in the VALUES clause". Absent means
+        # NULL here, deliberately: the upsert overwrites every updatable column, so a
+        # partial write would leave yesterday's targeting looking current.
+        "region_type": None,
+        "cities": None,
+        "min_cpm": None,
+        "pacing_type": None,
+        "billed_amount": None,
+        "campaign_cpm": None,
     }
+    if not detail:
+        return row
+
+    campaign_type = detail.get("campaign_type") or raw.get("campaign_type") or ""
+    row.update({
+        "daily_budget": detail.get("campaign_budget", row["daily_budget"]),
+        "region_type": detail.get("region_type"),
+        "cities": _resolve_cities(detail.get("region_ids"), cities),
+        "min_cpm": (detail.get("min_cpm_config") or {}).get(campaign_type),
+        "pacing_type": detail.get("pacing_type"),
+        "billed_amount": detail.get("billed_amount"),
+        "campaign_cpm": detail.get("cpm"),
+    })
+    return row
+
+
+def _resolve_cities(region_ids, cities: dict | None) -> list | None:
+    """`region_ids` → `[{"id": 1, "name": "Delhi"}]` using the account's directory.
+
+    None (not `[]`) when the campaign has no city targeting, so "pan-India" stays
+    distinguishable from "targeted, but we could not read the names". An id missing from
+    the directory keeps its number as the name — losing the row would silently narrow a
+    campaign's targeting in the UI.
+    """
+    if not region_ids:
+        return None
+    if not isinstance(region_ids, list):
+        region_ids = [region_ids]
+    directory = cities or {}
+    return [
+        {"id": rid, "name": directory.get(str(rid)) or directory.get(rid) or str(rid)}
+        for rid in region_ids
+        if rid is not None
+    ]
+
+
+def parse_campaign_keywords(
+    attributes: list,
+    detail: dict,
+    campaign_id: int,
+    tenant_id: str,
+    scrape_job_id: str,
+) -> list[dict]:
+    """A campaign's keywords with Blinkit's published bid range for each (V7).
+
+    One row per (campaign, keyword, match_type) — the engine's write key. Blinkit publishes
+    a range per match type (`exact_match` / `smart_match`) whether or not the campaign bids
+    that type, so `current_cpm` is filled only where the campaign actually has a bid.
+
+    `min_bid` here is the number the client meant by "the tech should know the min bid",
+    and it genuinely varies per keyword (₹100 on 'soda', ₹200 on 'protein chips').
+    """
+    # The campaign's own bids, so a published range can be paired with the live CPM.
+    entries = (
+        (detail.get("campaign_targeting") or {}).get("keyword_targeting", {}).get("keywords", [])
+        or detail.get("keywords", []) or []
+    )
+    current: dict[tuple[str, str], int] = {}
+    for kw in entries:
+        name = (kw.get("keyword") or "").strip()
+        for bid in kw.get("bids") or []:
+            match = _norm_match(bid.get("match_type"))
+            if name and match and bid.get("cpm") is not None:
+                current[(name, match)] = int(bid["cpm"])
+
+    campaign_type = detail.get("campaign_type")
+    rows: list[dict] = []
+    for attr in attributes or []:
+        keyword = (attr.get("keyword") or "").strip()
+        if not keyword:
+            continue
+        searches = attr.get("keyword_searches")
+        for api_match, rng in (attr.get("bid_range") or {}).items():
+            if not isinstance(rng, dict):
+                continue
+            match = _norm_match(api_match)
+            rows.append({
+                "upsert_key": make_upsert_key(
+                    tenant_id, "blinkit", "ad_kw_bid", str(campaign_id), keyword, match,
+                ),
+                "tenant_id": tenant_id,
+                "scrape_job_id": scrape_job_id,
+                "campaign_id": campaign_id,
+                "campaign_type": campaign_type,
+                "keyword": keyword,
+                "match_type": match,
+                "current_cpm": current.get((keyword, match)),
+                "min_bid": rng.get("min"),
+                "max_bid": rng.get("max"),
+                "suggested_min": rng.get("suggested_min"),
+                "suggested_max": rng.get("suggested_max"),
+                "min_for_boost": rng.get("min_for_boost"),
+                "keyword_searches": searches,
+                "scraped_at": now_ist(),
+            })
+    return rows
+
+
+def _norm_match(value: str | None) -> str:
+    """Blinkit names match types two ways depending on which response you read:
+    `bid_range` is keyed `exact_match`/`smart_match`, while a campaign's bids carry
+    `EXACT`/`SMART` (and legacy `EXACT_MATCH`). Normalise to the campaign-write vocabulary
+    so a range and a live bid for the same keyword land on the SAME row."""
+    v = (value or "").strip().upper().replace("_MATCH", "")
+    return v or "EXACT"
 
 
 def parse_campaign_daily(

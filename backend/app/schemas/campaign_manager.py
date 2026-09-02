@@ -150,6 +150,55 @@ class BidRuleUpdate(BaseModel):
     location_id: str | None = None
 
 
+# ── Bid context (V7.4) ──────────────────────────────────────────────────────
+#
+# What the bid-rule form needs to know about a campaign before someone fills it in: the
+# minimum bid Blinkit publishes per keyword, and which cities the campaign actually targets.
+# Everything here comes from the DAILY SCRAPE — the API has no browser, so it cannot ask
+# Blinkit. `scraped_at` is therefore part of the contract, not decoration: the UI says how
+# fresh this is, and an unscraped campaign returns `scraped_at: null` so the form can fall
+# back instead of showing a confident wrong number.
+
+
+class KeywordBidRange(BaseModel):
+    keyword: str
+    match_type: str
+    current_cpm: int | None = None
+    # Blinkit's published floor. None = we have not scraped this keyword (a keyword the
+    # campaign does not carry yet), which means "no opinion" — never "no floor".
+    min_bid: int | None = None
+    max_bid: int | None = None
+    suggested_min: int | None = None
+    suggested_max: int | None = None
+    keyword_searches: int | None = None
+
+
+class TargetedCity(BaseModel):
+    id: int
+    name: str
+    # The dark store a rule measuring in this city would use, or None when our catalog has
+    # no store there — the form then asks the user to pick one rather than blocking.
+    location_name: str | None = None
+    lat: float | None = None
+    lon: float | None = None
+
+
+class BidContextOut(BaseModel):
+    campaign_id: int
+    campaign_type: str | None = None
+    scraped_at: datetime | None = None
+    # PAN_INDIA → the city picker stays free; CITY → offer `cities`, auto-filling when one.
+    region_type: str | None = None
+    cities: list[TargetedCity] = []
+    keywords: list[KeywordBidRange] = []
+    # Budget facts, for display. We deliberately do NOT enforce a minimum budget locally —
+    # Blinkit publishes no such field and its dashboard derives one in the browser, so the
+    # marketplace stays the judge (decided 2026-08-27).
+    daily_budget: int | None = None
+    pacing_type: str | None = None
+    billed_amount: float | None = None
+
+
 # ── Actions ─────────────────────────────────────────────────────────────────
 
 class SetBudgetIn(BaseModel):

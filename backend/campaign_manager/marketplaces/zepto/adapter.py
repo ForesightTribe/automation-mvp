@@ -178,6 +178,39 @@ def bids_from_detail(detail: dict) -> dict[str, int]:
             for (text, _match), value in translate.bids_from_detail(detail).items()}
 
 
+async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
+                          ) -> dict[tuple[str, str], int]:
+    """Zepto's published minimum bid per (keyword, match_type). NOT YET WIRED.
+
+    Returns `{}`, which `effective_floor` reads as "no floor known" and falls back to
+    the rule's own `min_bid` — today's behaviour, unchanged. The method exists because
+    the engine calls it unconditionally; without it every Zepto tick raised
+    AttributeError inside the campaign-read `try` and reported "could not read the
+    campaign", skipping the rule entirely.
+
+    The endpoint IS known and verified live (2026-09-02) — the direct analogue of
+    Blinkit's `get_keyword_attributes`:
+
+        POST /ads-bff/api/v1/keyword/config   (`ep.KEYWORD_CONFIG`)
+        -> {"keywords": [{"keyword": "bread", "match_type": "EXACT"}]}
+        <- {"keywords": [{"keyword": "bread", "match_type": "EXACT", "min_bid": 9}]}
+
+    Wiring it is deliberately deferred (Deepansh, 2026-09-02) rather than done inside
+    a merge. Three things to honour when it is:
+
+    * **Floors vary per keyword** — bread 9, ricotta 3 in one sample. `MIN_BID = 10`
+      is currently enforced flat, so it is conservative and over-restrictive; it
+      should become the fallback for keywords the lookup does not cover.
+    * **EXACT only.** PHRASE and BROAD returned nothing for any keyword tested.
+    * **Absence is not permission.** `pink toffee` is missing from the response for
+      every match type, yet a live write was refused against a floor of 10.
+
+    Key the returned dict in OUR vocabulary (see `blinkit.adapter._our_match`) — the
+    engine looks up `(keyword, rule.match_type)` and must not translate.
+    """
+    return {}
+
+
 async def read_products(client, campaign_id: int) -> list[dict]:
     """The products a campaign advertises, as `{pid, name}` — the shape every adapter
     returns, so the bid engine never has to know a marketplace's field names.

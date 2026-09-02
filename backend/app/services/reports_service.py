@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchListing
+from app.services import zepto_ads, zepto_reports
 from scraper.utils.pack import per_unit_price
 from app.schemas.reports import (
     CompetitionReport,
@@ -150,6 +151,18 @@ async def get_sales_pivot(
             .group_by(Sale.platform, Sale.item_id, Sale.category, Sale.date)
         )
     ).all()
+
+    # Zepto rows arrive in the same tuple shape, so everything below — the week
+    # axis, category grouping, subtotals, the weekday/weekend split — runs over
+    # both marketplaces without knowing which produced a row. `platform` keeps
+    # them in separate top-level blocks.
+    if zepto_reports.wants_zepto(marketplaces):
+        rows = [
+            *rows,
+            *await zepto_reports.pivot_rows(
+                session, tenant_id=tenant_id, start=start, end=end, metric=metric
+            ),
+        ]
 
     # ── Column axes ────────────────────────────────────────────────────────
     days = [start + timedelta(days=i) for i in range((end - start).days + 1)]
@@ -311,6 +324,17 @@ async def get_marketing_report(
     ).all()
     ad_map = {d: (float(sp), float(sa), int(im)) for d, sp, sa, im in ad_rows}
 
+    if zepto_reports.wants_zepto(marketplaces):
+        # Add into the Blinkit figures rather than replacing them: with both
+        # marketplaces selected a day carries the spend of both.
+        for d, (sp, sa, im) in (
+            await zepto_ads.trend_series(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            b_sp, b_sa, b_im = ad_map.get(d, (0.0, 0.0, 0))
+            ad_map[d] = (b_sp + sp, b_sa + sa, b_im + im)
+
     sale_rows = (
         await session.execute(
             select(
@@ -322,6 +346,14 @@ async def get_marketing_report(
         )
     ).all()
     sale_map = {d: float(rev) for d, rev in sale_rows}
+
+    if zepto_reports.wants_zepto(marketplaces):
+        for d, rev in (
+            await zepto_reports.sales_daily(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            sale_map[d] = sale_map.get(d, 0.0) + rev
 
     rows: list[MarketingRow] = []
     tot_spend = tot_ad = tot_organic = tot_total = 0.0

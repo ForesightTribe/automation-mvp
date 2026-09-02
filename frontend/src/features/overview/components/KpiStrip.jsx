@@ -1,5 +1,10 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import { formatCompactCurrency, formatNumber } from "../../../lib/format";
+import { useMarketplaces } from "../../../context/MarketplaceContext";
+import {
+	formatCompactCurrency,
+	formatCurrency,
+	formatNumber,
+} from "../../../lib/format";
 
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
@@ -13,6 +18,16 @@ const formatRoas = (v) =>
  * live on the Competition page.
  */
 export const KpiStrip = ({ data, trends = [] }) => {
+	const { selected } = useMarketplaces();
+	// This strip totals whatever marketplaces are selected, so "which platform"
+	// is only answerable when exactly one is picked. Zepto alone gets exact
+	// rupees — its figures are small and get reconciled against Zepto's own
+	// dashboard, which prints them in full. Anything else keeps the compact
+	// form, because Blinkit runs to crores and would overflow the tile.
+	const money =
+		selected?.length === 1 && selected[0] === "zepto"
+			? formatCurrency
+			: formatCompactCurrency;
 	const m = (key) => data?.[key] ?? {};
 	const series = (fn) => trends.map(fn);
 	const roasSeries = series((t) =>
@@ -23,14 +38,14 @@ export const KpiStrip = ({ data, trends = [] }) => {
 		// Ad plane (marketing dashboard) ─────────────────────────────
 		{
 			label: "Ad Spend",
-			value: formatCompactCurrency(m("ad_spend").value),
+			value: money(m("ad_spend").value),
 			delta: m("ad_spend").delta_pct,
 			series: series((t) => t.ad_spend),
 			sparkColor: "#4f46e5",
 		},
 		{
 			label: "Ad Revenue",
-			value: formatCompactCurrency(m("ad_sales").value),
+			value: money(m("ad_sales").value),
 			delta: m("ad_sales").delta_pct,
 			series: series((t) => t.ad_sales),
 			sparkColor: "#16a34a",
@@ -45,14 +60,14 @@ export const KpiStrip = ({ data, trends = [] }) => {
 		// Sales plane (seller dashboard) ──────────────────────────────
 		{
 			label: "Total Revenue",
-			value: formatCompactCurrency(m("revenue").value),
+			value: money(m("revenue").value),
 			delta: m("revenue").delta_pct,
 			series: series((t) => t.revenue),
 			sparkColor: "#0284c7",
 		},
 		{
 			label: "Organic Revenue",
-			value: formatCompactCurrency(m("organic_revenue").value),
+			value: money(m("organic_revenue").value),
 			delta: m("organic_revenue").delta_pct,
 			series: series((t) =>
 				t.revenue != null && t.ad_sales != null

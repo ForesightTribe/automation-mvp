@@ -46,7 +46,10 @@ export const OverviewPage = () => {
 				<SalesTrendChart />
 			</div>
 
-			{/* Operations — month-on-month (independent of the day-range picker). */}
+			{/* Operations — month-on-month (independent of the day-range picker).
+			    All three read Blinkit seller tables, so on a Zepto-only client
+			    they are permanently empty. Each says which source it is waiting
+			    on rather than "No data yet", which reads as "a scrape is due". */}
 			<div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
 				<MonthlyTrendChart
 					title="On-shelf availability (MoM)"
@@ -55,6 +58,7 @@ export const OverviewPage = () => {
 					color="#16a34a"
 					type="bar"
 					kind="percent"
+					emptyMessage="Needs Blinkit stock-on-hand history. Zepto shelf data is on the Inventory page."
 				/>
 				<MonthlyTrendChart
 					title="Fill rate (MoM)"
@@ -63,6 +67,7 @@ export const OverviewPage = () => {
 					color="#4f46e5"
 					type="bar"
 					kind="percent"
+					emptyMessage="From the Blinkit seller scorecard. Not collected for Zepto."
 				/>
 				<MonthlyTrendChart
 					title="PO value (MoM)"
@@ -71,6 +76,7 @@ export const OverviewPage = () => {
 					color="#0284c7"
 					type="bar"
 					kind="currency"
+					emptyMessage="From Blinkit purchase orders. Not collected for Zepto yet."
 				/>
 			</div>
 

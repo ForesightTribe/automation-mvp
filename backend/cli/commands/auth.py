@@ -19,14 +19,11 @@ from platform_auth.types import Credentials
 # wired=False): its sign-in is a browser flow, not the HTTP flows that package
 # models. So its login and probe are wired up separately, below.
 from scraper.utils.session import save_session, session_exists, load_session
-from scraper.platforms.zepto.dashboard_data.seller.auth import login as zepto_seller_login
-from scraper.platforms.zepto.dashboard_data.seller.scraper import validate as zepto_seller_validate
 
 # Platforms with a browser-free health check that aren't in the registry yet.
-# Registry-wired platforms use `auth probe` instead.
-_VALIDATORS = {
-    "zepto_seller": zepto_seller_validate,
-}
+# Registry-wired platforms use `auth probe` instead. Empty since Zepto moved
+# onto platform_auth (2026-09-01) — `auth probe zepto` covers it now.
+_VALIDATORS: dict = {}
 
 app = typer.Typer(help="Manage marketplace platform sessions (not Foresight logins).")
 credentials_app = typer.Typer(help="Per-tenant login credentials.")
@@ -292,36 +289,6 @@ async def _reset(platform: str, tenant_id: str) -> None:
     )
 
 
-@app.command("zepto-seller")
-def zepto_seller_login_cmd(
-    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-):
-    """Log in to Zepto Seller via email + password + OTP and save the session."""
-    asyncio.run(_zepto_seller_login(tenant_id))
-
-
-async def _zepto_seller_login(tenant_id: str) -> None:
-    async with AsyncSessionLocal() as session:
-        try:
-            if await session_exists(session, tenant_id, "zepto_seller"):
-                overwrite = typer.confirm("A session already exists for this tenant. Overwrite?")
-                if not overwrite:
-                    raise typer.Exit()
-
-            email = typer.prompt("Zepto seller email")
-            password = typer.prompt("Zepto seller password", hide_input=True)
-            console.print("\n[yellow]Browser opening — enter your OTP when prompted.[/yellow]\n")
-            storage_state = await zepto_seller_login(email, password)
-
-            await save_session(session, tenant_id, "zepto_seller", storage_state)
-            console.print("[green]Login successful. Session saved.[/green]")
-        except typer.Exit:
-            raise
-        except Exception as e:
-            console.print(f"[red]Login failed: {e}[/red]")
-            raise typer.Exit(1)
-
-
 @app.command("status")
 def auth_status(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
@@ -385,40 +352,6 @@ def blinkit_seller_login(
 
 
 # ── Zepto — outside platform_auth for now (registry: wired=False) ─────────────
-# Zepto's sign-in rejects headless browsers (401 before the OTP screen, in
-# Chromium, Firefox and WebKit alike), so it is a headful Playwright flow rather
-# than the HTTP flows platform_auth models. On a display-less box it runs under
-# `xvfb-run`. Verified end to end on foresight-vm.
-
-@app.command("zepto-seller")
-def zepto_seller_login_cmd(
-    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-) -> None:
-    """Log in to Zepto Seller via email + password + OTP and save the session."""
-    asyncio.run(_zepto_seller_login(tenant_id))
-
-
-async def _zepto_seller_login(tenant_id: str) -> None:
-    async with AsyncSessionLocal() as db:
-        try:
-            if await session_exists(db, tenant_id, "zepto_seller"):
-                if not typer.confirm("A session already exists for this tenant. Overwrite?"):
-                    raise typer.Exit()
-
-            email = typer.prompt("Zepto seller email")
-            password = typer.prompt("Zepto seller password", hide_input=True)
-            console.print("\n[yellow]Browser opening — enter your OTP when prompted.[/yellow]\n")
-            storage_state = await zepto_seller_login(email, password)
-
-            await save_session(db, tenant_id, "zepto_seller", storage_state)
-            console.print("[green]Login successful. Session saved.[/green]")
-        except typer.Exit:
-            raise
-        except Exception as e:
-            console.print(f"[red]Login failed: {e}[/red]")
-            raise typer.Exit(1)
-
-
 @app.command("validate")
 def auth_validate(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),

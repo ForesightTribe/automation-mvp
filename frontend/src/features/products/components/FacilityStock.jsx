@@ -23,11 +23,24 @@ const COLUMNS = [
 	},
 ];
 
-/** Current stock split across backend facilities (lowest frontend first). */
-export const FacilityStock = ({ facilities = [] }) => (
+/**
+ * Current stock split across backend facilities (lowest frontend first).
+ *
+ * Zepto reports one stock figure per SKU with no facility dimension, so an empty
+ * table there means "not reported", not "no stock" — the SKU may well be fully
+ * stocked. Saying "no snapshot" would read as missing data and send someone
+ * looking for a scrape that never existed.
+ */
+export const FacilityStock = ({ facilities = [], marketplace }) => (
 	<Card title="Stock by facility">
 		{facilities.length === 0 ? (
-			<EmptyState message="No current stock snapshot for this SKU." />
+			<EmptyState
+				message={
+					marketplace === "zepto"
+						? "Zepto reports stock per SKU, not split by facility."
+						: "No current stock snapshot for this SKU."
+				}
+			/>
 		) : (
 			<DataTable
 				columns={COLUMNS}

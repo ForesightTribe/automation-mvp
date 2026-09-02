@@ -17,6 +17,44 @@ BRAND_CATEGORY_MAPPING_API = "/api/v1/commons/brand-category-mapping"
 SALES_OVERVIEW_API = "/brand-analytics-web/api/v1/sales-analytics/sales-overview"
 PRODUCT_PERFORMANCE_API = "/brand-analytics-web/api/v1/sales-analytics/product-performance"
 
+# ── PO Management (`/vendor` app on the same host) ──────────────────────────────
+# A separate part of the seller portal (brands.zepto.co.in/vendor/po/*) that
+# nothing scraped until 2026-08-27. Its APIs live on the SAME host as the
+# analytics ones above and accept the SAME saved session — no WAF challenge, no
+# browser needed, unlike ads-bff.
+#
+# All three are POST with a JSON body carrying a date window, an offset/limit
+# pair, and filter arrays. They page: the response has `total` and `hasNext`.
+#
+# ⚠️ `statusList: []` is assumed to mean "every status". The browser sends one
+# value because the UI is on a status tab; an empty list has NOT been verified
+# to widen it. If a scrape returns fewer POs than the dashboard shows, this is
+# the first thing to check.
+PO_PAGE = "/vendor/po/lifecycle"
+PO_FILTER_API = "/api/v1/po/filter"
+PO_LISTING_STAT_API = "/api/v1/po/listing-stat"
+PO_SCHEDULED_API = "/api/v1/po/scheduled"
+GRN_FILTER_API = "/api/v1/grn/filter"
+ASN_FILTER_API = "/api/v1/asn/filter"
+# Returns-to-vendor. Endpoint observed but its payload was never captured, so
+# nothing reads it yet.
+RTV_FILTER_API = "/vendor/api/v2/rtv/filter"
+
+# Per-PO line items — a GET, one call per PO, paged with offset/limit. The list
+# endpoint reports `itemsCount` but not the lines themselves, so this is a second
+# pass over the POs already fetched. Carries `unitPrice` (what Zepto pays) and
+# `mrp`, which appear on no other Zepto endpoint, and `pvId` — the same id
+# `zepto_seller_sales` keys on, so lines join to Products directly.
+PO_ITEMS_API = "/api/v1/po/{po_id}/items"
+GRN_ITEMS_API = "/api/v1/grn/{grn_no}/items"
+
+# The UI asks for 14 at a time; 100 is well within what the API accepts and
+# cuts the number of pages for a 30-day window to one on this account.
+PO_PAGE_SIZE = 100
+# Guard against an unbounded loop if `hasNext` ever misbehaves.
+PO_MAX_PAGES = 20
+
+
 # ── Ads (`ads-bff`) ─────────────────────────────────────────────────────────────
 # A different service from the analytics endpoints above, and stricter: it
 # rejects the saved session's WAF token with 202 (an AWS WAF challenge), so ads

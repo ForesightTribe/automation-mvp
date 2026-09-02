@@ -12,6 +12,7 @@ from datetime import datetime, timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
+    BidContextOut, KeywordBidRange, TargetedCity,
     BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn, BudgetRuleOut, BudgetRuleUpdate,
     BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmJobOut, RunLogOut,
 )
@@ -276,8 +277,69 @@ async def list_bid_rules(tenant_id: uuid.UUID) -> list[BidRuleOut]:
     return [_bid_out(r, now) for r, _rt in pairs]
 
 
+async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextOut:
+    """Everything the bid-rule form needs about one campaign (V7.4) — DB only, no Blinkit.
+
+    An unscraped campaign returns an empty shell with `scraped_at=None` rather than a 404:
+    the form then behaves exactly as it did before V7 (free city input, no bid prefill),
+    which is the right answer for a campaign created since the last scrape. Blocking would
+    make a brand-new campaign unautomatable for a day.
+    """
+    campaign, keywords = await repo.get_bid_context(tenant_id, campaign_id, PLATFORM)
+    if campaign is None:
+        return BidContextOut(campaign_id=campaign_id)
+
+    cities: list[TargetedCity] = []
+    for c in campaign.cities or []:
+        name = c.get("name") if isinstance(c, dict) else None
+        if not name:
+            continue
+        # Each targeted city is resolved to the store a rule would actually measure at, so
+        # the form can say "no dark store in our catalog for X" up front instead of letting
+        # someone save a rule that silently has no measurement point.
+        store = await repo.resolve_store(PLATFORM, city=name)
+        lat, lon, label = store if store else (None, None, None)
+        cities.append(TargetedCity(id=c.get("id"), name=name,
+                                   location_name=label, lat=lat, lon=lon))
+
+    return BidContextOut(
+        campaign_id=campaign_id,
+        campaign_type=campaign.type,
+        scraped_at=campaign.scraped_at,
+        region_type=campaign.region_type,
+        cities=cities,
+        keywords=[KeywordBidRange.model_validate(k, from_attributes=True) for k in keywords],
+        daily_budget=campaign.daily_budget,
+        pacing_type=campaign.pacing_type,
+        billed_amount=campaign.billed_amount,
+    )
+
+
+async def _check_bid_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
+                           match_type: str, min_bid: int | None) -> None:
+    """Refuse a rule whose `min_bid` sits below the floor Blinkit publishes (V7.5).
+
+    This is the SAVE-time check and it reads the last scrape, so it is a convenience, not
+    the authority — the engine re-checks live at write time, where the number cannot be
+    stale. It exists to keep an unworkable rule out of the DB and to explain why at the
+    moment someone types it, rather than in a job log the next morning.
+
+    Silent when we have no scraped floor: "unknown" must never read as "rejected".
+    """
+    if min_bid is None:
+        return
+    floor = await repo.get_keyword_floor(tenant_id, campaign_id, keyword, match_type, PLATFORM)
+    if floor is not None and min_bid < floor:
+        raise EditError(
+            f"Blinkit's minimum bid for “{keyword}” is ₹{floor} — a min bid of ₹{min_bid} "
+            f"would be raised to ₹{floor} on the first write. Set ₹{floor} or more."
+        )
+
+
 async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> BidRuleOut:
     d = body.model_dump()
+    await _check_bid_floor(tenant_id, body.campaign_id, body.keyword,
+                           body.match_type, body.min_bid)
     # Resolve the measurement location from a city / store id when lat/lon weren't given.
     city, location_id = d.pop("city", None), d.pop("location_id", None)
     if (d.get("lat") is None or d.get("lon") is None) and (city or location_id):
@@ -305,6 +367,12 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
     if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
                 end_date=fields.get("stop_date", r.stop_date)):
         raise EditError("This one-time window has already ended — change its date to reschedule it.")
+    # The floor applies to whatever the rule will BE after the edit, not to what was
+    # sent — changing the keyword alone can drop an unchanged min_bid below its new floor.
+    await _check_bid_floor(tenant_id, r.campaign_id,
+                           fields.get("keyword", r.keyword),
+                           fields.get("match_type", r.match_type),
+                           fields.get("min_bid", r.min_bid))
     # `city`/`location_id` re-resolve the measurement lat/lon (same as create).
     city, location_id = fields.pop("city", None), fields.pop("location_id", None)
     if city or location_id:

@@ -9,7 +9,7 @@ import { ProductPublicPanel } from "./components/ProductPublicPanel";
 import { MetricTile } from "../../components/ui/MetricTile";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
-import { formatCompactCurrency, formatNumber } from "../../lib/format";
+import { formatCurrency, formatNumber } from "../../lib/format";
 
 const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v} days`);
 
@@ -56,7 +56,7 @@ export const ProductDetailPage = () => {
 					<div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 						<MetricTile
 							label="Revenue"
-							value={formatCompactCurrency(data.revenue)}
+							value={formatCurrency(data.revenue)}
 						/>
 						<MetricTile
 							label="Units sold"
@@ -64,7 +64,7 @@ export const ProductDetailPage = () => {
 						/>
 						<MetricTile
 							label="Avg price/unit"
-							value={formatCompactCurrency(data.avg_price)}
+							value={formatCurrency(data.avg_price)}
 						/>
 						<MetricTile
 							label="Frontend stock"
@@ -79,21 +79,34 @@ export const ProductDetailPage = () => {
 							value={
 								data.potential_loss === null
 									? "—"
-									: formatCompactCurrency(data.potential_loss)
+									: formatCurrency(data.potential_loss)
 							}
 						/>
 					</div>
 
 					<SalesStockChart detail={data} />
 
-					<ProductPublicPanel itemId={data.item_id} />
+					<ProductPublicPanel
+						itemId={data.item_id}
+						marketplace={data.marketplace}
+					/>
 
+					{/* `marketplace` lets each section say why it is empty. A blank
+					    panel reading "no data" where the platform simply doesn't
+					    publish that dimension sends people hunting for a scrape
+					    that was never missing. */}
 					<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-						<FacilityStock facilities={data.facilities} />
-						<CityBreakdown cities={data.cities} />
+						<FacilityStock
+							facilities={data.facilities}
+							marketplace={data.marketplace}
+						/>
+						<CityBreakdown
+							cities={data.cities}
+							marketplace={data.marketplace}
+						/>
 					</div>
 
-					<PoHistory itemId={data.item_id} />
+					<PoHistory itemId={data.item_id} marketplace={data.marketplace} />
 				</>
 			)}
 		</div>

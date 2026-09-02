@@ -3,7 +3,7 @@
 import uuid
 from datetime import date, datetime, time, timedelta
 
-from sqlalchemy import Integer, cast, distinct, func, select
+from sqlalchemy import Integer, case, cast, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
@@ -239,6 +239,21 @@ async def _denominators(
     return int(row[0] or 0), int(row[1] or 0), {k or "unknown": int(v) for k, v in tiers.items()}
 
 
+async def _result_marketplaces(session: AsyncSession, cond: list) -> list[str]:
+    """Which marketplaces the rows in this result actually come from.
+
+    Lets a caller tell a Zepto-only result from a Blinkit-only one without
+    re-deriving it from the request filter, which is not the same thing: an
+    unfiltered request still returns a single marketplace for a tenant that only
+    has one. Consumers use it to show marketplace-specific columns without those
+    columns leaking onto a marketplace that never asked for them.
+    """
+    rows = (
+        await session.execute(select(distinct(SkuSnapshot.mp_slug)).where(*cond))
+    ).scalars().all()
+    return sorted(r for r in rows if r)
+
+
 async def _store_names(session: AsyncSession, merchant_ids: set[str],
                        mp_slugs: list[str] | None = None) -> dict[str, str]:
     """merchant_id -> human label from the store catalog. Stores discovered by a
@@ -342,6 +357,16 @@ async def get_distribution(
                 func.avg(latest.c.price),
                 func.avg(latest.c.discount_pct),
                 func.max(latest.c.scraped_at),
+                # Still buyable, but on the last unit — see get_stores for why
+                # `in_stock` is part of the condition (a sold-out shelf has 0, which
+                # would otherwise be counted as low as well as out).
+                func.sum(
+                    case(
+                        ((latest.c.in_stock.is_(True)) & (latest.c.inventory <= 1), 1),
+                        else_=0,
+                    )
+                ),
+                func.count(latest.c.inventory),
             ).group_by(latest.c.pid)
         )
     ).all()
@@ -357,10 +382,13 @@ async def get_distribution(
             "stores_out_of_stock": int(listed) - int(in_stock or 0),
             "reach_pct": _round(int(listed) / stores_scraped * 100, 1) if stores_scraped else 0.0,
             "distribution_pct": _round(int(in_stock or 0) / listed * 100, 1) if listed else 0.0,
+            "stores_low_stock": int(low or 0),
+            "stores_with_qty": int(withqty or 0),
+            "low_stock_pct": _round(int(low or 0) / int(withqty) * 100, 1) if withqty else None,
             "avg_price": _round(price),
             "avg_discount": _round(disc, 1),
         }
-        for pid, name, listed, in_stock, price, disc, _ in rows
+        for pid, name, listed, in_stock, price, disc, _, low, withqty in rows
     ]
     skus.sort(key=lambda s: (s["reach_pct"], s["distribution_pct"]))  # widest gaps first
     return {
@@ -369,6 +397,9 @@ async def get_distribution(
         "stores_scraped": stores_scraped,
         "active_range": active_range,
         "tiers": tiers,
+        "marketplaces": await _result_marketplaces(
+            session, _store_cond(tenant_id, own, window, city, marketplaces, kind)
+        ),
         "skus": skus,
     }
 
@@ -403,6 +434,15 @@ async def get_availability_history(
                 week,
                 func.avg(cast(SkuSnapshot.in_stock, Integer)),
                 func.count(distinct(SkuSnapshot.merchant_id)),
+                # Still buyable but on the last unit — disjoint from the OOS line
+                # above, so the two series never describe the same shelf.
+                func.sum(
+                    case(
+                        ((SkuSnapshot.in_stock.is_(True)) & (SkuSnapshot.inventory <= 1), 1),
+                        else_=0,
+                    )
+                ),
+                func.count(SkuSnapshot.inventory),
             )
             .where(*cond)
             .group_by(week)
@@ -414,11 +454,16 @@ async def get_availability_history(
             "week": w.date() if hasattr(w, "date") else w,
             "availability_pct": _round(float(avail) * 100, 1),
             "oos_pct": _round((1 - float(avail)) * 100, 1),
+            "low_stock_pct": _round(int(low or 0) / int(withqty) * 100, 1) if withqty else None,
             "stores": n,
         }
-        for w, avail, n in rows
+        for w, avail, n, low, withqty in rows
     ]
-    return {"period_days": days, "points": points}
+    return {
+        "period_days": days,
+        "points": points,
+        "marketplaces": await _result_marketplaces(session, cond),
+    }
 
 
 async def get_pricing(
@@ -527,6 +572,17 @@ async def get_stores(
         func.count(),
         func.sum(cast(latest.c.in_stock, Integer)),
         func.max(latest.c.scraped_at),
+        # Shelves that are STILL BUYABLE but down to their last unit — the leading
+        # indicator of a stockout, deliberately disjoint from `skus_out_of_stock`
+        # so the two never describe the same shelf. `in_stock` is required in the
+        # condition for exactly that reason: a sold-out shelf has inventory 0,
+        # which satisfies `<= 1`, and counting it here would double-report it as
+        # both already-failed and about-to-fail. NULL inventory is not counted
+        # either: unknown is not the same as low.
+        func.sum(
+            case(((latest.c.in_stock.is_(True)) & (latest.c.inventory <= 1), 1), else_=0)
+        ),
+        func.count(latest.c.inventory),
     ).group_by(latest.c.merchant_id)
     if tier:
         q = q.where(latest.c.merchant_type == tier)
@@ -545,10 +601,13 @@ async def get_stores(
             "skus_in_stock": int(ok or 0),
             "skus_out_of_stock": int(listed) - int(ok or 0),
             "skus_not_listed": max(active_range - int(listed), 0),
+            "skus_low_stock": int(low or 0),
+            "skus_with_qty": int(withqty or 0),
+            "low_stock_pct": _round(int(low or 0) / int(withqty) * 100, 1) if withqty else None,
             "reach_pct": _round(int(listed) / active_range * 100, 1) if active_range else 0.0,
             "distribution_pct": _round(int(ok or 0) / listed * 100, 1) if listed else 0.0,
         }
-        for mid, mtype, city_, listed, ok, _ in rows
+        for mid, mtype, city_, listed, ok, _, low, withqty in rows
     ]
     stores.sort(key=lambda s: (-s["skus_out_of_stock"], s["reach_pct"]))
     return {
@@ -557,6 +616,9 @@ async def get_stores(
         "stores_scraped": stores_scraped,
         "active_range": active_range,
         "tiers": tiers,
+        "marketplaces": await _result_marketplaces(
+            session, _store_cond(tenant_id, own, window, city, marketplaces, kind)
+        ),
         "stores": stores,
     }
 
@@ -590,6 +652,16 @@ async def get_cities(
                 func.count(),
                 func.sum(cast(latest.c.in_stock, Integer)),
                 func.max(latest.c.scraped_at),
+                # Still buyable, but on the last unit — see get_stores for why
+                # `in_stock` is part of the condition (a sold-out shelf has 0, which
+                # would otherwise be counted as low as well as out).
+                func.sum(
+                    case(
+                        ((latest.c.in_stock.is_(True)) & (latest.c.inventory <= 1), 1),
+                        else_=0,
+                    )
+                ),
+                func.count(latest.c.inventory),
             ).group_by(latest.c.city)
         )
     ).all()
@@ -610,8 +682,11 @@ async def get_cities(
             "reach_pct": _round(int(listed) / (active_range * int(n_stores)) * 100, 1)
             if active_range and n_stores else 0.0,
             "distribution_pct": _round(int(ok or 0) / listed * 100, 1) if listed else 0.0,
+            "skus_low_stock": int(low or 0),
+            "skus_with_qty": int(withqty or 0),
+            "low_stock_pct": _round(int(low or 0) / int(withqty) * 100, 1) if withqty else None,
         }
-        for c, n_stores, listed, ok, _ in rows
+        for c, n_stores, listed, ok, _, low, withqty in rows
     ]
     cities.sort(key=lambda c: -c["stores"])
     return {
@@ -619,6 +694,9 @@ async def get_cities(
         "as_of": max(r[4] for r in rows),
         "stores_scraped": stores_scraped,
         "active_range": active_range,
+        "marketplaces": await _result_marketplaces(
+            session, _store_cond(tenant_id, own, window, None, marketplaces, kind)
+        ),
         "cities": cities,
     }
 

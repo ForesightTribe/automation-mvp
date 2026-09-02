@@ -33,7 +33,78 @@ class BlinkitAdCampaign(SQLModel, table=True):
     start_ts: datetime | None = None
     end_ts: datetime | None = None
     infinite_campaign: bool = False
+    # ⚠️ Blinkit's campaign LIST carries no budget field at all, so this stayed NULL for
+    # every live campaign until V7 — it is populated from the per-campaign DETAIL call the
+    # scrape now makes.
     daily_budget: int | None = None
+
+    # ── From the per-campaign detail call (V7) ────────────────────────────────
+    # Campaign-grain facts the campaign manager enforces against. They live here rather
+    # than in a cm_* table because the SCRAPER writes them: a second CM-owned copy would
+    # drift from this one, the same reasoning that put `repo.upsert_campaign_catalog`'s
+    # writes into this table.
+    region_type: str | None = None                  # PAN_INDIA | CITY
+    # Blinkit's `region_ids` resolved to names at scrape time, [{"id": 1, "name": "Delhi"}]
+    # — resolving here is what removes any need for a city-directory table.
+    cities: list | None = Field(default=None, sa_column=Column(JSON))
+    # ── Budget facts ─────────────────────────────────────────────────────────
+    # Blinkit publishes NO minimum-budget field; its dashboard derives one in the browser
+    # from these plus the campaign type. We store the ingredients and let Blinkit reject a
+    # too-low budget at write time (2026-08-27 — deliberately not enforcing it locally).
+    # ⚠️ `min_cpm` is `min_cpm_config[campaign_type]`, which despite its name is a BUDGET
+    # input and never a bid floor — the bid floor is per keyword, on the table below, and
+    # Blinkit publishes THAT one directly.
+    min_cpm: int | None = None
+    pacing_type: str | None = None                  # DAILY | NONPACED
+    # Spend to date. A NONPACED campaign's budget must EXCEED it, and it raises the floor
+    # for several campaign types.
+    billed_amount: float | None = None
+    # The campaign-level CPM — the bid for reach-type assets; 0 on keyword campaigns.
+    campaign_cpm: int | None = None
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class BlinkitAdCampaignKeyword(SQLModel, table=True):
+    """A campaign's configured keywords and the bid range Blinkit publishes for each
+    (from /campaigns/keywords/attributes — V7).
+
+    One row per (campaign, keyword, match_type), which is exactly the engine's write key
+    (`adapter.apply_bid(campaign, keyword, cpm, match_type)`).
+
+    **Current state, not a time series** — upserted in place like the campaign catalogue,
+    NOT appended per day. Deliberately not extra columns on BlinkitAdCampaignDetail: that
+    table is a per-day snapshot of PERFORMANCE and only holds keywords that had report
+    data, so a keyword with no impressions would have no floor — precisely the keyword a
+    bid rule is about to start bidding on.
+
+    `min_bid` here is Blinkit's floor, and it genuinely varies per keyword (₹100 on 'soda',
+    ₹200 on 'protein chips'). `suggested_*` is stored but not surfaced yet, so using
+    suggested bids later needs no backfill."""
+
+    __tablename__ = "blinkit_ad_campaign_keywords"
+
+    __table_args__ = (
+        Index("idx_backw_tenant_campaign", "tenant_id", "campaign_id"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    campaign_id: int
+    campaign_type: str | None = None
+    keyword: str
+    match_type: str                                 # EXACT | SMART (Blinkit's bid_range key)
+    # The campaign's live bid for this keyword+match type; None when the campaign does not
+    # currently bid that match type (the range is published either way).
+    current_cpm: int | None = None
+    min_bid: int | None = None
+    max_bid: int | None = None
+    suggested_min: int | None = None
+    suggested_max: int | None = None
+    min_for_boost: int | None = None
+    keyword_searches: int | None = None
     scraped_at: datetime = Field(default_factory=now_ist)
 
 

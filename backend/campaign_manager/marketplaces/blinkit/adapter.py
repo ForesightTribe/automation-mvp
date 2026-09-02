@@ -88,6 +88,68 @@ async def read_bids(client, campaign_id: int) -> dict[str, int]:
     return bids_from_detail(detail or {})
 
 
+def _api_match(match_type: str | None) -> str:
+    """Our vocabulary → Blinkit's bid-range key. `apply_bid` sends BROAD as SMART, so the
+    floor has to be looked up under the SAME name or a BROAD rule would be checked against
+    the exact-match floor."""
+    m = (match_type or "EXACT").upper().replace("_MATCH", "")
+    return "SMART" if m == "BROAD" else m
+
+
+def _our_match(api_match: str | None) -> str:
+    """Blinkit's bid-range key → OUR vocabulary. The inverse of `_api_match`.
+
+    `read_bid_floors` keys its result with this, so the returned dict speaks the same
+    language as `cm_bid_rules.match_type` and the engine can look a floor up with a
+    plain `floors.get((kw, rule.match_type))`.
+
+    It used to key by Blinkit's names, which forced `bid.py` to call
+    `adapter._api_match(...)` — the MP-agnostic engine reaching into a private function
+    of one adapter. Zepto has no such function, so every Zepto bid run raised
+    AttributeError. Translation belongs on the side that owns the vocabulary.
+    """
+    m = (api_match or "EXACT").upper().replace("_MATCH", "")
+    return "BROAD" if m == "SMART" else m
+
+
+async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
+                          ) -> dict[tuple[str, str], int]:
+    """Blinkit's minimum bid per (keyword, match_type) for a campaign (a READ — safe).
+
+    This is the authority the bid engine clamps to. It is read LIVE rather than from the
+    nightly scrape because it is the number that decides what gets written to a real
+    account: the scraped copy is for the UI, this is for the write.
+
+    ONE request per campaign — the endpoint takes the whole keyword list — so a run costs
+    +1 call per campaign regardless of how many keywords it manages. Pass an
+    already-fetched `detail` to avoid re-reading it.
+
+    Returns {} on any failure, which the caller must read as "no floor known" and fall back
+    to the rule's own `min_bid`. Refusing to bid because a lookup failed would be worse
+    than bidding at the configured minimum.
+    """
+    if detail is None:
+        detail, _ = await client.get_campaign_detail(campaign_id)
+    detail = detail or {}
+    keywords = [k["keyword"] for k in (
+        (detail.get("campaign_targeting") or {}).get("keyword_targeting", {}).get("keywords", [])
+        or detail.get("keywords", []) or []
+    ) if k.get("keyword")]
+    if not keywords:
+        return {}
+
+    attrs = await client.get_keyword_attributes(
+        campaign_id, detail.get("campaign_type") or "", keywords)
+    floors: dict[tuple[str, str], int] = {}
+    for a in attrs or []:
+        kw = (a.get("keyword") or "").strip()
+        for api_match, rng in (a.get("bid_range") or {}).items():
+            if not isinstance(rng, dict) or rng.get("min") is None:
+                continue
+            floors[(kw, _our_match(api_match))] = int(rng["min"])
+    return floors
+
+
 async def read_products(client, campaign_id: int) -> list[dict]:
     """Campaign products (name + pid) — used to match the ad in live search (a READ)."""
     return await client.get_campaign_products(campaign_id)

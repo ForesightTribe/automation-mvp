@@ -201,12 +201,62 @@ def parse_product_perf(
             "available_stores": p.get("availableStores"),
             "week_on_week_growth": p.get("weekOnWeekGrowth"),
             "month_on_month_growth": p.get("monthOnMonthGrowth"),
-            # Null on every row observed so far — Stock View is subscription-gated.
+            # A SCRAPE-TIME SNAPSHOT, not a fact about period_start. Holds the
+            # same value on every day of the window (measured: 0/14 SKU-jobs
+            # vary). Re-scraping an old window returns null, which the
+            # COALESCE guard in storage.py stops from overwriting a real
+            # reading. See docs/zepto.md.
             "stock_on_hand": p.get("stockOnHand"),
             "scraped_at": now_ist(),
         }
         for p in products
     ]
+
+
+def parse_product_city(
+    by_city: dict[str, list[dict]],
+    city_names: dict[str, str],
+    tenant_id: str,
+    scrape_job_id: str | None,
+    day: str,
+) -> list[dict]:
+    """`fetch_product_performance_by_city` -> one row per SKU per city per day.
+
+    Day grain, not window grain: the caller scrapes a day at a time, so `date`
+    is a single day and the key needs no end date. `city_id` IS part of the key —
+    without it each city's call would overwrite the last and only the final city
+    would survive.
+    """
+    d = date.fromisoformat(day)
+    rows: list[dict] = []
+    for city_id, products in by_city.items():
+        for p in products:
+            rows.append(
+                {
+                    "upsert_key": make_upsert_key(
+                        tenant_id,
+                        "zepto",
+                        "seller_product_city_daily",
+                        city_id,
+                        p["productVariantId"],
+                        d.isoformat(),
+                    ),
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+                    "date": d,
+                    "city_id": city_id,
+                    "city_name": city_names.get(city_id),
+                    "product_variant_id": p["productVariantId"],
+                    "product_name": p.get("productName"),
+                    "sku_name": p.get("skuName"),
+                    "category_name": p.get("categoryName"),
+                    "subcategory_name": p.get("subcategoryName"),
+                    "gmv": float(p.get("gmv") or 0),
+                    "qty_sold": int(p.get("qtySold") or 0),
+                    "scraped_at": now_ist(),
+                }
+            )
+    return rows
 
 
 def _f(v) -> float | None:
@@ -602,3 +652,193 @@ def parse_ad_breakdown(
             }
         )
     return out
+
+
+# ── PO Management ────────────────────────────────────────────────────────────
+
+def _po_date(v) -> date | None:
+    """Zepto's PO app sends ISO-8601 with a Z suffix ("2026-08-26T01:06:33.4Z")
+    or null. Only the calendar day is kept — every consumer groups by day, and
+    storing the instant would invite accidental timezone arithmetic on a value
+    that is already IST-derived."""
+    if not v:
+        return None
+    try:
+        return datetime.fromisoformat(str(v).replace("Z", "+00:00")).date()
+    except (TypeError, ValueError):
+        return None
+
+
+def _num(v) -> float | None:
+    if v in (None, ""):
+        return None
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(v) -> int | None:
+    f = _num(v)
+    return int(f) if f is not None else None
+
+
+def parse_pos(
+    rows: list[dict], tenant_id: str, scrape_job_id: str | None
+) -> list[dict]:
+    """`fetch_pos` response → one row per purchase order.
+
+    The key is the PO id alone, not (id, date): a PO is a durable object whose
+    status and received quantity change over its life, so re-scraping an
+    overlapping window must UPDATE it rather than create a second row. That is
+    the opposite of the sales tables, where each day is its own fact.
+    """
+    return [
+        {
+            "upsert_key": make_upsert_key(tenant_id, "zepto", "po", p["id"]),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "po_id": p["id"],
+            "vin_po_no": p.get("vinPoNo"),
+            "status": p.get("status"),
+            "vendor_code": p.get("vendorCode"),
+            "vendor": p.get("vendor"),
+            "vendor_relation_type": p.get("vendorRelationType"),
+            "location_code": p.get("locationCode"),
+            "location": p.get("location"),
+            "mh_code": p.get("mhCode"),
+            "city": p.get("city"),
+            "po_date": _po_date(p.get("poDate")),
+            "scheduled_date": _po_date(p.get("scheduledDate")),
+            "expiry_date": _po_date(p.get("expiryDate")),
+            "items_count": _int(p.get("itemsCount")),
+            "total_qty": _int(p.get("totalQty")),
+            "total_asn_qty": _int(p.get("totalAsnQty")),
+            "total_grn_qty": _int(p.get("totalGrnQty")),
+            "total_value": _num(p.get("totalValue")),
+            "payment_terms": p.get("paymentTerms"),
+            "source": p.get("source"),
+            "entity_code": p.get("entityCode"),
+            "scraped_at": now_ist(),
+        }
+        for p in rows
+        if p.get("id")
+    ]
+
+
+def parse_grns(
+    rows: list[dict], tenant_id: str, scrape_job_id: str | None
+) -> list[dict]:
+    """`fetch_grns` response → one row per goods-receipt note."""
+    return [
+        {
+            "upsert_key": make_upsert_key(tenant_id, "zepto", "grn", g["grnNo"]),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "grn_no": g["grnNo"],
+            "asn_no": g.get("asnNo") or None,
+            "ext_asn_no": g.get("extAsnNo") or None,
+            "po_id": g.get("poId") or None,
+            "vin_po_no": g.get("vinPoNo") or None,
+            "status": g.get("status"),
+            "vendor_code": g.get("vendorCode"),
+            "vendor_name": g.get("vendorName"),
+            "location_code": g.get("locationCode"),
+            "location": g.get("location"),
+            "po_qty": _int(g.get("poQty")),
+            "asn_qty": _int(g.get("asnQty")),
+            "grn_qty": _int(g.get("grnQty")),
+            "remaining_qty": _int(g.get("remainingQty")),
+            "po_value": _num(g.get("poValue")),
+            "grn_value": _num(g.get("grnValue")),
+            "grn_date": _po_date(g.get("grnDate")),
+            "entity_code": g.get("entityCode"),
+            "scraped_at": now_ist(),
+        }
+        for g in rows
+        if g.get("grnNo")
+    ]
+
+
+def parse_asns(
+    rows: list[dict], tenant_id: str, scrape_job_id: str | None
+) -> list[dict]:
+    """`fetch_asns` response → one row per advance shipping notice."""
+    return [
+        {
+            "upsert_key": make_upsert_key(tenant_id, "zepto", "asn", a["asnNo"]),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "asn_no": a["asnNo"],
+            "ext_asn_no": a.get("extAsnNo") or None,
+            "po_id": a.get("poId") or None,
+            "vin_po_no": a.get("vinPoNo") or None,
+            "status": a.get("status"),
+            "vendor_code": a.get("vendorCode"),
+            "vendor_name": a.get("vendorName"),
+            "location_code": a.get("locationCode"),
+            "external_location_code": a.get("externalLocationCode"),
+            "location": a.get("location"),
+            "po_qty": _int(a.get("poQty")),
+            "asn_qty": _int(a.get("asnQty")),
+            "grn_qty": _int(a.get("grnQty")),
+            "remaining_qty": _int(a.get("remainingQty")),
+            "po_value": _num(a.get("poValue")),
+            "asn_value": _num(a.get("asnValue")),
+            "asn_date": _po_date(a.get("asnDate")),
+            "entity_code": a.get("entityCode"),
+            "scraped_at": now_ist(),
+        }
+        for a in rows
+        if a.get("asnNo")
+    ]
+
+
+def parse_po_items(
+    by_po: dict[str, list[dict]], tenant_id: str, scrape_job_id: str | None
+) -> list[dict]:
+    """`fetch_po_items` output -> one row per SKU per PO.
+
+    Keyed on (po_id, pvId) rather than Zepto's line `id`: the line uuid is stable
+    in practice, but the pair is what actually identifies a line, and keying on it
+    means a re-scrape updates quantities in place as stock arrives against the PO.
+
+    `unitPrice` is what Zepto PAYS; `mrp` is what it sells at. Both are stored as
+    given — the margin is derived at read time, never baked into a column.
+    """
+    rows: list[dict] = []
+    for po_id, items in by_po.items():
+        for it in items:
+            pv = it.get("pvId")
+            rows.append(
+                {
+                    "upsert_key": make_upsert_key(
+                        tenant_id, "zepto", "po_item", po_id, pv or it.get("skuCode") or ""
+                    ),
+                    "tenant_id": uuid.UUID(tenant_id),
+                    "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+                    "po_id": po_id,
+                    "line_id": it.get("id"),
+                    "status": it.get("status"),
+                    "sku_code": it.get("skuCode"),
+                    "sku_name": it.get("skuName"),
+                    "product_variant_id": pv,
+                    "ean_no": it.get("eanNo"),
+                    "hsn_code": it.get("hsnCode"),
+                    "brand": it.get("brand"),
+                    "po_qty": _int(it.get("poQty")),
+                    "asn_qty": _int(it.get("asnQty")),
+                    "grn_qty": _int(it.get("grnQty")),
+                    "remaining_qty": _int(it.get("remainingQty")),
+                    "unit_price": _num(it.get("unitPrice")),
+                    "mrp": _num(it.get("mrp")),
+                    "total_value": _num(it.get("totalValue")),
+                    "cgst": _num(it.get("cgst")),
+                    "sgst": _num(it.get("sgst")),
+                    "igst": _num(it.get("igst")),
+                    "cess": _num(it.get("cess")),
+                    "scheduled_date": _po_date(it.get("scheduledDate")),
+                    "scraped_at": now_ist(),
+                }
+            )
+    return rows

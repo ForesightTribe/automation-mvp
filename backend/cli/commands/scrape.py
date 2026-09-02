@@ -8,26 +8,30 @@ from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
 from platform_auth import service as auth_service
+from campaign_manager.marketplaces.zepto.transport import setup as zepto_setup
 from platform_auth.errors import AuthError
-from scraper.platforms.zepto.dashboard_data.seller.session_health import (
-    ensure_healthy_session,
-    SessionUnhealthy,
-)
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.zepto.dashboard_data.seller.scraper import (
-    validate as zepto_seller_validate,
     discover_ids as zepto_discover_ids,
     fetch_sales_overview as zepto_fetch_sales_overview,
-    fetch_sales_by_city as zepto_fetch_sales_by_city,
     fetch_product_performance as zepto_fetch_product_performance,
-    capture_ads_headers as zepto_capture_ads_headers,
+    fetch_product_performance_by_city as zepto_fetch_product_perf_by_city,
+    NoDataYet as ZeptoNoDataYet,
+    fetch_pos as zepto_fetch_pos,
+    fetch_grns as zepto_fetch_grns,
+    fetch_asns as zepto_fetch_asns,
+    fetch_po_items as zepto_fetch_po_items,
     fetch_ad_campaigns as zepto_fetch_ad_campaigns,
     fetch_ads_tabular as zepto_fetch_ads_tabular,
 )
 from scraper.platforms.zepto.dashboard_data.seller.parser import (
     parse_sales_daily as parse_zepto_sales_daily,
     parse_product_perf as parse_zepto_product_perf,
-    parse_sales_by_city as parse_zepto_sales_by_city,
+    parse_product_city as parse_zepto_product_city,
+    parse_pos as parse_zepto_pos,
+    parse_grns as parse_zepto_grns,
+    parse_asns as parse_zepto_asns,
+    parse_po_items as parse_zepto_po_items,
     parse_ad_campaigns as parse_zepto_ad_campaigns,
     parse_ad_tabular_campaigns as parse_zepto_ad_tabular_campaigns,
     parse_ad_keywords as parse_zepto_ad_keywords,
@@ -36,6 +40,7 @@ from scraper.platforms.zepto.dashboard_data.seller.parser import (
 )
 from scraper.platforms.zepto.dashboard_data.seller.storage import (
     save_sales_results as zepto_save_sales_results,
+    save_po_results as zepto_save_po_results,
     save_ad_results as zepto_save_ad_results,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
@@ -43,6 +48,7 @@ from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
     parse_campaign,
     parse_campaign_daily,
     parse_campaign_detail,
+    parse_campaign_keywords,
     parse_sponsored_sov,
     parse_brand_collection,
     parse_visibility_plan,
@@ -116,8 +122,22 @@ async def _scrape_blinkit(
             with console.status(f"[cyan]Scraping Blinkit marketing {start}→{end}...[/cyan]"):
                 raw = await scrape(storage_state, start, end, limit=limit)
 
-            campaigns = [parse_campaign(c, tenant_id, job_id) for c in raw["campaigns"]]
+            campaign_detail = raw.get("campaign_detail") or {}
+            cities = raw.get("cities") or {}
+            campaigns = [
+                parse_campaign(c, tenant_id, job_id,
+                               detail=campaign_detail.get(c["id"]), cities=cities)
+                for c in raw["campaigns"]
+            ]
             type_by_id = {c["id"]: c.get("campaign_type") for c in raw["campaigns"]}
+
+            keyword_bids = [
+                row
+                for cid, attrs in (raw.get("keyword_attributes") or {}).items()
+                for row in parse_campaign_keywords(
+                    attrs, campaign_detail.get(cid) or {}, cid, tenant_id, job_id
+                )
+            ]
 
             daily = [
                 parse_campaign_daily(row, cid, type_by_id.get(cid), tenant_id, job_id)
@@ -139,7 +159,8 @@ async def _scrape_blinkit(
             plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
 
             if save:
-                await save_scrape_results(db, campaigns, daily, detail, sov, collections, plans)
+                await save_scrape_results(db, campaigns, daily, detail, sov, collections,
+                                          plans, keywords=keyword_bids)
                 await complete_scrape_job(db, job_id)
 
             console.print(
@@ -147,9 +168,12 @@ async def _scrape_blinkit(
                 f"  campaigns: {len(campaigns)}\n"
                 f"  daily rows: {len(daily)}\n"
                 f"  detail rows: {len(detail)}\n"
+                f"  keyword bid ranges: {len(keyword_bids)}\n"
                 f"  sov: {len(sov)}  collections: {len(collections)}  plans: {len(plans)}"
             )
             _print_campaigns(campaigns)
+            _print_targeting(campaigns)
+            _print_keyword_bids(keyword_bids)
             _print_daily(daily)
             _print_detail(detail)
             _print_sov(sov)
@@ -192,6 +216,89 @@ def _print_campaigns(campaigns: list) -> None:
         status_text = f"[{status_style}]{c['status']}[/{status_style}]" if status_style else c["status"]
         table.add_row(c["name"], c["type"], status_text)
     console.print(table)
+
+
+def _print_targeting(campaigns: list) -> None:
+    """City targeting + the budget/pacing facts, from the per-campaign detail call (V7).
+    Shows the CITY-targeted campaigns first — they are the ones the bid-rule form
+    auto-fills from, and the rare case worth eyeballing after a scrape."""
+    scoped = [c for c in campaigns if c.get("region_type")]
+    if not scoped:
+        console.print("\n[dim]No campaign targeting captured (detail calls returned nothing).[/dim]")
+        return
+    targeted = [c for c in scoped if c.get("cities")]
+    preview = (targeted + [c for c in scoped if not c.get("cities")])[:10]
+    console.print(
+        f"\n[bold cyan]Targeting & budget floor[/bold cyan] "
+        f"({len(targeted)} city-targeted of {len(scoped)}; showing {len(preview)})"
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Campaign")
+    table.add_column("Region")
+    table.add_column("Cities")
+    table.add_column("Pacing", style="dim")
+    table.add_column("Budget", justify="right")
+    table.add_column("Spent", justify="right")
+    table.add_column("min_cpm", justify="right")
+    for c in preview:
+        cities = ", ".join(x["name"] for x in (c.get("cities") or [])) or "—"
+        budget = c.get("daily_budget")
+        table.add_row(
+            (c.get("name") or "")[:34],
+            c.get("region_type") or "—",
+            cities[:40],
+            c.get("pacing_type") or "—",
+            "—" if budget is None else f"{budget:,.0f}",
+            f"{c.get('billed_amount') or 0:,.0f}",
+            "—" if c.get("min_cpm") is None else f"{c['min_cpm']:,}",
+        )
+    console.print(table)
+
+
+def _print_keyword_bids(rows: list) -> None:
+    """Blinkit's published bid range per keyword (V7). The interesting column is
+    `Min` — the floor a bid rule may not go under — and whether the live bid is under it."""
+    if not rows:
+        console.print("\n[dim]No keyword bid ranges captured.[/dim]")
+        return
+    exact = [r for r in rows if r["match_type"] == "EXACT"]
+    below = [
+        r for r in exact
+        if r.get("current_cpm") is not None and r.get("min_bid") is not None
+        and r["current_cpm"] < r["min_bid"]
+    ]
+    preview = (below + [r for r in exact if r not in below])[:15]
+    console.print(
+        f"\n[bold cyan]Keyword bid ranges[/bold cyan] "
+        f"(showing {len(preview)} of {len(exact)} EXACT, {len(rows)} rows all match types)"
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("Campaign", style="dim")
+    table.add_column("Keyword")
+    table.add_column("Bid", justify="right")
+    table.add_column("Min", justify="right")
+    table.add_column("Max", justify="right")
+    table.add_column("Suggested", justify="right")
+    table.add_column("Searches", justify="right")
+    for r in preview:
+        bid = r.get("current_cpm")
+        under = bid is not None and r.get("min_bid") is not None and bid < r["min_bid"]
+        sugg = (
+            f"{r['suggested_min']:,}–{r['suggested_max']:,}"
+            if r.get("suggested_min") and r.get("suggested_max") else "—"
+        )
+        table.add_row(
+            str(r["campaign_id"]),
+            r["keyword"][:28],
+            "—" if bid is None else (f"[red]{bid:,}[/red]" if under else f"{bid:,}"),
+            f"{r['min_bid']:,}" if r.get("min_bid") is not None else "—",
+            f"{r['max_bid']:,}" if r.get("max_bid") is not None else "—",
+            sugg,
+            f"{r['keyword_searches']:,}" if r.get("keyword_searches") else "—",
+        )
+    console.print(table)
+    if below:
+        console.print(f"[yellow]{len(below)} live bid(s) sit below Blinkit's published minimum.[/yellow]")
 
 
 def _print_daily(rows: list) -> None:
@@ -703,8 +810,17 @@ async def _scrape_zepto_sales(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                storage_state = await ensure_healthy_session(db, tenant_id, "zepto_seller", zepto_seller_validate)
+            # One client for the whole run, built the same way the Zepto budget
+            # automation builds it (campaign_manager/marketplaces/zepto/transport).
+            # `setup()` = ensure() the session, then mint a WAF token.
+            #
+            # It recovers PER CALL, not just at pre-flight: 401 -> re-login,
+            # 202/429 -> re-mint. That distinction matters here more than
+            # anywhere — the Zepto account is shared, and on 2026-09-01 the
+            # session was evicted three times in ten minutes. A run that only
+            # authenticates at the start dies halfway through.
+            with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+                _, _, storage_state = await zepto_setup(str(tenant_id))
             console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
@@ -746,39 +862,61 @@ async def _scrape_zepto_sales(
 
             daily_rows = parse_zepto_sales_daily(data, ids, tenant_id, job_id, date_from, date_to)
 
-            # Per-city split. Zepto has no city breakdown in a single response
-            # (`viewType=CITY` is rejected), so this is one call per city — but
-            # only for cities already known to sell, which on this account is
-            # one of 138. `--all-cities` re-sweeps everything to catch a new
-            # one; worth running occasionally, not daily.
-            city_rows: list[dict] = []
+            # Which cities to ask for. Zepto has no city breakdown in a single
+            # response, so a split means one call per city — but only for cities
+            # already known to sell, which on this account is two of 138.
+            # `--all-cities` re-sweeps everything to catch a new one; worth
+            # running occasionally, not daily (Hosur went unnoticed for weeks).
             city_names = {c["cityID"]: c["cityName"] for c in ids.get("city_list", [])}
             targets = None if all_cities else await _zepto_known_cities(db, tenant_id)
-            if targets is None or targets:
-                label = "all 138 cities" if targets is None else f"{len(targets)} known city/cities"
-                with console.status(f"[cyan]Fetching sales by city ({label})...[/cyan]"):
-                    by_city = await zepto_fetch_sales_by_city(
-                        storage_state, date_from, date_to, ids, targets
-                    )
-                city_rows = parse_zepto_sales_by_city(
-                    by_city, city_names, ids, tenant_id, job_id, date_from, date_to
-                )
+
+            # SKU x city x day — the only source that carries city AND category
+            # on one row, which is what the Analytics category-x-city heatmap
+            # needs. One call per city per day, so it reuses the same short
+            # `targets` list as the city split above rather than sweeping all
+            # 138 every run.
+            product_city_rows: list[dict] = []
+            pc_targets = targets if targets is not None else ids["city_ids"]
+            if pc_targets:
+                with console.status("[cyan]Fetching product breakdown by city...[/cyan]") as status:
+                    for i, day in enumerate(days, 1):
+                        status.update(
+                            f"[cyan]Product-by-city {day} ({i}/{len(days)}), "
+                            f"{len(pc_targets)} cities...[/cyan]"
+                        )
+                        try:
+                            by_city_products = await zepto_fetch_product_perf_by_city(
+                                storage_state, day, day, ids, pc_targets
+                            )
+                        except Exception as e:
+                            logger.warning(
+                                f"Zepto product-performance by city failed for {day}: {e}"
+                            )
+                            continue
+                        product_city_rows.extend(
+                            parse_zepto_product_city(
+                                by_city_products, city_names, tenant_id, job_id, day
+                            )
+                        )
+                        if i < len(days):
+                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
 
             written = 0
             if save:
                 written = await zepto_save_sales_results(
-                    db, daily_rows, product_rows, city_rows
+                    db, daily_rows, product_rows, product_city_rows
                 )
                 await complete_scrape_job(db, job_id, written)
             else:
                 await complete_scrape_job(db, job_id)
 
-            if city_rows:
+            # City summary now comes from the per-SKU city rows, the only
+            # place the split is stored since sales_city_daily was dropped.
+            if product_city_rows:
                 by_name: dict[str, float] = {}
-                for r in city_rows:
-                    by_name[r["city_name"] or r["city_id"]] = (
-                        by_name.get(r["city_name"] or r["city_id"], 0) + r["gmv"]
-                    )
+                for r in product_city_rows:
+                    key = r["city_name"] or r["city_id"]
+                    by_name[key] = by_name.get(key, 0) + r["gmv"]
                 top = sorted(by_name.items(), key=lambda kv: -kv[1])[:3]
                 console.print(
                     "  Cities: "
@@ -805,12 +943,27 @@ async def _scrape_zepto_sales(
                 _write_zepto_sales_xlsx(save_xlsx, data, products, date_from, date_to, ids)
                 console.print(f"[green]Saved:[/green] {save_xlsx}")
 
-        except SessionUnhealthy as e:
-            console.print(f"[red]Session not usable: {escape(str(e))}[/red]")
-            console.print("[yellow]Run `cli auth zepto-seller --tenant <id>` to re-login.[/yellow]")
+        except AuthError as e:
+            # platform_auth already tried to re-login and could not. Usually the
+            # circuit breaker: repeated evictions on a shared account trip it, and
+            # `auth reset` clears it once the other person has stopped.
+            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
+            console.print(
+                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
+                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
+            )
             raise typer.Exit(1)
         except typer.Exit:
             raise
+        except ZeptoNoDataYet as e:
+            # Not a failure — Zepto simply has not computed that day yet. The
+            # job is completed with zero records rather than marked failed, so
+            # `cli status` does not report a broken scrape for something that is
+            # only a matter of timing.
+            if job_id:
+                await complete_scrape_job(db, job_id, {})
+            console.print(f"[yellow]Nothing to scrape yet: {escape(str(e))}[/yellow]")
+            raise typer.Exit(0)
         except Exception as e:
             if job_id:
                 await fail_scrape_job(db, job_id, str(e))
@@ -1558,7 +1711,7 @@ async def _zepto_known_cities(db, tenant_id: str) -> list[str]:
     rows = (
         await db.execute(
             text(
-                "SELECT DISTINCT city_id FROM zepto_seller_sales_city_daily "
+                "SELECT DISTINCT city_id FROM zepto_seller_product_city_daily "
                 "WHERE tenant_id = :t"
             ),
             {"t": tenant_id},
@@ -1612,7 +1765,9 @@ async def _scrape_zepto_ads(
         job_id = None
         try:
             with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                storage_state = await ensure_healthy_session(db, tenant_id, "zepto_seller", zepto_seller_validate)
+                # Same shared client. `/ads-bff/*` is the one surface that
+                # genuinely needs the WAF token, which the client already holds.
+                _, _, storage_state = await zepto_setup(str(tenant_id))
             console.print("[green]Session healthy.[/green]")
 
             with console.status("[cyan]Discovering brand...[/cyan]"):
@@ -1620,10 +1775,11 @@ async def _scrape_zepto_ads(
             brand_id = ids["brand_id"]
             console.print(f"[green]Brand:[/green] {ids['brand_name']}")
 
-            # ads-bff will not take the stored WAF token; harvest a live one.
-            with console.status("[cyan]Capturing ads headers (browser)...[/cyan]"):
-                headers = await zepto_capture_ads_headers(storage_state)
-            console.print("[green]Ads headers captured.[/green]")
+            # No header-capture step any more: the client holds the JWT and the
+            # WAF token and refreshes each on its own failure signal. The name
+            # `headers` survives only because the fetchers still take it
+            # positionally.
+            headers = storage_state
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_ads", platform="zepto")
 
@@ -1846,12 +2002,120 @@ async def _scrape_zepto_ads(
             else:
                 console.print("  [yellow]--no-save: nothing written[/yellow]")
 
-        except SessionUnhealthy as e:
-            console.print(f"[red]Session not usable: {escape(str(e))}[/red]")
-            console.print("[yellow]Run `cli auth zepto-seller --tenant <id>` to re-login.[/yellow]")
+        except AuthError as e:
+            # platform_auth already tried to re-login and could not. Usually the
+            # circuit breaker: repeated evictions on a shared account trip it, and
+            # `auth reset` clears it once the other person has stopped.
+            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
+            console.print(
+                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
+                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
+            )
             raise typer.Exit(1)
         except typer.Exit:
             raise
+        except Exception as e:
+            if job_id:
+                await fail_scrape_job(db, job_id, str(e))
+            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
+            raise typer.Exit(1)
+
+
+# ── Zepto PO Management ────────────────────────────────────────────────────────
+
+@app.command("zepto-po")
+def scrape_zepto_po(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 30 days ago)"),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: today)"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
+):
+    """Fetch Zepto purchase orders, goods receipts and shipping notices.
+
+    Three endpoints on the `/vendor` app (same host and session as the sales
+    scrape, no browser needed): what Zepto ordered, what shipped, what arrived.
+    `grn_qty / po_qty` is the fill rate — the figure Blinkit's seller scorecard
+    reports and the only route to one for Zepto.
+
+    Windows here are inclusive of TODAY by default, unlike the sales scrape:
+    POs are forward-looking (an order issued today expires in three weeks), so
+    stopping at yesterday would miss the ones that most need acting on.
+    """
+    asyncio.run(_scrape_zepto_po(tenant_id, date_from, date_to, save))
+
+
+async def _scrape_zepto_po(
+    tenant_id: str, date_from: str | None, date_to: str | None, save: bool
+) -> None:
+    date_to = date_to or _date.today().isoformat()
+    date_from = date_from or (_date.today() - timedelta(days=30)).isoformat()
+
+    async with AsyncSessionLocal() as db:
+        job_id = None
+        try:
+            # Same shared client as the sales scrape — see the note there.
+            with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+                _, _, storage_state = await zepto_setup(str(tenant_id))
+            console.print("[green]Session healthy.[/green]")
+
+            job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")
+
+            # Each endpoint is fetched independently: Zepto returned a 500 on
+            # asn/filter on 2026-08-27 and aborting the run discarded 74 POs and
+            # 72 GRNs that had already come back. One flaky endpoint should cost
+            # its own data, not the whole scrape.
+            async def _try(label, coro):
+                try:
+                    return await coro
+                except Exception as e:
+                    logger.warning(f"Zepto {label} failed, continuing without it: {e}")
+                    console.print(f"[yellow]{label} failed — continuing[/yellow]")
+                    return []
+
+            with console.status(f"[cyan]Fetching POs {date_from}..{date_to}...[/cyan]"):
+                raw_pos = await _try("po/filter", zepto_fetch_pos(storage_state, date_from, date_to))
+            with console.status(f"[cyan]Fetching GRNs {date_from}..{date_to}...[/cyan]"):
+                raw_grns = await _try("grn/filter", zepto_fetch_grns(storage_state, date_from, date_to))
+            with console.status(f"[cyan]Fetching ASNs {date_from}..{date_to}...[/cyan]"):
+                raw_asns = await _try("asn/filter", zepto_fetch_asns(storage_state, date_from, date_to))
+
+            pos = parse_zepto_pos(raw_pos, tenant_id, job_id)
+            grns = parse_zepto_grns(raw_grns, tenant_id, job_id)
+            asns = parse_zepto_asns(raw_asns, tenant_id, job_id)
+
+            # Line items: one GET per PO. Carries unit_price (cost) and mrp,
+            # which appear on no other Zepto endpoint, plus per-SKU fill rate.
+            po_ids = [p["po_id"] for p in pos]
+            with console.status(f"[cyan]Fetching line items for {len(po_ids)} POs...[/cyan]"):
+                raw_items = await zepto_fetch_po_items(storage_state, po_ids)
+            po_items = parse_zepto_po_items(raw_items, tenant_id, job_id)
+
+            written = 0
+            if save:
+                counts = await zepto_save_po_results(db, pos, grns, asns, po_items)
+                written = sum(counts.values())
+                await complete_scrape_job(db, job_id, written)
+            else:
+                await complete_scrape_job(db, job_id)
+
+            ordered = sum(p["total_qty"] or 0 for p in pos)
+            received = sum(g["grn_qty"] or 0 for g in grns)
+            po_value = sum(p["total_value"] or 0.0 for p in pos)
+
+            console.print("")
+            console.print(f"[bold]Zepto PO Management ({date_from} to {date_to})[/bold]")
+            console.print(f"  POs: {len(pos)}   units ordered: {ordered:,}   value: Rs {po_value:,.0f}")
+            console.print(f"  GRNs: {len(grns)}   units received: {received:,}")
+            console.print(f"  ASNs: {len(asns)}")
+            console.print(f"  PO line items: {len(po_items)}")
+
+            # Fill rate from GRN rows, where ordered and received sit together.
+            po_q = sum(g["po_qty"] or 0 for g in grns)
+            grn_q = sum(g["grn_qty"] or 0 for g in grns)
+            if po_q:
+                console.print(f"  [bold]Fill rate: {grn_q:,}/{po_q:,} = {100 * grn_q / po_q:.1f}%[/bold]")
+            if save:
+                console.print(f"  Saved to DB: {written} rows")
         except Exception as e:
             if job_id:
                 await fail_scrape_job(db, job_id, str(e))

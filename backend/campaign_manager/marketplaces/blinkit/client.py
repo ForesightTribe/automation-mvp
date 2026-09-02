@@ -198,6 +198,32 @@ class BlinkitClient:
 
         return sorted(result, key=lambda x: (x["position"] is None, x["position"] or 999))
 
+    async def get_keyword_attributes(self, campaign_id: int, campaign_type: str,
+                                     keywords: list[str]) -> list[dict]:
+        """Blinkit's published bid range per keyword (V7.6).
+
+        `keyword_attributes[].bid_range.{exact_match,smart_match}` carries
+        `{min, max, suggested_min, suggested_max, min_for_boost}`. The `min` is the floor
+        Blinkit enforces on a bid write, and it varies PER KEYWORD (₹50 on 'mango', ₹400 on
+        'cocktail') — there is no account-wide number. ⚠️ `min_cpm_config`, despite the
+        name, is a BUDGET input and must never be used as a bid floor.
+
+        Takes a comma-separated list, so a whole campaign costs ONE request regardless of
+        keyword count; chunked only to keep the URL sane.
+        """
+        out: list[dict] = []
+        for i in range(0, len(keywords), 40):
+            chunk = keywords[i:i + 40]
+            resp = await self._fetch("GET", "/adservice/v1/campaigns/keywords/attributes", {
+                "keywords": ",".join(chunk),
+                "campaign_type": campaign_type or "",
+                "campaign_id": str(campaign_id),
+            })
+            data = (resp or {}).get("data") or {}
+            out.extend(data.get("keyword_attributes")
+                       or (resp or {}).get("keyword_attributes") or [])
+        return out
+
     async def get_campaign_products(self, campaign_id: int) -> list[dict]:
         """Returns products in the campaign with pid, name, and brand.
 

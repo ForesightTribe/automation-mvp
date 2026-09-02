@@ -26,7 +26,7 @@ const TABS = [
  * "problems" number would bury that.
  */
 export const NeedsAttentionCard = ({ kind = "main", onSelectProduct, onSelectCity }) => {
-	const [tab, setTab] = useState("oos");
+	const [chosenTab, setChosenTab] = useState(null);
 	const dist = useDistribution(kind);
 	const cities = useCities(kind);
 
@@ -38,6 +38,10 @@ export const NeedsAttentionCard = ({ kind = "main", onSelectProduct, onSelectCit
 	};
 
 	const scraped = dist.data?.stores_scraped ?? 0;
+
+	const tab = chosenTab ?? "oos";
+	const setTab = setChosenTab;
+
 	const productKey = tab === "oos" ? "stores_out_of_stock" : "_missing";
 	const cityKey = tab === "oos" ? "skus_out_of_stock" : "skus_not_listed";
 
@@ -55,6 +59,12 @@ export const NeedsAttentionCard = ({ kind = "main", onSelectProduct, onSelectCit
 	const maxP = products[0]?.[productKey] || 1;
 	const maxC = places[0]?.[cityKey] || 1;
 
+	// "Nothing to chase" and "nothing to look at" are different answers and must not
+	// share a message. With the Combos filter on a brand that sells no multipacks
+	// there are no products at all, and the healthy copy claimed everything was in
+	// stock — reassuring the reader about a shelf that does not exist.
+	const noData = (dist.data?.skus ?? []).length === 0;
+
 	const verb = tab === "oos" ? "out of stock in" : "not listed in";
 	const totalP = (dist.data?.skus ?? []).reduce((a, s) => a + (tab === "oos" ? s.stores_out_of_stock : scraped - s.stores_listed), 0);
 
@@ -66,9 +76,11 @@ export const NeedsAttentionCard = ({ kind = "main", onSelectProduct, onSelectCit
 						Needs attention
 					</h2>
 					<p className="text-xs text-content-subtle">
-						{tab === "oos"
-							? `${formatNumber(totalP)} shelves with your product but nothing to sell — chase supply`
-							: `${formatNumber(totalP)} store shelves that could carry a product of yours — chase a listing`}
+						{noData
+							? "Nothing matches this filter"
+							: tab === "oos"
+								? `${formatNumber(totalP)} shelves with your product but nothing to sell — chase supply`
+								: `${formatNumber(totalP)} store shelves that could carry a product of yours — chase a listing`}
 					</p>
 				</div>
 				<ViewToggle options={TABS} value={tab} onChange={setTab} />
@@ -80,9 +92,11 @@ export const NeedsAttentionCard = ({ kind = "main", onSelectProduct, onSelectCit
 				<ErrorState message={error.message} onRetry={refetch} />
 			) : products.length === 0 && places.length === 0 ? (
 				<p className="py-8 text-center text-sm text-content-subtle">
-					{tab === "oos"
-						? "Everything on shelf is in stock. Nothing to chase."
-						: "You're carried for every product in every store we can see."}
+					{noData
+						? "No products match this filter, so there is nothing to measure."
+						: tab === "oos"
+							? "Everything on shelf is in stock. Nothing to chase."
+							: "You're carried for every product in every store we can see."}
 				</p>
 			) : (
 				<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">

@@ -69,7 +69,7 @@ const Meter = ({ label, value, count, total, tone = "brand" }) => (
  * search. Written for a brand manager — no "distribution"/"reach" jargon (which mean
  * the opposite in FMCG), and every percentage shows its "X of N". See docs/darkstores.md.
  */
-export const ProductPublicPanel = ({ itemId }) => {
+export const ProductPublicPanel = ({ itemId, marketplace }) => {
 	const { data, isLoading, error, refetch } = useProductPublic(itemId);
 
 	const notStocked =
@@ -87,7 +87,13 @@ export const ProductPublicPanel = ({ itemId }) => {
 			{!isLoading && !error && data && !data.mapped && (
 				<EmptyState
 					title="No public shelf data yet"
-					message="We haven't linked this product to its Blinkit listing. Once mapped, its live shelf presence, pricing and search rank show here."
+					/* The marketplace name is not decoration — this panel is the
+					   private-to-public bridge, and `sku_map` is per marketplace.
+					   Naming Blinkit on a Zepto product told the reader to go
+					   looking for a mapping that was never the right one. */
+					message={`We haven't linked this product to its ${
+						marketplace === "zepto" ? "Zepto" : "Blinkit"
+					} listing. Once mapped, its live shelf presence, pricing and search rank show here.`}
 				/>
 			)}
 			{!isLoading && !error && data?.mapped && (

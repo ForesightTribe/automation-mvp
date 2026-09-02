@@ -15,6 +15,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.blinkit_seller import BlinkitSellerSale
+from app.models.zepto_seller import ZeptoSellerSales
 from app.models.search import SkuMap, SkuSnapshot
 from app.models.tenant import TenantWatchlist
 from app.utils.time import now_ist
@@ -56,6 +57,30 @@ async def build_map(session: AsyncSession, tenant_id: uuid.UUID) -> dict:
         .where(BlinkitSellerSale.tenant_id == tenant_id)
         .distinct()
     )).all()
+
+    # Zepto's private ids live in their own table, and its id systems are just as
+    # disjoint as Blinkit's: the seller dashboard calls Artisinal Sourdough
+    # `5e4a9b9b-…` while the shopper app calls it `06d0fc37-…`. Same table, same
+    # name-matching — only the source of the private list differs.
+    #
+    # `sku_map` carries no marketplace column, so a tenant selling on BOTH
+    # marketplaces would have the two fight over one row per item_id. No tenant
+    # does today; adding `mp_slug` is the fix when one does.
+    priv = [
+        *priv,
+        *(await session.execute(
+            select(
+                ZeptoSellerSales.product_variant_id,
+                # `product_name`, NOT `sku_name`. sku_name carries the pack
+                # ("… 400.0 GRAM") which the public listing omits, so matching on
+                # it fails every row. product_name is already the pack-free form
+                # the shopper app uses, so the two normalise identically.
+                ZeptoSellerSales.product_name,
+            )
+            .where(ZeptoSellerSales.tenant_id == tenant_id)
+            .distinct()
+        )).all(),
+    ]
     own_priv = [
         (str(iid), name) for iid, name in priv
         if any(a in (name or "").lower() for a in aliases)

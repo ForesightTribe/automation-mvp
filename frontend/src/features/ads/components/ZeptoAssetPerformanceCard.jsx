@@ -173,7 +173,11 @@ export const ZeptoAssetPerformanceCard = () => {
 
 	if (!wantsZepto) return null;
 
-	const showMatchFilter = isAll || isKeyword;
+	// Keyword-only: match type is a property of a keyword bid. In the "All"
+	// view the table also carries product/category/city rows that have no
+	// match type, so filtering there hid whole sections that simply do not
+	// carry the field.
+	const showMatchFilter = isKeyword;
 	const firstColLabel = isAll ? "Asset" : TYPE_LABEL[dimension];
 	// Name + Impressions, Clicks, CTR, Orders, ATC, Spend, Sales, RoAS.
 	const colCount = 9;
@@ -229,13 +233,17 @@ export const ZeptoAssetPerformanceCard = () => {
 						onChange={setAdType}
 						options={AD_TYPE_OPTIONS}
 					/>
-					{/* A menu rather than a <select>, so the control keeps reading
-					    "Campaign performance" instead of swapping to the chosen
-					    option. <details> gives click-to-open with no open/close
-					    state to manage; a pick closes it via `open = false`. */}
+					{/* A menu rather than a <select>: the control names the view it is
+					    showing ("Keyword", "City", "All campaigns"), matching its
+					    siblings ("All ad types" / "All match types") so the row reads
+					    as three filters in the same voice. <details> gives
+					    click-to-open with no open/close state to manage; a pick closes
+					    it via `open = false`. */}
 					<details className="relative" ref={menuRef}>
 						<summary className="flex cursor-pointer list-none items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-sm font-medium text-content marker:content-none focus:outline-none focus:ring-2 focus:ring-brand/30">
-							Campaign performance
+							{isAll
+								? "All campaigns"
+								: DIMENSIONS.find((x) => x.key === dimension)?.label}
 							<span
 								className="text-[10px] text-content-subtle"
 								aria-hidden

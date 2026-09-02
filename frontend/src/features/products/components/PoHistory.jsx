@@ -47,8 +47,14 @@ const COLUMNS = [
 ];
 
 /** This SKU's PO line history (tenant-wide, paginated). Own page state — it's not
- * tied to the page's date window. */
-export const PoHistory = ({ itemId }) => {
+ * tied to the page's date window.
+ *
+ * Works for both marketplaces: Blinkit lines come from `blinkit_po_items`, Zepto
+ * from `zepto_po_items`, merged behind one endpoint. `marketplace` only changes
+ * the empty-state wording — Zepto POs are scraped over a rolling window, so an
+ * absent SKU may simply not have been ordered in it.
+ */
+export const PoHistory = ({ itemId, marketplace }) => {
 	const [page, setPage] = useState(1);
 	const { data, isLoading, error, refetch } = useProductPos(itemId, page);
 	const rows = data?.items ?? [];
@@ -60,7 +66,13 @@ export const PoHistory = ({ itemId }) => {
 			{!isLoading &&
 				!error &&
 				(rows.length === 0 ? (
-					<EmptyState message="No purchase orders for this SKU." />
+					<EmptyState
+						message={
+							marketplace === "zepto"
+								? "No purchase orders for this SKU in the scraped window."
+								: "No purchase orders for this SKU."
+						}
+					/>
 				) : (
 					<>
 						<DataTable
@@ -72,8 +84,7 @@ export const PoHistory = ({ itemId }) => {
 							page={data.page}
 							pages={data.pages}
 							total={data.total}
-							limit={data.limit}
-							onChange={setPage}
+							onPage={setPage}
 						/>
 					</>
 				))}

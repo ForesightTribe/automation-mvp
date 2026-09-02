@@ -74,6 +74,9 @@ class DistributionRow(BaseModel):
     stores_listed: int
     stores_in_stock: int
     stores_out_of_stock: int
+    stores_low_stock: int = 0
+    stores_with_qty: int = 0
+    low_stock_pct: float | None = None
     reach_pct: float
     distribution_pct: float
     avg_price: float | None
@@ -87,18 +90,21 @@ class DistributionResponse(BaseModel):
     active_range: int            # distinct SKUs observed
     tiers: dict[str, int] = {}   # merchant_type -> distinct stores (UI shows a split
                                  # only when >1 tier is present)
+    marketplaces: list[str] = []
     skus: list[DistributionRow]
 
 
 class AvailabilityHistoryPoint(BaseModel):
     week: date
     availability_pct: float
+    low_stock_pct: float | None = None
     oos_pct: float
     stores: int                  # distinct stores sampled that week
 
 
 class AvailabilityHistoryResponse(BaseModel):
     period_days: int
+    marketplaces: list[str] = []
     points: list[AvailabilityHistoryPoint]
 
 
@@ -139,6 +145,12 @@ class StoreAvailabilityRow(BaseModel):
     skus_in_stock: int
     skus_out_of_stock: int
     skus_not_listed: int
+    # Shelves down to their last unit, and how many carry a quantity reading at
+    # all. Kept apart from in-stock: a marketplace can report quantity while
+    # being unable to report a stockout (see inventory_service.get_stores).
+    skus_low_stock: int = 0
+    skus_with_qty: int = 0
+    low_stock_pct: float | None = None
     reach_pct: float
     distribution_pct: float
 
@@ -149,6 +161,7 @@ class StoresResponse(BaseModel):
     stores_scraped: int
     active_range: int
     tiers: dict[str, int] = {}
+    marketplaces: list[str] = []
     stores: list[StoreAvailabilityRow]
 
 
@@ -159,6 +172,9 @@ class CityAvailabilityRow(BaseModel):
     skus_in_stock: int
     skus_out_of_stock: int
     skus_not_listed: int
+    skus_low_stock: int = 0
+    skus_with_qty: int = 0
+    low_stock_pct: float | None = None
     reach_pct: float
     distribution_pct: float
 
@@ -168,6 +184,7 @@ class CitiesResponse(BaseModel):
     as_of: datetime | None
     stores_scraped: int
     active_range: int
+    marketplaces: list[str] = []
     cities: list[CityAvailabilityRow]
 
 

@@ -5,17 +5,22 @@ Mirrors blinkit/dashboard_data/seller/storage.py — same ON CONFLICT
 layer here, unlike Blinkit's: this parser emits real `date`/`uuid.UUID` objects
 rather than strings, so there is nothing to convert.
 """
+from sqlalchemy import func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import (
+    ZeptoASN,
+    ZeptoGRN,
+    ZeptoPO,
+    ZeptoPOItem,
     ZeptoAdCampaignDaily,
     ZeptoAdBreakdownDaily,
     ZeptoAdKeywordDaily,
     ZeptoAdProductDaily,
-    ZeptoSellerProductPerf,
-    ZeptoSellerSalesCityDaily,
-    ZeptoSellerSalesDaily,
+    ZeptoSellerProductCityDaily,
+    ZeptoSellerSales,
+    ZeptoSellerSalesSummary,
 )
 from app.utils.logger import logger
 
@@ -24,18 +29,21 @@ async def save_sales_results(
     session: AsyncSession,
     daily: list[dict],
     products: list[dict],
-    cities: list[dict] | None = None,
+    product_cities: list[dict] | None = None,
 ) -> int:
-    cities = cities or []
-    await _upsert(session, ZeptoSellerSalesDaily, daily)
-    await _upsert(session, ZeptoSellerProductPerf, products)
-    await _upsert(session, ZeptoSellerSalesCityDaily, cities)
+    # SKU x city x day. A finer grain than `products` (SKU x day, all cities)
+    # and deliberately its own table — see ZeptoSellerProductCityDaily. The two
+    # hold the same money at different resolutions; never sum across them.
+    product_cities = product_cities or []
+    await _upsert(session, ZeptoSellerSalesSummary, daily)
+    await _upsert(session, ZeptoSellerSales, products)
+    await _upsert(session, ZeptoSellerProductCityDaily, product_cities)
     await session.commit()
     logger.info(
         f"Zepto seller sales saved — days:{len(daily)} products:{len(products)} "
-        f"city-days:{len(cities)}"
+        f"product-city-days:{len(product_cities)}"
     )
-    return len(daily) + len(products) + len(cities)
+    return len(daily) + len(products) + len(product_cities)
 
 
 async def save_ad_results(
@@ -67,6 +75,53 @@ async def save_ad_results(
         "Zepto ads saved — " + " ".join(f"{k}:{v}" for k, v in written.items())
     )
     return written
+
+
+# Columns a re-scrape must never blank out.
+#
+# `zepto_seller_sales` rows are keyed on the SALES date, but these three
+# columns are not facts about that date — they carry the same value on every day
+# of the window a scrape covered, because they describe the moment of the CALL.
+# Re-scraping an older window returns null for them, and a plain upsert then
+# writes that null over a real reading.
+#
+# Which columns belong here was measured, not assumed. For each column, count
+# the (scrape_job, sku) groups whose value varies across the days in that job:
+#
+#     stock_on_hand           0/14   constant within a job  -> snapshot
+#     week_on_week_growth     0/33   constant within a job  -> snapshot
+#     month_on_month_growth   0/34   constant within a job  -> snapshot
+#     available_stores       18/34   varies by day          -> FACT, not listed
+#     sales_contribution     18/34   varies by day          -> FACT, not listed
+#     gmv / qty_sold         18/34   varies by day          -> FACT, obviously
+#
+# `available_stores` was in this list until 2026-08-28, on the strength of one
+# 88.52% -> 55.98% comparison. That comparison spanned six days AND two scrape
+# jobs, so it never isolated the variable; the per-job test above shows it moves
+# with the sales date exactly like gmv. It belongs with sales, and guarding it
+# here would have been harmless but wrong — a claim someone would later inherit.
+#
+# What the guard prevents, observed 2026-08-27: re-scraping 21-Aug and 26-Aug
+# (for an unrelated city sweep) wiped stock on every row of both days — 16 rows,
+# 0 retained. Batches scraped once still held 89% and 68% coverage. The value
+# cannot be re-fetched afterwards: the moment has passed.
+#
+# COALESCE keeps what we already have when the incoming value is null. It does
+# NOT block a genuine update — a non-null reading still overwrites.
+#
+# Longer term these belong in a snapshot table keyed on the scrape JOB rather
+# than the sales date. Deliberately NOT built yet: whether the two growth
+# columns are scrape-time readings or window-level aggregates is still unproven.
+# Stored data cannot settle it — the upsert overwrites in place, so no SKU-day
+# has ever had two rows to compare. That needs a live experiment; see
+# docs/zepto.md. This guard is the containment until then.
+_KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
+    "zepto_seller_sales": (
+        "stock_on_hand",
+        "week_on_week_growth",
+        "month_on_month_growth",
+    ),
+}
 
 
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
@@ -119,7 +174,16 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
             .values(rows[i:i + chunk])
             .on_conflict_do_update(
                 index_elements=["upsert_key"],
-                set_={c: insert(model).excluded[c] for c in update_cols},
+                set_={
+                    c: (
+                        func.coalesce(
+                            insert(model).excluded[c], getattr(model, c)
+                        )
+                        if c in _KEEP_IF_NULL.get(model.__tablename__, ())
+                        else insert(model).excluded[c]
+                    )
+                    for c in update_cols
+                },
             )
         )
         await session.execute(stmt)
@@ -128,3 +192,31 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
 def _update_cols(model) -> list[str]:
     pk = {"id", "upsert_key"}
     return [c.name for c in model.__table__.columns if c.name not in pk]
+
+
+async def save_po_results(
+    session: AsyncSession,
+    pos: list[dict],
+    grns: list[dict],
+    asns: list[dict],
+    po_items: list[dict] | None = None,
+) -> dict[str, int]:
+    """Upsert the PO-management tables. Returns rows written per table.
+
+    A PO is keyed on its own id (not id+date), so re-scraping an overlapping
+    window UPDATES status and received quantity in place — which is the point:
+    a PO issued today is PENDING_ACKNOWLEDGEMENT and receives stock over the
+    following weeks, and we want the current state, not a row per observation.
+    """
+    await _upsert(session, ZeptoPO, pos)
+    await _upsert(session, ZeptoGRN, grns)
+    await _upsert(session, ZeptoASN, asns)
+    await _upsert(session, ZeptoPOItem, po_items or [])
+    await session.commit()
+    written = {"pos": len(pos), "grns": len(grns), "asns": len(asns),
+               "po_items": len(po_items or [])}
+    logger.info(
+        f"Zepto PO saved — pos:{written['pos']} grns:{written['grns']} "
+        f"asns:{written['asns']} items:{written['po_items']}"
+    )
+    return written

@@ -20,6 +20,12 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed
  *   On shelf — of every store×product slot, how many carry the product (breadth)
  *   In stock — of what IS carried, how much a shopper could buy now (health)
  *
+ * In stock reads the same on every marketplace. It briefly did not: Zepto's parser
+ * was discarding the sold-out widget, so `in_stock` was true on every stored row and
+ * the tile showed a permanent 100%. That was fixed at the source (see
+ * zepto/public_data/endpoints.py::PRODUCT_WIDGETS) rather than worked around here, so
+ * this tile needs no marketplace-specific behaviour.
+ *
  * Denominators are observed, not configured: a store that failed to answer is
  * excluded, not counted as a miss. See docs/darkstores.md.
  */
@@ -44,7 +50,11 @@ export const InvKpis = ({ kind = "main", city }) => {
 			<MetricTile
 				label="Stores selling you"
 				value={formatNumber(scraped)}
-				hint={nCities ? `across ${formatNumber(nCities)} cities` : undefined}
+				hint={
+					nCities
+						? `across ${formatNumber(nCities)} ${nCities === 1 ? "city" : "cities"}`
+						: undefined
+				}
 			/>
 			<MetricTile
 				label="Your products on shelf"

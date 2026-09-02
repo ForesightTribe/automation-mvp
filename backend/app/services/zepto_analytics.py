@@ -20,9 +20,9 @@ from datetime import date
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.zepto_seller import ZeptoSellerProductPerf as Prod
-from app.models.zepto_seller import ZeptoSellerSalesCityDaily as CityDaily
-from app.models.zepto_seller import ZeptoSellerSalesDaily as Daily
+from app.models.zepto_seller import ZeptoSellerSales as Prod
+from app.models.zepto_seller import ZeptoSellerProductCityDaily as ProdCity
+from app.models.zepto_seller import ZeptoSellerSalesSummary as Daily
 
 # Which marketplace slug routes to these tables.
 SLUG = "zepto"
@@ -191,18 +191,18 @@ async def sales_by_city(
     rows = (
         await session.execute(
             select(
-                CityDaily.city_id,
-                func.max(CityDaily.city_name),
-                func.coalesce(func.sum(CityDaily.gmv), 0.0),
-                func.coalesce(func.sum(CityDaily.units), 0),
+                ProdCity.city_id,
+                func.max(ProdCity.city_name),
+                func.coalesce(func.sum(ProdCity.gmv), 0.0),
+                func.coalesce(func.sum(ProdCity.qty_sold), 0),
             )
             .where(
-                CityDaily.tenant_id == tenant_id,
-                CityDaily.date >= start,
-                CityDaily.date <= end,
+                ProdCity.tenant_id == tenant_id,
+                ProdCity.date >= start,
+                ProdCity.date <= end,
             )
-            .group_by(CityDaily.city_id)
-            .order_by(func.coalesce(func.sum(CityDaily.gmv), 0.0).desc())
+            .group_by(ProdCity.city_id)
+            .order_by(func.coalesce(func.sum(ProdCity.gmv), 0.0).desc())
         )
     ).all()
     return [
@@ -212,4 +212,73 @@ async def sales_by_city(
             "units_sold": int(units),
         }
         for city_id, name, rev, units in rows
+    ]
+
+
+async def city_category(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date,
+    limit: int = 15,
+) -> list[dict]:
+    """City x category revenue cells for the Analytics heatmap.
+
+    Reads `zepto_seller_product_city_daily` — the only Zepto table carrying city
+    and category on one row. `zepto_seller_sales` has no city, so it
+    cannot answer this on its own, and joining the two on date alone would
+    attribute every SKU's revenue to whichever cities sold that day rather than
+    reading the real split.
+
+    (A coarser `zepto_seller_sales_city_daily` — brand per city per day, no
+    category — was dropped in a3f7c92e51d8. It held the same money at a coarser
+    grain; all 14 of its rows were verified reproducible from this table.)
+
+    Scoped to the top `limit` cities by revenue, mirroring the Blinkit version:
+    the heatmap renders cities as rows, and there are more of them than fit.
+
+    Returns [] until a scrape has run since the per-city breakdown was added —
+    the caller then shows an empty chart, which is the honest state, rather than
+    a synthesised one.
+    """
+    revenue = func.coalesce(func.sum(ProdCity.gmv), 0.0)
+    conds = [
+        ProdCity.tenant_id == tenant_id,
+        ProdCity.date >= start,
+        ProdCity.date <= end,
+    ]
+
+    top = (
+        await session.execute(
+            select(ProdCity.city_id, func.max(ProdCity.city_name), revenue)
+            .where(*conds)
+            .group_by(ProdCity.city_id)
+            .order_by(revenue.desc())
+            .limit(limit)
+        )
+    ).all()
+    if not top:
+        return []
+    name_by_id = {cid: (cname or cid) for cid, cname, _ in top}
+
+    category = func.coalesce(ProdCity.subcategory_name, ProdCity.category_name,
+                             "Uncategorized")
+    cells = (
+        await session.execute(
+            select(
+                ProdCity.city_id,
+                category,
+                revenue,
+                func.coalesce(func.sum(ProdCity.qty_sold), 0),
+            )
+            .where(*conds, ProdCity.city_id.in_(list(name_by_id)))
+            .group_by(ProdCity.city_id, category)
+            .order_by(revenue.desc())
+        )
+    ).all()
+    return [
+        {
+            "city": name_by_id[cid],
+            "category": cat,
+            "revenue": round(float(rev), 2),
+            "units_sold": int(units),
+        }
+        for cid, cat, rev, units in cells
     ]
