@@ -709,7 +709,19 @@ def parse_pos(
             "mh_code": p.get("mhCode"),
             "city": p.get("city"),
             "po_date": _po_date(p.get("poDate")),
-            "scheduled_date": _po_date(p.get("scheduledDate")),
+            # Two fields, near-identical names, and the top-level one is a decoy:
+            # `scheduledDate` was null on 78/78 POs sampled 2026-09-02, while
+            # `planningDetails.poScheduledDate` carried the date the portal shows
+            # as "Scheduled on" (P5430045: 2026-09-04). Reading only the top-level
+            # one left this column empty on all 387 stored POs.
+            #
+            # Still sparse after the fix — populated on 24/78, i.e. Zepto fills it
+            # once a PO is actually slotted, not when it is raised. Null here means
+            # "not yet scheduled", not "we failed to read it".
+            "scheduled_date": _po_date(
+                p.get("scheduledDate")
+                or (p.get("planningDetails") or {}).get("poScheduledDate")
+            ),
             "expiry_date": _po_date(p.get("expiryDate")),
             "items_count": _int(p.get("itemsCount")),
             "total_qty": _int(p.get("totalQty")),

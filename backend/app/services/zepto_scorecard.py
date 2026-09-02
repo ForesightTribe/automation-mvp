@@ -58,6 +58,13 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import Pagination
 from app.schemas.common import Page
 from app.schemas.scorecard import FacilityPoRow, FacilityRow, KeySkuRow
+# THE metric packer, not a copy of it. This module used to define its own, whose
+# docstring claimed it matched this one and did not: it returned `delta_pct` as a
+# PERCENTAGE (36.2) where every other service returns a FRACTION (0.362).
+# DeltaBadge multiplies by 100, so the Zepto scorecard rendered "+3620%".
+# scorecard_service imports the same function for Blinkit — which is exactly why
+# Blinkit was never affected. Import it; never re-implement it.
+from app.services.analytics_service import _metric
 
 SLUG = "zepto"
 
@@ -194,17 +201,6 @@ async def get_weeks(session: AsyncSession, *, tenant_id: uuid.UUID) -> list[date
         {"t": tenant_id},
     )
     return [r[0] for r in rows.all()]
-
-
-def _metric(cur, prev) -> dict:
-    """Same shape analytics_service._metric returns, so the KPI strip renders
-    Zepto and Blinkit identically."""
-    cur = float(cur) if cur is not None else None
-    prev = float(prev) if prev is not None else None
-    delta = None
-    if cur is not None and prev not in (None, 0):
-        delta = round((cur - prev) / abs(prev) * 100, 1)
-    return {"value": cur, "prev": prev, "delta_pct": delta}
 
 
 _METRIC_KEYS = (
