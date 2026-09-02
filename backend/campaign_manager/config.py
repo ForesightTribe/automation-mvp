@@ -79,6 +79,62 @@ BID_RAISE_ESCALATE: float = float(os.getenv("CM_BID_RAISE_ESCALATE", "1.5"))
 # concluded at changed), which is the correct behaviour — see bid.stored_effective_target.
 BID_MAX_ABSOLUTE: int = int(os.getenv("CM_BID_MAX_ABSOLUTE", "10000"))
 
+# ── Per-marketplace tuning ──────────────────────────────────────────────────
+#
+# Everything above is the DEFAULT, and Blinkit uses it unchanged. A marketplace whose
+# bids live at a different order of magnitude overrides only the values that are
+# denominated in RUPEES — percentages already scale by themselves.
+#
+# Zepto bids in CPC at ~₹10-25 (observed: our test campaign at ₹10-12, competitors'
+# winning bids ₹15-21). Blinkit bids CPM up to ~₹900. So Blinkit's ₹50 raise floor is
+# a 417% jump on a ₹12 Zepto bid, and its ₹5 drift floor a 42% cut — both floors
+# dominate the percentages completely and neither is survivable. Note also that
+# `int(12 * 8/100) == 0`: at this scale the percentage term rounds away to nothing and
+# the min-step floor IS the algorithm, so getting it right is not a nicety.
+#
+# ⚠️ BID_RAISE_MIN_STEP = 2, not 1. Escalation is integer — `int(1 * 1.5) == 1` — so at
+# a ₹1 step it never fires and the climb is a flat ₹1/tick: 13 ticks to cross a ₹21
+# winning bid, most of a window spent underbidding. ₹2 is the smallest step that grows.
+#
+# The platform's own MINIMUM BID is deliberately NOT here. That is a fact Zepto
+# publishes, not a knob we tune, so it lives with MIN_DAILY_BUDGET in the adapter's
+# endpoints.py — where nobody can "tune" it below what the marketplace accepts.
+_BID_TUNING_OVERRIDES: dict[str, dict[str, float]] = {
+    "zepto": {
+        "BID_RAISE_MIN_STEP": int(os.getenv("CM_ZEPTO_BID_RAISE_MIN_STEP", "2")),
+        "BID_RAISE_PCT": float(os.getenv("CM_ZEPTO_BID_RAISE_PCT", "15")),
+        "BID_DRIFT_MIN_STEP": int(os.getenv("CM_ZEPTO_BID_DRIFT_MIN_STEP", "1")),
+        "BID_MAX_ABSOLUTE": int(os.getenv("CM_ZEPTO_BID_MAX_ABSOLUTE", "100")),
+    },
+}
+
+# The tunables, and their defaults. A name absent from a platform's override block
+# resolves here — so a constant with NO override is provably identical on every
+# marketplace, which is what protects live Blinkit from a Zepto-driven change.
+_BID_DEFAULTS: dict[str, float] = {
+    "BID_RAISE_MIN_STEP": BID_RAISE_MIN_STEP,
+    "BID_RAISE_PCT": BID_RAISE_PCT,
+    "BID_RAISE_ESCALATE": BID_RAISE_ESCALATE,
+    "BID_DRIFT_PCT": BID_DRIFT_PCT,
+    "BID_DRIFT_MIN_STEP": BID_DRIFT_MIN_STEP,
+    "BID_DRIFT_PAUSE_MINUTES": BID_DRIFT_PAUSE_MINUTES,
+    "BID_MAX_ABSOLUTE": BID_MAX_ABSOLUTE,
+}
+
+
+def bid_tuning(platform: str, name: str):
+    """The value of bid tunable `name` for `platform`, falling back to the default.
+
+    Raises on an unknown name rather than returning a default: a typo'd tunable would
+    otherwise silently resolve to whatever the fallback happened to be, which is the
+    kind of bug that only shows up as a campaign spending oddly.
+    """
+    if name not in _BID_DEFAULTS:
+        raise KeyError(
+            f"unknown bid tunable {name!r} — known: {sorted(_BID_DEFAULTS)}")
+    return _BID_TUNING_OVERRIDES.get(platform, {}).get(name, _BID_DEFAULTS[name])
+
+
 # The advertiser account for LIVE writes (B3) is stored PER-TENANT in the DB
 # (cm_platform_accounts), set via `cm set-advertiser`. Blinkit doesn't expose it in its
 # read APIs, so it's captured once at onboarding. No global env var — see repo.get_advertiser.

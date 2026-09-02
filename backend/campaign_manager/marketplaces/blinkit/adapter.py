@@ -143,12 +143,27 @@ async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -
 
 
 def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
-                    product_names: list[str], product_pids: list[str],
-                    brand_name: str | None) -> tuple[float | None, str]:
-    """Match a campaign's product inside already-fetched results (pure, no I/O)."""
+                    products: list[dict] | None = None, brand_name: str | None = None,
+                    **_ignored) -> tuple[float | None, str]:
+    """Match a campaign's product inside already-fetched results (pure, no I/O).
+
+    Takes the raw `products` from `read_products` and pulls out what Blinkit's matcher
+    needs. That extraction used to live in `bid.py`, which meant the MP-agnostic engine
+    was reading Blinkit's field names — and on any other marketplace produced two empty
+    lists, so nothing ever matched and the run reported "product not in results"
+    forever, silently. Extraction belongs with the matcher that defines the shape.
+
+    `campaign_id` / `match_type` are accepted and ignored: Blinkit's search results
+    carry no per-slot campaign attribution, so matching is by product identity.
+    """
     from campaign_manager.marketplaces.blinkit import positions
-    return positions.locate(results, keyword, lat, lon, product_names=product_names,
-                            product_pids=product_pids, brand_name=brand_name)
+    products = products or []
+    return positions.locate(
+        results, keyword, lat, lon,
+        product_names=[p.get("name", "") for p in products if p.get("name")],
+        product_pids=[str(p["pid"]) for p in products if p.get("pid")],
+        brand_name=brand_name,
+    )
 
 
 async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,

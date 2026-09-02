@@ -102,7 +102,14 @@ class CampaignAdapter(Protocol):
         """
 
     async def read_products(self, client, campaign_id: int) -> list[dict]:
-        """Products a campaign advertises. Used to match our ad in search results."""
+        """Products a campaign advertises, as `{pid, name}`.
+
+        ⚠️ The SHAPE is part of the contract. The engine passes this straight to
+        `locate_position` and never reads inside it — an adapter returning its own
+        field names produces no match at all, silently, which reads as "our ad isn't
+        there" rather than as a bug. Blinkit's `pid` is a product id; Zepto's is the
+        `product_variant_id`, which is exactly what its consumer search reports back.
+        """
 
     # ── writes (guarded; only reached via writes.py) ─────────────────────────
     async def apply_budget(self, client, campaign_id: int, budget: float) -> dict:
@@ -159,14 +166,28 @@ class CampaignAdapter(Protocol):
         """Search results for one keyword at one store, ad-flagged."""
 
     def locate_position(self, results: list[dict], keyword: str,
-                        lat: float, lon: float, **kw: Any) -> Any:
-        """Find OUR sponsored product's rank in those results.
+                        lat: float, lon: float, *, products: list[dict],
+                        campaign_id: Any, match_type: str,
+                        brand_name: str | None) -> tuple[float | None, str]:
+        """Find OUR sponsored slot in those results. Returns (position | None, reason).
+
+        Every argument is passed unconditionally so the engine needs no
+        per-marketplace branching; an adapter ignores what its marketplace does not
+        expose, and should accept `**_ignored` so a later addition cannot break it.
+
+        - **Blinkit** has no per-slot attribution, so it matches by product identity
+          (pid, then name tokens, then brand) and ignores `campaign_id`/`match_type`.
+        - **Zepto** stamps every sponsored row with a `uclId` naming the campaign,
+          the campaign KEYWORD and the match type that won it, so it matches on
+          (campaign, keyword, match_type) — campaign alone would credit one slot to
+          every rule in a multi-keyword campaign.
 
         ⚠️ The failure mode to design against is silence, not error: a results
         source that cannot identify sponsored placements returns everything as
         organic, which reads as "nothing to do" and produces no bid decision, ever.
         Blinkit's DOM fallback was deleted for exactly this. An adapter that cannot
-        positively identify our ad should raise, not return an empty match.
+        positively identify our ad should say so in the reason string — and where it
+        genuinely could not look, `fetch_positions` should raise instead.
         """
 
     async def close_position_session(self, session: dict) -> None:

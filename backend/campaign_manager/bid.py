@@ -11,7 +11,7 @@ again. The pair is deliberate — the reset is best-effort (the campaign may be 
 Blinkit may refuse), and without the window-open floor a reset that failed last night is
 never recovered, so the bid ratchets up across days until it pins at `max_bid`.
 
-The decision (`_dynamic_step` / `compute_bid` / `_in_window`) is **pure** — ported from
+The decision (`compute_bid` / `next_raise_step` / `_in_window`) is **pure** — ported from
 `ad_campaigns.bid_optimizer` (validated v1 logic) and unit-tested in
 tests/test_bid_logic.py without Blinkit or the DB. The Blinkit-specific position
 sourcing lives behind `adapter.resolve_position` (D17). MVP scrapes every keyword live;
@@ -36,17 +36,6 @@ RESET_LOOKAHEAD_MINUTES = 2
 
 
 # ── Pure decision logic (unit-tested) ────────────────────────────────────────
-
-def _dynamic_step(distance: float) -> float:
-    """Bid step (₹) as a function of distance from target — bigger when far."""
-    if distance >= 4:
-        return 100
-    if distance >= 3:
-        return 50
-    if distance >= 1:
-        return 25
-    return 12.5
-
 
 def _time_ok(current_time: str, st: str | None, et: str | None) -> bool:
     """Is `current_time` inside the [st, et] time-of-day window? Handles a window that
@@ -213,29 +202,40 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
                 last_position: float | None, minutes_since_change: float | None, *,
                 last_holding_cpm: int | None = None, drift_paused: bool = False,
                 drift_pct: float = 0.0, drift_min_step: int = 5,
-                raise_step: int | None = None) -> tuple[int | None, str]:
+                raise_step: int) -> tuple[int | None, str]:
     """The bid decision. Returns (new_cpm | None, reason); None = no change.
 
     "Holding" means position is at target **or better** — better is a success, not an error
     to correct. Blinkit's sponsored slots sit on a sparse lattice (observed positions are
     ~89% 1/5/9/13/17), so a target of 3 is frequently unreachable and demanding exact
-    equality would mean never settling.
+    equality would mean never settling. Zepto's slots move around instead, which the same
+    `>` / `<=` comparisons handle without change.
 
     Three outcomes when off target: `recover` (snap back precisely — our drift overshot),
     `hold` (inside the reflection window, position hasn't improved), or `raise`.
 
-    When holding, `drift_pct` decides everything. At its default of **0 the behaviour is
-    exactly what it was before drift existed** — freeze at target, step down only when
-    strictly better than target — so the config kill switch is a true revert, not a
-    half-disabled state. Above 0, holding shaves `drift_pct`% off the bid each tick,
-    gated on two consecutive holding observations and on the post-overshoot pause.
+    `raise_step` is REQUIRED — the caller computes it with `next_raise_step`, which is the
+    only place that knows whether the last raise moved us. It used to be optional, falling
+    back to a fixed ₹100/50/25/12.5 ladder; that ladder is gone (see below).
+
+    When holding, `drift_pct` decides everything. Above 0, holding shaves `drift_pct`% off
+    the bid each tick, gated on two consecutive holding observations and on the
+    post-overshoot pause. At **0 the kill switch simply FREEZES the bid** — hold the
+    position, never trim.
+
+    ⚠️ 0 used to mean "step down the ₹100/50/25/12.5 ladder when better than target". That
+    ladder was removed 2026-09-01: it is denominated in rupees at Blinkit's CPM scale, so
+    on a ₹12 Zepto CPC it produced a ₹12.5-₹100 step — a safety switch more dangerous than
+    the feature it disabled, and reachable ONLY in the incident where someone reaches for
+    it. Freezing is what "turn off cost trimming" is assumed to mean anyway. Production
+    runs at the default of 7, so nothing live changed.
     """
     drift_on = drift_pct > 0
 
     if position > target:                        # ── off target ──
         # Our own drift went a step too far: go straight back to the bid we KNOW was
-        # holding, rather than a _dynamic_step raise that would overshoot past it and
-        # spend the next hour drifting back down.
+        # holding, rather than a fresh raise that would overshoot past it and spend the
+        # next hour drifting back down.
         if drift_on and is_recovery(position, target, current_cpm, last_holding_cpm):
             return int(last_holding_cpm), (
                 f"dropped to position {position:g} after trimming — going back to "
@@ -247,22 +247,22 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
             return None, (
                 f"holding at ₹{current_cpm} — position has not improved since the last "
                 f"change {minutes_since_change:.0f} min ago")
-        # `raise_step` comes from `next_raise_step` (escalates while the position isn't
-        # moving). Falling back to the distance tiers keeps the pure-function callers in
-        # the tests honest; the orchestration always supplies one.
-        step = raise_step if raise_step is not None else _dynamic_step(abs(position - target))
+        # `raise_step` comes from `next_raise_step`, which escalates while the position
+        # isn't moving. It is the caller's job precisely because only the caller knows
+        # that history.
+        step = raise_step
         new_cpm = min(int(current_cpm + step), int(max_bid))
         return new_cpm, (f"raising to ₹{new_cpm} (+₹{step:g}) because position "
                          f"{position:g} is worse than target {target}")
 
     # ── holding (at target or better) ──
-    if not drift_on:                             # legacy behaviour, unchanged
-        if position == target:
-            return None, f"target reached at position {position:g} — holding this bid"
-        step = _dynamic_step(abs(position - target))
-        new_cpm = max(int(current_cpm - step), int(min_bid))
-        return new_cpm, (f"lowering to ₹{new_cpm} (−₹{step:g}) because position "
-                         f"{position:g} is better than target {target} needs")
+    # Kill switch: hold the position and never trim. Deliberately a no-op rather than a
+    # step down — a rupee-denominated ladder cannot be right on two marketplaces whose
+    # bids differ by ~40x, and the switch exists to make the optimizer STOP, not to make
+    # it do something else.
+    if not drift_on:
+        return None, (f"target held at position {position:g} — cost trimming is switched "
+                      f"off, so the bid stays at ₹{current_cpm}")
 
     # A single reading was unreliable ~28% of the time in the v1 log, so never spend a
     # write on one. Requiring the PREVIOUS tick to have held too also stops us undoing a
@@ -321,6 +321,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
 
     adapter = get_adapter(platform)
+    mp = platform.title()          # what a human reads in the log lines below
+    # Resolved ONCE per run so every decision, log line and runtime write in this run
+    # agrees about whether drift is armed. Read per-marketplace: the percentages are
+    # shared, but a marketplace may override the rupee floors they bottom out at.
+    drift_pct = config.bid_tuning(platform, "BID_DRIFT_PCT")
     pw = browser = None
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
@@ -378,7 +383,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # Resolved ONCE, so everything downstream — the decision, the clamps, the
             # relaxation — keeps taking a plain int and never has to know `max_bid` is
             # optional. `rule.max_bid` must not be read directly below this line.
-            ceiling = resolve_ceiling(rule.max_bid, config.BID_MAX_ABSOLUTE)
+            ceiling = resolve_ceiling(rule.max_bid, config.bid_tuning(platform, "BID_MAX_ABSOLUTE"))
 
             if cid not in bids_cache:
                 try:
@@ -391,7 +396,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     bids_cache[cid], products_cache[cid] = {}, []
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
-                                  msg=f"could not read the campaign from Blinkit — {e}")
+                                  msg=f"could not read the campaign from {mp} — {e}")
 
             lat, lon = float(rule.lat or _DEFAULT_LAT), float(rule.lon or _DEFAULT_LON)
             live_cpm = bids_cache[cid].get(kw)
@@ -411,7 +416,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if status_cache[cid] is not None and status_cache[cid] != "running":
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning",
-                             msg=f"campaign is {status_cache[cid]} on Blinkit — not serving, "
+                             msg=f"campaign is {status_cache[cid]} on {mp} — not serving, "
                                  f"so there is nothing to optimise")
                 skipped += 1
                 continue
@@ -454,7 +459,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 was = f" (was ₹{live_cpm})" if live_cpm is not None else ""
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                              msg=(f"applied — bid is now ₹{rule.min_bid}{was}" if ok else
-                                  f"not applied — Blinkit rejected the change to ₹{rule.min_bid}"))
+                                  f"not applied — {mp} rejected the change to ₹{rule.min_bid}"))
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "open" if ok else "skip", live_cpm, rule.min_bid,
                                      "window opened → min", dry_run, ok))
@@ -493,7 +498,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     skipped += int(not ok)
                     logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                                  msg=(f"applied — bid is now ₹{bounded}" if ok else
-                                      f"not applied — Blinkit rejected the change to ₹{bounded}"))
+                                      f"not applied — {mp} rejected the change to ₹{bounded}"))
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                          "bounds" if ok else "skip", live_cpm, bounded,
                                          f"live bid {why} — forced into [{rule.min_bid}–"
@@ -502,9 +507,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                         runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
                     continue               # no position scrape — the bid just moved
 
+            # Handed to `locate_position` as-is. This used to unpack `name`/`pid` HERE,
+            # which meant the MP-agnostic engine knew Blinkit's field names — and on any
+            # other marketplace produced two empty lists, so nothing matched and the run
+            # reported "product not in results" forever, silently. The adapter owns the
+            # shape now; `read_products` returns `{pid, name}` on both marketplaces.
             products = products_cache[cid]
-            names = [p.get("name", "") for p in products if p.get("name")]
-            pids = [str(p["pid"]) for p in products if p.get("pid")]
 
             # On the tick that CONFIRMS the floor, Blinkit reads back min_bid but runtime
             # still holds yesterday's `last_cpm` — stepping from that would undo the open.
@@ -536,9 +544,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             try:
                 if fetch_error is not None:
                     raise fetch_error
+                # `campaign_id` and `match_type` matter on a marketplace whose search
+                # results say which campaign and keyword won each sponsored slot (Zepto
+                # does; Blinkit does not and ignores them). Passing them unconditionally
+                # keeps the engine free of per-marketplace branching.
                 position, source = adapter.locate_position(
                     results, kw, lat, lon,
-                    product_names=names, product_pids=pids, brand_name=rule.brand_name,
+                    products=products, campaign_id=cid, match_type=rule.match_type,
+                    brand_name=rule.brand_name,
                 )
             except Exception as e:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
@@ -556,16 +569,44 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     if reused else
                     f"found {len(results)} product{'' if len(results) == 1 else 's'}, "
                     f"{sponsored} sponsored")
-            if position is None:
+            # ── Not in the results ──────────────────────────────────────────
+            #
+            # Being absent is the WORST outcome, not a neutral one: the whole point of a
+            # sponsored slot is to appear. Skipping here means that once a keyword is
+            # outbid off the page it can never climb back — every tick sees "absent",
+            # skips, and the bid never moves. Worse, the next window open writes
+            # `min_bid`, which is lower still.
+            #
+            # So an opted-in marketplace treats absence as "worse than anything we could
+            # see" and raises. The synthetic position is `len(results) + 1` — a genuine
+            # lower bound on where we are, and one that keeps the escalation honest: if
+            # the next tick is still absent the position has not improved, so the step
+            # grows exactly as it would for a real slot.
+            #
+            # ⚠️ OPT-IN PER MARKETPLACE (`getattr(..., False)`), because the guard this
+            # replaces was protecting against something real on Blinkit: its DOM fallback
+            # reported every result as organic, so "absent" could mean a broken SOURCE
+            # rather than a missing ad, and raising against that is bidding on garbage.
+            # Zepto's marker is positive and verified (`tagsV2` + `uclId`), so absence
+            # there is a fact about the auction. Blinkit declares nothing and is unchanged.
+            absent = position is None
+            if absent and not getattr(adapter, "RAISE_WHEN_ABSENT", False):
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning", msg=f"{seen} — {source}, leaving the bid unchanged")
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "skip", current_cpm, current_cpm, source, dry_run, True))
                 continue
-            logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                          msg=f"{seen} — our ad is at position {position:g}",
-                          position=position)
+            if absent:
+                position = float(len(results) + 1)
+                logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              level="warning",
+                              msg=f"{seen} — {source}. Treating that as worse than position "
+                                  f"{len(results)} and bidding up to get on the page")
+            else:
+                logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              msg=f"{seen} — our ad is at position {position:g}",
+                              position=position)
 
             last_pos = runtime.last_position if runtime else None
             mins = _minutes_since(runtime.last_bid_updated_at if runtime else None, now)
@@ -583,8 +624,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             improved = last_pos is not None and position < last_pos
             step_now = next_raise_step(
                 current_cpm, None if open_stamp else (runtime.raise_step if runtime else None),
-                improved, min_step=config.BID_RAISE_MIN_STEP, pct=config.BID_RAISE_PCT,
-                escalate=config.BID_RAISE_ESCALATE,
+                improved, min_step=config.bid_tuning(platform, "BID_RAISE_MIN_STEP"),
+                pct=config.bid_tuning(platform, "BID_RAISE_PCT"),
+                escalate=config.bid_tuning(platform, "BID_RAISE_ESCALATE"),
             )
 
             # ── Unreachable target: chase what the ceiling can actually buy ──
@@ -593,7 +635,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 runtime.effective_target if runtime else None,
                 runtime.effective_at_max_bid if runtime else None,
             )
-            relaxed_now = eff is None and should_relax_target(
+            # NEVER relax against a synthetic position. Relaxing would set the working
+            # target to `len(results) + 1`, at which point the synthetic position equals
+            # the target, `compute_bid` reads it as HOLDING, and drift-down starts
+            # trimming the bid — undoing the very climb that is trying to get us onto the
+            # page. Relaxation is for "the ceiling cannot buy position 3"; it means
+            # nothing when we never saw a slot at all.
+            relaxed_now = (not absent) and eff is None and should_relax_target(
                 position, rule.target_position, current_cpm, ceiling, last_pos)
             if relaxed_now:
                 eff = int(position)
@@ -613,10 +661,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             new_cpm, reason = compute_bid(
                 position, target, current_cpm, rule.min_bid, ceiling,
                 last_pos, mins, last_holding_cpm=holding_cpm, drift_paused=drift_paused,
-                drift_pct=config.BID_DRIFT_PCT, drift_min_step=config.BID_DRIFT_MIN_STEP,
+                drift_pct=drift_pct, drift_min_step=config.bid_tuning(platform, "BID_DRIFT_MIN_STEP"),
                 raise_step=step_now,
             )
-            recovering = (config.BID_DRIFT_PCT > 0
+            recovering = (drift_pct > 0
                           and is_recovery(position, target, current_cpm, holding_cpm))
             # `reason` is already a full sentence. The escalation clause is added here
             # because only the orchestration knows the step grew — compute_bid is handed
@@ -657,7 +705,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # Our own drift overshot. Stop shaving for a while so we don't walk into
                 # the same wall every tick — but RAISES stay ungated, so a competitor
                 # outbidding us during the pause is still answered immediately.
-                rt["drift_paused_until"] = now + timedelta(minutes=config.BID_DRIFT_PAUSE_MINUTES)
+                rt["drift_paused_until"] = now + timedelta(minutes=config.bid_tuning(platform, "BID_DRIFT_PAUSE_MINUTES"))
 
             # No change (target held, HOLD, awaiting confirmation, or drift paused): record
             # the observed position, but do NOT write a History row — those every 15 min
@@ -695,13 +743,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                              msg=f"not applied — the bid is already ₹{final}")
             else:
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — Blinkit rejected the change to ₹{final}")
+                             msg=f"not applied — {mp} rejected the change to ₹{final}")
 
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
                 rt["last_cpm"] = final
                 rt["last_bid_updated_at"] = now.isoformat()
             runtime_rows.append(rt)
-            drifted = config.BID_DRIFT_PCT > 0 and position <= target
+            drifted = drift_pct > 0 and position <= target
             action = "recover" if recovering else ("drift" if drifted else "apply")
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                  action if ok else "skip", current_cpm, new_cpm, reason, dry_run, True))
@@ -747,6 +795,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
 
     adapter = get_adapter(platform)
+    mp = platform.title()
     pw = browser = None
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
@@ -793,7 +842,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                     status_cache[cid], bids_cache[cid] = None, {}
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
-                                  msg=f"could not read the current bid from Blinkit — {e}")
+                                  msg=f"could not read the current bid from {mp} — {e}")
 
             status = status_cache[cid]
             # An UNREADABLE bid is not a bid at the floor. This used to fall back to
@@ -833,7 +882,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=r.min_bid, current_cpm=current, min_bid=r.min_bid,
-                    max_bid=resolve_ceiling(r.max_bid, config.BID_MAX_ABSOLUTE),
+                    max_bid=resolve_ceiling(r.max_bid, config.bid_tuning(platform, "BID_MAX_ABSOLUTE")),
                     match_type=r.match_type, dry_run=dry_run, recent_writes=0,
                 )
                 err = None
@@ -844,7 +893,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
             logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                          msg=(f"would set bid to ₹{r.min_bid} — not sent" if (ok and dry_run)
                               else f"applied — bid is now ₹{r.min_bid}" if ok
-                              else f"not applied — Blinkit rejected the reset"
+                              else f"not applied — {mp} rejected the reset"
                                    + (f" ({err})" if err else "")))
             if ok and not dry_run:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(r.min_bid)})

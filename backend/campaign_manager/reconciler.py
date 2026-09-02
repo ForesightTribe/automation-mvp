@@ -355,6 +355,25 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
                          RECONCILE_JOB, _CLEANUP_CRON, True, initial_next_run(_CLEANUP_CRON),
                          params={"live": "true"}))
 
+    # ── Every schedule must SAY which marketplace it is for ──────────────────
+    #
+    # The schedule NAME carries the platform, but the runner never reads the name — it
+    # builds argv from `params`, and `jobs/types.py` fills in `_DEFAULT_MP` ("blinkit")
+    # when `marketplace` is absent. So without this stamp a Zepto reconcile produced
+    # rows called `auto:cm:bid:<tenant>:zepto:opt` that fired
+    # `cm bid-optimizer --marketplace blinkit` — Zepto's rules driving Blinkit's
+    # account, and once armed, writing real money to the wrong marketplace.
+    #
+    # It also matters to the uniqueness guard: `uq_jobs_active` keys on
+    # COALESCE(params->>'marketplace','blinkit'), so an unstamped Zepto job would
+    # collide with a running Blinkit one and be refused as a duplicate.
+    #
+    # Stamped LAST so it covers the cleanup row too. Blinkit rows gain an explicit
+    # `marketplace=blinkit`, which resolves to the same argv the default produced — so
+    # existing schedules keep behaving identically, just stated rather than assumed.
+    for x in d:
+        x.params = {**x.params, "marketplace": platform}
+
     return d
 
 
