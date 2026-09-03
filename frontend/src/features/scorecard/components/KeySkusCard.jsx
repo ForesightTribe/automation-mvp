@@ -6,7 +6,7 @@ import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
-import { formatCompactCurrency } from "../../../lib/format";
+import { formatCompactCurrency, formatNumber } from "../../../lib/format";
 
 const LIMIT = 20;
 
@@ -25,6 +25,10 @@ export const KeySkusCard = ({ from }) => {
 		limit: LIMIT,
 	});
 	const rows = data?.items ?? [];
+	// Which of the two the marketplace actually sent. Checked across the rows
+	// rather than on the first one, so a single SKU with no shortfall does not
+	// flip the whole column.
+	const unitsColumn = rows.some((r) => r.units_short != null);
 
 	const columns = [
 		{
@@ -48,12 +52,22 @@ export const KeySkusCard = ({ from }) => {
 			label: "Category",
 			render: (r) => r.proxy_category || "—",
 		},
-		{
-			key: "total_gmv",
-			label: "GMV",
-			align: "right",
-			render: (r) => formatCompactCurrency(r.total_gmv),
-		},
+		// Blinkit reports GMV per key SKU; Zepto sends units short instead and
+		// leaves GMV null. One column, labelled for whichever arrived — the
+		// alternative was rendering a unit count as currency.
+		unitsColumn
+			? {
+					key: "units_short",
+					label: "Units short",
+					align: "right",
+					render: (r) => formatNumber(r.units_short),
+				}
+			: {
+					key: "total_gmv",
+					label: "GMV",
+					align: "right",
+					render: (r) => formatCompactCurrency(r.total_gmv),
+				},
 		{
 			key: "potential_loss",
 			label: "Potential loss",

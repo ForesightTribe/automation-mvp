@@ -124,7 +124,11 @@ group by 1
 # bucket for this account ("Dairy, Bread & Eggs" covers every SKU), so grouping on
 # it yields a single useless row. Subcategory is the level that distinguishes.
 _WEEKLY_CATEGORIES = """
-select date_trunc('week', p.po_date)::date as from_date,
+-- Bucketed on the RECEIPT week, like every other query here. It used to use
+-- p.po_date, which put a category in a different week from the fill rate it
+-- was meant to explain: the two dates differ for 94% of deliveries, and the
+-- 24-Aug week came out Rs 8,876 apart between the tiles and this panel.
+select date_trunc('week', g.grn_date)::date as from_date,
        coalesce(s.subcategory_name, s.category_name, 'Uncategorized') as proxy_category,
        count(distinct i.product_variant_id) as skus,
        sum(i.po_qty)                        as total_po_quantity,
@@ -134,7 +138,8 @@ select date_trunc('week', p.po_date)::date as from_date,
        round(sum((i.po_qty - coalesce(i.grn_qty, 0)) * i.unit_price)::numeric, 2)
                                                                     as potential_loss
 from zepto_po_items i
-join zepto_po p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
+join zepto_po  p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
+join zepto_grn g on g.po_id = i.po_id and g.tenant_id = i.tenant_id
 left join (select distinct product_variant_id, subcategory_name, category_name
            from zepto_seller_sales where tenant_id = :t) s
   on s.product_variant_id = i.product_variant_id
@@ -276,21 +281,51 @@ async def get_trend(
     return out
 
 
+# Per-warehouse fill AND the rupees behind it.
+#
+# The value half is a separate aggregate over the line items, joined back on
+# location, because unit_price lives only on `zepto_po_items` while the fill
+# quantities live on the GRN header. Attempting both in one GROUP BY would
+# multiply the header quantities by the number of lines on each PO.
+#
+# This used to send potential_loss=0.0 and weighted_fill_rate_percent=fill_rate
+# as placeholders. A hardcoded zero reads as "this warehouse lost nothing",
+# which is the opposite of the truth for the worst ones — HOSKOTE NEW alone is
+# ~59% of all shortfall. Both are now real.
 _FACILITIES = """
+with value as (
+    select g.location,
+           sum((i.po_qty - coalesce(i.grn_qty, 0)) * i.unit_price) as potential_loss,
+           sum(coalesce(i.grn_qty, 0) * i.unit_price)              as received_value,
+           sum(i.po_qty * i.unit_price)                            as ordered_value
+    from zepto_po_items i
+    join zepto_po  p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
+    join zepto_grn g on g.po_id = i.po_id and g.tenant_id = i.tenant_id
+    where i.tenant_id = :t and i.grn_qty is not null
+      and (cast(:week as date) is null
+           or date_trunc('week', g.grn_date)::date = cast(:week as date))
+    group by g.location
+)
 select g.location                                       as facility_id,
        g.location                                       as facility_name,
        max(p.city)                                      as city_name,
        coalesce(sum(g.po_qty), 0)                       as total_po_quantity,
        coalesce(sum(g.grn_qty), 0)                      as total_grn_quantity,
        round((100.0 * sum(g.grn_qty)
-              / nullif(sum(g.po_qty), 0))::numeric, 2)  as fill_rate
+              / nullif(sum(g.po_qty), 0))::numeric, 2)  as fill_rate,
+       round(coalesce(max(v.potential_loss), 0)::numeric, 2) as potential_loss,
+       round((100.0 * max(v.received_value)
+              / nullif(max(v.ordered_value), 0))::numeric, 2)
+                                                        as weighted_fill_rate_percent
 from zepto_grn g
 left join zepto_po p on p.po_id = g.po_id and p.tenant_id = g.tenant_id
+left join value  v on v.location = g.location
 where g.tenant_id = :t
   and (cast(:week as date) is null
        or date_trunc('week', g.grn_date)::date = cast(:week as date))
 group by g.location
-order by (coalesce(sum(g.po_qty), 0) - coalesce(sum(g.grn_qty), 0)) desc
+order by coalesce(max(v.potential_loss), 0) desc,
+         (coalesce(sum(g.po_qty), 0) - coalesce(sum(g.grn_qty), 0)) desc
 """
 
 
@@ -301,15 +336,16 @@ async def get_facilities(
     pagination: Pagination,
     from_date: date | None = None,
 ) -> Page[FacilityRow]:
-    """Per-warehouse fill, worst shortfall first.
+    """Per-warehouse fill and loss, most expensive shortfall first.
 
     Zepto has no facility id separate from the location NAME
     (`KWPL_BLR-FRESH-HOSKOTE NEW`), so the name serves as both. Blinkit's
     numeric `facility_id` has no equivalent.
 
-    Value weighting is skipped here: it would need a second join through the
-    line items per location, and the unweighted figure is what ranks warehouses
-    for action anyway.
+    Both value figures come from the `value` CTE in the query — a second pass
+    over the line items, since only they carry `unit_price`. `potential_loss`
+    is null-safe: a warehouse whose POs have no scraped line items yet returns
+    0 rather than dropping out of the list.
     """
     rows = (
         await session.execute(
@@ -328,9 +364,10 @@ async def get_facilities(
                 total_po_quantity=int(r["total_po_quantity"]),
                 total_grn_quantity=int(r["total_grn_quantity"]),
                 fill_rate=float(r["fill_rate"] or 0),
-                # Unweighted stands in: see the note above.
-                weighted_fill_rate_percent=float(r["fill_rate"] or 0),
-                potential_loss=0.0,
+                weighted_fill_rate_percent=float(
+                    r["weighted_fill_rate_percent"] or r["fill_rate"] or 0
+                ),
+                potential_loss=float(r["potential_loss"] or 0),
                 manufacturer_rank=None,
             )
             for r in page
@@ -349,10 +386,14 @@ select i.product_variant_id                              as item_id,
            as potential_loss,
        coalesce(sum(i.po_qty) - sum(coalesce(i.grn_qty, 0)), 0) as units_short
 from zepto_po_items i
-join zepto_po p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
+join zepto_po  p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
+join zepto_grn g on g.po_id = i.po_id and g.tenant_id = i.tenant_id
 where i.tenant_id = :t and i.grn_qty is not null
+  -- Receipt week, not PO week. See the note on _WEEKLY_CATEGORIES: bucketing
+  -- these on p.po_date made this panel describe a different set of POs from
+  -- the tile directly above it.
   and (cast(:week as date) is null
-       or date_trunc('week', p.po_date)::date = cast(:week as date))
+       or date_trunc('week', g.grn_date)::date = cast(:week as date))
 group by i.product_variant_id
 order by potential_loss desc
 """
@@ -389,10 +430,10 @@ async def get_key_skus(
                 variant_description=None,
                 proxy_category=r["proxy_category"],
                 potential_loss=float(r["potential_loss"] or 0),
-                # Blinkit puts brand GMV here; Zepto's per-SKU equivalent would
-                # need a sales join that says nothing about the shortfall, so
-                # units short is the honest figure to carry.
-                total_gmv=float(r["units_short"] or 0),
+                # Zepto has no per-SKU GMV worth reporting here, so this stays
+                # null and `units_short` carries the figure. See KeySkuRow.
+                total_gmv=None,
+                units_short=int(r["units_short"] or 0),
             )
             for r in page
         ],

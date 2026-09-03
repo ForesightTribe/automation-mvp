@@ -43,7 +43,13 @@ class KeySkuRow(BaseModel):
     variant_description: str | None
     proxy_category: str | None
     potential_loss: float
-    total_gmv: float
+    # Blinkit reports brand GMV per key SKU; Zepto has no equivalent, and a
+    # sales join would say nothing about the shortfall. Zepto sends
+    # `units_short` instead and leaves this null — rather than putting a unit
+    # COUNT in a field named gmv, which the table then rendered as "Rs 1.3K"
+    # when it meant 1,268 missing units.
+    total_gmv: float | None = None
+    units_short: int | None = None
 
 
 class FacilityRow(BaseModel):
