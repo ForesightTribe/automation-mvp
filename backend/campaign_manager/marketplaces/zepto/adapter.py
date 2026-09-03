@@ -48,6 +48,10 @@ from campaign_manager.marketplaces.zepto.transport import setup  # noqa: F401  (
 # sub-minimum target is refused with a readable reason instead of arriving as an
 # opaque 400. Ours to mirror, not to argue with.
 MIN_BUDGET = ep.MIN_DAILY_BUDGET
+# Zepto enforces a keyword bid floor server-side but does not publish it — learned
+# from a live 400 (see endpoints.py). Declared so `writes.apply_bid` refuses locally
+# with a readable reason instead of sending a doomed WHOLE-CAMPAIGN PUT.
+MIN_BID = ep.MIN_BID
 
 # Resuming is a dedicated endpoint that flips the campaign back on with its own
 # budget and bids intact — nothing is re-submitted, so no budget is required and
@@ -55,6 +59,40 @@ MIN_BUDGET = ep.MIN_DAILY_BUDGET
 # campaign re-submission. `writes.py` reads this to decide whether a resume must
 # carry a budget; without it a Zepto resume is refused as "budget is None".
 RESUME_RESUBMITS = False
+
+# Absence means "bid up", not "do nothing".
+#
+# If our ad is not in the results, that is the worst outcome a sponsored campaign can
+# have — and on Zepto it is a FACT, not a guess: `tagsV2` marks sponsored rows
+# positively and `uclId` names the campaign that won each one, so "not ours" is
+# something we established rather than failed to detect.
+#
+# Blinkit does not opt in, for two reasons — neither of which is the DOM fallback an
+# earlier version of this comment cited (that was deleted long ago; Blinkit reads
+# `ads_campaign_id` from the API now, a positive marker like ours):
+#
+#   1. Blinkit is LIVE-ARMED and spending today. Zepto is not: every run is by hand.
+#      Changing how a running optimizer reacts to absence is a deployment decision.
+#   2. Its "absent" is LESS CERTAIN than ours. Blinkit's search rows do not say which
+#      campaign paid for them, so we recognise our own ad by product id, falling back
+#      to name tokens and then brand. A name-match miss produces a FALSE absent — and
+#      under this flag a false absent becomes an escalating bid increase for a product
+#      already sitting on the page. Zepto's `uclId` names the campaign outright, so
+#      "none of these is ours" is read, not inferred.
+#
+# Worth revisiting: measure how often Blinkit reaches "absent" via a pid match versus
+# the name fallback. If pids match reliably, reason 2 evaporates.
+#
+# Evidence this is the right call for Zepto (2026-09-02): a `pink toffee` search
+# returned 11 sponsored slots including two SUITCASE brands, so relevance filtering is
+# loose enough that almost anything can win a slot; and the campaign's own product was
+# confirmed stocked and serviceable at the same store. Absent at ₹10 therefore means
+# outbid, which is precisely what a bid can fix.
+RAISE_WHEN_ABSENT = True
+
+# Where position is measured when a rule carries no store of its own. Same Bengaluru
+# fallback the bid engine uses, kept here so the adapter is self-contained.
+_DEFAULT_LAT, _DEFAULT_LON = 12.9767, 77.5713
 
 _STATUS_FROM_ZEPTO = {
     ep.STATUS_ACTIVE: "running",
@@ -140,10 +178,180 @@ def bids_from_detail(detail: dict) -> dict[str, int]:
             for (text, _match), value in translate.bids_from_detail(detail).items()}
 
 
+async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
+                          ) -> dict[tuple[str, str], int]:
+    """Zepto's published minimum bid per (keyword, match_type). NOT YET WIRED.
+
+    Returns `{}`, which `effective_floor` reads as "no floor known" and falls back to
+    the rule's own `min_bid` — today's behaviour, unchanged. The method exists because
+    the engine calls it unconditionally; without it every Zepto tick raised
+    AttributeError inside the campaign-read `try` and reported "could not read the
+    campaign", skipping the rule entirely.
+
+    The endpoint IS known and verified live (2026-09-02) — the direct analogue of
+    Blinkit's `get_keyword_attributes`:
+
+        POST /ads-bff/api/v1/keyword/config   (`ep.KEYWORD_CONFIG`)
+        -> {"keywords": [{"keyword": "bread", "match_type": "EXACT"}]}
+        <- {"keywords": [{"keyword": "bread", "match_type": "EXACT", "min_bid": 9}]}
+
+    Wiring it is deliberately deferred (Deepansh, 2026-09-02) rather than done inside
+    a merge. Three things to honour when it is:
+
+    * **Floors vary per keyword** — bread 9, ricotta 3 in one sample. `MIN_BID = 10`
+      is currently enforced flat, so it is conservative and over-restrictive; it
+      should become the fallback for keywords the lookup does not cover.
+    * **EXACT only.** PHRASE and BROAD returned nothing for any keyword tested.
+    * **Absence is not permission.** `pink toffee` is missing from the response for
+      every match type, yet a live write was refused against a floor of 10.
+
+    Key the returned dict in OUR vocabulary (see `blinkit.adapter._our_match`) — the
+    engine looks up `(keyword, rule.match_type)` and must not translate.
+    """
+    return {}
+
+
 async def read_products(client, campaign_id: int) -> list[dict]:
-    """The products a campaign advertises — used to identify our own ad in search."""
+    """The products a campaign advertises, as `{pid, name}` — the shape every adapter
+    returns, so the bid engine never has to know a marketplace's field names.
+
+    Zepto calls it `product_variant_id`, and that id is what consumer search reports
+    as `variant_id`, so the join is exact — no name matching needed. `name` is often
+    absent here; it is carried when present only for readable logs.
+    """
     detail = await zc.get_campaign_detail(client, campaign_id)
-    return list(detail.get("ad_assets_pla") or [])
+    return [{"pid": str(a["product_variant_id"]), "name": a.get("name") or ""}
+            for a in (detail.get("ad_assets_pla") or [])
+            if a.get("product_variant_id")]
+
+
+# ── position sourcing (bid optimisation only) ───────────────────────────────
+#
+# ⚠️ `pw` is None on Zepto. The engines unpack `(playwright, browser, client)` from
+# `setup()` and hand the first element straight to `open_position_session` — but
+# Zepto's setup returns `(None, None, client)` because its API needs no persistent
+# browser. So the position session launches its OWN Playwright and owns it.
+#
+# The consumer scrape is the PUBLIC scraper, shared with the keyword scrape rather
+# than reimplemented, so a Zepto payload change gets fixed once. It manages its own
+# AWS WAF pass in-session (`_ensure_pass`, ~4-6 min, re-minted by re-navigating the
+# same page) — do NOT wrap a second pass lifecycle around it.
+
+async def open_position_session(pw, lat: float | None = None,
+                                lon: float | None = None) -> dict:
+    """Open one consumer-side session for a whole run.
+
+    `pw` is accepted for signature compatibility and IGNORED — see the note above.
+    The returned dict carries its own playwright handle so `close_position_session`
+    can shut both down.
+
+    Raises RuntimeError when no session could be established: the bid loop must be
+    able to tell "our ad isn't there" from "we could not look".
+    """
+    from playwright.async_api import async_playwright
+    from scraper.platforms.zepto.public_data import scraper as zs
+
+    lat = _DEFAULT_LAT if lat is None else float(lat)
+    lon = _DEFAULT_LON if lon is None else float(lon)
+    driver = await async_playwright().start()
+    try:
+        session = await zs.open_session(driver, lat, lon)
+    except Exception:
+        await driver.stop()
+        raise
+    if not session:
+        await driver.stop()
+        raise RuntimeError(
+            f"Zepto: could not open a consumer search session at ({lat}, {lon})")
+    session["_pw"] = driver
+    return session
+
+
+async def close_position_session(session: dict) -> None:
+    """Release the session AND the playwright driver it owns. Never raises — a
+    teardown failure must not fail a run that already did its work."""
+    from scraper.platforms.zepto.public_data import scraper as zs
+
+    if not session:
+        return
+    try:
+        await zs.close_session(session)
+    except Exception as e:
+        logger.debug(f"Zepto: position session teardown failed ({e})")
+    driver = session.get("_pw")
+    if driver is not None:
+        try:
+            await driver.stop()
+        except Exception as e:
+            logger.debug(f"Zepto: playwright teardown failed ({e})")
+
+
+async def fetch_positions(session: dict, keyword: str, lat: float,
+                          lon: float) -> list[dict]:
+    """Search results for one keyword at one store, ad-flagged.
+
+    ⚠️ Zepto binds a search to a store by HEADER, not by coordinate — sending lat/lon
+    alone returns a valid 200 carrying a generic catalog, with nothing in the response
+    to say so. The store id is passed explicitly where we have one; otherwise the
+    scraper resolves the coordinate, which spends a separate and independently
+    rate-limited budget (`get_page`) that this project has exhausted once before.
+
+    Raises when the search could not be performed — a block, or a transport failure —
+    so the caller records an error rather than a silent "nothing found". That
+    distinction is the point: "we could not look" must never read as "our ad is not
+    there", which under `RAISE_WHEN_ABSENT` would bid money against no evidence.
+
+    A `gate` (299 LOGIN_REQUIRED) or `rate` (429) is retried ONCE after the pause the
+    scraper itself publishes. Both are transient and shared — 299 is documented as
+    self-clearing in about a minute — so losing a whole 15-minute tick to one is
+    wasteful when we know how long to wait. Anything still blocked after that raises.
+    """
+    import asyncio
+
+    from scraper.platforms.zepto.public_data import endpoints as pub_ep
+    from scraper.platforms.zepto.public_data import scraper as zs
+
+    async def _once():
+        return await zs.search(session, keyword, lat=lat, lon=lon,
+                               merchant_id=session.get("_merchant_id") or None)
+
+    res = await _once()
+    kind = res.get("kind")
+    if res.get("blocked") and kind in ("gate", "rate"):
+        pause = pub_ep.GATE_PAUSE_S if kind == "gate" else pub_ep.RATE_PAUSE_S
+        logger.warning(
+            f"Zepto {kind} on {keyword!r} ({res.get('error')}) — waiting {pause:g}s and "
+            f"retrying once; this throttle is shared and self-clearing")
+        await asyncio.sleep(pause)
+        res = await _once()
+
+    if res.get("blocked"):
+        raise RuntimeError(
+            f"Zepto blocked the search for {keyword!r}: {res.get('error') or 'blocked'}")
+    if not res.get("ok"):
+        raise RuntimeError(
+            f"Zepto search for {keyword!r} failed: {res.get('error') or 'unknown error'}")
+    return res.get("products") or []
+
+
+def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
+                    products: list[dict] | None = None, campaign_id=None,
+                    match_type: str = "EXACT", brand_name: str | None = None,
+                    **_ignored) -> tuple[float | None, str]:
+    """Find THIS campaign+keyword's sponsored slot in already-fetched results (pure).
+
+    Attribution is by campaign id from the row's `uclId`, not by product-name
+    similarity — see positions.py. `products` supplies the campaign's variant ids as
+    a secondary signal for the case where the tracking id does not decode.
+    """
+    from campaign_manager.marketplaces.zepto import positions
+
+    return positions.locate(
+        results, keyword, lat, lon,
+        campaign_id=campaign_id, match_type=match_type,
+        variant_ids=[p.get("pid") for p in (products or [])],
+        brand_name=brand_name,
+    )
 
 
 async def read_wallet(client) -> dict:
@@ -192,7 +400,7 @@ async def _targeting_options(client) -> dict:
 
 
 async def _put_one_field(client, campaign_id: int, field_path: str,
-                         mutate) -> dict:
+                         mutate, *, base: dict | None = None) -> dict:
     """THE Zepto write primitive: change exactly one field of a live campaign.
 
     Zepto has no targeted write. Budget and bid are both a PUT of the WHOLE
@@ -205,8 +413,15 @@ async def _put_one_field(client, campaign_id: int, field_path: str,
     That single check catches both failure modes at once — a translator bug, and a
     campaign edited in the dashboard between our read and our write. The second is
     routine here, not exotic: one session per user means a human is often in there.
+
+    `base` lets a caller that ALREADY read the campaign hand that payload in rather
+    than causing a second read. `apply_bid` needs one to locate the keyword's index,
+    and reusing it is not merely cheaper: computing the index from one read and
+    mutating a different one means the index can point at the wrong keyword if the
+    campaign's keyword list changed in between. Same read, same indices.
     """
-    base, _detail = await _rebased_payload(client, campaign_id)
+    if base is None:
+        base, _detail = await _rebased_payload(client, campaign_id)
     new = json.loads(json.dumps(base))      # deep copy; payloads nest
     mutate(new)
 
@@ -251,25 +466,30 @@ async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
     before this is trusted live (see PLAN-cm.md).
     """
     target = int(round(float(cpm)))
-    index = await _keyword_index(client, campaign_id, keyword, match_type)
+    # ONE read, used for both the index lookup and the mutation — see `_put_one_field`.
+    base, _detail = await _rebased_payload(client, campaign_id)
+    index = _keyword_index(base, campaign_id, keyword, match_type)
     resp = await _put_one_field(
         client, campaign_id, f".keyword_targeting[{index}].bid_value",
         lambda p: p["keyword_targeting"][index].update(bid_value=target),
+        base=base,
     )
     logger.info(
         f"Zepto campaign {campaign_id}: bid[{keyword!r}/{match_type}] -> ₹{target}")
     return {"success": True, "response": resp}
 
 
-async def _keyword_index(client, campaign_id: int, keyword: str,
-                         match_type: str) -> int:
-    """Where this keyword sits in `keyword_targeting[]`.
+def _keyword_index(payload: dict, campaign_id: int, keyword: str,
+                   match_type: str) -> int:
+    """Where this keyword sits in an ALREADY-READ payload's `keyword_targeting[]`.
 
     Matched on (text, match_type) — the text alone is ambiguous, because Zepto bids
     one keyword under several match types at different rates, and writing to the
     wrong one would move a bid nobody asked to move.
+
+    Pure, and takes the payload rather than fetching one: the index is only valid for
+    the exact list it was computed from, so the caller must mutate that same payload.
     """
-    payload, _ = await _rebased_payload(client, campaign_id)
     for i, kw in enumerate(payload.get("keyword_targeting", [])):
         if kw.get("text") == keyword and kw.get("match_type") == match_type:
             return i

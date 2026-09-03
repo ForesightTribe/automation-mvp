@@ -96,6 +96,22 @@ def _api_match(match_type: str | None) -> str:
     return "SMART" if m == "BROAD" else m
 
 
+def _our_match(api_match: str | None) -> str:
+    """Blinkit's bid-range key → OUR vocabulary. The inverse of `_api_match`.
+
+    `read_bid_floors` keys its result with this, so the returned dict speaks the same
+    language as `cm_bid_rules.match_type` and the engine can look a floor up with a
+    plain `floors.get((kw, rule.match_type))`.
+
+    It used to key by Blinkit's names, which forced `bid.py` to call
+    `adapter._api_match(...)` — the MP-agnostic engine reaching into a private function
+    of one adapter. Zepto has no such function, so every Zepto bid run raised
+    AttributeError. Translation belongs on the side that owns the vocabulary.
+    """
+    m = (api_match or "EXACT").upper().replace("_MATCH", "")
+    return "BROAD" if m == "SMART" else m
+
+
 async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
                           ) -> dict[tuple[str, str], int]:
     """Blinkit's minimum bid per (keyword, match_type) for a campaign (a READ — safe).
@@ -130,7 +146,7 @@ async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
         for api_match, rng in (a.get("bid_range") or {}).items():
             if not isinstance(rng, dict) or rng.get("min") is None:
                 continue
-            floors[(kw, _api_match(api_match))] = int(rng["min"])
+            floors[(kw, _our_match(api_match))] = int(rng["min"])
     return floors
 
 
@@ -189,12 +205,27 @@ async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -
 
 
 def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
-                    product_names: list[str], product_pids: list[str],
-                    brand_name: str | None) -> tuple[float | None, str]:
-    """Match a campaign's product inside already-fetched results (pure, no I/O)."""
+                    products: list[dict] | None = None, brand_name: str | None = None,
+                    **_ignored) -> tuple[float | None, str]:
+    """Match a campaign's product inside already-fetched results (pure, no I/O).
+
+    Takes the raw `products` from `read_products` and pulls out what Blinkit's matcher
+    needs. That extraction used to live in `bid.py`, which meant the MP-agnostic engine
+    was reading Blinkit's field names — and on any other marketplace produced two empty
+    lists, so nothing ever matched and the run reported "product not in results"
+    forever, silently. Extraction belongs with the matcher that defines the shape.
+
+    `campaign_id` / `match_type` are accepted and ignored: Blinkit's search results
+    carry no per-slot campaign attribution, so matching is by product identity.
+    """
     from campaign_manager.marketplaces.blinkit import positions
-    return positions.locate(results, keyword, lat, lon, product_names=product_names,
-                            product_pids=product_pids, brand_name=brand_name)
+    products = products or []
+    return positions.locate(
+        results, keyword, lat, lon,
+        product_names=[p.get("name", "") for p in products if p.get("name")],
+        product_pids=[str(p["pid"]) for p in products if p.get("pid")],
+        brand_name=brand_name,
+    )
 
 
 async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,

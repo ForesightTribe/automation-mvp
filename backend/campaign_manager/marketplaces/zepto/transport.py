@@ -39,14 +39,17 @@ kills ours mid-run, and vice versa. `_reauth` handles that, with a hard cap — 
 its docstring for why unbounded retry is actively harmful here.
 """
 import asyncio
+import os
 from typing import Any
 
 import httpx
 
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
+from app.utils.time import now_ist
 from campaign_manager.marketplaces.zepto import endpoints as ep
 from platform_auth import service as auth_service
+from platform_auth import store as auth_store
 
 _TIMEOUT = 45
 _PLATFORM = "zepto"
@@ -56,6 +59,17 @@ _PLATFORM = "zepto"
 # emailed OTP and walks the auth circuit breaker toward tripping, so a client
 # working in the dashboard could cost us a whole day's logins in minutes.
 MAX_REAUTH_PER_RUN = 2
+
+# The CROSS-RUN bound. `MAX_REAUTH_PER_RUN` resets with every subprocess, and the bid
+# optimizer is a new subprocess every 15 minutes — so on its own it permits ~32 logins
+# across a 4-hour window. This floor is measured against the shared `last_login_at`,
+# so every run on every machine sees the same clock.
+#
+# 30 minutes: long enough that a sustained fight costs at most 2 logins an hour instead
+# of 4-8, short enough that a genuine one-off eviction (someone glanced at the
+# dashboard and left) still recovers on the next tick or two.
+MIN_REAUTH_INTERVAL_SECONDS = int(
+    os.getenv("CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS", str(30 * 60)))
 
 # CloudFront's answers when the WAF is unsatisfied: 202 = challenge, 429 = present
 # but rejected (or the `waf-enabled` header missing). Both mean "re-mint", not
@@ -128,23 +142,51 @@ class ZeptoClient:
         logger.info(f"Zepto WAF token re-minted (#{self.remint_count})")
 
     async def _reauth(self) -> bool:
-        """Re-login after eviction. Returns False once the run's budget is spent.
+        """Re-login after eviction. Returns False when either budget is spent.
 
-        Bounded deliberately. Zepto allows one session per user, so this ping-pongs
-        against a human: we log in, they are evicted, they log back in, we are
-        evicted. Left unbounded that loop burns an OTP per cycle and trips the
-        circuit breaker — turning "someone opened the dashboard" into "auto-login is
-        suspended for this tenant".
+        Bounded TWICE, because the two limits answer different questions.
+
+        `MAX_REAUTH_PER_RUN` bounds one run: it stops a single process ping-ponging
+        with a human inside a few minutes.
+
+        `MIN_REAUTH_INTERVAL_SECONDS` bounds across runs, and it is the one that
+        actually matters for bidding. The optimizer runs every 15 minutes as a
+        SEPARATE SUBPROCESS, so the per-run counter resets every tick — a 4-hour
+        window is 16 fresh budgets, i.e. up to 32 logins, 32 OTP emails and a client
+        evicted 32 times in an afternoon. Nothing observed that: these logins SUCCEED,
+        so `consecutive_failures` resets each cycle and the circuit breaker stays
+        green throughout. The shared `last_login_at` timestamp is the only cross-run
+        signal available without new schema.
+
+        Refusing is the right outcome, not a degraded one: if someone is holding the
+        session, another login cannot fix the run — it only takes their dashboard away
+        again. The run fails visibly instead, which is what surfaces the real problem
+        (no service user) rather than hiding it behind a retry.
         """
         if self.reauth_count >= MAX_REAUTH_PER_RUN:
             return False
-        self.reauth_count += 1
-        logger.warning(
-            f"Zepto session rejected (401) — re-login {self.reauth_count}/"
-            f"{MAX_REAUTH_PER_RUN}. If this recurs, someone is probably using the "
-            "dashboard on the same account; a service user would end it."
-        )
+
         async with AsyncSessionLocal() as db:
+            last = await auth_store.last_login(db, self.tenant_id, _PLATFORM)
+            if last is not None:
+                age = (now_ist() - last).total_seconds()
+                if age < MIN_REAUTH_INTERVAL_SECONDS:
+                    logger.error(
+                        f"Zepto session rejected (401), but the last login was only "
+                        f"{age / 60:.0f} min ago (floor {MIN_REAUTH_INTERVAL_SECONDS / 60:.0f} "
+                        f"min) — NOT logging in again. Someone is almost certainly using "
+                        f"the dashboard on this account: Zepto allows one session per "
+                        f"user, so each of our logins takes theirs away and burns an OTP. "
+                        f"This run will fail; a service user is the fix."
+                    )
+                    return False
+
+            self.reauth_count += 1
+            logger.warning(
+                f"Zepto session rejected (401) — re-login {self.reauth_count}/"
+                f"{MAX_REAUTH_PER_RUN}. If this recurs, someone is probably using the "
+                "dashboard on the same account; a service user would end it."
+            )
             session = await auth_service.ensure(db, self.tenant_id, _PLATFORM)
         self.jwt = session.raw.get("jwt", "")
         self.brand_ids = session.raw.get("brand_ids", []) or self.brand_ids

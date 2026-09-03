@@ -8,7 +8,7 @@ the Blinkit product-matching (positions.match_position).
 from datetime import datetime
 
 from campaign_manager.bid import (
-    HOLD_MINUTES, _dynamic_step, _in_window, _window_start, compute_bid, is_recovery,
+    HOLD_MINUTES, _in_window, _window_start, compute_bid, is_recovery,
     next_raise_step, resolve_ceiling, should_relax_target, stored_effective_target,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
@@ -18,20 +18,11 @@ NOW = datetime(2026, 8, 1, 14, 0)   # 14:00 on 2026-08-01
 
 # ── step ─────────────────────────────────────────────────────────────────────
 
-def test_dynamic_step_tiers():
-    """Still the step for the LOWER branch (reached only when drift is disabled). The
-    RAISE branch no longer uses it — see the escalating-raise tests below."""
-    assert _dynamic_step(5) == 100 and _dynamic_step(4) == 100
-    assert _dynamic_step(3.5) == 50 and _dynamic_step(3) == 50
-    assert _dynamic_step(2) == 25 and _dynamic_step(1) == 25
-    assert _dynamic_step(0.5) == 12.5 and _dynamic_step(0) == 12.5
-
-
 # ── compute_bid ──────────────────────────────────────────────────────────────
 
 def test_at_target_no_change():
-    new, reason = compute_bid(3, 3, 50, 10, 200, None, None)
-    assert new is None and "target reached" in reason
+    new, reason = compute_bid(3, 3, 50, 10, 200, None, None, raise_step=25)
+    assert new is None and "switched off" in reason
 
 
 def test_below_target_raises():
@@ -45,36 +36,40 @@ def test_raise_clamped_to_max():
     assert new == 200
 
 
-def test_above_target_lowers():
-    # pos 1 < target 3 → distance 2 → step 25 → 100 - 25 = 75
-    new, _ = compute_bid(1, 3, 100, 10, 200, None, None)
-    assert new == 75
-
-
-def test_lower_clamped_to_min():
-    new, _ = compute_bid(1, 3, 20, 10, 200, None, None)    # 20 - 25 = -5 → clamp 10
-    assert new == 10
+def test_drift_off_freezes_instead_of_stepping_down():
+    """Was a ₹100/50/25/12.5 ladder down. That ladder is GONE (2026-09-01): it is
+    denominated in rupees at Blinkit's CPM scale, so on a ₹12 Zepto CPC it produced a
+    ₹12.5-₹100 step — a kill switch more dangerous than the feature it disables, and
+    reachable only in the incident where someone reaches for it."""
+    for cpm in (100, 20):
+        new, reason = compute_bid(1, 3, cpm, 10, 200, None, None, raise_step=25)
+        assert new is None, f"drift-off must hold, not step down (cpm={cpm})"
+        assert "switched off" in reason
 
 
 def test_hold_when_no_improvement_inside_window():
     # pos didn't improve (6 >= last 6) and only 5min < 10min → HOLD, no change
-    new, reason = compute_bid(6, 3, 50, 10, 200, last_position=6, minutes_since_change=5)
+    new, reason = compute_bid(6, 3, 50, 10, 200, last_position=6, minutes_since_change=5,
+                              raise_step=50)
     assert new is None and "has not improved" in reason
 
 
 def test_no_hold_when_improved():
     # pos improved (6 < last 8) → not a hold, raise even though recent
-    new, _ = compute_bid(6, 3, 50, 10, 200, last_position=8, minutes_since_change=5)
+    new, _ = compute_bid(6, 3, 50, 10, 200, last_position=8, minutes_since_change=5,
+                         raise_step=50)
     assert new == 100
 
 
 def test_no_hold_after_reflection_window():
-    new, _ = compute_bid(6, 3, 50, 10, 200, last_position=6, minutes_since_change=HOLD_MINUTES + 1)
+    new, _ = compute_bid(6, 3, 50, 10, 200, last_position=6,
+                         minutes_since_change=HOLD_MINUTES + 1, raise_step=50)
     assert new == 100                                       # waited long enough → raise
 
 
 def test_no_hold_when_never_changed():
-    new, _ = compute_bid(6, 3, 50, 10, 200, last_position=6, minutes_since_change=None)
+    new, _ = compute_bid(6, 3, 50, 10, 200, last_position=6, minutes_since_change=None,
+                         raise_step=50)
     assert new == 100                                       # no last change → not held
 
 
@@ -194,13 +189,17 @@ def test_overnight_window_is_closed_AT_its_stop_time():
 #
 # DRIFT is the keyword-only knob; at 0 (the default) every test above still describes the
 # behaviour, which is the point of the kill switch.
-DRIFT = {"drift_pct": 7, "drift_min_step": 5}
+# `raise_step` is required now that the ₹100/50/25/12.5 ladder is gone; these tests
+# exercise the HOLDING branch, so the value only matters when one falls through to a
+# raise — and then it should be visible in the assertion.
+DRIFT = {"drift_pct": 7, "drift_min_step": 5, "raise_step": 50}
 
 
-def test_drift_off_by_default_keeps_the_old_freeze():
-    """The kill switch must be a TRUE revert, not a half-disabled state."""
-    assert compute_bid(3, 3, 400, 100, 900, 3, 30)[0] is None
-    assert compute_bid(1, 3, 400, 100, 900, 1, 30)[0] == 375     # legacy 'lower' still steps
+def test_drift_off_holds_at_target_and_below():
+    """`drift_pct=0` means STOP optimising cost — hold the bid, whether we are exactly at
+    target or better than it. Not 'do something cheaper instead'."""
+    assert compute_bid(3, 3, 400, 100, 900, 3, 30, raise_step=50)[0] is None
+    assert compute_bid(1, 3, 400, 100, 900, 1, 30, raise_step=50)[0] is None
 
 
 def test_drift_shaves_a_percentage_when_holding():
@@ -245,7 +244,7 @@ def test_drift_stops_once_sitting_on_min_bid():
 # ── recovery (our own drift overshot) vs a competitor outbidding us ──────────
 
 def test_recovery_snaps_back_to_the_last_holding_bid():
-    """A _dynamic_step raise from 299 would jump to 399 and overshoot the known-good 322
+    """A normal raise from 299 would step past the known-good 322
     by ₹77, which we would then spend an hour drifting back off."""
     new, reason = compute_bid(9, 3, 299, 100, 900, 1, 30, last_holding_cpm=322, **DRIFT)
     assert new == 322 and "going back to" in reason
@@ -253,9 +252,9 @@ def test_recovery_snaps_back_to_the_last_holding_bid():
 
 def test_market_moving_against_us_is_a_normal_raise_not_a_recovery():
     """Off target AT the last holding bid = a competitor moved, not our overshoot. The
-    snap-back would be a no-op, so it must fall through to the raise ladder."""
+    snap-back would be a no-op, so it must fall through to a normal raise."""
     new, reason = compute_bid(9, 3, 322, 100, 900, 1, 30, last_holding_cpm=322, **DRIFT)
-    assert new == 422 and "raising to" in reason             # distance 6 → step 100
+    assert new == 372 and "raising to" in reason             # 322 + the supplied step
 
 
 def test_is_recovery_predicate():
@@ -271,7 +270,7 @@ def test_pause_never_blocks_a_raise():
     must answer on the very next tick, or we sit off-target for 90 minutes."""
     new, reason = compute_bid(9, 3, 322, 100, 900, 1, 30,
                               last_holding_cpm=322, drift_paused=True, **DRIFT)
-    assert new == 422 and "raising to" in reason
+    assert new == 372 and "raising to" in reason
 
 
 def test_reflection_hold_still_applies_with_drift_on():
@@ -383,14 +382,15 @@ def test_no_relaxed_target_when_unset():
 def test_relaxed_target_makes_the_achieved_position_count_as_held():
     """The point of relaxing: at position 5 against a relaxed target of 5, drift takes over
     and starts cutting cost, instead of recomputing max_bid forever."""
-    new, reason = compute_bid(5, 5, 900, 100, 900, 5, 30, drift_pct=7, drift_min_step=5)
+    new, reason = compute_bid(5, 5, 900, 100, 900, 5, 30, drift_pct=7, drift_min_step=5,
+                              raise_step=50)
     assert new == 837 and "trimming cost" in reason
 
 
 def test_without_relaxing_a_pinned_bid_just_recomputes_the_ceiling():
     """Today's behaviour, kept as the contrast: the raise clamps to max_bid, the no-op
     guardrail rejects it, and nothing changes — every 15 minutes, all day."""
-    new, _ = compute_bid(5, 1, 900, 100, 900, 5, 30)
+    new, _ = compute_bid(5, 1, 900, 100, 900, 5, 30, raise_step=50)
     assert new == 900
 
 
@@ -420,7 +420,7 @@ def test_resolved_ceiling_is_always_an_int():
 def test_unbounded_rule_still_climbs_and_still_clamps():
     """With no rule ceiling the raise is bounded by the absolute one, not unbounded."""
     ceiling = resolve_ceiling(None, 10000)
-    new, _ = compute_bid(9, 3, 9950, 100, ceiling, 9, 30)
+    new, _ = compute_bid(9, 3, 9950, 100, ceiling, 9, 30, raise_step=50)
     assert new == 10000
 
 

@@ -53,6 +53,44 @@ USER_AGENT = (
 # choke-point gives a reason instead of a 400.
 MIN_DAILY_BUDGET = 500
 
+# ── Keyword bid floors ──────────────────────────────────────────────────────
+#
+# Zepto PUBLISHES a per-keyword minimum, read-only, one request for a whole list —
+# the direct analogue of Blinkit's `get_keyword_attributes`:
+KEYWORD_CONFIG = "/ads-bff/api/v1/keyword/config"    # POST
+#
+#     -> {"keywords": [{"keyword": "bread", "match_type": "EXACT"}]}
+#     <- {"keywords": [{"keyword": "bread", "match_type": "EXACT", "min_bid": 9}]}
+#
+# Measured live 2026-09-02 (EXACT): bread 9 · milk 9 · ricotta 3 · sourdough bread 3.
+#
+# ⚠️ THE FLOOR IS PER KEYWORD AND IT VARIES (3 to 9 in one sample). Any single global
+# number is therefore wrong for somebody — which is what `MIN_BID` below is, and why
+# it must become a FALLBACK rather than the floor once `read_bid_floors` exists.
+#
+# ⚠️ EXACT ONLY. PHRASE and BROAD returned nothing for any keyword tested. What Zepto
+# actually enforces for those is still unknown.
+#
+# ⚠️ COVERAGE IS INCOMPLETE, and silence is not permission. `pink toffee` is absent
+# from the response for every match type, yet a live PUT was refused against it:
+#
+#     keyword bid validation failed: keyword 'pink toffee' (EXACT)
+#     bid 8.00 is below minimum bid 10.00
+#
+# The hypothesis that fits every observation: a keyword WITH a config gets its own
+# floor, and one WITHOUT gets a default of 10. That makes ₹10 the right value for the
+# unknown case and the wrong value for `bread` (9) or `ricotta` (3).
+#
+# ⚠️ Not the ₹8 in `campaigns/metadata` either — that is
+# `bid_multiplier_types[pdp].minimum_bid`, a per-PLACEMENT floor. Adopting it would
+# have put our guardrail BELOW the real limit.
+#
+# INTERIM: `MIN_BID` is enforced unconditionally by `writes.apply_bid`, so today it is
+# deliberately CONSERVATIVE — it refuses a ₹3 bid on `ricotta` that Zepto would have
+# accepted. Safe (never writes below any observed floor), but over-restrictive, and it
+# is the reason `read_bid_floors` is worth building.
+MIN_BID = 10
+
 # Campaign statuses observed live. `DAILY_BUDGET_EXHAUSTED` is Zepto's equivalent of
 # Blinkit's ON_HOLD: live but out of budget, so stoppable rather than startable.
 # ⚠️ Not known to be the complete set — treat an unseen value as unknown, not as an

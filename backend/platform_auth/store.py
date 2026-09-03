@@ -197,6 +197,25 @@ async def login_email(db: AsyncSession, tenant_id: str, platform: str) -> str | 
     return creds.email if creds else None
 
 
+async def last_login(db: AsyncSession, tenant_id: str, platform: str):
+    """When this platform last completed a FULL login, or None if never.
+
+    `save()` stamps `last_login_at` on every successful login, so this is the shared
+    record of "a secret was consumed and someone's session was replaced" — which is
+    what a caller needs to avoid re-logging in on top of itself.
+
+    It exists because an in-process counter cannot see across runs. Zepto permits one
+    session per user, and its bid optimizer runs every 15 minutes as a SEPARATE
+    subprocess, so a per-run limit resets every tick: a client working in the
+    dashboard could be evicted every 15 minutes all day, each cycle burning an emailed
+    OTP. The circuit breaker cannot catch it either — those logins SUCCEED, so
+    `consecutive_failures` resets each time. This timestamp is the only cross-run
+    signal available without new schema.
+    """
+    row = await _row(db, tenant_id, platform)
+    return row.last_login_at if row else None
+
+
 async def mark_validated(db: AsyncSession, tenant_id: str, platform: str) -> None:
     row = await _row(db, tenant_id, platform)
     if not row:

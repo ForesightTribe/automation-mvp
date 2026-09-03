@@ -158,7 +158,11 @@ def test_bid_reset_fires_one_minute_BEFORE_the_stop():
     So a 23:00 window's reset fires at 22:59, not 23:00."""
     ds = _desired(bid_rules=[bidrule(True, "19:00", "23:00")])
     reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:2259"]
-    assert reset.cron == "59 22 * * *" and reset.repeat and reset.params == {"reset": "true"}
+    assert reset.cron == "59 22 * * *" and reset.repeat
+    # `marketplace` is stamped onto EVERY schedule: the runner builds argv from params,
+    # never from the name, and a missing key silently defaults to Blinkit — which sent
+    # Zepto's rules at Blinkit's ad account. See test_reconciler_marketplace.py.
+    assert reset.params == {"reset": "true", "marketplace": MP}
     assert "auto:cm:bid:T:blinkit:reset:2300" not in _by_name(ds)
 
 
@@ -172,18 +176,21 @@ def test_bid_reset_lead_wraps_past_midnight():
 def test_bid_reset_fire_once_overnight_is_oneshot():
     ds = _desired(bid_rules=[bidrule(True, "19:30", "02:00", type="once", date=FUTURE)])
     reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:20260816T0159"]   # overnight → next day, less the lead
-    assert reset.cron is None and reset.repeat is False and reset.params == {"reset": "true"}
+    assert reset.cron is None and reset.repeat is False
+    assert reset.params == {"reset": "true", "marketplace": MP}
 
 
 def test_armed_merges_live_into_reset_params():
     ds = desired_schedules(T, MP, [], [bidrule(True, "19:00", "23:00")], NOW, live=True)
-    assert _by_name(ds)["auto:cm:bid:T:blinkit:reset:2259"].params == {"reset": "true", "live": "true"}
+    assert _by_name(ds)["auto:cm:bid:T:blinkit:reset:2259"].params == {
+        "reset": "true", "live": "true", "marketplace": MP}
 
 
 def test_cleanup_reconcile_present_and_live():
     ds = _desired(bid_rules=[bidrule(True, "19:00", "23:00")])
     clean = _by_name(ds)["auto:cm:cleanup:T:blinkit"]
-    assert clean.cron == "0 4 * * *" and clean.params == {"live": "true"}
+    assert clean.cron == "0 4 * * *"
+    assert clean.params == {"live": "true", "marketplace": MP}
 
 
 def test_no_active_rules_no_cleanup():

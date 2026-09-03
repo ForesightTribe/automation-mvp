@@ -189,7 +189,8 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
             "is_brand", "price", "mrp", "discount_pct",
             "pack_raw", "pack_size", "pack_uom", "pack_count",
             "in_stock", "inventory",
-            "platform_product_id", "merchant_id", "merchant_type", "is_combo", "extra",
+            "platform_product_id", "merchant_id", "merchant_type", "is_combo", "is_ad",
+            "extra",
         ], [(
             local_to_real[r["snapshot_local_id"]], tid, job_id, r["mp_slug"],
             r["brand_slug"], r["keyword"], r["city"], r["zone"], r["pincode"],
@@ -198,7 +199,12 @@ async def load_file(db: AsyncSession, path: Path | str, *, prune: bool = True) -
             r["pack_raw"] or "", r["pack_size"], r["pack_uom"] or "", r["pack_count"],
             bool(r["in_stock"]), r["inventory"],
             r["platform_product_id"], r["merchant_id"] or "", r["merchant_type"] or "",
-            bool(r["is_combo"]), r["extra"] or None,
+            bool(r["is_combo"]),
+            # NULL on a file staged before the column existed — `bool(None)` is
+            # False, i.e. "we could not tell", reported as organic. The column is
+            # NOT NULL in Postgres, so this must never pass None through.
+            bool(r["is_ad"]),
+            r["extra"] or None,
         ) for r in lists])
         if lists:
             logger.info(f"loader: {len(lists):,} listings copied")

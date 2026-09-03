@@ -26,7 +26,7 @@
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
 | [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth on the box, cost/capacity model, and the VM gotchas |
-| [docs/zepto.md](docs/zepto.md) | **Zepto — platform build plan (Public Data first, PLANNED)** — decisions, the Phase 0 API recon questions, provider-abstraction refactor, Zepto's own store catalog, file-by-file spec, CLI/jobs/VM fit, the disk gate, and the post-public roadmap |
+| [docs/zepto-public.md](docs/zepto-public.md) | **Zepto public scrape — SHIPPED.** The rebuilt search scraper: store binding by header (a coordinate alone silently returns a generic catalog), the 299/202/429 gate vocabulary and its pacing, pack normalisation, the `is_ad` sponsored marker and the `uclId` it comes with. Replaces the old `zepto.md` build plan, which described a design that was superseded |
 
 ---
 

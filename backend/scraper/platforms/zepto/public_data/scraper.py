@@ -42,6 +42,7 @@ from app.utils.logger import logger
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.cities import CITIES
 from scraper.utils.search_result import HEADERS_COMMON
+from scraper.platforms.zepto.public_data import ads
 from scraper.platforms.zepto.public_data import endpoints as ep
 from scraper.platforms.zepto.public_data import packs
 
@@ -119,6 +120,16 @@ def _extract_product(item: dict) -> dict | None:
         "rating": _num(rat.get("averageRating")),
         "rating_count": rat.get("totalRatings"),
         "position": position,
+        # Paid placement or organic. Zepto interleaves the two and says which is
+        # which; on one live `bread` search 9 of 24 results were sponsored, so
+        # dropping this silently mixed bought placements into SoV and rank. See
+        # ads.py — and note it is NOT `is_fly_wheel_ad`, which is false even on
+        # confirmed ads.
+        "is_ad": ads.is_sponsored(pr),
+        # The sponsored slot's tracking id: advertiser, campaign, store, and the
+        # CAMPAIGN keyword that won the slot (which is NOT the query searched).
+        # Empty on organic rows. `ads.parse_ucl_id` decodes it.
+        "ucl_id": str(item.get("uclId") or ""),
         # Zepto is store-grain: each product names its fulfilling store.
         "merchant_id": str(pr.get("storeId") or ""),
         # No express/longtail tiering on Zepto — the column would be a constant.
@@ -443,7 +454,7 @@ async def search(
     url = ep.search_url()
 
     products: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, bool]] = set()   # (product id, is_ad) — see the loop below
     ok, error, blocked, kind = False, "", False, "ok"
     page_no: int | None = 0
 
@@ -469,15 +480,29 @@ async def search(
         if not page_rows:
             break  # genuinely nothing more for this term
 
-        # Keep the FIRST sighting — it carries the true (best) rank. Dedupe is
-        # mandatory even within one page: a 30-item page carried 3 duplicates,
-        # and page 1 repeated 29% of page 0.
+        # Dedupe on (product, is_ad) — NOT on product alone.
+        #
+        # Zepto genuinely repeats rows across pages (page 1 repeated 29% of page 0),
+        # so some deduping is mandatory. But a product can also hold TWO REAL SLOTS
+        # on one page: its organic placement and a sponsored one. Verified live —
+        # `sourdough bread` showed Brik Oven organic at 1/2/4 and sponsored at
+        # 7/9/13; `ricotta` showed the same SKU organic at 8 and sponsored at 9.
+        # (The "3 duplicates in a 30-item page" this comment used to cite were
+        # almost certainly those pairs, not artifacts.)
+        #
+        # Collapsing them lost the ad row, which understated SoV at BOTH ends: a
+        # brand in 2 of 4 slots scored 1/3 = 33% instead of 2/4 = 50%, because the
+        # denominator shrank too. It also hid the only position a bid can move.
+        #
+        # Rank is unaffected: `classify_products` takes min(position) over our rows,
+        # so the best placement still wins regardless of how many are kept.
         for p in page_rows:
             pid = p.get("variant_id") or p.get("product_id")
             if pid:
-                if pid in seen:
+                key = (pid, bool(p.get("is_ad")))
+                if key in seen:
                     continue
-                seen.add(pid)
+                seen.add(key)
             products.append(p)
 
         # The results ended inside this page — anything further is the "Similar

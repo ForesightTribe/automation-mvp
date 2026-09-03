@@ -102,6 +102,21 @@ class SearchListing(SQLModel, table=True):
     # Combo/multipack vs singular SKU (own or competitor). Combos are stocked
     # selectively and priced higher, so price comparisons filter to singles.
     is_combo: bool = False
+    # A PAID placement rather than an earned one. Marketplaces interleave the two
+    # and both say which is which — Zepto via `meta.tagsV2[*].tagType == "SPONSORED"`,
+    # Blinkit via `tracking.common_attributes.ads_campaign_id`. Without it SoV and
+    # rank are computed over a mixture of bought and earned slots: one live `bread`
+    # search was 9 sponsored out of 24 results.
+    #
+    # A product can hold BOTH an organic and a sponsored slot on one page, so two
+    # rows may share a `platform_product_id` within a snapshot and differ only here.
+    # That is real, not duplication — the search dedupe keys on (product, is_ad) for
+    # exactly this reason.
+    #
+    # False on rows scraped before this existed, and on any provider not yet
+    # reporting it (Blinkit — see zepto-cm-exp/TODO-blinkit-is-ad.md). "We could not
+    # tell" reads as organic, which under-counts ads rather than inventing them.
+    is_ad: bool = False
     extra: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 
 

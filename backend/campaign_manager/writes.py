@@ -49,6 +49,29 @@ def clamp_bid(cpm, min_bid, max_bid) -> int:
     return max(int(min_bid), min(int(cpm), int(max_bid)))
 
 
+def bid_out_of_bounds(cpm, *, min_bid: float | None = None,
+                      max_bid: float | None = None) -> str | None:
+    """Reason string if `cpm` is outside the MARKETPLACE's own bid bounds, else None.
+
+    The rule's own `[min_bid, max_bid]` is already applied by `clamp_bid`. This is the
+    separate question of whether the platform will accept the result at all — the same
+    declare/enforce split `apply_budget` uses for `MIN_BUDGET`: the adapter states the
+    marketplace's law, this policy enforces it, and a violation is refused with a
+    readable reason instead of arriving later as an opaque 400.
+
+    REFUSES rather than clamping up. Silently raising a bid above what the operator
+    configured is not a guardrail's decision to make — and a rule whose ceiling sits
+    below the platform floor is a configuration error that should be visible.
+    """
+    if cpm is None:
+        return "bid is None"
+    if min_bid is not None and cpm < min_bid:
+        return f"bid {cpm} below the marketplace minimum {min_bid:g}"
+    if max_bid is not None and cpm > max_bid:
+        return f"bid {cpm} above the marketplace maximum {max_bid:g}"
+    return None
+
+
 def is_noop(new, current) -> bool:
     """True when the computed value equals the current one → skip the write."""
     if new is None or current is None:
@@ -196,6 +219,17 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     if is_noop(clamped, current_cpm):
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
                              passed=False, reason="no-op (already at target bid)", keyword=keyword)
+        return False
+    # The marketplace's OWN bid bounds, if it publishes any — the same declare/enforce
+    # split `apply_budget` uses for MIN_BUDGET. Sits after the clamp because the clamp
+    # applies the RULE's range: a rule whose floor is below the platform's still needs
+    # catching, and the platform gets the final say.
+    reason = bid_out_of_bounds(clamped,
+                               min_bid=getattr(adapter, "MIN_BID", None),
+                               max_bid=getattr(adapter, "MAX_BID", None))
+    if reason:
+        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
+                             passed=False, reason=reason, keyword=keyword)
         return False
     if exceeds_rate_limit(recent_writes):
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,

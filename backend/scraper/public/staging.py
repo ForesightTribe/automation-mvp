@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS search_listings (
     price         REAL, mrp REAL, discount_pct REAL,
     pack_raw      TEXT, pack_size REAL, pack_uom TEXT, pack_count INTEGER,
     in_stock      INTEGER, inventory INTEGER, platform_product_id TEXT,
-    merchant_id   TEXT, merchant_type TEXT, is_combo INTEGER, extra TEXT
+    merchant_id   TEXT, merchant_type TEXT, is_combo INTEGER, is_ad INTEGER,
+    extra TEXT
 );
 
 CREATE TABLE IF NOT EXISTS sku_snapshots (
@@ -136,6 +137,11 @@ def _connect(path: Path) -> sqlite3.Connection:
                   ("pack_uom", "TEXT"), ("pack_count", "INTEGER")]
     _add_missing(conn, "search_listings", _pack_cols)
     _add_missing(conn, "sku_snapshots", _pack_cols)
+    # Sponsored-vs-organic. A file staged before this existed gains the column as
+    # NULL, which the loader reads as False — i.e. "we didn't know", reported as
+    # organic. That under-counts ads in old files rather than inventing them, and
+    # matters right now: there are unloaded runs staged before this landed.
+    _add_missing(conn, "search_listings", [("is_ad", "INTEGER")])
     # Same forward-compat rule: a file staged before these existed gains them as
     # NULL, and the loader COPYs that straight through.
     _add_missing(conn, "sku_snapshots",
@@ -273,8 +279,8 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
                 city, zone, pincode, scraped_at, position, product_name, is_brand,
                 price, mrp, discount_pct, pack_raw, pack_size, pack_uom, pack_count,
                 in_stock, inventory, platform_product_id,
-                merchant_id, merchant_type, is_combo, extra)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                merchant_id, merchant_type, is_combo, is_ad, extra)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
             [(snap_id, tid, jid, stg["mp_slug"], l.get("brand_slug"), result["keyword"],
               result.get("city", ""), result.get("zone", ""), result.get("pincode", ""),
               scraped_at, l.get("position"), l.get("name", ""),
@@ -285,6 +291,10 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
               l.get("inventory"), l.get("product_id") or None,
               l.get("merchant_id") or "", l.get("merchant_type") or "",
               int(combo_from_pack(l.get("name", ""), _pk["pack_count"])),
+              # Paid placement. Absent on a provider that does not report it yet
+              # (Blinkit — see zepto-cm-exp/TODO-blinkit-is-ad.md), which defaults
+              # to organic rather than guessing.
+              int(bool(l.get("is_ad", False))),
               json.dumps({"group_id": l.get("group_id"), "unit": l.get("unit"),
                           "ptype": l.get("ptype"), "category": l.get("category"),
                           "match_reason": l.get("match_reason"),
