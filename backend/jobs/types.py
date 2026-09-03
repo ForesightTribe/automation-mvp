@@ -105,6 +105,26 @@ def _zepto_sales(tenant_id, p):
     a = ["scrape", "zepto-sales", "--tenant", str(tenant_id)]
     _opt(a, "--from", p.get("date_from"))
     _opt(a, "--to", p.get("date_to"))
+    # 138 calls instead of a handful — a schedule should leave this off and
+    # sweep occasionally to pick up a new city, not daily.
+    _flag(a, "--all-cities", p.get("all_cities"))
+    return a
+
+
+def _zepto_ads(tenant_id, p):
+    a = ["scrape", "zepto-ads", "--tenant", str(tenant_id)]
+    _opt(a, "--from", p.get("date_from"))
+    _opt(a, "--to", p.get("date_to"))
+    # Leave this at the CLI's own default of 'all'. The three tabs return
+    # DISJOINT campaigns, so anything narrower silently drops the others' spend.
+    _opt(a, "--category", p.get("category"))
+    return a
+
+
+def _zepto_po(tenant_id, p):
+    a = ["scrape", "zepto-po", "--tenant", str(tenant_id)]
+    _opt(a, "--from", p.get("date_from"))
+    _opt(a, "--to", p.get("date_to"))
     return a
 
 
@@ -250,15 +270,45 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         param_keys=("week",),
         label="Blinkit scorecard scrape",
     ),
-    # Browser-free (session health check + ID discovery + API calls, all plain
-    # HTTP — see scraper/platforms/zepto/dashboard_data/seller/scraper.py), so
-    # a much tighter timeout ceiling than Blinkit's browser-driven scrapes is
-    # appropriate — this should normally finish in well under a minute.
-    # Requires a session already saved via `cli auth zepto-seller` (run
-    # separately, wherever there's a real display — not on this VM's lane).
+    # ── Zepto, mirroring Blinkit's three ────────────────────────────────────
+    # Data calls are plain HTTP, but each run still launches headless Chromium
+    # ONCE (~10s) to mint an AWS WAF token — campaign_manager/marketplaces/
+    # zepto/transport.py::mint_waf_token, called unconditionally by setup(),
+    # so sales and PO pay for it too even though only /ads-bff/* needs it.
+    # Transient, unlike Blinkit's browser-driven scrapes which hold ~950 MB for
+    # the whole run, hence the tighter ceilings below.
+    #
+    # `dashboard`, shared with Blinkit and deliberately NOT a lane of its own.
+    # The lane has ONE slot, and that is the only thing serialising these three:
+    # the overlap index keys on job_type, so zepto_ads and zepto_po would
+    # otherwise run together and evict each other's Zepto session (one session
+    # per account, server-enforced). Splitting the lane removes that protection
+    # for concurrency this workload does not need — revisit only when jobs are
+    # visibly queueing.
+    #
+    # Session comes from `cli auth login zepto`; `ensure()` self-heals an
+    # expired one mid-run. No display, no Xvfb — the login is browserless REST
+    # and the OTP is read from the shared inbox.
     "scrape.zepto_seller_sales": JobTypeSpec(
-        Lane.dashboard, 10 * 60, _zepto_sales,
+        Lane.dashboard, 15 * 60, _zepto_sales,
+        param_keys=("date_from", "date_to", "all_cities"),
+        label="Zepto sales scrape",
+    ),
+    # Six tabular views x three campaign categories, with a 1.5s pause between
+    # metric calls — comfortably the slowest of the three.
+    "scrape.zepto_ads": JobTypeSpec(
+        Lane.dashboard, 30 * 60, _zepto_ads,
+        param_keys=("date_from", "date_to", "category"),
+        label="Zepto ads scrape",
+    ),
+    # Slowest ceiling of the three: po_items is a SECOND pass, one call per PO,
+    # and the /vendor endpoints are genuinely flaky (~4 failures in 18 attempts
+    # measured 2026-08-30), each retried at 5/15/45s. A bad run is slow, not
+    # fatal, so the ceiling has to clear the retry ladder rather than kill it.
+    "scrape.zepto_po": JobTypeSpec(
+        Lane.dashboard, 45 * 60, _zepto_po,
         param_keys=("date_from", "date_to"),
+        label="Zepto PO scrape",
     ),
     # Public scrapes take the marketplace as a PARAM rather than having a job type
     # each: lane and timeout are identical, and sharing the `batch` lane is correct —
