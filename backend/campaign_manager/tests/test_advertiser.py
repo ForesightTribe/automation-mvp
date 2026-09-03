@@ -48,7 +48,7 @@ class Obj:
 
 
 def test_resolve_returns_derived():
-    assert _r(adapter.resolve_advertiser(DeriveClient(234))) == 234
+    assert _r(adapter.resolve_advertiser(DeriveClient(19802))) == 19802
 
 
 def test_set_advertiser_sets_attr():

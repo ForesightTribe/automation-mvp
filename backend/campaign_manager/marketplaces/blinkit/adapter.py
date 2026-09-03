@@ -9,6 +9,7 @@ B3: live writes send the tenant's STORED advertiser id (set on the client by
 `writes.arm_live` → `set_advertiser`), overriding the client's own unreliable
 `get_advertiser_id()` derivation (which falls back to a possibly-stale hardcoded id).
 """
+from campaign_manager.marketplaces.blinkit import payload as payload_check
 from campaign_manager.marketplaces.blinkit import restart
 
 # Resuming a Blinkit campaign is a RESTART: a full re-submission that rewrites
@@ -346,6 +347,11 @@ async def apply_status(client, campaign_id: int, target: str, *,
         raise RuntimeError(f"could not fetch details for campaign {campaign_id}")
     payload = restart.build(detail, campaign_id=campaign_id, budget=budget,
                             requested_by=client._email)
+    # A restart rewrites the campaign whole, so it is the write with the largest blast
+    # radius of the three. It is allowed to set the budget and the dates; everything else
+    # must still match what we just read (payload.py).
+    payload_check.verify(detail, payload, shape=payload_check.RESTART,
+                         campaign_id=campaign_id)
     return await client._fetch("PUT", "/adservice/v3/campaigns", payload)
 
 

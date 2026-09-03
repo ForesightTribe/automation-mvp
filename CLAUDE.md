@@ -170,7 +170,9 @@ python -m cli runner start                   # the daemon (systemd does this on 
   `/ads/bid-optimizer` API and the v1 UI (`/campaign-manager` now redirects). Its
   `client.py` + `live_position.py` had already been vendored into
   `campaign_manager/marketplaces/blinkit/`, which is now the ONLY Blinkit ad client — a
-  duplicated payload builder is exactly how a bug hides. Its **eight DB tables went too**
+  duplicated payload builder is exactly how a bug hides (§8.2b: a hardcoded `city_ids: "-1"`
+  in the bid builder broadened 9 live campaigns to pan-India; **~13 still need their cities
+  re-entered by hand in Blinkit** — the code is fixed, the accounts are not). Its **eight DB tables went too**
   (migration `e7a3c85f2b19`). The one thing that deliberately outlives it: the
   `budget_scheduler` / `bid_optimizer` / `sync_campaign_data` members of the **`Lane`
   enum**, without which ~3,700 historical `jobs` rows cannot be read — and Postgres cannot

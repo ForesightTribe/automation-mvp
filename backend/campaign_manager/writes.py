@@ -13,6 +13,25 @@ so the safety logic is verifiable without Blinkit.
 from campaign_manager import config, logs
 
 
+class WriteRefused(Exception):
+    """A payload builder refused to send a write it could not build safely.
+
+    Raised from deep inside an adapter — where the marketplace's own payload shape is
+    known — and caught here, at the choke point, because refusing is a POLICY outcome:
+    it is one failed write with a readable reason, not a crashed run.
+
+    That distinction matters. The engines wrap their per-campaign loops in `try/finally`,
+    not `try/except`, so any other exception escaping a write aborts the whole run and
+    every campaign after it is silently skipped. Only refusals are caught here — a dead
+    session or a network failure must still abort, because continuing would mean firing
+    the same broken call at fifty more campaigns.
+
+    The case that created it: a Blinkit campaign reporting `region_type=CITY` whose
+    `region_ids` cannot be read. Sending the pan-India default would broaden a live
+    campaign (docs §8.2b), so the builder refuses instead.
+    """
+
+
 # ── Pure guardrail logic (unit-tested, no I/O) ──────────────────────────────
 
 def _money(v) -> str:
@@ -201,7 +220,14 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
         return True
 
     # LIVE — the single real budget mutation.
-    resp = await adapter.apply_budget(client, campaign_id, target)
+    try:
+        resp = await adapter.apply_budget(client, campaign_id, target)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e))
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
+                          detail=f"refused — {e}")
+        return False
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       detail=f"{_money(current)} → {_money(target)}")
@@ -244,7 +270,12 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         return True
 
     # LIVE — the single real Blinkit bid mutation.
-    resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+    try:
+        resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e), keyword=keyword)
+        return False
     return bool(resp.get("status") or resp.get("success"))
 
 
@@ -322,7 +353,14 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         return True
 
     # LIVE — the single real status mutation.
-    resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
+    try:
+        resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e))
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
+                          detail=f"refused — {e}")
+        return False
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       detail=_status_detail(target, budget))

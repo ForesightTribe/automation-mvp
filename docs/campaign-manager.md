@@ -544,6 +544,223 @@ Consequences:
   our PUT echoes the old budget back.
 - The payload also does `total_budget = detail.get("campaign_budget", 0)` — a thin detail read would
   write a budget of zero.
+- **Every field the builder does not read off the campaign, it overwrites with whatever it
+  hardcodes.** That is not a theoretical risk — see 8.2b.
+
+### 8.2b City targeting — the field that got overwritten (fixed 2026-09-03)
+
+`campaign_targeting.city_ids` is rewritten by *all three* write paths. `"-1"` means **all of
+India**, and Blinkit accepts it silently on a campaign that was targeted at one city.
+
+`update_keyword_bids` sent a hardcoded `"city_ids": "-1"`, while `update_campaign` and
+`restart.build` each read `region_ids` off the campaign. So from mid-July every **keyword-bid**
+write silently broadened its campaign to pan-India. Budget writes and restarts were never
+affected — which is why it survived so long, and how it was finally confirmed:
+
+| campaign | bid writes | budget / restart writes | targeting after |
+|---|---|---|---|
+| `Sprite [Delhi NCR]` | 1 | 11 / 4 | **PAN_INDIA** |
+| `Sprite [BLR]` | 0 | 5 / 1 | CITY (1) |
+| `Sprite [Mumbai]` | 0 | 9 / 1 | CITY (1) |
+
+Across the whole account: **9 of 9** campaigns that ever took a live bid write were pan-India;
+**all 7** the manager had touched that still held city targeting had taken none — one of them
+after 23 budget writes and 10 restarts. The legacy `ad_campaigns` optimizer carried the same
+hardcode and cost campaign 568887 its Delhi-NCR targeting on 2026-07-13.
+
+There is now **one** implementation — `payload.city_ids`, in
+[`marketplaces/blinkit/payload.py`](../backend/campaign_manager/marketplaces/blinkit/payload.py)
+— and all three builders call it. It lives beside its own inverse deliberately (§8.2c): a
+field whose writer and reader sit in different files is free to drift apart, which is this
+bug in miniature.
+
+It also **fails closed**: a campaign reporting `region_type=CITY` whose `region_ids` cannot
+be read raises `writes.WriteRefused` instead of falling back to `-1`. A refused write is
+visible; a broadened campaign is not. The choke point catches that one exception type and
+turns it into a rejected write — the engines wrap their loops in `try/finally`, so anything
+escaping a write aborts the whole run and silently skips every campaign after it. Only
+*refusals* are caught; a dead session still aborts, because continuing would fire the same
+broken call at fifty more campaigns.
+
+`tests/test_payload_invariant.py` covers both directions: it greps the builders for the
+hardcoded literal, pins the fail-closed cases, and asserts a refusal costs one write rather
+than the run. `tests/test_builders_pass_invariant.py` drives the real builders through a
+fake transport to prove the check is not so strict that it refuses legitimate writes.
+
+⚠️ **The damage is not self-healing.** A broadened campaign stays broadened until someone
+re-enters its cities in the Blinkit dashboard, and our own record of what they were is gone:
+the `region_type`/`cities` columns only landed 2026-08-27, after most of the writes. The
+campaign names (`[Mumbai]`, `(Hyderabad)`, `[ROI]`) are the best surviving evidence of intent.
+`scripts/snapshot_campaign_state.py` captures what is *still* correct, to a local file — run it
+before any work that touches the payload builders.
+
+⚠️ **`region_type` is still never sent** in any payload — only `city_ids`. The only captured
+dashboard payload is from a pan-India campaign, so what its UI sends for a `CITY` campaign is
+unknown. The evidence above says omitting it is harmless (city-targeted campaigns survive
+budget writes and restarts intact), but that is inference from outcomes, not a capture.
+
+### 8.2c The write invariant — what a PUT may change
+
+Every builder now answers one question before its request goes out:
+
+> Does this payload say the same thing as the campaign we just read, except for the change
+> we intended?
+
+[`marketplaces/blinkit/payload.py`](../backend/campaign_manager/marketplaces/blinkit/payload.py)
+holds the rules; each builder calls `verify()` immediately before the PUT, and a failure
+raises `WriteRefused` — caught at the choke point, so one bad campaign costs one write
+rather than the run.
+
+**It compares against the campaign, not against another payload.** This is the whole
+design, and the obvious cheaper version does not work: building the payload twice (once
+with the change, once without) and diffing them is blind to a hardcoded constant, because
+both copies contain it. The `-1` bug would have sailed straight through such a check. So
+every rule carries an **inverse** — it reads the payload's own value back into the
+campaign's vocabulary (`"2010,2013"` → `{2010, 2013}`) and compares that to what Blinkit
+reported. A constant can only pass if it happens to equal the campaign's real value.
+`test_payload_invariant.py::test_a_self_consistency_check_would_not_have_caught_it` pins
+the distinction so it cannot be "simplified" away later.
+
+**Coverage: 21 of the 27 fields the builder sends** (§8.2d). The six that remain are
+constants or addressing — `source_platform`, `requested_by`, `campaign_request_type`,
+`campaign_id`, `is_extendable`, `preview_image_url` — which have no counterpart on the
+campaign to compare against, and whose failure mode is a *rejected request* rather than
+silent damage. `test_payload_invariant.py::test_every_derived_field_is_checked` is a
+**ratchet**: add a row to the field table and the suite fails until you either write a rule
+or state in `UNCHECKABLE` why the field cannot have one. That gap is what let coverage sit
+at 8/27 unnoticed.
+
+Two fields are guarded **structurally** rather than against the campaign, because Blinkit
+publishes no counterpart:
+
+- **`advertiser_id`** — the account a write lands in. A wrong one spends against someone
+  else's account, and `client.get_advertiser_id()` still falls back to the stale pre-split
+  `234` when its read comes back without the field. Now refused outright, along with `0` on
+  an UPDATE and any non-zero value on a RESTART (AD4).
+- **`brand_name`** — compared to the campaign on updates, exempt on RESTART, which blanks it
+  deliberately.
+
+Each rule declares how the sent value must relate to the campaign's:
+
+- **EXACT** — identical, for anything where both gaining and losing is damage. City
+  targeting is the canonical case: `-1` *adds* the whole country.
+- **NO_LOSS** — the campaign's value must survive; additions are allowed. For collections
+  where dropping is the damage and adding is a legitimate operation: a bid write may
+  introduce a keyword, but nothing may silently delete one.
+
+Three properties the first version got wrong, found by probing it and now pinned by tests:
+
+| | |
+|---|---|
+| A field sent as **null** is a value, not an omission | `city_ids: None` was collapsed into "absent" and skipped unexamined |
+| A **bid** write may not drop keywords | The first version exempted the keyword rule for bid writes — blinding the check for the exact operation that caused the incident. The rule checks the keyword *set*; a bid write changes a CPM, so it never needed exempting |
+| A **thin detail** refuses instead of passing | `_fetch` turns a Blinkit error page into `{}`. Every rule compares against the detail, so an empty one makes the check vacuous — it would wave anything through, exactly when the payload built from that same failed read is most dangerous |
+
+Each write shape declares what it is *allowed* to change:
+
+| Shape | May change | Because |
+|---|---|---|
+| `BID` | the keyword bids | that is the call |
+| `BUDGET` | the budget | that is the call |
+| `RESTART` | budget, `campaign_start`, `campaign_end` | a restart re-submits the campaign and stamps today + the no-end sentinel (AD4/AD5) |
+| `BUDGET_NO_PIDS` | budget, **products** | `adapter.apply_budget`'s delisted-catalog fallback, which retries with `pids: ""` |
+
+That last row was a finding in its own right, and **it has now been tested live**
+(2026-09-04, campaign 574687, PRODUCT_LISTING with one valid pid):
+
+1. It does **not** clear the products — Blinkit does not read an empty list as "set to
+   none". So it is not another instance of the city bug.
+2. It does not work either. Blinkit **rejects the whole request** with
+   `["Please select atleast one PID"]`. That validator fires on the payload having no pids,
+   which an empty list always does — so the fallback cannot rescue any PRODUCT_LISTING
+   write. **It is a safety net that has never caught anything.**
+
+Untested for `BANNER_LISTING`, where the pid validator may not apply — the only case in
+which it could ever have worked. Removing `empty_pids` from `adapter.apply_budget` is
+therefore a live decision worth taking, but it is a behaviour change and stays declared
+until someone makes it.
+
+⚠️ **This narrows the blast radius; it does not eliminate it.** A field with no rule is
+unchecked, and a field a shape is allowed to change is unchecked for that shape. The
+structural fix — building the payload by echoing the read instead of hand-listing fields,
+so an un-enumerated field round-trips rather than resetting — is still outstanding. The
+invariant is what holds until then, and stays useful afterwards.
+
+### 8.2d The payload is derived, not typed (Layer 1)
+
+The invariant in 8.2c catches a bad payload. This removes the way bad payloads were made.
+
+Until 2026-09-03 each builder spelled the body out as literals — ~26 fields per shape,
+every one an author's decision, and a field nobody thought of simply absent, which for a
+whole-campaign PUT means *reset*. `city_ids: "-1"` was one such decision.
+
+[`marketplaces/blinkit/build.py`](../backend/campaign_manager/marketplaces/blinkit/build.py)
+replaces all three hand-written dicts with one **field table** — a row per field saying
+where it goes, how to derive it from the campaign, and which shapes carry it. `build()`
+walks the table. Three properties now come from the structure rather than from diligence:
+
+- **A field cannot be forgotten** — nobody types fields any more.
+- **A field cannot be quietly hardcoded** — a constant must be an explicit `const(...)` row,
+  visible in review, not a literal buried mid-dict.
+- **Coverage stops being a maintained list.** The table *is* the payload.
+
+**It is a refactor, and that is proven, not asserted.**
+`tests/test_build_equivalence.py` freezes what the OLD builders produced for 9 campaign
+shapes × 4 write types — 36 payloads — and asserts the table reproduces them exactly, down
+to types (`502` vs `502.0`, `""` vs `None`). Those fixtures are a record of what shipped,
+not a specification of what is right: matching them is what proves nothing changed. The
+restart golden test, pinned against a real captured Blinkit payload, also still passes.
+
+#### The dead UI write path is gone
+
+`client.update_campaign_budget_via_ui` — 269 lines that drove the real Blinkit dashboard
+with Playwright (find the campaign row, open the edit panel, type a budget, click Update)
+and intercepted the resulting PUT — was **deleted on 2026-09-04**. Its only caller was
+`ad_campaigns/main.py`, removed with the v1 engine. It was also the one write path the
+invariant could never cover, because the payload was Blinkit's own. `client.py` went from
+780 lines to 511.
+
+#### What building the table exposed
+
+Writing the derivations down in one place made two long-standing inconsistencies visible
+that nobody could have seen while they were spread across three files:
+
+| Found | Status |
+|---|---|
+| **The three builders disagreed about where keywords live.** Bid and restart read nested-first with a top-level fallback; the budget builder read the **top level only** — so on a normal campaign it found none and omitted `keyword_targeting` from the PUT entirely | **Reproduced deliberately.** The omission is evidently safe (budget writes run constantly, keywords survive), and "fixing" it would make budget writes start restating the keyword list — *enlarging* their blast radius. That is a behaviour change needing its own decision, not a silent ride-along in a refactor |
+| The budget builder discards each keyword's `max_boost` and sends null; bid and restart preserve it | Reproduced; harmless, but now written down |
+
+Both are encoded as explicit flags on `build.keywords()` with the reasoning attached, so the
+next person sees a decision rather than an accident.
+
+### 8.2e Validated live (2026-09-04)
+
+The write path had never been exercised against a real Blinkit account end to end. It has
+now, on **574687 (Foresight | Tech Test)**, through the table-driven builder and the
+invariant, with the campaign restored afterwards each time.
+
+The campaign was given **Mumbai + Pune targeting (`region_ids: [2, 787]`)** specifically so
+the original failure would be reproducible — a pan-India campaign passes the city check
+trivially and proves nothing.
+
+| Test | Result |
+|---|---|
+| **LIVE bid write on a CITY-targeted campaign** (₹201→₹202) | **cities unchanged `[2, 787]`** — this is the exact operation that broadened nine campaigns |
+| **LIVE budget write on the same** (₹201→₹202) | cities unchanged |
+| Products, name, start/end across both | unchanged |
+| Restored to ₹201 / ₹201 | ✅ campaign exactly as found |
+| Earlier pan-India run (budget + bid) | applied cleanly; keyword survived the budget write |
+| `empty_pids` fallback | safe but non-functional — see 8.2d |
+
+Two things this settles that argument could not:
+
+- **The fix works against a live account, not just in tests.** Every prior assurance rested
+  on unit tests plus DB forensics.
+- **A budget write does not delete keywords.** The keyword survived at its original bid, so
+  an omitted `keyword_targeting` block genuinely means "leave them alone" (§8.2d).
+
+It also produced the **first live bid write the campaign manager has ever made** — that loop
+had never run end to end before, which is why the doc used to carry a ❌ against it.
 
 ### 8.3 Status vocabulary
 
@@ -839,13 +1056,15 @@ With v1 gone, the surviving manager took its plain name back: the UI route is
 | Coworker's `ADVERTISER_ID = 234` is stale | Their v1 writes would hit the dead pre-split account (the real one is 19802). Ours sends the stored id. Needs coordinating, not silently changing |
 | Nine stores have no canonical city | Four `up-ncr` at `2032xx` (Bulandshahr-district, matching no ad-city), `pilkhuwa`, and three Zepto stores with **transposed pincodes** in the `locations` sheet (`120001`, `210305`×2). They are simply not offered as measurement points |
 | No `pytest` | Suites are standalone assert-based. Fine, but a team call eventually |
+| **~13 campaigns are still pan-India after the `city_ids` bug (§8.2b)** | The code is fixed, the accounts are not. Their city lists must be re-entered in the Blinkit dashboard by hand — we never recorded what they were. Until then those campaigns spend nationally, and the metro/ROI splits overlap each other |
+| ~~Write payloads are hand-listed field sets~~ | **FIXED 2026-09-03** — payloads are derived from the field table in `build.py` (§8.2d), so a field cannot be forgotten or silently hardcoded. Equivalence with the old builders is pinned by 36 golden payloads |
 
 ### ⚠️ Validation status against the live marketplace
 
 | | |
 |---|---|
 | ✅ Validated live | Budget write (₹205 → 574687, reverted). Bid floors read per keyword. City targeting resolved on real campaigns. The scrape's write path. |
-| ❌ Not yet | The bid **write** loop end to end — window-open floor, reset, drift, relaxation and bounds enforcement have still not run against a real campaign. Everything so far is unit tests plus a fake-adapter simulation. |
+| ⚠️ Partly | The bid **write** itself now HAS run live (2026-09-04, §8.2e) and preserved city targeting. What is still unexercised against a real campaign is the surrounding bid ENGINE — window-open floor, reset, drift, relaxation and bounds enforcement. |
 
 ---
 

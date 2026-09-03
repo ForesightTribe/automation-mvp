@@ -316,6 +316,14 @@ def status(
         if platform == "blinkit":
             from campaign_manager.marketplaces.blinkit import restart as restart_mod
             t.add_row("allowed next", str(detail.get("allowed_transitions") or "—"))
+            # City targeting is THE field a whole-campaign PUT silently destroys (docs
+            # §8.2b), so the read-back check has to show it — this command's whole purpose
+            # is comparing a campaign either side of a write, and it used to omit the one
+            # thing most worth comparing. Shown as Blinkit reports it, not as we'd send it.
+            region_type = detail.get("region_type") or "—"
+            region_ids = detail.get("region_ids")
+            t.add_row("targeting", f"{region_type}"
+                                   + (f" · {region_ids}" if region_ids else ""))
             t.add_row("pids", restart_mod.extract_pids(detail) or "—")
             t.add_row("start / end", f"{detail.get('start_ts')} → {detail.get('end_ts')}")
             t.add_row("infinite", str(detail.get("infinite_campaign")))
