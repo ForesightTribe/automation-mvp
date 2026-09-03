@@ -864,10 +864,10 @@ class BlinkitClient:
                     log.warning("[blinkit_ui] absolute position click failed: %s", e)
 
             if not clicked:
-                log.warning("[blinkit_ui] could not find save button — see screenshots in ad_campaigns/")
+                log.warning("[blinkit_ui] could not find save button — see screenshots in %s", _AD_CAMPAIGNS_DIR)
                 raise RuntimeError(
                     "Could not find the Update/Save button on Blinkit. "
-                    "Check blinkit_step*.png screenshots in backend/ad_campaigns/"
+                    "Check the blinkit_step*.png screenshots this writes beside client.py."
                 )
 
             await self._page.wait_for_timeout(5000)
@@ -877,7 +877,8 @@ class BlinkitClient:
         if result.get("err"):
             raise RuntimeError(f"UI intercept error: {result['err']}")
         if not result.get("resp"):
-            raise RuntimeError("Budget update: no PUT request captured — see screenshots in ad_campaigns/")
+            raise RuntimeError("Budget update: no PUT request captured — see the "
+                               "blinkit_step*.png screenshots beside client.py")
         return result["resp"]
 
 

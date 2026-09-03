@@ -5,7 +5,8 @@
 There are **four top-level Python packages** under `backend/`, each a peer:
 `app/` (the API + shared application core), `cli/` (terminal entry point),
 `scraper/` (the browser work), `jobs/` (the job/runner/scheduler subsystem), plus
-`ad_campaigns/` (the coworker-owned campaign manager). `app/` is **not** API-only —
+`campaign_manager/` (campaign automation; the v1 `ad_campaigns/` was deleted 2026-09-03).
+`app/` is **not** API-only —
 it holds the shared core (`core/`, `models/`, `utils/`, `services/`) that every
 entry point imports, alongside the API layer (`routes/`, `router.py`, `schemas/`).
 
@@ -27,11 +28,11 @@ automation-mvp/
 │   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, SkuMap, MarketplaceLocation, TenantLocation, InventoryDepth
 │   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
 │   │   │   ├── blinkit_marketing.py   # BlinkitAdCampaign(Daily/Detail), SponsoredSOV, BrandCollection, VisibilityPlan
-│   │   │   ├── campaign_manager.py    # BudgetSchedule*, BidOptimizer* (coworker)
+│   │   │   ├── campaign_manager_v2.py # Cm* tables — the campaign manager's own
 │   │   │   └── explorer.py            # ExplorerRun
 │   │   ├── routes/                    # FastAPI route handlers (thin — call services)
 │   │   ├── services/                  # SHARED business logic — called by BOTH routes and CLI commands
-│   │   │   ├── ads_service.py         # marketing + campaign-manager orchestration (coworker-adjacent)
+│   │   │   ├── ads_service.py         # ads ANALYTICS only, read-only (its v1 automation half was deleted 2026-09-03)
 │   │   │   ├── job_service.py         # reads the scrape_jobs audit table (NOT the jobs queue — that's jobs/)
 │   │   │   ├── sku_map_service.py     # CLI-only service (imported by cli/commands/sku_map.py)
 │   │   │   └── … (analytics, auth, client, competition, inventory, overview, …)
@@ -48,7 +49,7 @@ automation-mvp/
 │   │   ├── scheduler.py               # cron producer: reads job_schedules, enqueues when due (catchup/misfire logic)
 │   │   ├── monitor.py                 # deadman/heartbeat: last-success-per-schedule + disk check → ERROR logs
 │   │   └── maintenance.py             # prune_logs() — the maint.log_cleanup job
-│   ├── ad_campaigns/                  # coworker-owned campaign manager (budget scheduler + bid optimizer) — OFF-LIMITS
+│   ├── campaign_manager/              # campaign automation: budget scheduler, bid optimizer, reconciler, gated writes
 │   ├── alembic/                       # DB migrations (env.py imports app.models for autogenerate)
 │   ├── scraper/
 │   │   ├── platforms/
@@ -60,7 +61,7 @@ automation-mvp/
 │   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
 │   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py, sku_storage.py
 │   │   │   ├── instamart/             # public_data/ — stub, NOT wired (old one-shot interface)
-│   │   │   └── zepto/                 # public_data/ — dead stub; see docs/zepto.md (planned)
+│   │   │   └── zepto/                 # public_data/ — SHIPPED; see docs/zepto-public.md
 │   │   ├── public/                    # MARKETPLACE-AGNOSTIC scrape engine — nothing here imports a platform
 │   │   │   ├── providers.py           # marketplace registry: slug → open_session/search/close_session/parse + cap floors
 │   │   │   ├── orchestrator.py        # keyword scrape (worker pool), mp_slug-parameterised
@@ -88,8 +89,9 @@ automation-mvp/
 > **Naming caution:** "job" and "scheduler" each name two unrelated things.
 > `scraper/utils/jobs.py` + `scrape_jobs` table = a scrape's *internal* progress
 > (drives `--resume`); `jobs/` + the `jobs` table = the *work-order queue*, which
-> links to the former via `ref_job_id`. And `ad_campaigns/scheduler.py` (coworker,
-> ad-budget timing) is unrelated to `jobs/scheduler.py` (infra cron). See docs/jobs.md.
+> links to the former via `ref_job_id`. The same trap existed in `ad_campaigns/scheduler.py`
+> (ad-budget timing) vs `jobs/scheduler.py` (infra cron) until the former was deleted on
+> 2026-09-03. See docs/jobs.md.
 
 ---
 
@@ -393,7 +395,7 @@ Explorer and the `marketplace=` job param.
 another platform's coordinates. A store's probe point is that platform's catchment.
 
 Check whether the platform's API blocks direct httpx — if so, use the in-page fetch
-technique (as Blinkit does). Worked example + open questions: [zepto.md](zepto.md).
+technique (as Blinkit does). Worked example + open questions: [zepto-public.md](zepto-public.md).
 
 ### Private scraper (Instamart, Zepto seller dashboards)
 

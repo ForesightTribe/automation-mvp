@@ -289,7 +289,7 @@ the DB. `cities.py` is not used.
 `blinkit` — so every command line below works unchanged. **Blinkit is the only
 wired marketplace today**; an unwired or unknown value fails fast and scrapes
 nothing. Each marketplace has its **own** catalog, its own coverage rows, and its
-own engine; coordinates are never shared between platforms. See [zepto.md](zepto.md).
+own engine; coordinates are never shared between platforms. See [zepto-public.md](zepto-public.md).
 
 **1. Configure — `cli sync`.** `config.xlsx` has three sheets:
 
@@ -596,7 +596,7 @@ python -m cli cm bid-optimizer    -t <id>          # reads live position → "wo
 python -m cli cm bid-optimizer    -t <id> --reset  # end-of-window: de-escalate closed keywords → min_bid (no scrape)
 ```
 
-Add `--live` to actually write to Blinkit (only takes effect once the tenant is **armed** — see below). History lands in `cm_run_log` (only real changes — no-op/hold rows go to Cloud Logging); bid runtime (last position/CPM) in `cm_bid_runtime`. `cm sync-campaign-data` is a stub.
+Add `--live` to actually write to Blinkit (only takes effect once the tenant is **armed** — see below). History lands in `cm_run_log` (only real changes — no-op/hold rows go to Cloud Logging); bid runtime (last position/CPM) in `cm_bid_runtime`.
 
 **`--reset`** is the end-of-window mode: it sets each just-closed keyword's bid back to its `min_bid` (no position scrape), so a bid the optimizer pushed up doesn't keep spending high overnight. The reconciler fires this automatically at each window's stop time — you rarely run it by hand.
 
@@ -641,7 +641,6 @@ python -m cli cm set-budget     -t <id> --campaign <cid> --budget 5000
 python -m cli cm set-activation -t <id> --campaign <cid> --status paused|running
 python -m cli cm stop           -t <id> --campaign <cid>   # shorthand for --status paused
 python -m cli cm restart        -t <id> --campaign <cid>   # shorthand for the reverse
-python -m cli cm sync-campaign-data -t <id>                # refresh the keyword/product cache
 ```
 
 Two more rule commands not shown above:
@@ -739,15 +738,12 @@ is the wrong container, and Excel opens CSV natively.
 
 ---
 
-## Ads automation (`ads`)
+## Ads automation — **removed**
 
-Runs on the VM as jobs; see [jobs.md](jobs.md).
-
-```bash
-python -m cli ads budget-scheduler      # apply budget rules for the current IST slot
-python -m cli ads bid-optimizer         # one pass of the bid optimizer
-python -m cli ads sync-campaign-data    # cache campaign keywords + products in the DB
-```
+The `ads` command group and its three `ads.*` job types were **deleted on 2026-09-03**
+with the rest of the v1 engine. Campaign automation is `cm` (see the Campaign Manager
+section and [campaign-manager.md](campaign-manager.md)); `cm budget-scheduler` and
+`cm bid-optimizer` are the replacements, dry-run by default.
 
 ---
 

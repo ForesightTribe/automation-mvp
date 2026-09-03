@@ -5,10 +5,10 @@
 | File | Contents |
 |---|---|
 | [docs/project-overview.md](docs/project-overview.md) | What the product is, stack, platform coverage, what data is collected |
-| [docs/architecture.md](docs/architecture.md) | Directory layout, data flow, DB schema, public/private scraper internals, how to add a platform |
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | Directory layout, data flow, DB schema, public/private scraper internals, how to add a platform |
 | [docs/code-standards.md](docs/code-standards.md) | Functions-not-classes, selectors.py, raw→parsed, async, logging, DB patterns, currency parsing |
-| [docs/setup.md](docs/setup.md) | Env setup, Alembic, first run checklist |
-| [docs/cli.md](docs/cli.md) | Full CLI reference — all commands with examples |
+| [docs/SETUP.md](docs/SETUP.md) | Env setup, Alembic, first run checklist |
+| [docs/CLI.md](docs/CLI.md) | Full CLI reference — all commands with examples |
 | [docs/api-reference.md](docs/api-reference.md) | REST API reference — every module (auth, clients, analytics, ads, competition, …), endpoints, scoping, conventions |
 | [docs/dashboard-views.md](docs/dashboard-views.md) | Dashboard insight catalog — questions → page/section → tables+columns → API. Build reference for the frontend |
 | [docs/frontend-architecture.md](docs/frontend-architecture.md) | Frontend stack, feature-first folder structure, state split (Context vs React Query), data flow, how to add a page |
@@ -22,7 +22,6 @@
 | [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
 | [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
 | [docs/campaign-manager.md](docs/campaign-manager.md) | **Campaign Manager — the ONE CM doc** (the v1 audit, the v2 build plan and the activation design were folded in and deleted 2026-08-29). What it is, the reconciler, the budget + bid engines (window floors, **the marketplace's own per-keyword bid floor**, drift-down, unreachable-target fallback, bounds invariants), **the canonical city registry** that turns a campaign's city targeting into a real store to measure at, the gated write choke-point, the Blinkit API surface + contract (a bid write is a whole-campaign PUT; `DELETE` = stop, not delete; ⚠️ `min_cpm_config` is a BUDGET input, never a bid floor), **a full edge-case reference**, config + kill switches, how to roll it out, and the known gaps |
-| [docs/campaign-automation-v7-brief.md](docs/campaign-automation-v7-brief.md) | Plain-language brief for the team/manager on the bid-floor + city work — why, what changed, impact. Shareable; not a technical reference |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
 | [docs/vm.md](docs/vm.md) | The scraper VM (GCP Mumbai) — why an Indian IP, box spec, provisioning scripts, re-auth on the box, cost/capacity model, and the VM gotchas |
@@ -165,11 +164,19 @@ python -m cli runner start                   # the daemon (systemd does this on 
   campaign lines, stamped 2026-07-21) — `alembic upgrade head` works normally.
 - **Campaign automation is `campaign_manager/`, owned by Deepansh.** Runs in the
   `cm_bid` / `cm_ops` / `interactive` lanes; **dry-run by default**, live writes armed
-  per tenant (`live_armed` on `cm_platform_accounts`). `ad_campaigns/` is **dead code** —
-  disabled 2026-07-30 (VM schedules 24 + 25 `enabled=false`, Playwright routes removed
-  from `app/routes/ads.py` so Render can't spawn Chromium), its `client.py` +
-  `live_position.py` vendored into `campaign_manager/marketplaces/blinkit/`. Kept on disk,
-  imported by nothing. See [docs/campaign-manager.md](docs/campaign-manager.md).
+  per tenant (`live_armed` on `cm_platform_accounts`). **`ad_campaigns/` no longer exists**
+  — the v1 engine was deleted 2026-09-03 along with the `cli ads` command group, the three
+  `ads.*` job types, its half of `ads_service`, the `/ads/budget-schedules` +
+  `/ads/bid-optimizer` API and the v1 UI (`/campaign-manager` now redirects). Its
+  `client.py` + `live_position.py` had already been vendored into
+  `campaign_manager/marketplaces/blinkit/`, which is now the ONLY Blinkit ad client — a
+  duplicated payload builder is exactly how a bug hides. Its **eight DB tables went too**
+  (migration `e7a3c85f2b19`). The one thing that deliberately outlives it: the
+  `budget_scheduler` / `bid_optimizer` / `sync_campaign_data` members of the **`Lane`
+  enum**, without which ~3,700 historical `jobs` rows cannot be read — and Postgres cannot
+  drop an enum value anyway. ⚠️ Don't confuse the deleted `cm.sync_campaign_data` stub with
+  **`cm.sync_campaigns`**, the live catalogue refresh behind the UI's Refresh button. See
+  [docs/campaign-manager.md](docs/campaign-manager.md).
 
 ## Database Patterns
 
@@ -242,7 +249,7 @@ an existing account (`member` by default, `--admin` for admin). Data is
 **account-scoped** — every user of an account sees all its clients; `role`
 (`admin`/`member`) gates only the Settings/admin UI and `require_admin` routes,
 not data. See [docs/api-reference.md](docs/api-reference.md) and the user-creation
-flow in [docs/setup.md](docs/setup.md).
+flow in [docs/SETUP.md](docs/SETUP.md).
 
 ## Seeding
 

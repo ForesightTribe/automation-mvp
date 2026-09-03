@@ -410,8 +410,8 @@ applies the recipient filter exactly as a real login would, so the verdict colum
       `.../seller/auth.py`, `ads_service.reconnect_blinkit`, its two schemas,
       `scripts/reconnect_blinkit.py`, and the frontend `ReconnectBlinkit` component /
       hook / api function. The seller `selectors.py` login block went with them.
-      `scraper/utils/session.py` **stays** as a re-export — `ads_service` and the inert
-      `ad_campaigns/` still import it.
+      `scraper/utils/session.py` **stays** as a re-export. (`ad_campaigns/` was one of its
+      importers until that package was deleted on 2026-09-03.)
 
 ## Open / next
 

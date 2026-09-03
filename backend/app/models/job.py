@@ -27,11 +27,19 @@ class Lane(str, Enum):
     dashboard = "dashboard"                # marketing/seller/scorecard — minutes, scheduled
     live = "live"                          # generic live lane
     interactive = "interactive"            # explorer/heartbeat/cm-reconcile — no browser, prompt
-    budget_scheduler = "budget_scheduler"  # v1 ads.* — deprecated at cutover
-    bid_optimizer = "bid_optimizer"        # v1 ads.* — deprecated at cutover
-    sync_campaign_data = "sync_campaign_data"  # v1 ads.* — deprecated at cutover
-    cm_bid = "cm_bid"                      # Campaign Manager v2 — bid optimizer, isolated (latency-critical)
-    cm_ops = "cm_ops"                      # Campaign Manager v2 — budget / sync / set-budget (share; latency-tolerant)
+    cm_bid = "cm_bid"                      # Campaign Manager — bid optimizer, isolated (latency-critical)
+    cm_ops = "cm_ops"                      # Campaign Manager — budget / sync / set-budget (share; latency-tolerant)
+
+    # ⚠️ HISTORICAL ONLY — do not delete. The v1 `ads.*` job types that used these lanes
+    # were removed on 2026-09-03, but ~3,700 `jobs` rows still carry these values and
+    # `lane` is a str-Enum column: drop a member and every read of that history raises
+    # (`cli status` over a long window, the jobs list, the compute report). They are also
+    # still values in the Postgres `lane` enum, where removing a value is worse than
+    # leaving it — see reference-db-ops-gotchas. Dead lanes cost nothing; nothing routes
+    # to them now that no job type names them.
+    budget_scheduler = "budget_scheduler"
+    bid_optimizer = "bid_optimizer"
+    sync_campaign_data = "sync_campaign_data"
 
 
 class Job(SQLModel, table=True):

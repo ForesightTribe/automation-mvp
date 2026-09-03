@@ -334,12 +334,6 @@ def status(
     asyncio.run(_run())
 
 
-@app.command("sync-campaign-data")
-def sync_campaign_data(tenant: str = _TENANT, marketplace: str = _MARKETPLACE):
-    """Refresh campaign_data_cache (keywords + products) for a tenant. [V-later]"""
-    typer.echo(f"cm sync-campaign-data is a stub (tenant={tenant}).")
-
-
 @app.command("sync-campaigns")
 def sync_campaigns(
     tenant: str = _TENANT,

@@ -110,9 +110,11 @@ ambiguity is the single biggest source of confusion here, so it is worth being b
 a scrape, driving `--resume`. `jobs` (new) = the **work order** — what to run, when, and
 how it went. Linked by `ref_job_id`.
 
-**"schedule" means two things.** `budget_schedules` is a *domain* concept (what ad budget
-to apply at what time of day — the campaign manager, coworker-owned). `job_schedules` is
-*infrastructure* (run this job at this cron time). Unrelated; must not be merged.
+**"schedule" means two things.** `cm_budget_schedules` is a *domain* concept (what ad
+budget to apply at what time of day — the campaign manager). `job_schedules` is
+*infrastructure* (run this job at this cron time). Unrelated; must not be merged. This
+warning originally named the v1 table `budget_schedules`, which was dropped with the rest
+of that engine on 2026-09-03.
 
 ### The OS vocabulary
 

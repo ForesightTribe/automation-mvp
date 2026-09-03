@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/Button";
-import { useBidContext, useCampaignKeywords, useCreateBidRule, useUpdateBidRule } from "../hooks";
+import { useBidContext, useCreateBidRule, useUpdateBidRule } from "../hooks";
 import { CampaignPicker } from "./CampaignPicker";
 import { TimingFields, emptyTiming, timingFromRule, timingPayload } from "./TimingFields";
 
@@ -39,11 +39,17 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 	const create = useCreateBidRule();
 	const update = useUpdateBidRule();
 	const mutation = isEdit ? update : create;
-	const { data: kwData } = useCampaignKeywords(campaign.id || null);
 	const { data: ctx } = useBidContext(campaign.id || null);
 	const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-	const suggestions = (kwData ?? []).map((k) => k.keyword);
+	// The campaign's keywords, for the autocomplete. Same source as the floor below — the
+	// nightly scrape — so the two can never disagree. This used to come from the v1
+	// `/ads/campaigns/{id}/keywords` cache, which nothing had refreshed since 2026-07-29.
+	// One row per (keyword, match_type), hence the dedupe.
+	const suggestions = useMemo(
+		() => [...new Set((ctx?.keywords ?? []).map((k) => k.keyword))],
+		[ctx],
+	);
 
 	// Blinkit's published floor for the keyword being typed. It varies per keyword (₹50 on
 	// "mango", ₹400 on "cocktail"), so it can only be looked up once a keyword is chosen.
@@ -134,13 +140,13 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 					hint={campaign.id ? "Suggestions come from this campaign." : "Pick a campaign for suggestions."}
 				>
 					<input
-						list="cm2-keyword-suggestions"
+						list="cm-keyword-suggestions"
 						value={f.keyword}
 						onChange={set("keyword")}
 						placeholder="goli soda"
 						className={FIELD}
 					/>
-					<datalist id="cm2-keyword-suggestions">
+					<datalist id="cm-keyword-suggestions">
 						{suggestions.map((k) => (
 							<option key={k} value={k} />
 						))}

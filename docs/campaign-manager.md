@@ -103,7 +103,7 @@ Concurrent browsers = the RAM bill (~1 GB each).
 | Lane          | Jobs                                              | Why |
 |---------------|---------------------------------------------------|-----|
 | `cm_bid`      | `cm.bid_optimizer`                                | The control loop. Isolated so nothing can starve it |
-| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaign_data` | Latency-tolerant, share one browser's worth of RAM |
+| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaigns` | Latency-tolerant, share one browser's worth of RAM |
 | `interactive` | `cm.reconcile`                                    | No browser at all — it only writes our own rows |
 
 **`cm_bid` and `cm_ops` run at the same time.** That parallelism is the source of several ordering
@@ -118,7 +118,7 @@ subtleties below — most importantly that both engines issue *whole-campaign* P
 | `cm.reconcile`          | `interactive` | `live`            | Recompile rules → `job_schedules` |
 | `cm.set_budget`         | `cm_ops`      | `campaign`, `budget`, `live` | On-demand budget write |
 | `cm.set_activation`     | `cm_ops`      | `campaign`, `action`, `live` | On-demand start/stop |
-| `cm.sync_campaign_data` | `cm_ops`      | —                 | Cache campaign keywords/products |
+| `cm.sync_campaigns`     | `cm_ops`      | `days`            | Re-read the account's campaigns + statuses into the catalogue (a READ) |
 
 ---
 
@@ -790,6 +790,31 @@ Everything defaults to dry-run. `--live` is always explicit.
 
 ## 12. Known gaps & parked
 
+### v1 retirement (completed 2026-09-03)
+
+The v1 engine is **gone**, code and data. Deleted in one pass: `ad_campaigns/`, the
+`cli ads` command group, the three `ads.*` job types, ~21 functions in `ads_service`, the
+`/ads/budget-schedules` + `/ads/bid-optimizer` routes and their schemas, the v1 UI
+(`frontend/src/features/campaign-manager/`), and — via migration **`e7a3c85f2b19`** — its
+eight tables. That also removed the `bid_optimizer_rules.json` side-write, a global,
+non-tenant-scoped file that three *live* API routes were still writing to.
+
+Dropped tables: `budget_schedules`, `budget_schedule_rules`, `budget_scheduler_log`,
+`bid_optimizer_rules`, `bid_optimizer_log`, `campaign_data_cache`, plus the long-dead
+`ad_automation_rules` / `ad_automation_actions` (an older abandoned experiment from
+revision `9cba1aca0fa7` that never had a model or a caller). ~7,400 rows, reviewed as
+stale before the drop. `downgrade()` restores the schema, never the rows.
+
+With v1 gone, the surviving manager took its plain name back: the UI route is
+`/campaign-manager` again and `/campaign-manager-v2` redirects to it.
+
+**Two things deliberately survived the deletion:**
+
+| Kept | Why |
+|---|---|
+| `Lane.budget_scheduler` / `bid_optimizer` / `sync_campaign_data` | ~3,700 historical `jobs` rows carry these values and `lane` is a str-Enum column — dropping a member breaks every read of that history. They have no `LANE_SLOTS` entry, so `lane_slots.get(lane.value, 0)` gives them zero slots and nothing can ever be claimed into them. And Postgres has **no `ALTER TYPE ... DROP VALUE` at all**: removing one means recreating the type and rewriting the column, on a shared DB with a live runner. Verified after the drop — `cli status --days 60` renders all 3,703 legacy rows fine, as raw type names rather than friendly labels (`label_for()`'s deliberate fallback for unknown types) |
+| `/ads/campaigns/{id}/keywords` — **no**, this one went too | It was the last v1 route with a live consumer: the bid form's keyword autocomplete. It served `campaign_data_cache`, unrefreshed since 2026-07-29, while `bid-context` served the *same* campaign's keywords from the nightly scrape. Two sources for one fact, one of them five weeks stale. The form now derives its suggestions from `bid-context`, and the route, service function and schema are deleted |
+
 ### Deliberately parked
 
 | Gap | Consequence |
@@ -809,7 +834,7 @@ Everything defaults to dry-run. `--live` is always explicit.
 | Bid window scheduling is hour-granular | A 09:30 start rounds to the 09:00 hour; `_in_window` filters the early ticks, so it's cosmetic |
 | Stale boundary crons after expiry | Expiry fires a reset one-shot but leaves the now-inert boundary crons; the daily cleanup prunes them |
 | `cm_run_log` has no retention policy | Grows unbounded against a 500 MB quota |
-| `cm_campaign_catalog` not built | `cm.sync_campaign_data` is a stub; the optimizer fetches products live. Not needed for bid floors or cities — those ride the daily scrape |
+| `cm_campaign_catalog` not built | The optimizer fetches products live. Not needed for bid floors or cities — those ride the daily scrape. The `cm.sync_campaign_data` stub that was to fill it was deleted 2026-09-03 along with `campaign_data_cache`; do not confuse it with `cm.sync_campaigns`, the live catalogue refresh behind the UI's Refresh button |
 | Drift is shipped at `CM_BID_DRIFT_PCT=0` | Cost minimisation is off. Before arming: confirm on real History rows that position is flat across wide bid ranges now the store is fixed per rule, then arm ONE keyword and measure |
 | Coworker's `ADVERTISER_ID = 234` is stale | Their v1 writes would hit the dead pre-split account (the real one is 19802). Ours sends the stored id. Needs coordinating, not silently changing |
 | Nine stores have no canonical city | Four `up-ncr` at `2032xx` (Bulandshahr-district, matching no ad-city), `pilkhuwa`, and three Zepto stores with **transposed pincodes** in the `locations` sheet (`120001`, `210305`×2). They are simply not offered as measurement points |

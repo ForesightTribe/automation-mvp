@@ -129,20 +129,10 @@ def _public_skus(tenant_id, p):
     return a
 
 
-def _budget_scheduler(tenant_id, p):
-    return ["ads", "budget-scheduler", "--tenant", str(tenant_id)]
-
-
-def _bid_optimizer(tenant_id, p):
-    return ["ads", "bid-optimizer", "--tenant", str(tenant_id)]
-
-
-def _sync_campaign_data(tenant_id, p):
-    return ["ads", "sync-campaign-data", "--tenant", str(tenant_id)]
-
-
-# Campaign Manager v2 (cm.*) — parallel to ads.* (deleted at cutover). Dry-run by
-# default; the `live` param maps to --live to arm a real write (only at/after cutover).
+# Campaign Manager (cm.*). Dry-run by default; the `live` param maps to --live to arm a
+# real write. The legacy `ads.*` job types this once ran parallel to were deleted with the
+# v1 engine on 2026-09-03 — see the Lane note in app/models/job.py for why their LANES
+# survive the deletion.
 #
 # `marketplace` selects the adapter (see campaign_manager/marketplaces/__init__.py).
 #
@@ -176,12 +166,6 @@ def _cm_reconcile(tenant_id, p):
     a = ["cm", "reconcile", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
     _flag(a, "--live", p.get("live"))
-    return a
-
-
-def _cm_sync_campaign_data(tenant_id, p):
-    a = ["cm", "sync-campaign-data", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
     return a
 
 
@@ -274,20 +258,7 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         param_keys=("marketplace", "city", "brand_cap", "workers", "resume"),
         label="Public own-SKU scrape",
     ),
-    # Ad automations — each has its own dedicated lane so they never block each other.
-    "ads.budget_scheduler": JobTypeSpec(
-        Lane.budget_scheduler, 5 * 60, _budget_scheduler,
-        label="Budget scheduler (legacy v1)",
-    ),
-    "ads.bid_optimizer": JobTypeSpec(
-        Lane.bid_optimizer, 5 * 60, _bid_optimizer,
-        label="Bid optimizer (legacy v1)",
-    ),
-    "ads.sync_campaign_data": JobTypeSpec(
-        Lane.sync_campaign_data, 2 * 60 * 60, _sync_campaign_data,
-        label="Campaign data sync (legacy v1)",
-    ),
-    # Campaign Manager v2 — its OWN lanes (D18): bid isolated in cm_bid (latency-
+    # Campaign Manager — its OWN lanes (D18): bid isolated in cm_bid (latency-
     # critical); budget + set-budget + sync share cm_ops (latency-tolerant); reconcile
     # is no-browser → the shared interactive lane (prompt).
     "cm.budget_scheduler": JobTypeSpec(
@@ -309,11 +280,6 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         Lane.cm_ops, 10 * 60, _cm_set_activation,
         param_keys=("marketplace", "campaign", "status", "budget", "live"),
         label="Campaign start/pause",
-    ),
-    "cm.sync_campaign_data": JobTypeSpec(
-        Lane.cm_ops, 2 * 60 * 60, _cm_sync_campaign_data,
-        param_keys=("marketplace",),
-        label="Campaign performance sync",
     ),
     # Catalogue refresh — a READ (one list call), so it never writes to Blinkit and needs
     # no `live` param. Short timeout: it is a browser launch plus two requests, and it

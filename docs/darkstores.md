@@ -47,7 +47,7 @@ what Blinkit actually exposes, what we probed to find out, and what has to chang
 
 - **Model & terms** (Reach vs Distribution, combos, sku_map) → [public-glossary.md](public-glossary.md)
 - **Decisions log & sizing** → [public-scraper-refactor.md](public-scraper-refactor.md)
-- **Schema & internals** → [architecture.md](architecture.md)
+- **Schema & internals** → [architecture.md](ARCHITECTURE.md)
 
 ---
 

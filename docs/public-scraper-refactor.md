@@ -4,8 +4,8 @@ The public-scraper refactor shipped. This doc is now the **decisions log + cost
 sizing + remaining open items** — it is not a how-to. For that:
 
 - **Model & terms** (Reach vs Distribution, combos, sku_map, the two scrapes) → [public-glossary.md](public-glossary.md)
-- **Schema & internals** → [architecture.md](architecture.md)
-- **Commands** → [cli.md](cli.md)   ·   **Endpoints** → [api-reference.md](api-reference.md)
+- **Schema & internals** → [architecture.md](ARCHITECTURE.md)
+- **Commands** → [cli.md](CLI.md)   ·   **Endpoints** → [api-reference.md](api-reference.md)
 
 ## Locked decisions (the *why*, not captured in the reference docs)
 

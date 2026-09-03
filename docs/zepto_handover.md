@@ -2,7 +2,8 @@
 
 **Date:** 06-Aug-2026 · **Branch:** `zepto-dark-stores-discover`
 **Supersedes:** `zepto_status.md` and `zepto_phase0_handover.md`
-**Companion:** [zepto.md](zepto.md) — the build plan with decisions D1–D11
+**Companion:** [zepto-public.md](zepto-public.md) — which replaced the old `zepto.md`
+build plan (decisions D1–D11) once the design it described was superseded
 
 ---
 
@@ -384,7 +385,7 @@ Zepto SERP** across 36,000+ rows. Reported explicitly rather than silently omitt
 | 4 | **Sign-off to run `cli sync`** | a write to the shared DB; dry run expects `added=1229, deleted=0` |
 | 5 | **The `keyword_cap` behind the Blinkit 4–5 h figure** | converts the comparison from approximate to exact |
 
-**Also worth correcting:** `zepto.md` states "~1.5 h for 2059 stores at 5 workers".
+**Also worth correcting:** the old `zepto.md` stated "~1.5 h for 2059 stores at 5 workers".
 The like-for-like figure at 9 keywords is **4–5 h**, and the capacity planning in
 that doc rests on the smaller number.
 

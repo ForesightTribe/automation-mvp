@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppLayout } from "../layout/AppLayout";
 import { RequireAuth } from "../routes/RequireAuth";
 import { RequireAdmin } from "../routes/RequireAdmin";
@@ -13,7 +13,6 @@ import { ProductDetailPage } from "../features/products/ProductDetailPage";
 import { InventoryPage } from "../features/inventory/InventoryPage";
 import { AdsPage } from "../features/ads/AdsPage";
 import { CampaignManagerPage } from "../features/campaign-manager/CampaignManagerPage";
-import { CampaignManagerV2Page } from "../features/campaign-manager-v2/CampaignManagerV2Page";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
@@ -49,7 +48,13 @@ export const router = createBrowserRouter([
 					{ path: "/inventory", element: <InventoryPage /> },
 					{ path: "/ads", element: <AdsPage /> },
 					{ path: "/campaign-manager", element: <CampaignManagerPage /> },
-						{ path: "/campaign-manager-v2", element: <CampaignManagerV2Page /> },
+					// v1 was deleted on 2026-09-03 and the surviving manager took its plain
+					// URL back, so `-v2` no longer means anything. Both old paths redirect
+					// rather than 404 — each was live until now, so bookmarks exist for both.
+					{
+						path: "/campaign-manager-v2",
+						element: <Navigate to="/campaign-manager" replace />,
+					},
 					{ path: "/competition", element: <CompetitionPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{ path: "/reports", element: <ReportsPage /> },
