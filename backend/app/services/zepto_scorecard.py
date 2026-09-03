@@ -381,13 +381,22 @@ _KEY_SKUS = """
 select i.product_variant_id                              as item_id,
        max(i.sku_name)                                   as item_name,
        max(i.ean_no)                                     as upc,
-       max(i.brand)                                      as proxy_category,
+       -- The SKU's retail subcategory, via the same product_variant_id join
+       -- _WEEKLY_CATEGORIES uses. This was `max(i.brand)`, which is the BRAND:
+       -- on a single-brand account every row read "Brik Oven", so the column
+       -- carried no information at all. Subcategory, not category — Zepto's
+       -- `categoryName` is one bucket ("Dairy, Bread & Eggs") covering
+       -- everything this account sells.
+       max(coalesce(s.subcategory_name, s.category_name, i.brand)) as proxy_category,
        round(sum((i.po_qty - coalesce(i.grn_qty, 0)) * i.unit_price)::numeric, 2)
            as potential_loss,
        coalesce(sum(i.po_qty) - sum(coalesce(i.grn_qty, 0)), 0) as units_short
 from zepto_po_items i
 join zepto_po  p on p.po_id = i.po_id and p.tenant_id = i.tenant_id
 join zepto_grn g on g.po_id = i.po_id and g.tenant_id = i.tenant_id
+left join (select distinct product_variant_id, subcategory_name, category_name
+           from zepto_seller_sales where tenant_id = :t) s
+  on s.product_variant_id = i.product_variant_id
 where i.tenant_id = :t and i.grn_qty is not null
   -- Receipt week, not PO week. See the note on _WEEKLY_CATEGORIES: bucketing
   -- these on p.po_date made this panel describe a different set of POs from
