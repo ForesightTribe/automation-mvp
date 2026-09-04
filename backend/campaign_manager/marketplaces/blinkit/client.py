@@ -15,7 +15,8 @@ from playwright.async_api import async_playwright, Page
 
 from app.core.database import AsyncSessionLocal
 from platform_auth import service as auth_service
-from scraper.utils.browser import create_browser_context
+from scraper.utils.browser import create_browser_context, new_context
+from campaign_manager.writes import SessionExpired
 from campaign_manager.marketplaces.blinkit import build
 from campaign_manager.marketplaces.blinkit import payload as payload_check
 
@@ -73,19 +74,41 @@ async def _inject_firebase_idb(context, idb_data: list) -> None:
     }})();""")
 
 
+def _looks_logged_out(html: str | None) -> bool:
+    """A non-JSON body that is the login page rather than some other error."""
+    if not html:
+        return False
+    lowered = html.lower()
+    return any(m in lowered for m in ("login", "sign in", "unauthorized", "unauthenticated"))
+
+
 class BlinkitClient:
-    def __init__(self, page: Page, token: str):
+    def __init__(self, page: Page, token: str, tenant_id: str | None = None):
         self._page = page
         self._token = token
         self._email = _decode_email(token)
+        # Needed to re-authenticate mid-run. None for a client built straight from a stored
+        # state (no tenant to look up), which then cannot self-heal — it raises instead.
+        self._tenant_id = tenant_id
 
-    async def _fetch(self, method: str, path: str, body: dict | None = None) -> dict:
+    async def _fetch(self, method: str, path: str, body: dict | None = None,
+                     *, _retrying: bool = False) -> dict:
+        """One Blinkit API call, made through the page so Cloudflare sees a real browser.
+
+        Re-authenticates ONCE if the session has died, then replays the call. A bid run can
+        last minutes while the session is established only at its start, so without this a
+        mid-run expiry costs every remaining keyword — and does it while claiming Blinkit
+        rejected the bids, which is not what happened.
+
+        Replaying a write is safe: an auth failure means the request never reached the
+        campaign.
+        """
         url = f"{BASE_URL}{path}"
         # GET/HEAD cannot have a body — move params to query string
         if method in ("GET", "HEAD") and body:
             url = f"{url}?{urlencode(body)}"
             body = None
-        return await self._page.evaluate(
+        raw = await self._page.evaluate(
             """async ([method, url, fallback_token, body]) => {
                 // Use Firebase SDK's live token if available — avoids stale stored token
                 let token = fallback_token;
@@ -105,10 +128,57 @@ class BlinkitClient:
                     body: body ? JSON.stringify(body) : null
                 });
                 const text = await resp.text();
-                try { return JSON.parse(text); } catch(e) { return {}; }
+                let body_json = null;
+                try { body_json = JSON.parse(text); } catch(e) {}
+                // Carry the STATUS out too: a login redirect returns HTML, which
+                // used to be swallowed into `{}` and read as a rejection.
+                return {__status: resp.status, __body: body_json,
+                        __html: body_json === null ? text.slice(0, 200) : null};
             }""",
             [method, url, self._token, body],
         )
+
+        status, payload = raw.get("__status"), raw.get("__body")
+        if status in (401, 403) or (payload is None and _looks_logged_out(raw.get("__html"))):
+            if _retrying or not self._tenant_id:
+                raise SessionExpired(
+                    f"Blinkit returned {status} for {method} {path} — the session is no "
+                    f"longer valid" + ("" if self._tenant_id else
+                                       " and this client cannot re-authenticate itself"))
+            log.warning("[blinkit] session looks dead (%s on %s) — re-authenticating mid-run",
+                        status, path)
+            await self.reauth()
+            return await self._fetch(method, path, body, _retrying=True)
+        # Unchanged for every caller: a non-JSON body is still `{}`.
+        return payload if payload is not None else {}
+
+    async def reauth(self) -> None:
+        """Rebuild this client's session in place, without disturbing the caller.
+
+        Swaps the browser CONTEXT, not the browser. The engine holds `pw`/`browser` from
+        `setup()` and closes them in a `finally`, so launching a second Chromium here would
+        leak ~1 GB and leave the caller closing the wrong one.
+
+        `auth_service.ensure` is the same load → probe → refresh → re-login path the run
+        used at startup, so this also respects the circuit breaker that suspends auto-login
+        after repeated failures rather than hammering it from inside a loop.
+        """
+        old_context = self._page.context
+        browser = old_context.browser
+        async with AsyncSessionLocal() as db:
+            session = await auth_service.ensure(db, self._tenant_id, "blinkit")
+
+        state = session.storage_state
+        context = await new_context(browser, state)
+        idb = (state or {}).get("indexedDB", [])
+        if idb:
+            await _inject_firebase_idb(context, idb)
+        page, token = await _bind_session(context)
+
+        self._page, self._token = page, token
+        self._email = _decode_email(token) or self._email
+        await old_context.close()
+        log.warning("[blinkit] session re-established mid-run")
 
     async def get_enabled_campaign_types(self) -> list[str]:
         """Campaign types enabled for this advertiser, read from the config call the
@@ -416,15 +486,14 @@ class BlinkitClient:
 
 
 
-async def setup_with_state(storage_state: dict):
-    """Open browser with a pre-loaded storage state (no DB call). Returns (playwright, browser, BlinkitClient)."""
-    pw = await async_playwright().start()
-    browser, context = await create_browser_context(pw, headless=True, storage_state=storage_state)
+async def _bind_session(context) -> tuple:
+    """A context with a session in it → `(page, firebase_token)`.
 
-    idb_data = storage_state.get("indexedDB", [])
-    if idb_data:
-        await _inject_firebase_idb(context, idb_data)
-
+    Extracted so `setup_with_state` and `BlinkitClient.reauth` establish a session the SAME
+    way. They used to be one code path only because re-authentication did not exist; making
+    it a second copy is how the two would drift, and the token-capture fallbacks below are
+    exactly the fiddly part nobody would keep in sync by hand.
+    """
     token_holder = {"token": None}
     page = await context.new_page()
 
@@ -438,9 +507,10 @@ async def setup_with_state(storage_state: dict):
     await page.goto(f"{BASE_URL}{CAMPAIGNS_PAGE}", wait_until="domcontentloaded", timeout=120_000)
 
     if "/diy/" not in page.url and "/dashboard" not in page.url:
-        await browser.close()
-        await pw.stop()
-        raise RuntimeError(
+        # Raise, don't clean up: the browser belongs to the CALLER (a fresh one in
+        # `setup_with_state`, the run's existing one in `reauth`), and closing it here is
+        # how the extraction would leak or double-close.
+        raise SessionExpired(
             f"Session expired — redirected to {page.url}. Please reconnect Blinkit from the Campaign Manager page."
         )
 
@@ -499,14 +569,36 @@ async def setup_with_state(storage_state: dict):
             pass
 
     if not token_holder["token"]:
-        await browser.close()
-        await pw.stop()
-        raise RuntimeError(
-            "Blinkit session expired — could not obtain auth token. "
+        raise SessionExpired(
+            "Blinkit session expired — could not obtain an auth token. "
             "Please reconnect Blinkit from the Campaign Manager page."
         )
 
-    return pw, browser, BlinkitClient(page, token_holder["token"])
+    return page, token_holder["token"]
+
+
+async def setup_with_state(storage_state: dict, tenant_id: str | None = None):
+    """Open a browser with a pre-loaded storage state (no DB call).
+    Returns (playwright, browser, BlinkitClient).
+
+    `tenant_id` is what lets the client re-authenticate itself mid-run; without it a dead
+    session raises instead of self-healing.
+    """
+    pw = await async_playwright().start()
+    browser, context = await create_browser_context(pw, headless=True, storage_state=storage_state)
+
+    idb_data = storage_state.get("indexedDB", [])
+    if idb_data:
+        await _inject_firebase_idb(context, idb_data)
+
+    try:
+        page, token = await _bind_session(context)
+    except Exception:
+        await browser.close()
+        await pw.stop()
+        raise
+
+    return pw, browser, BlinkitClient(page, token, tenant_id=tenant_id)
 
 
 async def setup(tenant_id: str):
@@ -524,4 +616,4 @@ async def setup(tenant_id: str):
     async with AsyncSessionLocal() as db:
         session = await auth_service.ensure(db, tenant_id, "blinkit")
 
-    return await setup_with_state(session.storage_state)
+    return await setup_with_state(session.storage_state, tenant_id=tenant_id)

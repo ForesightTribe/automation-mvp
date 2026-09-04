@@ -13,6 +13,26 @@ so the safety logic is verifiable without Blinkit.
 from campaign_manager import config, logs
 
 
+class SessionExpired(RuntimeError):
+    """The marketplace answered as if we are logged out.
+
+    Lives here, beside `WriteRefused`, because the ENGINES have to act on it and they are
+    marketplace-agnostic — an adapter-specific exception class would make `bid.py` import
+    from `marketplaces/blinkit/`.
+
+    Deliberately distinct from "the marketplace refused this change". Blinkit's `_fetch`
+    used to turn a login redirect into `{}`, which every caller reads as a rejection — so a
+    session dying mid-run logged `not applied — Blinkit rejected the change to ₹250` for
+    every remaining keyword. A false statement about the marketplace, and it hid the fault.
+
+    A client that CAN re-authenticate does so first and only raises this if that fails, so
+    reaching an engine means the run genuinely cannot continue.
+
+    Subclasses RuntimeError because `adapter.setup()` failures are already caught as
+    RuntimeError and reported as an expired session — this keeps startup behaviour identical.
+    """
+
+
 class WriteRefused(Exception):
     """A payload builder refused to send a write it could not build safely.
 

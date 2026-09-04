@@ -800,11 +800,38 @@ minute from a parallel lane, and its RESTART can land on top of our write.
 authoritative for the resume direction only — the stop is a different endpoint that never appears
 there, so gating on it would block every stop.
 
-### 8.5 Sessions
+### 8.5 Sessions — including one that dies mid-run
 
 The campaign manager **consumes** the same `(tenant, "blinkit")` session as the scrapers and owns no
 auth code of its own. Sessions live encrypted in the DB, not on disk. Engines call `ensure()`, so an
 expired session self-heals. See [platform-auth.md](platform-auth.md).
+
+**That used to be true only at run START.** `setup()` ran once and `ensure()` with it; a session that
+died thirty seconds later was never noticed, because `_fetch` turned Blinkit's login redirect into
+`{}` — which every caller reads as *"the marketplace refused this change"*. So a dead session logged
+
+> not applied — Blinkit rejected the change to ₹250
+
+for every remaining keyword: a false statement about Blinkit, and one that hid the real fault. A bid
+run lasts minutes and writes real money, so losing its back half to a silent auth failure is not
+acceptable.
+
+Since 2026-09-04 `_fetch` carries the HTTP status out alongside the body, and on a 401/403 or a
+login-page redirect it **re-authenticates once and replays the call**. Replaying a write is safe: an
+auth failure means the request never reached the campaign.
+
+| | |
+|---|---|
+| **How many attempts, really** | One `_fetch` retry, but `ensure()` is a LADDER — probe → refresh → full login, and the login rung itself retries `MAX_LOGIN_ATTEMPTS` (2) with a 5 s backoff. So a single recovery is up to four escalating attempts |
+| **Why not more rounds** | A second ladder 200 ms later is identical to the first. What reaches it — broken config, dead inbox, Blinkit refusing us — does not resolve on that timescale, while retrying reliably burns OTP quota and hammers a login endpoint from one datacentre IP. `MAX_LOGIN_ATTEMPTS` is the honest lever, because it has backoff |
+| **Parallel lanes** | `ensure()` locks per (tenant, platform), so the bid and budget engines cannot double-login — the second waits and finds the session already fixed |
+| **If login is broken** | Ticks 1–3 each attempt and fail; the circuit breaker (`MAX_CONSECUTIVE_FAILURES = 3`) then refuses **before any network call**, naming the manual fix command. Fail fast three times, then fail cheaply. Bids stay where they are — not reset, not raised |
+| **It swaps the CONTEXT, not the browser** | The engine holds `pw`/`browser` from `setup()` and closes them in a `finally`. Launching a second Chromium would leak ~1 GB and leave the caller closing the wrong one |
+| **Giving up** | `writes.SessionExpired` (a `RuntimeError`, so startup behaviour is unchanged). The engine catches it, logs a genuine session-expired and reports *"stopped after 7 of 20 automations"* rather than grinding on |
+
+⚠️ `setup_with_state` can be handed a bare storage state with **no tenant**. Such a client cannot look
+up credentials and so cannot self-heal — it raises `SessionExpired` saying exactly that, rather than
+pretending it re-authenticated.
 
 ### 8.6 The Blinkit API surface
 
@@ -857,19 +884,19 @@ Everything below is the actual behaviour of the current code.
 
 | Scenario | What happens |
 |---|---|
-| Position worse than target | Raise by the distance-scaled step |
+| Position worse than target | Raise by `next_raise_step` — **percentage-based, not distance-scaled**. Base is `max(min_step, bid × pct)`; it escalates ×`ESCALATE` while the position refuses to move and resets to base once it does. The old ₹100/50/25/12.5 distance tiers are gone |
 | Raised, no improvement, <10 min since | HOLD — wait for the marketplace to reflect it |
-| Position unreadable / product not found | Skip. No write, **no runtime stamp** → next tick retries |
-| Organic-only (ad not serving) | Skip |
+| Position unreadable (scrape failed) | Error row, counted; run continues to the next keyword |
+| **Ad not on the page** (organic-only, or product not in results) | **Raises**, on both marketplaces since 2026-09-04. Treated as position `len(results)+1` — a genuine lower bound that keeps escalation honest. Was a skip on Blinkit, which meant a keyword outbid off the page could never climb back, and the next window open wrote `min_bid`, lower still. ⚠️ A broken product match therefore climbs to `max_bid` and stays: the ceiling is the only bound (accepted) |
 | Position scrape throws | Error row, counted; the run continues to the next keyword |
 | Reached `max_bid`, target still missed | See [9.4](#94-target-unreachable) |
 
 ### 9.3 At target
 
-| Scenario | Drift **off** (default) | Drift **on** |
+| Scenario | Drift **off** (`BID_DRIFT_PCT=0`, the kill switch) | Drift **on** (**the default — `7`**) |
 |---|---|---|
 | Exactly at target | Freeze — pays the climb price all day | Shave `DRIFT_PCT`%/tick |
-| Better than target (pos 1, target 3) | Steps *down* toward target | Counts as holding, shave |
+| Better than target (pos 1, target 3) | **Freeze.** The ₹100/50/25/12.5 step-down ladder was removed 2026-09-01 — rupee-denominated steps cannot be right on two marketplaces whose bids differ ~40× | Counts as holding, shave |
 | Held once only | — | Wait for a second confirmation |
 | Shave went too far, position lost | — | Snap back **precisely** to `last_holding_cpm`, pause |
 | Outbid during the pause | Raise normally | **Raise normally** — the pause only blocks decreases |
@@ -932,11 +959,76 @@ Everything below is the actual behaviour of the current code.
 |---|---|
 | Tenant not armed (`live_armed=false`) | Everything computes and logs; **nothing is written** |
 | No `advertiser_id` stored | Live run refused outright — it can't be derived, so it must be configured |
-| Session expired | Run aborts cleanly, error logged |
+| Session expired **mid-run** | Re-authenticates once and replays the call (§8.5). If that fails, the run aborts and says how far it got |
+| Session expired **at startup** | Run aborts cleanly — and now writes **one History row per affected automation** saying it could not sign in, so the client sees a reason instead of a gap |
 | Campaign detail read fails | Status treated as *unknown*, not stopped — a read blip must not silently pause optimization |
 | >`MAX_WRITES_PER_WINDOW` writes on a keyword | Rate limit blocks further writes |
 | Computed budget is 0 or absurd | Rejected by the bounds guardrail, never sent |
 | `CM_BID_DRIFT_PCT=0` | True revert to pre-drift behaviour |
+
+---
+
+## 9b. History — what the client sees, and why
+
+`cm_run_log` is on its way to being a client-facing record: *what did the automation do to my
+campaign, and why*. Three changes on 2026-09-04 made it one.
+
+### Every tick is recorded, not just the changes
+
+A tick that changed nothing used to write no row. "Held at ₹201 because the position is already at
+target" existed only in Cloud Logging — which is not joinable to our data, has its own retention, and
+cannot be shown in the product. But those are the ticks a per-automation view needs *most*: **"why has
+my bid not moved for six hours"** is answered by them and by nothing else.
+
+They are now written with `hold` (off target, waiting for the marketplace to reflect the last change)
+or `no-op` (nothing to do).
+
+The old reasoning — that a row every 15 minutes would bury the real changes — was right about the
+symptom and wrong about the cure. The noise belonged in the default **view**, not in what we are
+willing to remember. So `/history` **defaults to changes only**, and `?include_unchanged=true` returns
+the full per-tick record. `?campaign_id=` / `?rule_id=` narrow it.
+
+### Three columns that make a decision explainable
+
+| Column | Why |
+|---|---|
+| `rule_id` | Which automation the decision belongs to — the key a per-automation view groups by. **Not a foreign key**: history must outlive the rule it describes, and budget/activation rows point at a different table |
+| `position` | The observed search position — THE input to every bid decision, and previously only prose inside `reason` |
+| `target` | The effective target it was judged against, which differs from the rule's whenever one has been relaxed |
+
+Without the last two a UI can show *that* a decision happened but never *why*, which is the whole
+point of showing it.
+
+### Reasons are written for a client, not for a log reader
+
+Every row already carried a `reason`; three of them were engineer-speak, and one was worse:
+
+| Before | Now |
+|---|---|
+| `window opened → min` | "the window opened, so the bid starts at its ₹200 floor" |
+| `window closed → min (campaign running)` | "the window closed, so the bid goes back to its ₹200 floor" |
+| `live bid above — forced into [200–400]` | "the live bid of ₹450 was above the ₹400 limit, so it was brought back to ₹400" |
+| `Zepto blocked the search: HTTP 299 {
+ "error_code": …` — **four lines of raw JSON** | "could not check the search position, so the bid was left unchanged (… HTTP 299 { "error_code": "LOGIN_REQUIRED" })" |
+
+`bid._plain()` collapses an exception to one line and caps it at 120 characters. The full text stays
+in Cloud Logging where support can find it. `tests/test_history_reasons.py` greps the source for the
+two mistakes that actually happened — arrow jargon in a reason, and `str(e)` passed straight in.
+
+The `compute_bid` reasons were already right and are untouched: *"raising to ₹25 (+₹3) because
+position 24 is worse than target 3"* is the register the whole column aims at.
+
+### A blocked run explains itself too
+
+A run that dies at `setup()` returns before writing anything, so History showed bids not moving for
+hours with no row saying why. All six early exits — session and account-arming failures, across the
+optimizer, the end-of-window reset and the budget engine — now write **one row per affected
+automation**, per campaign rather than per run, because that is how the question is asked.
+
+The write is wrapped: a bookkeeping failure must never mask the auth failure underneath it.
+
+⚠️ **This table now grows with TIME rather than with ACTIVITY** — roughly 4 rows/hour per in-window
+keyword, where it previously wrote none. It needs a retention policy; none is implemented.
 
 ---
 

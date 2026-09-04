@@ -157,6 +157,14 @@ Two mechanisms, complementary rather than alternative:
 
 - **On demand — `ensure()`.** Whatever needs a session calls it and gets a working one.
   This is the mechanism; it recovers from expiry.
+
+  ⚠️ **A long-running caller must call it more than once.** The campaign manager's bid engine
+  established its session at run start and nowhere else, so a session dying mid-run went
+  unnoticed for the rest of it — and, because Blinkit's login redirect was being swallowed
+  into `{}`, the failures were logged as *"Blinkit rejected the change"*. Since 2026-09-04
+  its client re-authenticates in place on a 401/login-redirect and replays the call, reusing
+  `ensure()` (and therefore this circuit breaker) rather than logging in behind its back.
+  See campaign-manager.md §8.5.
 - **Scheduled — `auth.refresh`.** A daily job that *prevents* expiry. It costs one API
   call per platform, consumes no secret and sends no email, so it cannot lose to a mail
   scanner or forwarding lag the way a full login can.

@@ -228,8 +228,21 @@ async def get_job(client: ClientDep, session: SessionDep, job_id: uuid.UUID):
 
 
 @router.get("/history", response_model=Page[RunLogOut])
-async def history(client: ClientDep, pagination: PaginationDep, kind: str | None = None):
-    rows, total = await svc.history(client.id, kind=kind, limit=pagination.limit, offset=pagination.offset)
+async def history(client: ClientDep, pagination: PaginationDep, kind: str | None = None,
+                  campaign_id: int | None = None, rule_id: int | None = None,
+                  include_unchanged: bool = False):
+    """What the automations did. **Changes only by default** — the engine now records every
+    tick, including the ones where it deliberately did nothing, and a "held at ₹201" row
+    every 15 minutes would bury the real changes.
+
+    `include_unchanged=true` returns the full per-tick record: that is the per-automation
+    drill-down, where "why has my bid not moved for six hours" is exactly the question, and
+    the held ticks carry the answer in `reason` with the `position`/`target` behind it.
+    Narrow with `campaign_id` or `rule_id`.
+    """
+    rows, total = await svc.history(
+        client.id, kind=kind, limit=pagination.limit, offset=pagination.offset,
+        campaign_id=campaign_id, rule_id=rule_id, include_unchanged=include_unchanged)
     return Page.build(rows, total, pagination)
 
 

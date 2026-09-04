@@ -196,7 +196,7 @@ from the raw D19 `state`.
 | POST | `/campaigns/refresh` | Re-read the account's campaigns + statuses from Blinkit into the catalogue → enqueues `cm.sync_campaigns`, returns `{job_id}`. A READ job (one list call), so it needs no arming. This is how a campaign created since last night's scrape becomes selectable in the pickers. |
 | POST | `/run/budget-scheduler` · `/run/bid-optimizer` | Run an engine now → enqueues the job, returns `{job_id}` to poll. Dry unless the tenant is armed. |
 | GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. |
-| GET | `/history` | Paginated `cm_run_log` — real actions only (no-ops go to logs, not here). `?kind=budget\|bid\|activation`. |
+| GET | `/history` | Paginated `cm_run_log`. **Changes only by default** — since 2026-09-04 the engine records EVERY tick, including the ones where it deliberately did nothing, and a "held at ₹201" row every 15 minutes would bury the real changes. `?include_unchanged=true` returns the full per-tick record (the per-automation drill-down, where "why has my bid not moved for six hours" is the question and the held ticks carry the answer). Narrow with `?campaign_id=` / `?rule_id=`; filter by `?kind=budget\|bid\|activation`. Rows carry `position` + `target` so a decision explains itself without parsing `reason`. |
 | GET · PUT | `/advertiser` | Get / set the Blinkit ad-account id (B3) live writes send. Captured once from a dashboard PUT. |
 
 Timing shapes on budget/bid rules match the CLI ([cli.md](CLI.md)): recurring daily window

@@ -182,10 +182,25 @@ class CmPlatformAccount(SQLModel, table=True):
 
 
 class CmRunLog(SQLModel, table=True):
-    """Slim structured history for the UI (append-only; retention policy later).
-    Verbose run narration goes to Cloud Logging, not here (D6)."""
+    """Structured history for the UI — **every tick, not just the changes** (append-only).
+
+    Until 2026-09-04 a tick that changed nothing wrote no row: "held at ₹201 because the
+    position is already at target" lived only in Cloud Logging, which is not joinable to our
+    data and cannot be shown in the product. A per-automation view needs those ticks most of
+    all — "why did my bid not move for six hours" is the question people actually ask.
+
+    Verbose narration still goes to Cloud Logging (D6); this is the queryable subset.
+
+    ⚠️ This table now grows with TIME rather than with ACTIVITY (~4 rows/hour per in-window
+    keyword). It needs a retention policy.
+    """
     __tablename__ = "cm_run_log"
-    __table_args__ = (Index("idx_cm_runlog_tenant", "tenant_id", "timestamp"),)
+    __table_args__ = (
+        Index("idx_cm_runlog_tenant", "tenant_id", "timestamp"),
+        # Every tick writes a row now, so the per-campaign drill-down must not scan the
+        # whole tenant's history.
+        Index("idx_cm_runlog_campaign", "tenant_id", "campaign_id", "timestamp"),
+    )
 
     id: int | None = Field(default=None, primary_key=True)
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
@@ -196,8 +211,16 @@ class CmRunLog(SQLModel, table=True):
     campaign_name: str | None = None
     keyword: str | None = None
     action: str                             # apply | skip | hold | no-op | error
+    # Which automation this decision belongs to. NOT a foreign key on purpose: history must
+    # outlive the rule it describes, and budget/activation rows point at a different table.
+    rule_id: int | None = None
     old_value: float | None = None
     new_value: float | None = None
+    # The observed search position, and the target it was judged against — the two inputs to
+    # every bid decision. They used to exist only as prose inside `reason`, which meant a UI
+    # could show THAT a decision happened but never why.
+    position: float | None = None
+    target: int | None = None
     reason: str | None = None
     dry_run: bool = True
     success: bool = True

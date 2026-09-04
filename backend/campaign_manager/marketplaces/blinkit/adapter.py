@@ -6,8 +6,8 @@ so campaign-manager v2 owns its whole Blinkit stack and no longer imports v1. `w
 owns the dry-run + guardrail *policy* and calls these only when a real mutation is due.
 
 B3: live writes send the tenant's STORED advertiser id (set on the client by
-`writes.arm_live` → `set_advertiser`), overriding the client's own unreliable
-`get_advertiser_id()` derivation (which falls back to a possibly-stale hardcoded id).
+`writes.arm_live` → `set_advertiser`), rather than the client's own live derivation.
+(That derivation used to fall back to a hardcoded account id; it now raises instead.)
 """
 from campaign_manager.marketplaces.blinkit import payload as payload_check
 from campaign_manager.marketplaces.blinkit import restart
@@ -17,6 +17,29 @@ from campaign_manager.marketplaces.blinkit import restart
 # subjects it to the same bounds guardrail as a budget write. Zepto declares False —
 # its activate is an idempotent flip that restores the campaign's own values.
 RESUME_RESUBMITS = True
+
+# Being absent from the search results makes the bid GO UP, rather than being skipped.
+#
+# ⚠️ This was OFF for Blinkit until 2026-09-04, and the reason it was off is no longer
+# true. The guard existed because Blinkit's DOM fallback reported every result as organic,
+# so "absent" could mean a broken SOURCE rather than a missing ad — and raising against
+# that is bidding on garbage. **That fallback no longer exists.** `live_position.py`
+# removed it precisely because it could not read `ads_campaign_id`, which is now the sole
+# source of the sponsored flag (with Blinkit's `"0"`/`"null"` string sentinels handled).
+# The signal is as positive as Zepto's, so absence here is a fact about the auction too.
+#
+# What it fixes: a keyword outbid off the page could never climb back. Every tick saw
+# "absent", skipped, and left the bid alone — and the next window open then wrote
+# `min_bid`, lower still. Once off the page, off forever, which is the opposite of what a
+# bid is for.
+#
+# ⚠️ Known and accepted (2026-09-04): if the PRODUCT MATCH breaks — a pid changes, a name
+# drifts — every tick reads "absent" and the bid climbs to `max_bid` and stays there,
+# paying the ceiling for a slot it never had. Relaxation cannot rescue it, because
+# relaxing against a synthetic position would make the engine trim while trying to climb
+# (see tests/test_absent_raises.py). The exposure is bounded by the operator's own
+# ceiling, which is why this was accepted rather than gated on an absent-streak counter.
+RAISE_WHEN_ABSENT = True
 from campaign_manager.marketplaces.blinkit.client import setup, setup_with_state  # noqa: F401  (session bootstrap)
 from campaign_manager.marketplaces.blinkit.live_position import get_live_positions
 
@@ -57,10 +80,9 @@ async def read_bid(client, campaign_id: int, keyword: str) -> int | None:
 
 
 async def resolve_advertiser(client) -> int:
-    """What Blinkit's own code would derive for the account — `client.get_advertiser_id()`,
-    which falls back to a (possibly STALE) hardcoded constant because Blinkit doesn't expose
-    the id in its read APIs. Shown by `cm advertiser` for comparison only; live writes use
-    the per-tenant STORED value, not this. Read-only."""
+    """What Blinkit reports for this session — `client.get_advertiser_id()`, which RAISES
+    rather than guessing when the id is unreadable. Shown by `cm advertiser` for comparison
+    only; live writes use the per-tenant STORED value, not this. Read-only."""
     return int(await client.get_advertiser_id())
 
 
