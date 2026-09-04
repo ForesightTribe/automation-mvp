@@ -283,6 +283,18 @@ await ctx.route("**/*", write_blocker)                         # 3. block writes
 
 Step 2 must execute before any page JavaScript. Firebase JS SDK v9+ stores the refresh token in IndexedDB only. Skip this step and Firebase sees the session as expired despite valid cookies.
 
+**⚠️ This only works if the session HAS an IndexedDB blob, and one of them doesn't.**
+`storage_state` cannot carry IndexedDB, so it depends on the login synthesising it:
+`blinkit` (ads) does — `blinkit_seller` does **not**, so a seller session cannot drive a
+browser at all, however valid it is. All four seller scrapes are therefore browserless
+(`_headers_from_state`), and `seller/scraper.py` is now a pure REST client with no
+Playwright import — its two browser fallbacks were **deleted** 2026-09-04, because they
+could only run when the session was too thin for the header path, and a browser restore
+needs strictly *more* from a session than that path does. **A session being API-valid
+does not make it browser-valid** — that gap cost the scorecard four weeks while
+`auth probe`, `expires_at` and every other scrape reported healthy. See
+[docs/platform-auth.md](docs/platform-auth.md).
+
 ## Public Scraper — Key Facts
 
 Blinkit-only (Instamart/Zepto are out of scope). Fully per-tenant and DB-driven.

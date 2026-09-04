@@ -135,6 +135,49 @@ browser, and `headers` for those that don't. Callers take whichever they need.
 Stored rows are versioned (`__v: 2`). Rows written before this module are bare
 storage_states and are read as legacy — **no backfill required**.
 
+#### 🔴 A REST-issued session is valid for the API, and NOT for a browser
+
+`storage_state` carries cookies and localStorage. It does **not** carry IndexedDB —
+Playwright has no way to serialise it. Both Blinkit dashboards are Firebase SPAs that
+read their refresh token from IndexedDB, so restoring a session into a browser only
+works if the login also produced that blob:
+
+| Platform | `indexedDB` in session | Browser restore | Consumers |
+|---|---|---|---|
+| `blinkit` (ads/marketing) | **yes — 1 entry, synthesised by the REST login** (`marketplaces/blinkit/marketing.py` writes `firebase:authUser:<api_key>:[DEFAULT]`) | works | marketing scrape injects it via `_inject_firebase_idb` |
+| `blinkit_seller` | **no — 0 entries** | **lands on "Sign in via email"** | none any more; all four seller scrapes are browserless |
+
+**This is not a bug in either one.** The seller APIs need only a token cookie and
+`myEntity`, so its login never had reason to synthesise a Firebase entry. It just means
+a `blinkit_seller` session cannot drive a browser, and never will.
+
+**⚠️ The rule for anyone replacing an auth mechanism:** the danger is not the callers you
+delete. It is the callers that keep working while the thing they receive quietly loses a
+property. `ensure()` still returns a perfectly valid session — `auth probe` passes,
+`expires_at` is days out, every other scrape is green — so every diagnostic points at
+health while one consumer is dead.
+
+That is exactly what happened to the **scorecard** (2026-08-05 → 2026-09-04, four weeks
+of data missed). The 2026-08-05 refactor made seller logins browserless REST; Sales, PO
+and SOH had already moved to `_headers_from_state` and never noticed, but the scorecard
+still opened a browser — because besides the headers it needed `manufacturer_id`, which
+it read out of the SPA's own POST body. It broke on the next weekly run and reported
+`session may be expired`, which was false and cost the diagnosis weeks.
+
+The id was never browser-only: it is **`myEntity.external_id`** in the session's
+localStorage. ⚠️ **Not `myEntity.id`** — for the same account those are 40246 and 107951;
+using `id` returns an empty scorecard rather than an error. All four seller scrapes are
+now browserless, and the scorecard runs in **0.4 s** instead of ~13 s + ~1 GB of Chromium.
+
+Both browser fallbacks were then **deleted** rather than kept as a safety net, and
+`seller/scraper.py` no longer imports Playwright at all. They could not fire on any
+input: a fallback ran only when the session was too thin for the header path, and a
+browser restore needs strictly *more* from a session than that path does, never less.
+Keeping them was worse than useless — code that reads as a fallback, guarding an error
+that blames the session, is what made this take four weeks to find. Every failure now
+names the missing field instead. If a browser-based seller login is ever reintroduced,
+add a fallback back deliberately.
+
 ### The service ladder
 
 `ensure()` climbs only as far as it must: stored session that probes clean → refresh →
