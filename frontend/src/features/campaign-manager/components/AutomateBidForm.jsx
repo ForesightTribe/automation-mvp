@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/Button";
 import { useBidContext, useCreateBidRule, useUpdateBidRule } from "../hooks";
 import { CampaignPicker } from "./CampaignPicker";
+import { KeywordPicker } from "./KeywordPicker";
 import { TimingFields, emptyTiming, timingFromRule, timingPayload } from "./TimingFields";
 
 const FIELD =
@@ -42,14 +43,6 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 	const { data: ctx } = useBidContext(campaign.id || null);
 	const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-	// The campaign's keywords, for the autocomplete. Same source as the floor below — the
-	// nightly scrape — so the two can never disagree. This used to come from the v1
-	// `/ads/campaigns/{id}/keywords` cache, which nothing had refreshed since 2026-07-29.
-	// One row per (keyword, match_type), hence the dedupe.
-	const suggestions = useMemo(
-		() => [...new Set((ctx?.keywords ?? []).map((k) => k.keyword))],
-		[ctx],
-	);
 
 	// Blinkit's published floor for the keyword being typed. It varies per keyword (₹50 on
 	// "mango", ₹400 on "cocktail"), so it can only be looked up once a keyword is chosen.
@@ -137,20 +130,19 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 				</Field>
 				<Field
 					label="Keyword"
-					hint={campaign.id ? "Suggestions come from this campaign." : "Pick a campaign for suggestions."}
+					hint={
+						campaign.id
+							? "This campaign's keywords, with what it bids and Blinkit's floor."
+							: "Pick a campaign to see its keywords."
+					}
 				>
-					<input
-						list="cm-keyword-suggestions"
+					<KeywordPicker
 						value={f.keyword}
-						onChange={set("keyword")}
-						placeholder="goli soda"
-						className={FIELD}
+						onChange={(kw) => setF((prev) => ({ ...prev, keyword: kw }))}
+						keywords={ctx?.keywords}
+						scrapedAt={ctx?.scraped_at}
+						campaignId={campaign.id}
 					/>
-					<datalist id="cm-keyword-suggestions">
-						{suggestions.map((k) => (
-							<option key={k} value={k} />
-						))}
-					</datalist>
 				</Field>
 				<Field label="Target position" hint="Where you want to rank (1 = top).">
 					<input
