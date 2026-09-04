@@ -110,12 +110,18 @@ class SearchListing(SQLModel, table=True):
     #
     # A product can hold BOTH an organic and a sponsored slot on one page, so two
     # rows may share a `platform_product_id` within a snapshot and differ only here.
-    # That is real, not duplication — the search dedupe keys on (product, is_ad) for
-    # exactly this reason.
+    # That is real, not duplication — the KEYWORD scrape keys its dedupe on
+    # (product, is_ad) for exactly this reason. The targeted own-SKU scrape does the
+    # opposite (`distinct_ad_slots=False`) because `sku_snapshots` records a product's
+    # state at a store, where the same pair is one fact. See scraper/public/providers.py.
     #
-    # False on rows scraped before this existed, and on any provider not yet
-    # reporting it (Blinkit — see zepto-cm-exp/TODO-blinkit-is-ad.md). "We could not
-    # tell" reads as organic, which under-counts ads rather than inventing them.
+    # False on rows scraped before this existed — including every Blinkit row written
+    # before 2026-09-04, when the marker was finally read (the data was in the response
+    # all along). "We could not tell" reads as organic, which under-counts ads rather
+    # than inventing them, and those rows cannot be backfilled.
+    #
+    # The sponsoring campaign's ids live in `extra` (`ads_campaign_id` on Blinkit,
+    # `ucl_id` on Zepto) rather than in columns — only ~8% of rows are sponsored.
     is_ad: bool = False
     extra: dict[str, Any] | None = Field(default=None, sa_column=Column(JSON))
 

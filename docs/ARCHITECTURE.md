@@ -162,7 +162,7 @@ The runner is a thin dispatch layer above this diagram — see docs/jobs.md.
 | Table | Key columns | Notes |
 |---|---|---|
 | `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **keyword scrape header** — one row per (tenant, keyword, location, scrape) |
-| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `is_combo`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product in the result page (lat/lon via `snapshot_id → search_snapshots`) |
+| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `is_combo`, `is_ad`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product placement in the result page (lat/lon via `snapshot_id → search_snapshots`). A product holding both an organic and a sponsored slot is **two rows** differing only in `is_ad` |
 | `sku_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `platform_product_id` (key), `product_name`, `is_combo`, `merchant_id`, `city`, `lat`/`lon`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `rating` | **targeted own-SKU scrape** — one flat row per (own product × location × scrape) |
 | `sku_map` | `tenant_id`, `item_id`, `platform_product_id`, `product_name`, `match_method` | bridges private `item_id` ↔ public `platform_product_id` (name-matched; `cli sku-map`) |
 | `marketplace_locations` | `mp_slug`, `merchant_id` (key), `city`, `state`, `region`, `lat`/`lon` | shared darkstore catalog (from `config.xlsx`) |
@@ -190,6 +190,15 @@ one store can answer several coordinates. So public read metrics should
 `is_combo` separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The
 old `search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products`
 tables were dropped in migration `f3a9c1d7b2e5`.
+
+`is_ad` separates **bought** placements from **earned** ones (migration `f2a71c4d8e93`),
+so SoV and rank can be read paid-vs-organic instead of over a blend of the two. Both
+marketplaces report it — Blinkit from `tracking.common_attributes.ads_campaign_id`, Zepto
+from `meta.tagsV2[*].tagType == "SPONSORED"` — and the campaign ids travel in `extra`
+rather than in columns (~8% of rows are sponsored). Two things to know before querying it:
+**Blinkit rows before 2026-09-04 all read `false`** and cannot be backfilled (the flag was
+never captured), and the **keyword** scrape dedupes on `(product, is_ad)` while the
+**targeted** scrape collapses the pair — see `scraper/public/providers.py`.
 
 ### Blinkit marketing tables (tenant-scoped)
 

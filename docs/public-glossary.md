@@ -85,6 +85,26 @@ metrics are counted in **dark stores**, split by **Main vs Combo**, sourced from
 | — **Keywords** | distinct keywords the competitor appeared in |
 | — **Avg pos / Avg price** | their mean rank and listed price |
 | **Price positioning** | Per keyword: **your** price band vs the **competitor** band — priced into or out of the set |
+| **Paid vs organic** (`is_ad`) | Whether a result was a **bought** placement or an **earned** one. Both marketplaces say which is which — Blinkit in `tracking.common_attributes.ads_campaign_id`, Zepto in `meta.tagsV2[*].tagType == "SPONSORED"` |
+
+### Paid vs organic — read this before quoting SoV
+
+Search results interleave paid and earned placements, and until they are told apart,
+**SoV and rank are computed over a mixture of the two**: a brand that bought its way to
+position 2 scores the same as one that earned it. On a live Zepto `bread` search, 9 of
+24 results (37.5%) were sponsored.
+
+A product can hold **both** slots on one page (verified on Zepto: one SKU organic at
+1/2/4 and sponsored at 7/9/13). That is two placements and counts as two — collapsing
+them understates SoV at *both* ends, because the denominator shrinks too: a brand in 2
+of 4 slots would score 1/3 rather than 2/4. `sku_snapshots` is the deliberate exception
+— it records a product's **state at a store**, where the same pair is one fact.
+
+⚠️ **`is_ad` is only trustworthy going forward.** Every Blinkit row written before
+**2026-09-04** reads `false` because the scraper never looked at the marker, not because
+those placements were organic — 340,635 rows that cannot be backfilled, since the flag
+was never in them. Segmenting historical Blinkit data by paid/organic will show 0% paid
+and be wrong. Zepto has carried it since 2026-09-01.
 
 ## The bridge (Products page)
 

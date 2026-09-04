@@ -325,6 +325,17 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   regex only when the unit is unparseable — the name alone missed ~13% of multipacks.
   Combos are stocked selectively, so views filter `?kind=main|combo|all` (default main).
   `keyword_cap`/`brand_cap` live on the `brands` config sheet.
+- **Paid vs organic (`is_ad`)** — search results interleave bought and earned
+  placements and both marketplaces say which is which (Blinkit:
+  `tracking.common_attributes.ads_campaign_id`; Zepto: `meta.tagsV2`). Without it SoV
+  and rank blend the two. **⚠️ Blinkit rows before 2026-09-04 all read `false` and are
+  NOT backfillable** — the marker was never captured, so a paid/organic split over
+  historical Blinkit data reads 0% paid. Campaign ids ride in `extra`, not columns.
+  **The two scrapes dedupe differently on purpose:** the keyword scrape keys on
+  `(product, is_ad)` because a product holding both slots is two placements, while the
+  targeted own-SKU scrape passes `distinct_ad_slots=False` because `sku_snapshots` is a
+  product's state at a store and a second row double-counts inventory. One predicate for
+  both the scrape and the **bid optimizer**, in `blinkit/public_data/ads.py`.
 - **Per-unit price** normalizes price across pack sizes (₹/100 ml · 100 g · piece),
   parsed from the `unit` string into `pack_size`/`pack_uom`/`pack_count` on both public
   tables; per-unit price is derived (`price ÷ pack_size`), never stored. All parsing goes

@@ -170,7 +170,8 @@ def _sku_row(base: dict, row: dict) -> dict:
 # ── Scrape helpers ────────────────────────────────────────────────────────────
 
 async def _safe_search(provider: Provider, session: dict, keyword: str, cap: int,
-                       loc: MarketplaceLocation, follow_similarity: bool = False) -> dict:
+                       loc: MarketplaceLocation, follow_similarity: bool = False,
+                       distinct_ad_slots: bool = True) -> dict:
     """Every explorer search goes through here, which is why the per-marketplace
     gap lives here rather than at each call site.
 
@@ -182,6 +183,7 @@ async def _safe_search(provider: Provider, session: dict, keyword: str, cap: int
         return await provider.search(
             session, keyword, cap, lat=loc.lat, lon=loc.lon,
             follow_similarity=follow_similarity,
+            distinct_ad_slots=distinct_ad_slots,
         )
     except Exception as e:
         return {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
@@ -263,8 +265,13 @@ async def _worker(wid: int, provider: Provider, browser, seed: tuple, queue: asy
                             stats["rows"] += 1
 
                 if do_catalog:
+                    # Catalog mode builds SKU rows (a product's state at a store), so
+                    # it collapses ad+organic to one row exactly as `targeted.py` does.
+                    # The keyword loop above keeps them apart — same reasoning, opposite
+                    # answer, because it is measuring placements. See providers.py.
                     res = await _safe_search(provider, session, brand_query, brand_cap, loc,
-                                             follow_similarity=True)
+                                             follow_similarity=True,
+                                             distinct_ad_slots=False)
                     if res.get("ok") and res.get("products"):
                         stale = 0
                         cls = classify_products(res["products"], ctx["brand_slug"], ctx["aliases"], competitors=[])

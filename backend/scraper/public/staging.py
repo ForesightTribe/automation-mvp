@@ -32,6 +32,7 @@ from pathlib import Path
 from app.utils.logger import logger
 from app.utils.time import now_ist
 from scraper.utils.pack import pack_fields, combo_from_pack
+from scraper.utils.search_result import listing_extra
 
 # Kinds mirror ScrapeJob.dashboard so the loader can create the job row verbatim.
 KIND_SEARCH = "public_search"
@@ -291,14 +292,11 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
               l.get("inventory"), l.get("product_id") or None,
               l.get("merchant_id") or "", l.get("merchant_type") or "",
               int(combo_from_pack(l.get("name", ""), _pk["pack_count"])),
-              # Paid placement. Absent on a provider that does not report it yet
-              # (Blinkit — see zepto-cm-exp/TODO-blinkit-is-ad.md), which defaults
-              # to organic rather than guessing.
+              # Paid placement. Both marketplaces now report it (Blinkit reads
+              # `tracking.common_attributes.ads_campaign_id`, Zepto `meta.tagsV2`);
+              # a provider that does not defaults to organic rather than guessing.
               int(bool(l.get("is_ad", False))),
-              json.dumps({"group_id": l.get("group_id"), "unit": l.get("unit"),
-                          "ptype": l.get("ptype"), "category": l.get("category"),
-                          "match_reason": l.get("match_reason"),
-                          "image_url": l.get("image_url")}))
+              json.dumps(listing_extra(l)))
              for l in listings for _pk in (pack_fields(l.get("unit")),)],
         )
         conn.commit()

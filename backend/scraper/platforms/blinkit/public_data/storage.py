@@ -7,6 +7,7 @@ from app.models.search import SearchSnapshot, SearchListing
 from app.utils.logger import logger
 from app.utils.time import now_ist
 from scraper.utils.pack import pack_fields, combo_from_pack
+from scraper.utils.search_result import listing_extra
 from scraper.utils.storage import ensure_refs
 
 
@@ -101,14 +102,11 @@ async def save(session: AsyncSession, result: dict, tenant_id, job_id=None, ensu
                     # Per-product, not per-snapshot: one response spans several stores.
                     merchant_id=l.get("merchant_id") or "",
                     merchant_type=l.get("merchant_type") or "",
-                    extra={
-                        "group_id": l.get("group_id"),
-                        "unit": l.get("unit"),
-                        "ptype": l.get("ptype"),
-                        "category": l.get("category"),
-                        "match_reason": l.get("match_reason"),
-                        "image_url": l.get("image_url"),
-                    },
+                    # Paid placement. This path had no `is_ad` at all, so the same
+                    # scrape stored a sponsored row as organic here and correctly via
+                    # staging — the column defaults to False, so it failed silently.
+                    is_ad=bool(l.get("is_ad", False)),
+                    extra=listing_extra(l),
                 )
             )
 

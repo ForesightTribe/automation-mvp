@@ -57,6 +57,27 @@ monthly partitioning when it matters). Private data is a rounding error next to 
 
 ## Open items
 
+- **Paid vs organic (`is_ad`)** — ✅ SHIPPED both marketplaces (Zepto 2026-09-01,
+  Blinkit 2026-09-04). Blinkit's marker was in `tracking.common_attributes.
+  ads_campaign_id` — the same block the extractor already read for position, rating
+  and category — and the bid optimizer had been parsing it correctly the whole time;
+  the public scrape simply never looked. `platforms/blinkit/public_data/ads.py` now
+  owns the predicate for both consumers. The sponsoring campaign's ids go to
+  `extra` (`ads_campaign_id` / Zepto's `ucl_id`), not to columns: ~8% of rows are
+  sponsored and `extra` is already half the weight of a listing row.
+  - ⚠️ **Not backfillable.** 340,635 Blinkit rows written before 2026-09-04 read
+    `false` because the flag was never captured, not because they were organic.
+    Any paid/organic split over historical Blinkit data will read 0% paid.
+  - ⚠️ **Two scrapes, two dedupe keys.** The keyword scrape keys on
+    `(product, is_ad)` — a product holding both slots is two placements. The
+    targeted own-SKU scrape passes `distinct_ad_slots=False`, because
+    `sku_snapshots` records state at a store and a second row double-counts that
+    store's inventory. `providers.py` documents the contract.
+- **Ad attribution beyond the campaign** — Zepto's `uclId` names the campaign
+  KEYWORD that won each slot (which is *not* the query searched); Blinkit's
+  `ads_campaign_id` names only the campaign. So a Blinkit slot can be attributed to
+  a campaign but not to a rule within it. Both ids now reach `extra`; nothing reads
+  them yet.
 - **Scrape dedup (optional efficiency)** — iterate distinct `(lat,lon)` (~1,924) not
   all catalog rows (~2,216): ~13% less work, no duplicate rows at source. Needs a
   re-scrape. Metrics already count locations, so this is efficiency-only.

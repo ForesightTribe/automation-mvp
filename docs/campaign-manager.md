@@ -332,6 +332,23 @@ Blinkit change is fixed once.
 > returned was flagged organic, which `match_position` can only read as "skip". It never
 > once produced a usable bid decision.
 
+> **The sponsored predicate is shared, not copied** (2026-09-04). "A non-empty
+> `ads_campaign_id` under `tracking.common_attributes` means this slot was bought" now
+> lives once, in `scraper/platforms/blinkit/public_data/ads.py`, and both readers call it:
+> this scraper and the public keyword scrape (which had never read the marker at all —
+> every Blinkit listing ever stored says organic). Two definitions of "sponsored" drifting
+> apart is not hypothetical here; a second copy of the payload builder is exactly how the
+> `city_ids` bug hid for months (§8.2b).
+>
+> ⚠️ The same key appears in `widget_meta` / `entry_source_map` on promotional BANNERS.
+> Reading it off the snippet at large — rather than off a product's `common_attributes` —
+> would flag a banner carousel as a sponsored product.
+>
+> `_parse_snippets` now also returns `campaign_id`, i.e. WHOSE ad it is. Nothing acts on it
+> yet: `match_position` treats any sponsored slot matching our product as ours, which is
+> right today (we match on our own PIDs and brand tokens) but cannot tell us apart from a
+> reseller advertising the same SKU. Carrying the id is what makes that check possible.
+
 ### 7.3 Holding — "at target **or better**"
 
 Being better than target is a **success, not an error to correct.** Sponsored slots sit on a sparse

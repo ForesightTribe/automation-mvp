@@ -30,7 +30,7 @@ from urllib.parse import parse_qs, urlparse
 from playwright.async_api import async_playwright
 
 from app.utils.logger import logger
-from scraper.platforms.blinkit.public_data import endpoints as ep
+from scraper.platforms.blinkit.public_data import ads, endpoints as ep
 from scraper.platforms.blinkit.public_data.scraper import in_page_fetch
 
 # Default: Bengaluru MG Road / Shivajinagar dark store
@@ -117,7 +117,7 @@ async def close_session(session: dict) -> None:
 # ── Search ───────────────────────────────────────────────────────────────────
 
 def _parse_snippets(snippets: list, start_rank: int) -> list[dict]:
-    """Blinkit search snippets → [{position, name, is_ad, pid}]. Pure."""
+    """Blinkit search snippets → [{position, name, is_ad, pid, campaign_id}]. Pure."""
     out: list[dict] = []
     for sn in snippets:
         if not isinstance(sn, dict):
@@ -138,15 +138,22 @@ def _parse_snippets(snippets: list, start_rank: int) -> list[dict]:
 
         # A non-empty ads_campaign_id is what makes a slot sponsored. This is the ONLY
         # place the sponsored flag comes from, which is why there is no DOM fallback.
+        # The predicate itself now lives in `public_data/ads.py` — the public keyword
+        # scrape reads the same marker, and two definitions of "sponsored" drifting
+        # apart is a bug nobody would notice until a bid chased a phantom position.
         common = (sn.get("tracking") or {}).get("common_attributes") or {}
-        ads_campaign_id = str(common.get("ads_campaign_id") or "").strip()
-        is_ad = bool(ads_campaign_id and ads_campaign_id not in ("0", "null", "None"))
 
         out.append({
             "position": start_rank + len(out),
             "name": name[:100],
-            "is_ad": is_ad,
+            "is_ad": ads.is_sponsored(common),
             "pid": pid,
+            # WHOSE ad this is. Carried but not yet acted on: `match_position` treats
+            # any sponsored slot matching our product as ours, which is right today
+            # (we only match on our own PIDs and brand tokens) but cannot distinguish
+            # our campaign from a reseller running ads on the same SKU. Having the id
+            # on the row is what makes that check possible later.
+            "campaign_id": ads.campaign_id(common),
         })
     return out
 

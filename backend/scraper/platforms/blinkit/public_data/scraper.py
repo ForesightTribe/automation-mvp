@@ -19,7 +19,7 @@ from app.utils.logger import logger
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.cities import CITIES
 from scraper.utils.search_result import HEADERS_COMMON, dig
-from scraper.platforms.blinkit.public_data import endpoints as ep
+from scraper.platforms.blinkit.public_data import ads, endpoints as ep
 
 
 # ── Extraction ───────────────────────────────────────────────────────────────
@@ -75,6 +75,16 @@ def _extract_product(snippet: dict) -> dict | None:
             "l2": common.get("l2_category"),
         },
         "match_reason": common.get("reason"),
+        # Paid placement or organic. The marker was always in the block we already
+        # read for position/rating/category — we simply never looked at it, so every
+        # stored Blinkit listing to date reads as organic and SoV/rank are computed
+        # over a mixture of bought and earned slots. `ads.py` owns the predicate; the
+        # bid optimizer reads it through the same function. See its docstring for why
+        # the campaign id must come from `common_attributes` and nowhere else.
+        "is_ad": ads.is_sponsored(common),
+        # The sponsoring campaign's tracking ids — OUR campaign id, the same integer
+        # the Campaign Manager writes to. Empty dict on organic rows.
+        "ad_meta": ads.ad_meta(common),
     }
 
 
@@ -246,6 +256,7 @@ async def search(
     lat: float | None = None, lon: float | None = None,
     merchant_id: str | None = None,
     follow_similarity: bool = False,
+    distinct_ad_slots: bool = True,
 ) -> dict:
     """Run one keyword search in an open session, paginating up to `cap`. Pass
     `lat`/`lon` to target a specific store without reopening the session — Blinkit
@@ -263,6 +274,9 @@ async def search(
     the tail (bounded by `cap`) recovers the full catalog. Safe there because the
     caller classifies own-brand-only, discarding any non-own similarity padding.
 
+    `distinct_ad_slots` decides whether a product's sponsored and organic placements
+    are two rows or one — see the dedupe loop below.
+
     Returns {products, total_results, merchant_id, ok, error}; `ok` is False when
     the first fetch didn't return 200, `error` carries a short reason.
     """
@@ -272,7 +286,7 @@ async def search(
         headers = {**headers, "lat": str(lat), "lon": str(lon)}
 
     products: list[dict] = []
-    seen: set[str] = set()
+    seen: set[tuple[str, bool]] = set()   # (product id, is_ad) — see the loop below
     total_results: int | None = None
     ok = False
     error = ""
@@ -291,14 +305,40 @@ async def search(
         # Blinkit repeats products across pages — the `similarity` tail re-lists items
         # already returned as `basic`, so a brand scrape (follow_similarity=True) saw
         # the same SKU two or three times and wrote a duplicate row per store. Keep the
-        # FIRST sighting: it carries the true (best) rank. Deduping on product_id alone
-        # is safe — a product resolves to exactly one store per coordinate.
+        # FIRST sighting: it carries the true (best) rank.
+        #
+        # Dedupe on (product, is_ad) — NOT on product alone, which is what this did
+        # until `is_ad` was populated above.
+        #
+        # Whether Blinkit serves a product BOTH slots on one response is NOT
+        # established: api.txt concatenates several captures, so its repeated pids
+        # prove nothing either way. (On Zepto it is established — `sourdough bread`
+        # showed one SKU organic at 1/2/4 and sponsored at 7/9/13.)
+        #
+        # The key is widened anyway because the failure is ONE-SIDED. If Blinkit never
+        # dual-slots, the two keys are identical and this changes nothing. If it does,
+        # the narrow key drops a real placement — and drops the wrong one: sponsored
+        # slots rank high, so the ad arrives FIRST and first-sighting-wins keeps it,
+        # silently converting the product's stored placement from earned to bought.
+        # A wider key cannot invent a row; a narrower one can rewrite the truth.
+        #
+        # Rank is unaffected either way: `classify_products` takes min(position) over
+        # our rows, so the best placement still wins regardless of how many are kept.
+        #
+        # ⚠️ `distinct_ad_slots=False` collapses the pair back to one row, and the
+        # TARGETED own-SKU scrape needs exactly that. It measures a product's STATE at
+        # a store (price, stock, inventory) rather than its placements on a page, and
+        # writes `sku_snapshots` — where a second row for the same product at the same
+        # store double-counts the inventory it is there to report. A brand-name query
+        # is precisely where a brand-defence ad shows up, so this is not hypothetical.
+        # Two scrapes, two questions, two keys.
         for p in _extract_products(page_body):
             pid = p.get("product_id")
             if pid:
-                if pid in seen:
+                key = (pid, bool(p.get("is_ad")) and distinct_ad_slots)
+                if key in seen:
                     continue
-                seen.add(pid)
+                seen.add(key)
             products.append(p)
 
         next_url, method, count = _pagination(page_body)

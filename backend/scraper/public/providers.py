@@ -5,16 +5,29 @@ so everything above the platform layer — `orchestrator.py` (keyword scrape),
 `targeted.py` (own-SKU scrape) and `explorer/` — stays marketplace-agnostic:
 
     open_session(browser, lat, lon)                          -> session | None
-    search(session, keyword, cap, *, lat, lon, merchant_id, follow_similarity)
-                                     -> {products, total_results, merchant_id, ok, error}
+    search(session, keyword, cap, *, lat, lon, merchant_id, follow_similarity,
+           distinct_ad_slots)        -> {products, total_results, merchant_id, ok, error}
     close_session(session)                                   -> None
     parse(raw)                                               -> classified result
 
 `search()` must return the shape above, and each product must use the shared key
 names (`product_id`, `name`, `brand`, `price`, `mrp`, `unit`, `inventory`,
-`in_stock`, `rating`, `position`, `merchant_id`, `merchant_type`). Translating a
-marketplace's own vocabulary into those names happens INSIDE that marketplace's
-engine, never here and never in a caller — that is the whole contract.
+`in_stock`, `rating`, `position`, `merchant_id`, `merchant_type`, `is_ad`).
+Translating a marketplace's own vocabulary into those names happens INSIDE that
+marketplace's engine, never here and never in a caller — that is the whole contract.
+
+`is_ad` marks a PAID placement, and every marketplace says which slots it sold
+(Blinkit in `tracking.common_attributes.ads_campaign_id`, Zepto in `meta.tagsV2`).
+A provider that cannot tell reports False — "we could not prove it is an ad" reads
+as organic, which under-counts ads rather than inventing them.
+
+`distinct_ad_slots` exists because the two scrapes ask different questions of the
+same engine. The KEYWORD scrape measures placements on a page, where a product
+holding both an organic and a sponsored slot is two facts (collapsing them
+understates SoV at both ends — a brand in 2 of 4 slots scores 1/3, not 2/4, because
+the denominator shrinks too). The TARGETED own-SKU scrape measures a product's state
+at a store, where the same pair is ONE fact and a second row double-counts inventory
+in `sku_snapshots`. Default True; `targeted.py` passes False.
 
 `merchant_id` is passed IN as well as returned, because the two marketplaces bind
 in opposite directions (D8). Blinkit takes a coordinate and reports back which
