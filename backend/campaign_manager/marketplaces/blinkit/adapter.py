@@ -58,11 +58,18 @@ async def apply_budget(client, campaign_id: int, budget: float) -> dict:
     detail, _ = await client.get_campaign_detail(campaign_id)
     pacing = (detail or {}).get("pacing_type", "DAILY")
     changes = {"bidding_strategy": {"total_budget": float(budget), "pacing_type": pacing}}
-    resp = await client.update_campaign(campaign_id, changes, advertiser_id=adv)
-    if resp.get("status") or resp.get("success"):
-        return resp
-    # Fallback: empty pids handles delisted/invalid catalog products.
-    return await client.update_campaign(campaign_id, changes, empty_pids=True, advertiser_id=adv)
+    # ONE write. There used to be a retry here that resent the campaign with `pids: ""`,
+    # meant to rescue a delisted catalog. Tested live 2026-09-04 (574687,
+    # PRODUCT_LISTING): it does not clear the products — Blinkit ignores an empty list —
+    # but it cannot succeed either, because the validator fires on the payload HAVING no
+    # pids ("Please select atleast one PID"), which an empty list always does.
+    #
+    # It was removed rather than kept because it actively cost us the diagnosis: the
+    # retry's rejection REPLACED the first response, so a failed budget write reported an
+    # error about a payload we invented instead of the one you asked for. A fallback that
+    # cannot fire, whose message stands in for the real one, is how the scorecard hid for
+    # four weeks. `writes.apply_budget` now logs the marketplace's own message instead.
+    return await client.update_campaign(campaign_id, changes, advertiser_id=adv)
 
 
 async def read_bid(client, campaign_id: int, keyword: str) -> int | None:

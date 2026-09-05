@@ -49,6 +49,45 @@ def test_rate_limit():
     assert writes.exceeds_rate_limit(5, limit=5) is True
 
 
+# ── why a write was refused ─────────────────────────────────────────────────
+#
+# Added 2026-09-05 with the removal of the delisted-catalog retry. A failed budget write
+# used to log `applied=False` and "₹201 → ₹250" and nothing else — the marketplace's own
+# reason sat in the response and was dropped. That silence is half of why a fallback that
+# could never work survived in `apply_budget` for months: nobody ever saw either message.
+
+def test_the_marketplace_reason_is_extracted():
+    """The real Blinkit rejection — the one the removed fallback used to provoke."""
+    assert writes._why({"success": False, "message": ["Please select atleast one PID"]}) \
+        == "Please select atleast one PID"
+
+
+def test_several_messages_are_joined():
+    assert writes._why({"message": ["Bad budget", "Bad pacing"]}) == "Bad budget; Bad pacing"
+
+
+def test_a_plain_string_message_works():
+    assert writes._why({"status": False, "message": "Campaign is stopped"}) == "Campaign is stopped"
+
+
+def test_other_marketplaces_key_it_differently():
+    """Zepto uses `error`/`detail`; the choke point is shared, so this must not be
+    Blinkit-shaped."""
+    assert writes._why({"error": "BUDGET_TOO_LOW"}) == "BUDGET_TOO_LOW"
+    assert writes._why({"detail": "not permitted"}) == "not permitted"
+
+
+def test_an_empty_response_says_so_rather_than_going_blank():
+    """`{}` is what a dead session used to look like to every caller. "no reason given"
+    is information — it distinguishes an empty refusal from a reason we failed to read."""
+    assert "no reason given" in writes._why({})
+    assert "no reason given" in writes._why(None)
+
+
+def test_a_long_reason_is_truncated():
+    assert len(writes._why({"message": "x" * 500})) <= 200
+
+
 def _run() -> int:
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_") and callable(v)]
     failed = 0

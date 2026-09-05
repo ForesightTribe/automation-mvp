@@ -378,8 +378,12 @@ Four rules make it safe:
 - **`last_holding_cpm` is refreshed on every holding tick**, not just the first, so the snap-back
   tracks the market instead of returning to a price that worked an hour ago.
 
-`CM_BID_DRIFT_PCT=0` is the default and a **true revert** — at 0 the decision logic is behaviourally
-identical to pre-drift (freeze at target, step down only when strictly better).
+⚠️ **The default is `CM_BID_DRIFT_PCT=7` — drift is ARMED and running on live campaigns.**
+This paragraph used to say the default was `0`; it was wrong, and wrong in the direction that
+matters: a reader would conclude cost minimisation was switched off when it is not. Setting it
+to `0` is a **true revert** — at 0 the decision logic is behaviourally identical to pre-drift
+(freeze at target, step down only when strictly better) — so it remains the kill switch, but
+it is not where the system ships.
 
 ### 7.5 Unreachable target
 
@@ -611,10 +615,39 @@ campaign names (`[Mumbai]`, `(Hyderabad)`, `[ROI]`) are the best surviving evide
 `scripts/snapshot_campaign_state.py` captures what is *still* correct, to a local file — run it
 before any work that touches the payload builders.
 
-⚠️ **`region_type` is still never sent** in any payload — only `city_ids`. The only captured
-dashboard payload is from a pan-India campaign, so what its UI sends for a `CITY` campaign is
-unknown. The evidence above says omitting it is harmless (city-targeted campaigns survive
-budget writes and restarts intact), but that is inference from outcomes, not a capture.
+✅ **`region_type` is never sent, and must stay that way — settled by capture 2026-09-05.**
+This used to read "still never sent … what the UI sends for a `CITY` campaign is unknown",
+because the only captured dashboard payload came from a pan-India campaign. That unknown sat
+on the exact field family that broadened nine live campaigns, so it was worth closing properly.
+
+**How.** Playwright drove Blinkit's own dashboard on campaign 574687 (PRODUCT_LISTING,
+targeting Mumbai + Pune, `region_ids [2, 787]`) through *Details → Budget details → Edit →
+Next → Update Campaign*, with every `PUT`/`PATCH`/`DELETE` intercepted and **aborted before
+it left the browser**. The UI composed a real payload; it was never sent. Verified after:
+budget still 201, `region_type` still `CITY`, `region_ids` still `[2, 787]`, keyword
+`pink toffee` still at ₹201.
+
+**What it says.** `region_type` appears **nowhere** in the dashboard's payload. Its targeting
+block is `campaign_targeting.city_ids: "2,787"` and nothing else — byte-identical to ours. So
+`region_type` is read-only, derived server-side from `city_ids`, and **adding it to our
+payloads would put an unverified field into the write path for no benefit.** Do not.
+
+**The same capture found a real defect.** `campaign_start`: the dashboard sends `"7/15/2026"`
+where we send `"7/14/2026"`. `start_ts` is `2026-07-14T18:30:00+00:00`, and 18:30 UTC **is**
+midnight IST on the 15th — but `build.fmt_date` strips the timezone rather than converting it
+(`.replace("+00:00", "")`). Every Indian campaign starts at midnight IST: **260 of 260 have a
+`start_ts` at ≥18:30 UTC**, so every UPDATE payload we build carries a start date one day
+early. Blinkit has evidently ignored it on update (the campaign still shows 15 Jul after our
+live writes), but it is a wrong value in a whole-campaign PUT — the same class as `city_ids`
+— and the invariant cannot catch it, because it compares our output against our own
+derivation of the same field. Self-consistency, which §8.2c exists to distrust. `RESTART`
+uses `fmt_date(today)` and needs checking with it.
+
+Remaining differences are shape, not correctness — our writes work. The dashboard also sends
+`image_url`, `preview_image_url`, `store_name`, `collection_id`, `creative_type`,
+`highlighted_pids`, and `days_of_week` + `timeslots` inside `campaign_targeting`; we send
+`brand_ids`, `infinite_campaign`, `is_extendable`, `pids` and `negative_keywords` instead.
+This is the first time both payloads have been compared side by side.
 
 ### 8.2c The write invariant — what a PUT may change
 
@@ -680,22 +713,33 @@ Each write shape declares what it is *allowed* to change:
 | `BID` | the keyword bids | that is the call |
 | `BUDGET` | the budget | that is the call |
 | `RESTART` | budget, `campaign_start`, `campaign_end` | a restart re-submits the campaign and stamps today + the no-end sentinel (AD4/AD5) |
-| `BUDGET_NO_PIDS` | budget, **products** | `adapter.apply_budget`'s delisted-catalog fallback, which retries with `pids: ""` |
+Three shapes. There was a fourth, `BUDGET_NO_PIDS`, which alone was allowed to rewrite the
+**product list** — `adapter.apply_budget` retried a rejected budget write with `pids: ""` to
+work around a delisted catalog. **Removed 2026-09-05**, and worth recording why, because the
+reasoning generalises.
 
-That last row was a finding in its own right, and **it has now been tested live**
-(2026-09-04, campaign 574687, PRODUCT_LISTING with one valid pid):
+Tested live 2026-09-04 (campaign 574687, PRODUCT_LISTING, one valid pid):
 
 1. It does **not** clear the products — Blinkit does not read an empty list as "set to
-   none". So it is not another instance of the city bug.
+   none". So it was never another instance of the city bug.
 2. It does not work either. Blinkit **rejects the whole request** with
-   `["Please select atleast one PID"]`. That validator fires on the payload having no pids,
-   which an empty list always does — so the fallback cannot rescue any PRODUCT_LISTING
-   write. **It is a safety net that has never caught anything.**
+   `["Please select atleast one PID"]`. That validator fires on the payload *having* no
+   pids, which an empty list always does — so it could not rescue any `PRODUCT_LISTING`
+   write. A safety net that never caught anything.
 
-Untested for `BANNER_LISTING`, where the pid validator may not apply — the only case in
-which it could ever have worked. Removing `empty_pids` from `adapter.apply_budget` is
-therefore a live decision worth taking, but it is a behaviour change and stays declared
-until someone makes it.
+The deciding argument was not that it was useless but that it was **costing us the
+diagnosis**: the retry's rejection replaced the first response, so a failed budget write
+reported an error about a payload we invented rather than the one that was asked for. That is
+the scorecard pattern — a fallback that cannot fire, whose message stands in for the truth.
+`BANNER_LISTING` stayed untested (its pid validator may not apply, the one case where this
+could have worked), but none of the 17 such campaigns is under automation, so it could not
+help anything we actually write to.
+
+Removing it also removed the only write shape permitted to touch products, so the invariant
+got **simpler by one shape** — the tell that the fallback was always the anomaly. In its place
+`writes.apply_budget` now logs the marketplace's own reason (`writes._why`), which had been
+sitting in the response and going unread all along: a failed write logged `applied=False` and
+`₹201 → ₹250`, and nothing about why.
 
 ⚠️ **This narrows the blast radius; it does not eliminate it.** A field with no rule is
 unchecked, and a field a shape is allowed to change is unchecked for that shape. The
@@ -767,7 +811,7 @@ trivially and proves nothing.
 | Products, name, start/end across both | unchanged |
 | Restored to ₹201 / ₹201 | ✅ campaign exactly as found |
 | Earlier pan-India run (budget + bid) | applied cleanly; keyword survived the budget write |
-| `empty_pids` fallback | safe but non-functional — see 8.2d |
+| `empty_pids` fallback | safe but non-functional — **removed 2026-09-05**, see §8.2c |
 
 Two things this settles that argument could not:
 
@@ -1098,10 +1142,11 @@ Everything defaults to dry-run. `--live` is always explicit.
 
 1. Apply any migration (shown and confirmed first — shared DB).
 2. Merge to `main` and pull on the VM. **The VM runs `main`; nothing on a feature branch exists there.**
-3. Create one bid rule on a **low-stakes campaign**, with drift off.
+3. Create one bid rule on a **low-stakes campaign**, with drift off — which now takes an
+   explicit `CM_BID_DRIFT_PCT=0`, because the default is `7` (armed).
 4. Watch a day of `cm_run_log` + Cloud Logging: does the window-open floor land, does the end reset
    fire, does anything get refused?
-5. Only then arm drift (`CM_BID_DRIFT_PCT=7` + runner restart) on that one keyword, and measure.
+5. Only then restore drift (drop the `0` override + runner restart) on that one keyword, and measure.
 
 ### What to watch first
 
@@ -1161,7 +1206,7 @@ With v1 gone, the surviving manager took its plain name back: the UI route is
 | Stale boundary crons after expiry | Expiry fires a reset one-shot but leaves the now-inert boundary crons; the daily cleanup prunes them |
 | `cm_run_log` has no retention policy | Grows unbounded against a 500 MB quota |
 | `cm_campaign_catalog` not built | The optimizer fetches products live. Not needed for bid floors or cities — those ride the daily scrape. The `cm.sync_campaign_data` stub that was to fill it was deleted 2026-09-03 along with `campaign_data_cache`; do not confuse it with `cm.sync_campaigns`, the live catalogue refresh behind the UI's Refresh button |
-| Drift is shipped at `CM_BID_DRIFT_PCT=0` | Cost minimisation is off. Before arming: confirm on real History rows that position is flat across wide bid ranges now the store is fixed per rule, then arm ONE keyword and measure |
+| **`campaign_start` is sent one day early on every UPDATE** | `fmt_date` strips the timezone (`.replace("+00:00","")`) instead of converting it, and `start_ts` is midnight IST = 18:30 UTC the day before. **260 of 260 campaigns** are affected. Blinkit appears to ignore the field on update, but it is a wrong value in a whole-campaign PUT, and the invariant cannot see it — it checks our output against our own derivation of the same field. Found by the 2026-09-05 dashboard capture (§8.2b). Check `RESTART`'s `fmt_date(today)` with it |
 | Coworker's `ADVERTISER_ID = 234` is stale | Their v1 writes would hit the dead pre-split account (the real one is 19802). Ours sends the stored id. Needs coordinating, not silently changing |
 | Nine stores have no canonical city | Four `up-ncr` at `2032xx` (Bulandshahr-district, matching no ad-city), `pilkhuwa`, and three Zepto stores with **transposed pincodes** in the `locations` sheet (`120001`, `210305`×2). They are simply not offered as measurement points |
 | No `pytest` | Suites are standalone assert-based. Fine, but a team call eventually |

@@ -54,6 +54,29 @@ class WriteRefused(Exception):
 
 # ── Pure guardrail logic (unit-tested, no I/O) ──────────────────────────────
 
+def _why(resp: dict | None) -> str:
+    """The marketplace's own reason a write was refused.
+
+    It was always in the response and never logged: a failed budget write recorded
+    `applied=False` and "₹201 → ₹250", with the reason dropped on the floor. That is
+    half of why a delisted-catalog retry could sit in `apply_budget` for months looking
+    like it did something — nobody ever saw either message.
+
+    Blinkit puts it in `message`, as a string or a list of them; Zepto uses `error` or
+    `detail`. Falls back to naming the shape of the response, because "no reason given"
+    is itself worth knowing — it means the refusal came back empty, not that we lost it.
+    """
+    if not isinstance(resp, dict):
+        return f"no reason given ({type(resp).__name__})"
+    for key in ("message", "error", "detail", "errors"):
+        val = resp.get(key)
+        if isinstance(val, (list, tuple)):
+            val = "; ".join(str(v) for v in val if v)
+        if val:
+            return str(val)[:200]
+    return f"no reason given (keys: {', '.join(sorted(resp)) or 'none'})"
+
+
 def _money(v) -> str:
     """Render a budget the way it will actually be SENT.
 
@@ -249,8 +272,11 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
                           detail=f"refused — {e}")
         return False
     ok = bool(resp.get("status") or resp.get("success"))
+    detail = f"{_money(current)} → {_money(target)}"
+    if not ok:
+        detail = f"{detail} — {_why(resp)}"
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=f"{_money(current)} → {_money(target)}")
+                      detail=detail)
     return ok
 
 

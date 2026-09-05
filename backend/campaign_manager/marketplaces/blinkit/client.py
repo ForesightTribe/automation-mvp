@@ -445,19 +445,23 @@ class BlinkitClient:
         log.debug("[get_advertiser_id] advertiser_id=%r", adv_id)
         return adv_id
 
-    async def update_campaign(self, campaign_id: int, changes: dict, *, empty_pids: bool = False,
+    async def update_campaign(self, campaign_id: int, changes: dict, *,
                               advertiser_id: int | None = None) -> dict:
         """Minimal PUT payload for campaign updates (e.g. budget).
-        empty_pids=True skips product/pids validation — use when catalog PIDs are delisted.
+
         advertiser_id: optional explicit account override (campaign-manager v2 passes the
-        per-tenant stored id here). Falls back to get_advertiser_id() when None."""
+        per-tenant stored id here). Falls back to get_advertiser_id() when None.
+
+        The `empty_pids` option was removed 2026-09-05 — it sent `pids: ""` to work around
+        a delisted catalog, and Blinkit rejects any payload with no pids, so it never
+        worked. See `adapter.apply_budget`."""
         actual_advertiser_id = advertiser_id if advertiser_id is not None else await self.get_advertiser_id()
         detail, min_cpm_config = await self.get_campaign_detail(campaign_id)
         if not detail:
             raise RuntimeError(f"Could not fetch details for campaign {campaign_id}")
 
         payload = build.build(
-            detail, shape=build.BUDGET_NO_PIDS if empty_pids else build.BUDGET,
+            detail, shape=build.BUDGET,
             campaign_id=campaign_id, requested_by=self._email,
             advertiser_id=actual_advertiser_id, min_cpm=min_cpm_config,
         )
@@ -468,13 +472,9 @@ class BlinkitClient:
         # AFTER `changes` is merged — that dict is a caller-supplied override and is
         # exactly as capable of clobbering the campaign as the builder is.
         payload_check.verify(
-            detail, payload,
-            # The delisted-catalog fallback deliberately clears the product list, so it is
-            # checked as its own shape rather than being waved through the normal one.
-            shape=payload_check.BUDGET_NO_PIDS if empty_pids else payload_check.BUDGET,
-            campaign_id=campaign_id)
-        log.debug("[update_campaign] campaign=%d pids=%r empty_pids=%s budget=%s",
-                    campaign_id, payload.get("pids"), empty_pids,
+            detail, payload, shape=payload_check.BUDGET, campaign_id=campaign_id)
+        log.debug("[update_campaign] campaign=%d pids=%r budget=%s",
+                    campaign_id, payload.get("pids"),
                     payload.get("bidding_strategy", {}).get("total_budget"))
         if detail.get("campaign_type") == "BANNER_LISTING":
             # This type has tripped Blinkit's image validator before, so its body is worth

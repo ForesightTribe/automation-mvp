@@ -43,8 +43,6 @@ def _build(detail: dict, kind: str) -> dict:
             {"keyword": "soda", "match_type": "EXACT", "cpm": 111}], **common)
     if kind == "budget":
         return build.build(shape=build.BUDGET, budget=900.0, **common)
-    if kind == "budget_empty_pids":
-        return build.build(shape=build.BUDGET_NO_PIDS, budget=900.0, **common)
     if kind == "restart":
         return build.build(shape=build.RESTART, budget=900, **common)
     raise ValueError(kind)
@@ -70,61 +68,67 @@ def _check(name: str, kind: str) -> None:
 # One test per campaign shape, so a failure names the shape rather than "something differs".
 
 def test_city_targeted():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("city_targeted", kind)
 
 
 def test_pan_india():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("pan_india", kind)
 
 
 def test_banner_listing():
     """The variant with its own `campaign_data`: any image field trips Blinkit's
     "Cannot change listing spotlight image" validator even when unchanged."""
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("banner_listing", kind)
 
 
 def test_no_keywords():
     """A budget write omits `keyword_targeting` entirely rather than sending an empty list,
     which would read as "delete them all"."""
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("no_keywords", kind)
 
 
 def test_pids_as_list():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("pids_as_list", kind)
 
 
 def test_pids_from_products():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("pids_from_products", kind)
 
 
 def test_with_campaign_data():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("with_campaign_data", kind)
 
 
 def test_with_negative_keywords():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("with_negative_kw", kind)
 
 
 def test_with_repeat_order():
-    for kind in ("bid", "budget", "budget_empty_pids", "restart"):
+    for kind in ("bid", "budget", "restart"):
         _check("with_repeat_order", kind)
 
 
 def test_the_fixtures_actually_cover_the_shapes():
     """A guard against the suite silently emptying — if the fixtures file is truncated or a
-    shape stops building, every test above passes vacuously."""
+    shape stops building, every test above passes vacuously.
+
+    9 campaign shapes x 3 write kinds. It was 4 kinds and 36 payloads until 2026-09-05,
+    when `budget_empty_pids` was removed with the delisted-catalog fallback it covered.
+    Lowering this number is only ever correct alongside deleting a write path — if it
+    fails after a refactor, the payloads went missing rather than being retired.
+    """
     assert len(FIXTURES) == 9, f"expected 9 campaign shapes, found {len(FIXTURES)}"
     built = sum(1 for e in FIXTURES.values()
-                for k in ("bid", "budget", "budget_empty_pids", "restart") if k in e)
-    assert built == 36, f"expected 36 golden payloads, found {built}"
+                for k in ("bid", "budget", "restart") if k in e)
+    assert built == 27, f"expected 27 golden payloads, found {built}"
 
 
 def _run() -> int:

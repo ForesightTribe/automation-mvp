@@ -52,11 +52,10 @@ _IST = timezone(timedelta(hours=5, minutes=30))
 # Shapes (re-exported from payload.py so callers need one import, not two).
 BID = pl.BID
 BUDGET = pl.BUDGET
-BUDGET_NO_PIDS = pl.BUDGET_NO_PIDS
 RESTART = pl.RESTART
 
-_UPDATES = frozenset({BID, BUDGET, BUDGET_NO_PIDS})
-_ALL = frozenset({BID, BUDGET, BUDGET_NO_PIDS, RESTART})
+_UPDATES = frozenset({BID, BUDGET})
+_ALL = frozenset({BID, BUDGET, RESTART})
 
 
 # ── deriving values from the campaign ───────────────────────────────────────
@@ -202,8 +201,7 @@ def _campaign_data(ctx: dict) -> dict:
     return {
         "creative_type": detail.get("creative_type", ""),
         "collection_id": detail.get("collection_id", ""),
-        # The delisted-catalog fallback clears pids HERE too, not just at the top level.
-        "pids": "" if shape == BUDGET_NO_PIDS else ctx["pids"],
+        "pids": ctx["pids"],
     }
 
 
@@ -257,7 +255,7 @@ FIELDS = (
     ("is_extendable",         const(None),                                    _UPDATES),
     ("brand_ids",             _from("brand_ids"),                             _UPDATES),
     ("brand_name",            _from("brand_name"),                            _UPDATES),
-    ("pids",                  lambda c: "" if c["shape"] == BUDGET_NO_PIDS else c["pids"], _UPDATES),
+    ("pids",                  lambda c: c["pids"],                            _UPDATES),
     ("bidding_strategy",      lambda c: {"total_budget": c["budget"],
                                          "pacing_type": c["detail"].get("pacing_type", "DAILY")}, _ALL),
     ("campaign_data",         _campaign_data,                                 _ALL),

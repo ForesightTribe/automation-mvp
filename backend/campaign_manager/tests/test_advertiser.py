@@ -33,7 +33,7 @@ class WriteCaptureClient:
     async def get_campaign_detail(self, cid):
         return ({"pacing_type": "DAILY"}, {})
 
-    async def update_campaign(self, cid, changes, *, empty_pids=False, advertiser_id=None):
+    async def update_campaign(self, cid, changes, *, advertiser_id=None):
         self.captured = advertiser_id
         return {"success": True}
 

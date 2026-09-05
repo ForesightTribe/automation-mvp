@@ -53,7 +53,6 @@ from campaign_manager.writes import WriteRefused
 BID = "bid"            # client.update_keyword_bids   — one keyword's cpm changes
 BUDGET = "budget"      # client.update_campaign       — total_budget changes
 RESTART = "restart"    # restart.build                — budget + dates change
-BUDGET_NO_PIDS = "budget(empty_pids)"   # the same call with `empty_pids=True`
 
 # What each shape is ALLOWED to rewrite. A rule named here is skipped for that shape,
 # because changing it is the point of the call.
@@ -70,24 +69,15 @@ INTENDED: dict[str, frozenset[str]] = {
     RESTART: frozenset({"budget", "campaign_start", "campaign_end",
                         # AD4 — the dashboard sends an empty brand_name on a restart.
                         "brand_name", "image_url"}),
-    # `adapter.apply_budget`'s fallback: when a budget write is rejected because the
-    # campaign references delisted products, it retries with `pids: ""`.
-    #
-    # ✅ TESTED LIVE 2026-09-04 on campaign 574687 (PRODUCT_LISTING, one valid pid). Two
-    # results, and the second is the surprise:
-    #   1. It does NOT clear the products. Blinkit does not read an empty list as "set to
-    #      none", so this is not another instance of the city bug.
-    #   2. It does not work either — Blinkit **rejects the whole request** with
-    #      `["Please select atleast one PID"]`. That validator fires on the payload having
-    #      no pids, which an empty list always does, so the fallback cannot rescue any
-    #      PRODUCT_LISTING write. It is a safety net that has never caught anything.
-    # Untested for BANNER_LISTING, where the pid validator may not apply — which is the
-    # only case in which this fallback could ever have worked. Removing it is a live
-    # decision, so the shape stays declared until someone makes it.
-    # `pids` is cleared in THREE places by this fallback — the top level, `highlighted_pids`
-    # and inside `campaign_data`. All three are named so the declaration matches the reality
-    # rather than half of it.
-    BUDGET_NO_PIDS: frozenset({"budget", "pids", "highlighted_pids", "campaign_data.pids"}),
+    # ⚠️ There was a fourth shape here, BUDGET_NO_PIDS — `adapter.apply_budget` retried a
+    # rejected budget write with `pids: ""` to work around a delisted catalog, and that
+    # retry needed permission to rewrite the product list. Tested live 2026-09-04 (574687,
+    # PRODUCT_LISTING): it does NOT clear the products (Blinkit ignores an empty list, so
+    # it was never a second city bug) but it cannot succeed either — the validator fires on
+    # the payload HAVING no pids ("Please select atleast one PID"). Removed 2026-09-05 with
+    # the shape, because it also destroyed the diagnosis: its rejection replaced the real
+    # one. If a pid-clearing write is ever needed again, declare the shape again — do not
+    # widen an existing one.
 }
 
 

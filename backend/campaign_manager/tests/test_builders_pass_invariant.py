@@ -133,20 +133,24 @@ def test_budget_write_on_a_campaign_with_no_keywords_is_accepted():
     assert c.sent is not None
 
 
-def test_budget_write_with_empty_pids_is_accepted():
-    """`empty_pids=True` is the delisted-catalog fallback: it deliberately sends no pids.
-    The checker must not read a deliberately-emptied field as corruption — it only checks
-    what is sent, and this sends `""`.
+def test_a_budget_write_never_clears_the_products():
+    """Replaces `test_budget_write_with_empty_pids_is_accepted` (removed 2026-09-05).
 
-    ⚠️ If this ever starts failing, do NOT relax the pids rule: that fallback is a real
-    write path and the right fix is to declare it as an intended change for its own shape.
+    That test existed to prove the invariant tolerated the delisted-catalog fallback,
+    which deliberately sent `pids: ""`. The fallback is gone — Blinkit rejects any payload
+    with no pids, so it never worked — and with it the one write shape allowed to rewrite
+    the product list.
+
+    So the assertion inverts: a budget write must now carry the campaign's real products.
+    If this fails, something has reintroduced a pid-clearing path.
     """
     c = _CapturingClient(CITY_DETAIL)
     _run_async(c.update_campaign(
         568944, {"bidding_strategy": {"total_budget": 900.0, "pacing_type": "DAILY"}},
-        empty_pids=True, advertiser_id=19802))
-    assert c.sent is not None, (
-        "empty_pids was refused — see the docstring before touching the pids rule")
+        advertiser_id=19802))
+    assert c.sent is not None
+    assert c.sent.get("pids"), "a budget write must not send an empty product list"
+    assert c.sent.get("campaign_data", {}).get("pids"), "campaign_data.pids was emptied"
 
 
 # ── The restart builder ─────────────────────────────────────────────────────
