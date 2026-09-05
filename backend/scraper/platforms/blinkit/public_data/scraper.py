@@ -17,7 +17,6 @@ from playwright.async_api import TimeoutError as PWTimeout
 
 from app.utils.logger import logger
 from scraper.utils.browser import PLAYWRIGHT_ARGS
-from scraper.utils.cities import CITIES
 from scraper.utils.search_result import HEADERS_COMMON, dig
 from scraper.platforms.blinkit.public_data import ads, endpoints as ep
 
@@ -386,7 +385,7 @@ def _express_merchant(products: list[dict]) -> str:
 async def scrape(
     keyword: str,
     brand_slug: str,
-    city_slug: str = "bengaluru",
+    city_slug: str = "",            # label only — carried onto the result
     zone: str = "",
     pincode: str = "",
     lat: float | None = None,
@@ -396,10 +395,18 @@ async def scrape(
 ) -> dict[str, Any]:
     """Scrape one keyword at one location (opens + closes its own session).
     The orchestrator (Phase 5) will instead reuse one session across keywords."""
-    city = CITIES.get(city_slug, CITIES["bengaluru"])
-    _lat = lat if lat is not None else city["lat"]
-    _lon = lon if lon is not None else city["lon"]
-    _pincode = pincode or city["pincode"]
+    # Coordinates are REQUIRED. This used to fall back to a hardcoded city table whose
+    # own docstring called its coordinates unverified placeholders, so a caller that
+    # forgot them silently scraped a made-up point and got a plausible-looking result.
+    # A scraper has no business owning a city registry; the caller resolves the store
+    # (see scraper/utils/locations.py) and passes real coordinates.
+    if lat is None or lon is None:
+        raise ValueError(
+            "blinkit scrape needs lat/lon. Resolve them from the store catalogue "
+            "with scraper.utils.locations.resolve_city(db, 'blinkit', city)."
+        )
+    _lat, _lon = float(lat), float(lon)
+    _pincode = pincode
     _cap = cap if cap is not None else ep.RESULT_CAP
 
     products: list[dict] = []
@@ -421,7 +428,7 @@ async def scrape(
 
     if not products:
         logger.warning(
-            f"Blinkit: no products for '{keyword}' in {city['name']}"
+            f"Blinkit: no products for '{keyword}' in {city_slug}"
             f"{f'/{zone}' if zone else ''}"
         )
 

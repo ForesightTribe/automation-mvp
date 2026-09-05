@@ -5,7 +5,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.brand import Brand, Marketplace
 from app.models.job import JobStatus, ScrapeJob
 from app.models.search import MarketplaceLocation, SearchSnapshot
-from scraper.utils.cities import CITIES
 
 
 async def list_brands(session: AsyncSession) -> list[Brand]:
@@ -68,34 +67,18 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
     ]
 
 
-def list_cities() -> list[dict]:
-    """Flatten the hardcoded CITIES dict into city -> per-platform zones."""
-    cities = []
-    for slug, city in CITIES.items():
-        platforms = {
-            pname: [
-                {"zone": z["zone"], "pincode": z["pincode"]}
-                for z in pconf.get("zones", [])
-            ]
-            for pname, pconf in city.get("platforms", {}).items()
-        }
-        cities.append(
-            {
-                "slug": slug,
-                "name": city["name"],
-                "state": city["state"],
-                "platforms": platforms,
-            }
-        )
-    return cities
-
-
 async def list_blinkit_zones(session: AsyncSession, mp_slug: str = "blinkit") -> list[dict]:
-    """Return a marketplace's active dark store locations from marketplace_locations.
-    Falls back to hardcoded CITIES if the table is empty (not yet populated by scraper).
+    """Return a marketplace's active dark store locations from `marketplace_locations`.
 
     Defaults to Blinkit for the existing route; catalogs are per-marketplace, so the
     caller picks. (The `blinkit` in the name is historical — rename with the route.)
+
+    ⚠️ NO FALLBACK, deliberately (2026-09-04). This used to fall back to the hardcoded
+    `scraper/utils/cities.py` when the table was empty, from a time before the darkstore
+    catalog existed. That file's own docstring calls its coordinates unverified
+    placeholders, so the fallback answered "where are the stores?" with made-up points —
+    and did so silently, exactly when the catalog was missing and a human most needed to
+    know. An empty list is the honest answer; the caller renders an empty picker.
     """
     rows = (
         await session.execute(
@@ -110,44 +93,26 @@ async def list_blinkit_zones(session: AsyncSession, mp_slug: str = "blinkit") ->
         )
     ).scalars().all()
 
-    if rows:
-        # Deduplicate: one representative dark store per (city, area) pair, where area
-        # is the store's sub-city name ("Shahganj"), falling back to pincode.
-        seen: set[str] = set()
-        zones = []
-        for r in rows:
-            area = (r.location_name.strip() if r.location_name and r.location_name.strip()
-                    else (r.pincode.strip() if r.pincode and r.pincode.strip() else ""))
-            key = f"{r.city}|{area}"
-            if key in seen:
-                continue
-            seen.add(key)
-            label = f"{r.city} — {area}" if area else r.city
-            zones.append({
-                "label": label,
-                "city": r.city,
-                "zone": area,
-                "state": r.state or "",
-                "pincode": area,
-                "merchant_id": r.merchant_id or "",
-                "lat": r.lat,
-                "lon": r.lon,
-            })
-        return zones
-
-    # Fallback: hardcoded CITIES dict so the dropdown is never empty
+    # Deduplicate: one representative dark store per (city, area) pair, where area
+    # is the store's sub-city name ("Shahganj"), falling back to pincode.
+    seen: set[str] = set()
     zones = []
-    for slug, city in CITIES.items():
-        blinkit = city.get("platforms", {}).get("blinkit", {})
-        for z in blinkit.get("zones", []):
-            zones.append({
-                "label": f"{city['name']} — {z['zone']}",
-                "city": city["name"],
-                "zone": z["zone"],
-                "state": city.get("state", ""),
-                "pincode": z.get("pincode", ""),
-                "merchant_id": "",
-                "lat": z["lat"],
-                "lon": z["lon"],
-            })
+    for r in rows:
+        area = (r.location_name.strip() if r.location_name and r.location_name.strip()
+                else (r.pincode.strip() if r.pincode and r.pincode.strip() else ""))
+        key = f"{r.city}|{area}"
+        if key in seen:
+            continue
+        seen.add(key)
+        label = f"{r.city} — {area}" if area else r.city
+        zones.append({
+            "label": label,
+            "city": r.city,
+            "zone": area,
+            "state": r.state or "",
+            "pincode": area,
+            "merchant_id": r.merchant_id or "",
+            "lat": r.lat,
+            "lon": r.lon,
+        })
     return zones

@@ -105,7 +105,7 @@ Global dropdown data (login required, not client-scoped).
 |---|---|---|
 | GET | `/brands` | All brands (slug, name, category, logo, tint). |
 | GET | `/marketplaces` | All marketplaces (slug, name, color). |
-| GET | `/cities` | Cities → per-platform zones, from `scraper/utils/cities.py` (no DB). |
+| GET | `/blinkit-zones` | Active dark stores from `marketplace_locations`, deduped to one per (city, area). **The only source of store locations.** |
 
 ### `analytics` — `/api/clients/{id}/analytics` *(private)*
 Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). Every endpoint

@@ -247,8 +247,12 @@ Re-running the same scrape updates existing rows rather than creating duplicates
 
 The darkstore catalog, per-tenant keywords, and coverage live in `config.xlsx` and
 are synced to the DB by `cli sync` (`marketplace_locations`, `tenant_watchlist`,
-`tenant_locations`). `scraper/utils/cities.py` is **legacy and being retired** — the
-scraper reads locations from the DB, not from it. Blinkit selects the dark store
+`tenant_locations`). `scraper/utils/cities.py` — a hardcoded city→zone→lat/lon table
+predating the catalog, whose own docstring called its coordinates unverified
+placeholders — was **deleted 2026-09-04**, along with the `GET /reference/cities`
+endpoint that served it and the fallback inside `list_blinkit_zones`. The catalog is
+now the only answer to "where is this city"; `scraper/utils/locations.py` resolves a
+city name to a real store for the ad-hoc scrape path. Blinkit selects the dark store
 from the **lat/lon** in the request headers; `pincode`/`location_name`/`address` are
 metadata only. `marketplace_locations` is keyed on `merchant_id` — one row per
 **express** store, holding the coordinate to probe it at.

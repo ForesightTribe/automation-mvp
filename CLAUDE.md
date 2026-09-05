@@ -304,8 +304,10 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   `locations` / `brands` / `coverage`) is the source of truth: the darkstore
   catalog, each tenant's keywords/aliases, and which stores it covers. The `brands`
   sheet also carries per-tenant `keyword_cap` / `brand_cap` (own rows). `cli sync`
-  reconciles the DB (upsert; `--dry-run`, `--prune`). `scraper/utils/cities.py` is
-  legacy/unreliable and being retired — NOT used by this path.
+  reconciles the DB (upsert; `--dry-run`, `--prune`). **The catalog is the ONLY source
+  of store locations** — `scraper/utils/cities.py` (hardcoded placeholder coordinates)
+  was deleted 2026-09-04 with the `GET /reference/cities` endpoint that served them;
+  `scraper/utils/locations.py` resolves a city name to a real store for ad-hoc scrapes.
 - **Two complementary scrapes.** `public-run` = the **keyword scrape** (category
   keywords → SoV/rank + competitors, `cap=keyword_cap`, → `search_snapshots` /
   `search_listings`). `public-skus` = the **targeted scrape** (searches the

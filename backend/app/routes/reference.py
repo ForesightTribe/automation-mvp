@@ -2,7 +2,7 @@
 from fastapi import APIRouter
 
 from app.dependencies import CurrentUserDep, SessionDep
-from app.schemas.reference import BrandOut, CityOut, MarketplaceOut
+from app.schemas.reference import BrandOut, MarketplaceOut
 from app.services import reference_service
 
 router = APIRouter()
@@ -16,11 +16,6 @@ async def brands(session: SessionDep, _user: CurrentUserDep):
 @router.get("/marketplaces", response_model=list[MarketplaceOut])
 async def marketplaces(session: SessionDep, _user: CurrentUserDep):
     return await reference_service.list_marketplaces(session)
-
-
-@router.get("/cities", response_model=list[CityOut])
-async def cities(_user: CurrentUserDep):
-    return reference_service.list_cities()
 
 
 @router.get("/blinkit-zones")
