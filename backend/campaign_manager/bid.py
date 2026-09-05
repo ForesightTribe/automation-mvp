@@ -330,7 +330,29 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     pairs = await repo.get_bid_rules(tenant_id, platform)
     if reset:                                   # end-of-window de-escalation, not optimization
         return await _reset_run(tenant_id, platform, pairs, now, run_id, dry_run)
-    active = [(r, rt) for r, rt in pairs if r.state == "active" and _in_window(_rule_dict(r), now)]
+    # Open NOW *and* still open once the reset's look-ahead has passed.
+    #
+    # The second half is what keeps the optimizer and the reset off the same keyword. The
+    # reset evaluates windows at `now + RESET_LOOKAHEAD_MINUTES` (it is fired a minute early
+    # so the bid drops before the budget engine can stop the campaign), so for ~2 minutes at
+    # window close it considers a keyword closed while this loop still considered it open.
+    # While the job guard treated a reset as an optimizer run they could never overlap, so
+    # that sliver was harmless. Now that they can run together (migration a2d5f81c9b34) it
+    # would be a genuine race over one bid — the optimizer raising it at the same moment the
+    # reset drops it, last writer wins, which is exactly what the reset exists to prevent.
+    #
+    # Skipping it costs nothing: a keyword two minutes from closing is about to be reset to
+    # its floor, so raising its bid was always money spent on a position we are about to
+    # give up.
+    #
+    # ⚠️ BOTH tests are needed, not just the look-ahead one. Testing only `now + lookahead`
+    # would also open every window two minutes EARLY, which would start bidding before the
+    # window the client configured.
+    soon = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
+    active = [(r, rt) for r, rt in pairs
+              if r.state == "active"
+              and _in_window(_rule_dict(r), now)
+              and _in_window(_rule_dict(r), soon)]
     if not active:
         logs.note(run_id, "No keyword automations are in window right now", dry_run=dry_run)
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",

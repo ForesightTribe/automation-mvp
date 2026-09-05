@@ -5,10 +5,10 @@ Run standalone:  python -m campaign_manager.tests.test_bid_logic
 Covers the distance step, the raise/lower/target/HOLD decision, the active window, and
 the Blinkit product-matching (positions.match_position).
 """
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from campaign_manager.bid import (
-    HOLD_MINUTES, _in_window, _window_start, compute_bid, is_recovery,
+    HOLD_MINUTES, RESET_LOOKAHEAD_MINUTES, _in_window, _window_start, compute_bid, is_recovery,
     next_raise_step, resolve_ceiling, should_relax_target, stored_effective_target,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
@@ -87,6 +87,61 @@ def test_in_window_date_bounds():
     assert _in_window({"start_date": "2099-01-01"}, NOW) is False      # not started
     assert _in_window({"stop_date": "2000-01-01"}, NOW) is False       # already ended
     assert _in_window({}, NOW) is True                                 # no constraints
+
+
+# ── the optimizer/reset boundary (migration a2d5f81c9b34) ───────────────────
+#
+# The optimizer selects rules that are open NOW *and* still open at
+# `now + RESET_LOOKAHEAD_MINUTES`, which is the instant the reset evaluates windows at.
+# That is what keeps the two engines off the same keyword now that the job guard lets
+# them run concurrently. These pin both halves of the condition — testing only the
+# look-ahead would open every window two minutes EARLY.
+
+def _optimizer_takes(rule, now):
+    """The selection `bid.run` applies, isolated from the DB."""
+    soon = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
+    return _in_window(rule, now) and _in_window(rule, soon)
+
+
+def _reset_takes(rule, now):
+    """`_reset_run`'s test: closed once the look-ahead has passed."""
+    return not _in_window(rule, now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES))
+
+
+def test_a_keyword_about_to_close_is_left_to_the_reset():
+    """14:00 now, window closes 14:01 — inside the 2-minute look-ahead. The optimizer
+    must not raise a bid it is about to give up."""
+    rule = {"start_time": "09:00", "stop_time": "14:01"}
+    assert _in_window(rule, NOW) is True, "still open right now"
+    assert _optimizer_takes(rule, NOW) is False, "optimizer must skip it"
+    assert _reset_takes(rule, NOW) is True, "the reset is the one that acts"
+
+
+def test_the_two_engines_never_take_the_same_keyword():
+    """The property that matters: for any window, at most one of them acts. Swept over a
+    day at one-minute resolution, which covers both boundaries."""
+    rule = {"start_time": "09:00", "stop_time": "18:00"}
+    for minute in range(0, 24 * 60):
+        now = datetime(2026, 8, 1) + timedelta(minutes=minute)
+        assert not (_optimizer_takes(rule, now) and _reset_takes(rule, now)), (
+            f"both engines would act at {now:%H:%M}")
+
+
+def test_the_window_does_not_open_early():
+    """The trap in the naive fix. Testing only `now + lookahead` would make a 09:00
+    window start at 08:58 — bidding before the window the client configured."""
+    rule = {"start_time": "09:00", "stop_time": "18:00"}
+    just_before = datetime(2026, 8, 1, 8, 59)
+    assert _in_window(rule, just_before + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)) is True, (
+        "look-ahead alone says open — this is what makes the naive version wrong")
+    assert _optimizer_takes(rule, just_before) is False, "must still be closed at 08:59"
+    assert _optimizer_takes(rule, datetime(2026, 8, 1, 9, 0)) is True, "open exactly on time"
+
+
+def test_mid_window_is_untouched():
+    rule = {"start_time": "09:00", "stop_time": "18:00"}
+    assert _optimizer_takes(rule, NOW) is True
+    assert _reset_takes(rule, NOW) is False
 
 
 def test_in_window_overnight():
