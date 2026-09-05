@@ -25,7 +25,7 @@ from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
 from scraper.public import staging
-from scraper.public.orchestrator import _clamp_workers
+from scraper.public.orchestrator import _clamp_workers, warn_if_co_located
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.search_result import classify_products
@@ -410,6 +410,7 @@ async def run_targeted(
                     f"targeted: tenant {tid} on {mp_slug} — {n_workers} workers × "
                     f"{total} stores, {len(brands)} brand(s)"
                 )
+                warn_if_co_located(locations, "targeted")
                 tasks = [
                     asyncio.create_task(_worker(
                         w, provider, browser, seed, queue, brands, done,
