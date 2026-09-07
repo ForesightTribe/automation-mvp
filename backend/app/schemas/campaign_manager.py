@@ -252,7 +252,8 @@ class RunLogOut(BaseModel):
     keyword: str | None = None
     action: str
     # Which automation this decision belongs to — the key a per-automation view groups by.
-    rule_id: int | None = None
+    # A bid rule's id is a uuid hex string, so this is text (see CmRunLog.rule_id).
+    rule_id: str | None = None
     old_value: float | None = None
     new_value: float | None = None
     # The two inputs behind the decision, so the UI can show WHY without parsing `reason`.

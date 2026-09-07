@@ -229,7 +229,7 @@ async def get_job(client: ClientDep, session: SessionDep, job_id: uuid.UUID):
 
 @router.get("/history", response_model=Page[RunLogOut])
 async def history(client: ClientDep, pagination: PaginationDep, kind: str | None = None,
-                  campaign_id: int | None = None, rule_id: int | None = None,
+                  campaign_id: int | None = None, rule_id: str | None = None,
                   include_unchanged: bool = False):
     """What the automations did. **Changes only by default** — the engine now records every
     tick, including the ones where it deliberately did nothing, and a "held at ₹201" row

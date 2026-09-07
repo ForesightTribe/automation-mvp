@@ -1053,12 +1053,22 @@ the full per-tick record. `?campaign_id=` / `?rule_id=` narrow it.
 
 | Column | Why |
 |---|---|
-| `rule_id` | Which automation the decision belongs to — the key a per-automation view groups by. **Not a foreign key**: history must outlive the rule it describes, and budget/activation rows point at a different table |
+| `rule_id` | Which automation the decision belongs to — the key a per-automation view groups by. **TEXT**, because a bid rule's id is a uuid hex string. **Not a foreign key**: history must outlive the rule it describes, and budget/activation rows point at a different table |
 | `position` | The observed search position — THE input to every bid decision, and previously only prose inside `reason` |
 | `target` | The effective target it was judged against, which differs from the rule's whenever one has been relaxed |
 
 Without the last two a UI can show *that* a decision happened but never *why*, which is the whole
 point of showing it.
+
+> ⚠️ **`rule_id` shipped as INTEGER and broke every bid tick for three days** (2026-09-04 →
+> 2026-09-07, fixed by migration `a4e7c2f19b83`). The only writer is the bid engine passing
+> `cm_bid_rules.id` — a uuid hex string — so the INSERT died with an asyncpg `DataError`,
+> **after** the bids had already been PUT to Blinkit. Two things that made it worse than a
+> lost log row: the run exited 1, so a healthy optimizer alerted as a failing job every tick;
+> and `repo.recent_write_count` — the runaway-write guard — counts `cm_run_log` rows with
+> `dry_run = false`, so with nothing landing it counted zero and the cap was not counting at
+> all. The row-shape tests missed it because they only inspect a dict; the type is now pinned
+> against the model in `test_history_reasons.py`.
 
 ### Reasons are written for a client, not for a log reader
 

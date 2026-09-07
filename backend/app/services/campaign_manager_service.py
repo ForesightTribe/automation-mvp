@@ -458,7 +458,7 @@ async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID) -> CmJobOut 
 
 
 async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset: int,
-                  campaign_id: int | None = None, rule_id: int | None = None,
+                  campaign_id: int | None = None, rule_id: str | None = None,
                   include_unchanged: bool = False):
     """History for the UI. Changes only by default; `include_unchanged` returns every tick,
     which is what a per-automation view wants (see repo.list_run_log)."""

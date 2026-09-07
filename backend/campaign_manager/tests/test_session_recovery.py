@@ -157,7 +157,9 @@ def test_a_blocked_run_writes_one_row_per_automation():
     from campaign_manager import bid, repo
 
     class Rule:
-        id, campaign_id, campaign_name, keyword, target_position = 7, 111, "C", "soda", 3
+        # A bid rule's id is a uuid hex string, not an int — see test_history_reasons.
+        id = "d657c360345f421d866bcde09a702e42"
+        campaign_id, campaign_name, keyword, target_position = 111, "C", "soda", 3
 
     written = []
     original = repo.write_run_log
@@ -174,7 +176,8 @@ def test_a_blocked_run_writes_one_row_per_automation():
 
     assert len(written) == 1
     row = written[0]
-    assert row["campaign_id"] == 111 and row["rule_id"] == 7 and row["keyword"] == "soda"
+    assert row["campaign_id"] == 111 and row["keyword"] == "soda"
+    assert row["rule_id"] == "d657c360345f421d866bcde09a702e42"
     assert row["action"] == "error" and row["success"] is False
     assert "could not sign in" in row["reason"]
 
@@ -185,7 +188,9 @@ def test_recording_the_block_never_masks_the_real_fault():
     from campaign_manager import bid, repo
 
     class Rule:
-        id, campaign_id, campaign_name, keyword, target_position = 7, 111, "C", "soda", 3
+        # A bid rule's id is a uuid hex string, not an int — see test_history_reasons.
+        id = "d657c360345f421d866bcde09a702e42"
+        campaign_id, campaign_name, keyword, target_position = 111, "C", "soda", 3
 
     async def boom(rows):
         raise RuntimeError("db down")

@@ -13,6 +13,10 @@ Two rules, both enforced here:
 """
 from campaign_manager import bid
 
+# The shape a bid rule's id really has (`cm_bid_rules.id` is a uuid hex), not a tidy int —
+# the fixture that used `42` is why the INTEGER column looked fine in tests.
+_RULE_ID = "d657c360345f421d866bcde09a702e42"
+
 
 def _row(**over):
     base = dict(tenant_id="t", platform="blinkit", run_id="r", cid=1, cname="c",
@@ -30,9 +34,25 @@ def _row(**over):
 
 def test_a_row_records_reason_position_target_and_rule():
     r = _row(reason="raising to ₹120 because position 9 is worse than target 3",
-             rule_id=42, position=9.0, target=3)
+             rule_id=_RULE_ID, position=9.0, target=3)
     assert r["reason"].startswith("raising")
-    assert r["rule_id"] == 42 and r["position"] == 9.0 and r["target"] == 3
+    assert r["rule_id"] == _RULE_ID and r["position"] == 9.0 and r["target"] == 3
+
+
+def test_the_rule_id_column_accepts_the_id_the_engine_actually_writes():
+    """The 2026-09-04 bug: `cm_run_log.rule_id` was created INTEGER, but the only writer is
+    the bid engine passing `cm_bid_rules.id` — a uuid hex string. Every tick carrying a rule
+    died on the INSERT, AFTER the bid had already been written to Blinkit. These row tests
+    never caught it because they only inspect a dict, so pin the column type itself."""
+    from app.models.campaign_manager_v2 import CmBidRule, CmRunLog
+    # Compare the compiled DDL, not the Python class: SQLModel maps `str` to its own
+    # AutoString decorator, which is neither a String subclass nor has a `python_type`.
+    def ddl(col):
+        return col.type.compile().upper()
+    assert "CHAR" in ddl(CmRunLog.__table__.c.rule_id), (
+        f"rule_id is {ddl(CmRunLog.__table__.c.rule_id)} — it must hold a bid rule's uuid hex id")
+    assert "CHAR" in ddl(CmBidRule.__table__.c.id), (
+        "if a bid rule's id ever stops being a string, cm_run_log.rule_id must follow")
 
 
 def test_every_row_is_timestamped_at_decision_time():

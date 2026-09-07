@@ -213,7 +213,12 @@ class CmRunLog(SQLModel, table=True):
     action: str                             # apply | skip | hold | no-op | error
     # Which automation this decision belongs to. NOT a foreign key on purpose: history must
     # outlive the rule it describes, and budget/activation rows point at a different table.
-    rule_id: int | None = None
+    # TEXT, not int: a bid rule's id is a uuid hex string (`cm_bid_rules.id`) and the bid
+    # engine is the only writer. It was created as INTEGER, which made EVERY bid tick that
+    # carried a rule_id fail its history write (asyncpg DataError) from 2026-09-04 until
+    # a4e7c2f19b83 — after the bids had already been written to Blinkit. A budget rule's
+    # int id, if ever logged, is stored as its string form.
+    rule_id: str | None = None
     old_value: float | None = None
     new_value: float | None = None
     # The observed search position, and the target it was judged against — the two inputs to

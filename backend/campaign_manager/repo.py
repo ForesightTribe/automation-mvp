@@ -501,7 +501,7 @@ NO_CHANGE_ACTIONS = ("hold", "no-op")
 
 async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
                        kind: str | None = None, limit: int = 50, offset: int = 0,
-                       campaign_id: int | None = None, rule_id: int | None = None,
+                       campaign_id: int | None = None, rule_id: str | None = None,
                        include_unchanged: bool = False):
     """Recent cm_run_log rows for a tenant (newest first) + total count.
 
