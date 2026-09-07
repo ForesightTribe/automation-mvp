@@ -861,6 +861,42 @@ minute from a parallel lane, and its RESTART can land on top of our write.
 authoritative for the resume direction only — the stop is a different endpoint that never appears
 there, so gating on it would block every stop.
 
+### 8.4b A reply that never arrives is not a refusal
+
+Blinkit can answer a bid PUT with nothing usable — an empty body, a non-JSON gateway page, a 200
+with no success marker. **That does not mean the write failed.** On 2026-09-07, campaign 637511,
+keyword `soda`, two ticks failed identically and meant opposite things:
+
+| Tick | What came back | What the bid actually did |
+|---|---|---|
+| 12:16 | `{"message": ""}` (valid JSON, empty message) | **unchanged** — the next tick read the old value |
+| 18:15 | not JSON at all → `_fetch` returns `{}` | **changed** — ₹421 was live on Blinkit |
+
+Both took 35–42 s, which is a timeout, not a validator. Both raised a bare `RuntimeError` that
+escaped the choke point, escaped the engine's per-rule loop, and escaped past its `finally` — so the
+run died *before* `write_bid_runtime` and `write_run_log`. The 18:15 tick was a drift **recovery**:
+it had snapped the bid back to the last price known to hold and should have paused trimming for 90
+minutes. That pause was never persisted, so the following tick trimmed straight back to the price
+that had just lost the slot.
+
+Three things changed:
+
+- **`writes.WriteUnverified`** — raised instead of `RuntimeError` when the marketplace's answer does
+  not say whether the write worked. `writes.apply_bid` resolves it by **reading the bid back**
+  (`verify_bid`) and reports applied only when the marketplace now holds the value we sent. Guessing
+  "failed" is not the safe default when a write may have landed: it makes our memory disagree with
+  the account.
+- **`bid._safe_apply_bid`** wraps all three of the optimizer's write sites (window-open floor, bounds
+  correction, the optimizer decision). One failed write is now one failed write — an `error` row in
+  History with the marketplace's own reason — and the run continues to its bookkeeping.
+  `SessionExpired` still aborts, because every remaining keyword would fail identically.
+- **The HTTP status is carried.** `_fetch` kept `__status` only long enough to detect 401/403 and
+  then dropped it, which is why the two rows above were indistinguishable in the logs. The client now
+  stashes the status and (for a non-JSON body) its first bytes, and puts them in the error.
+
+Covered by `tests/test_write_survives.py`, including a guard that the engine never calls
+`writes.apply_bid` directly.
+
 ### 8.5 Sessions — including one that dies mid-run
 
 The campaign manager **consumes** the same `(tenant, "blinkit")` session as the scrapers and owns no
@@ -1023,6 +1059,8 @@ Everything below is the actual behaviour of the current code.
 | Session expired **mid-run** | Re-authenticates once and replays the call (§8.5). If that fails, the run aborts and says how far it got |
 | Session expired **at startup** | Run aborts cleanly — and now writes **one History row per affected automation** saying it could not sign in, so the client sees a reason instead of a gap |
 | Campaign detail read fails | Status treated as *unknown*, not stopped — a read blip must not silently pause optimization |
+| **Bid write not acknowledged** (empty / non-JSON reply) | The bid is **read back** and the outcome decided on what the marketplace actually holds — see [8.4b](#84b-a-reply-that-never-arrives-is-not-a-refusal) |
+| **A bid write throws** | One `error` row in History with the marketplace's reason; the run continues and still persists its runtime + history |
 | >`MAX_WRITES_PER_WINDOW` writes on a keyword | Rate limit blocks further writes |
 | Computed budget is 0 or absurd | Rejected by the bounds guardrail, never sent |
 | `CM_BID_DRIFT_PCT=0` | True revert to pre-drift behaviour |

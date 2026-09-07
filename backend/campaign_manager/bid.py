@@ -519,22 +519,32 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              msg="first run of today's window — resetting to the floor "
                                  "before optimising")
-                ok = await writes.apply_bid(
+                ok, write_error = await _safe_apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=min_bid, current_cpm=live_cpm, min_bid=min_bid,
                     max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                     recent_writes=0,
                 )
                 applied += int(ok)
-                skipped += int(not ok)
+                skipped += int(not ok and write_error is None)
+                errors += int(write_error is not None)
                 was = f" (was ₹{live_cpm})" if live_cpm is not None else ""
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                              msg=(f"applied — bid is now ₹{min_bid}{was}" if ok else
+                                  _plain(write_error, f"not applied — the change to "
+                                                      f"₹{min_bid} could not be sent to {mp}")
+                                  if write_error is not None else
                                   f"not applied — {mp} rejected the change to ₹{min_bid}"))
+                open_reason = (f"the window opened, so the bid starts at its "
+                               f"₹{min_bid} floor")
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     "open" if ok else "skip", live_cpm, min_bid,
-                                     f"the window opened, so the bid starts at its "
-                                     f"₹{min_bid} floor", dry_run, ok,
+                                     "open" if ok else ("error" if write_error is not None
+                                                        else "skip"),
+                                     live_cpm, min_bid,
+                                     open_reason if write_error is None else
+                                     _plain(write_error,
+                                            f"{open_reason} — but it could not be sent to {mp}"),
+                                     dry_run, ok,
                                      rule_id=rule.id, target=rule.target_position))
                 # No runtime row on purpose: `updated_at` must stay behind the window start
                 # so the next tick re-checks that the floor actually stuck. Dry-run never
@@ -561,22 +571,31 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                  msg=f"live bid ₹{live_cpm} is {why} ₹{limit} limit — "
                                      f"forcing it back into range")
-                    ok = await writes.apply_bid(
+                    ok, write_error = await _safe_apply_bid(
                         adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=min_bid,
                         max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                         recent_writes=0,
                     )
                     applied += int(ok)
-                    skipped += int(not ok)
+                    skipped += int(not ok and write_error is None)
+                    errors += int(write_error is not None)
                     logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                                  msg=(f"applied — bid is now ₹{bounded}" if ok else
+                                      _plain(write_error, f"not applied — the change to "
+                                                          f"₹{bounded} could not be sent to {mp}")
+                                      if write_error is not None else
                                       f"not applied — {mp} rejected the change to ₹{bounded}"))
+                    bounds_reason = (f"the live bid of ₹{live_cpm} was {why} ₹{limit} limit, "
+                                     f"so it was brought back to ₹{bounded}")
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                         "bounds" if ok else "skip", live_cpm, bounded,
-                                         f"the live bid of ₹{live_cpm} was {why} "
-                                         f"₹{limit} limit, so it was brought back to "
-                                         f"₹{bounded}", dry_run, ok,
+                                         "bounds" if ok else ("error" if write_error is not None
+                                                              else "skip"),
+                                         live_cpm, bounded,
+                                         bounds_reason if write_error is None else
+                                         _plain(write_error, f"{bounds_reason} — but it could "
+                                                             f"not be sent to {mp}"),
+                                         dry_run, ok,
                                          rule_id=rule.id, target=rule.target_position))
                     if ok and not dry_run:
                         runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
@@ -814,19 +833,25 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
                 kind="bid", keyword=kw,
             )
-            ok = await writes.apply_bid(
+            ok, write_error = await _safe_apply_bid(
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=min_bid,
                 max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                 recent_writes=recent,
             )
             applied += int(ok)
-            skipped += int(not ok)
+            skipped += int(not ok and write_error is None)
+            errors += int(write_error is not None)
             final = int(writes.clamp_bid(new_cpm, min_bid, ceiling))
             if ok:
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=True,
                              msg=(f"would set bid to ₹{final} — not sent" if dry_run
                                   else f"applied — bid is now ₹{final}"))
+            elif write_error is not None:
+                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
+                             msg=_plain(write_error,
+                                        f"not applied — the change to ₹{final} could not "
+                                        f"be sent to {mp}"))
             elif recent >= config.MAX_WRITES_PER_WINDOW:
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
                              msg=f"not applied — rate limit reached ({recent} changes this hour)")
@@ -843,8 +868,16 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             runtime_rows.append(rt)
             drifted = drift_pct > 0 and position <= target
             action = "recover" if recovering else ("drift" if drifted else "apply")
+            if write_error is not None:
+                # A write that could not be SENT is an error row, not a `skip` — a skip is
+                # a decision we made, and this was not one. Marked unsuccessful so it shows
+                # in the default History rather than hiding among the no-change rows.
+                action, success = "error", False
+                reason = _plain(write_error, f"{reason} — but it could not be sent to {mp}")
+            else:
+                action, success = (action if ok else "skip"), True
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                 action if ok else "skip", current_cpm, new_cpm, reason, dry_run, True,
+                                 action, current_cpm, new_cpm, reason, dry_run, success,
                                  rule_id=rule.id, position=position, target=target))
     except writes.SessionExpired as e:
         # The client already tried to re-authenticate once and could not. Continuing would
@@ -1062,6 +1095,27 @@ async def _record_run_blocked(tenant_id, platform: str, run_id: str, rules, reas
         await repo.write_run_log(rows)
     except Exception as e:                     # never let bookkeeping mask the real fault
         logs.note(run_id, f"could not record why the run was blocked: {e}", dry_run=dry_run)
+
+
+async def _safe_apply_bid(adapter, client, **kw) -> tuple[bool, Exception | None]:
+    """`writes.apply_bid`, but a failed write is ONE failed write instead of a dead run.
+
+    Returns `(applied, error)`. `SessionExpired` still propagates — every remaining keyword
+    would fail identically, and the engine has a dedicated path that says so. Everything
+    else (a marketplace error, a reply that never arrived, a network drop) comes back for
+    the caller to log before moving on.
+
+    2026-09-07: an unacknowledged Blinkit reply escaped the optimizer loop, past its
+    `finally`, and took `write_bid_runtime` and `write_run_log` with it — so a tick that
+    HAD changed the marketplace left no history, and the drift pause it had just earned was
+    lost. Bookkeeping must survive the write it is describing.
+    """
+    try:
+        return await writes.apply_bid(adapter, client, **kw), None
+    except writes.SessionExpired:
+        raise
+    except Exception as e:
+        return False, e
 
 
 def _plain(err, what: str) -> str:

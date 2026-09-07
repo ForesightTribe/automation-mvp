@@ -52,6 +52,31 @@ class WriteRefused(Exception):
     """
 
 
+class WriteUnverified(RuntimeError):
+    """The write WAS SENT and the marketplace's answer does not say whether it worked.
+
+    Not the same as a refusal. A refusal is the marketplace telling us no; this is the
+    marketplace telling us nothing — an empty body, a gateway timeout page, a 200 with no
+    success marker. The write may have landed.
+
+    Why it exists (2026-09-07, Blinkit, campaign 637511, keyword "soda"). Two ticks failed
+    the same way and meant opposite things:
+
+      12:16  body `{"message": ""}`  → the bid did NOT change (next tick read the old value)
+      18:15  body not JSON at all    → the bid DID change (₹421 was live on Blinkit)
+
+    Both raised a bare `RuntimeError`, both aborted the whole run, and neither was
+    distinguishable in the logs. The 18:15 one was the expensive kind: the marketplace was
+    mutated, we reported failure, and — because the exception escaped past the engine's
+    `finally` — the run never wrote its runtime state, so the 90-minute drift pause that
+    recovery had just earned was silently lost.
+
+    So this is raised instead, and `apply_bid` answers the question by READING THE BID BACK
+    rather than guessing. Guessing "failed" is not the safe default when a write may have
+    landed: it makes the engine's memory disagree with the marketplace.
+    """
+
+
 # ── Pure guardrail logic (unit-tested, no I/O) ──────────────────────────────
 
 def _why(resp: dict | None) -> str:
@@ -322,7 +347,49 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
                              passed=False, reason=str(e), keyword=keyword)
         return False
+    except WriteUnverified as e:
+        # The write went out and we did not get a usable answer. Ask the marketplace what
+        # the bid IS now, rather than assuming the worst — see WriteUnverified.
+        return await verify_bid(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                                keyword=keyword, intended=clamped, why=str(e))
     return bool(resp.get("status") or resp.get("success"))
+
+
+async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
+                     intended: int, why: str) -> bool:
+    """Did an unacknowledged bid write actually land? Read the bid back and see.
+
+    Returns True only when the marketplace now reports the value we sent. Anything else —
+    a different value, an unreadable keyword, a failed read — is False, because "we could
+    not confirm it" must never be logged as an applied write.
+
+    Compares against `adapter.read_bids`, which is the SAME source the engine reads
+    `current_cpm` from, so a confirmation here means the next tick will agree with us.
+    """
+    read = getattr(adapter, "read_bids", None)
+    if read is None:                              # a marketplace with no read-back path
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; this marketplace cannot be read back",
+                             keyword=keyword)
+        return False
+    try:
+        live = await read(client, campaign_id)
+    except Exception as e:                        # the read is best-effort by definition
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; reading the bid back failed too ({e})",
+                             keyword=keyword)
+        return False
+
+    current = live.get(keyword)
+    if current is not None and int(current) == int(intended):
+        logs.note(run_id, f'"{keyword}" — {why}, but the bid IS now ₹{intended} on the '
+                          f"marketplace, so the change did land", level="warning")
+        return True
+    shown = f"₹{int(current)}" if current is not None else "unreadable"
+    logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                         reason=f"{why}; the bid is still {shown}, so it did not land",
+                         keyword=keyword)
+    return False
 
 
 def _status_detail(target: str, budget: float | None) -> str:
