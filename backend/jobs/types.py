@@ -101,31 +101,28 @@ def _scorecard(tenant_id, p):
     return a
 
 
-def _zepto_sales(tenant_id, p):
-    a = ["scrape", "zepto-sales", "--tenant", str(tenant_id)]
+
+def _zepto(tenant_id, p):
+    """Sales + PO + ads in ONE run.
+
+    Blinkit needs two job types because it has two dashboards behind two
+    separate logins; Zepto's single console needs one. Passing no section flag
+    runs all three on a single login and a single WAF mint — which also means
+    the client's Zepto dashboard is evicted once a day instead of three times.
+    """
+    a = ["scrape", "zepto", "--tenant", str(tenant_id)]
     _opt(a, "--from", p.get("date_from"))
     _opt(a, "--to", p.get("date_to"))
-    # 138 calls instead of a handful — a schedule should leave this off and
-    # sweep occasionally to pick up a new city, not daily.
+    _opt(a, "--po-days-back", p.get("po_days_back"))
+    # Leave `category` unset for the CLI's own default of 'all'. The three ad
+    # tabs return DISJOINT campaigns, so anything narrower silently drops the
+    # others' spend.
+    _opt(a, "--category", p.get("category"))
+    for flag in ("sales", "po", "ads"):
+        _flag(a, f"--{flag}", p.get(flag))
     _flag(a, "--all-cities", p.get("all_cities"))
     return a
 
-
-def _zepto_ads(tenant_id, p):
-    a = ["scrape", "zepto-ads", "--tenant", str(tenant_id)]
-    _opt(a, "--from", p.get("date_from"))
-    _opt(a, "--to", p.get("date_to"))
-    # Leave this at the CLI's own default of 'all'. The three tabs return
-    # DISJOINT campaigns, so anything narrower silently drops the others' spend.
-    _opt(a, "--category", p.get("category"))
-    return a
-
-
-def _zepto_po(tenant_id, p):
-    a = ["scrape", "zepto-po", "--tenant", str(tenant_id)]
-    _opt(a, "--from", p.get("date_from"))
-    _opt(a, "--to", p.get("date_to"))
-    return a
 
 
 def _public_keyword(tenant_id, p):
@@ -289,26 +286,24 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     # Session comes from `cli auth login zepto`; `ensure()` self-heals an
     # expired one mid-run. No display, no Xvfb — the login is browserless REST
     # and the OTP is read from the shared inbox.
-    "scrape.zepto_seller_sales": JobTypeSpec(
-        Lane.dashboard, 15 * 60, _zepto_sales,
-        param_keys=("date_from", "date_to", "all_cities"),
-        label="Zepto sales scrape",
-    ),
-    # Six tabular views x three campaign categories, with a 1.5s pause between
-    # metric calls — comfortably the slowest of the three.
-    "scrape.zepto_ads": JobTypeSpec(
-        Lane.dashboard, 30 * 60, _zepto_ads,
-        param_keys=("date_from", "date_to", "category"),
-        label="Zepto ads scrape",
-    ),
-    # Slowest ceiling of the three: po_items is a SECOND pass, one call per PO,
-    # and the /vendor endpoints are genuinely flaky (~4 failures in 18 attempts
-    # measured 2026-08-30), each retried at 5/15/45s. A bad run is slow, not
-    # fatal, so the ceiling has to clear the retry ladder rather than kill it.
-    "scrape.zepto_po": JobTypeSpec(
-        Lane.dashboard, 45 * 60, _zepto_po,
-        param_keys=("date_from", "date_to"),
-        label="Zepto PO scrape",
+    # ONE Zepto job type, where Blinkit needs two. Blinkit's split is forced by
+    # two dashboards behind two separate logins (see platform_auth/registry.py);
+    # Zepto's single console does not have that constraint, so carrying the
+    # split over would copy a workaround rather than a design.
+    #
+    # Ceiling is the sum of the three sections' own worst cases — sales 15,
+    # ads 30, PO 45, the last of which has to clear its 5/15/45s retry ladder.
+    # Measured real runs are ~5 min total, so this is a safety ceiling for a
+    # hung section, not an expectation.
+    #
+    # `dashboard`, shared with Blinkit and deliberately NOT a lane of its own:
+    # that lane's single slot is the only thing serialising Zepto against
+    # itself, and Zepto permits one session per account.
+    "scrape.zepto": JobTypeSpec(
+        Lane.dashboard, 90 * 60, _zepto,
+        param_keys=("date_from", "date_to", "sales", "po", "ads",
+                    "po_days_back", "category", "all_cities"),
+        label="Zepto scrape",
     ),
     # Public scrapes take the marketplace as a PARAM rather than having a job type
     # each: lane and timeout are identical, and sharing the `batch` lane is correct —
