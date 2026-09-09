@@ -61,7 +61,7 @@ export const Chevron = ({ open, onClick, label }) => (
 );
 
 /** Text action for the expanded panel's footer, where buttons would be too loud. */
-export const Action = ({ onClick, disabled, tone = "muted", children }) => {
+export const Action = ({ onClick, disabled, title, tone = "muted", children }) => {
 	const tones = {
 		muted: "text-content-muted hover:text-content",
 		primary: "text-primary hover:text-primary-hover",
@@ -72,6 +72,7 @@ export const Action = ({ onClick, disabled, tone = "muted", children }) => {
 			type="button"
 			onClick={onClick}
 			disabled={disabled}
+			title={title}
 			className={`text-xs font-medium transition-colors disabled:opacity-40 ${tones[tone]}`}
 		>
 			{children}
@@ -79,8 +80,18 @@ export const Action = ({ onClick, disabled, tone = "muted", children }) => {
 	);
 };
 
-/** Delete, armed in two steps — these rows delete automations, not drafts. */
-export const ConfirmDelete = ({ onConfirm, children = "Delete" }) => {
+/** Delete, armed in two steps — these rows delete automations, not drafts.
+ *
+ *  `onConfirmAlt` adds a SECOND confirm beside the first, for a delete that does something
+ *  extra on the way out. A bid rule uses it for "reset & delete": deleting the row does not
+ *  lower the bid the automation left on the marketplace, and that choice belongs at the
+ *  moment of deleting rather than in a setting nobody will find. */
+export const ConfirmDelete = ({
+	onConfirm,
+	onConfirmAlt,
+	altLabel,
+	children = "Delete",
+}) => {
 	const [armed, setArmed] = useState(false);
 	if (!armed)
 		return (
@@ -89,7 +100,7 @@ export const ConfirmDelete = ({ onConfirm, children = "Delete" }) => {
 			</Action>
 		);
 	return (
-		<span className="inline-flex items-center gap-2">
+		<span className="inline-flex flex-wrap items-center gap-2">
 			<button
 				type="button"
 				onClick={onConfirm}
@@ -97,6 +108,15 @@ export const ConfirmDelete = ({ onConfirm, children = "Delete" }) => {
 			>
 				Confirm delete
 			</button>
+			{onConfirmAlt && (
+				<button
+					type="button"
+					onClick={onConfirmAlt}
+					className="text-xs font-semibold text-danger hover:underline"
+				>
+					{altLabel}
+				</button>
+			)}
 			<Action onClick={() => setArmed(false)}>cancel</Action>
 		</span>
 	);
