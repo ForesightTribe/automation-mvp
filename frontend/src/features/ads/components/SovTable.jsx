@@ -10,8 +10,12 @@ import { formatNumber } from "../../../lib/format";
 const toPct = (v) => (v == null ? 0 : v <= 1 ? v * 100 : v);
 
 /** Sponsored share-of-voice per keyword — your paid presence on each searched
- * term, with a bar for quick scanning (highest SOV first). */
-export const SovTable = () => {
+ * term, with a bar for quick scanning (highest SOV first).
+ *
+ * `barClass` exists because this table is rendered on two pages that are on different sides
+ * of the brand rollout: the Ads page keeps the primary indigo it has always had, and
+ * Insights passes the brand red. One component, because the numbers must not diverge. */
+export const SovTable = ({ barClass = "bg-primary" }) => {
 	const { data, isLoading, error, refetch } = useSov();
 	const rows = data ?? [];
 
@@ -59,7 +63,7 @@ export const SovTable = () => {
 												<div className="flex items-center gap-2">
 													<div className="h-2 flex-1 rounded-full bg-muted">
 														<div
-															className="h-2 rounded-full bg-primary"
+															className={`h-2 rounded-full ${barClass}`}
 															style={{
 																width: `${Math.min(pct, 100)}%`,
 															}}

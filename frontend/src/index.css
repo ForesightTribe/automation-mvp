@@ -71,3 +71,30 @@ body {
 	font-family: var(--font-sans);
 	-webkit-font-smoothing: antialiased;
 }
+
+/* Tailwind's preflight gives buttons `cursor: default`, so nothing in the app showed a hand
+   unless a component remembered to add `cursor-pointer` — and most did not. A pointer is how
+   a mouse user knows something can be clicked at all, so it belongs on every enabled control
+   rather than on the ones somebody thought of. Disabled controls keep the default, because
+   the cursor should not promise an action that will not happen. */
+button:not(:disabled),
+[role="button"]:not([aria-disabled="true"]),
+label[for],
+summary {
+	cursor: pointer;
+}
+
+/* The Loading dots. Declared here because Tailwind has no keyframes for a staggered bob and
+   the three dots differ only by animation-delay. */
+@keyframes loading-bob {
+	0%,
+	80%,
+	100% {
+		transform: translateY(0);
+		opacity: 0.35;
+	}
+	40% {
+		transform: translateY(-4px);
+		opacity: 1;
+	}
+}

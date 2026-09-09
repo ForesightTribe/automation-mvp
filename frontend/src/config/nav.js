@@ -4,6 +4,7 @@ import {
 	Package,
 	Warehouse,
 	Megaphone,
+	FlaskConical,
 	Target,
 	Gauge,
 	FileText,
@@ -23,7 +24,19 @@ export const NAV_ITEMS = [
 	{ label: "Sales & Analytics", path: "/analytics", icon: BarChart3 },
 	{ label: "Products", path: "/products", icon: Package },
 	{ label: "Inventory", path: "/inventory", icon: Warehouse },
+	// A plain top-level entry, deliberately outside the AdsBeta group below.
 	{ label: "Ads", path: "/ads", icon: Megaphone },
+	// No `path`, deliberately: this is a section label, so clicking it reveals the submenu
+	// instead of navigating somewhere. `children` is optional; an entry without it is a
+	// plain link.
+	{
+		label: "AdsBeta",
+		icon: FlaskConical,
+		children: [
+			{ label: "Insights", path: "/ads/insights" },
+			{ label: "Ad Automation", path: "/ads/automation" },
+		],
+	},
 	// The v1 Campaign Manager is hidden from the rail — v2 below supersedes it. Its route
 	// still exists, so /campaign-manager remains reachable by URL until v1 is removed.
 	// { label: "Campaign Manager", path: "/campaign-manager", icon: Target },

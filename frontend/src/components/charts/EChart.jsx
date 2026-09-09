@@ -6,6 +6,7 @@ import {
 	TooltipComponent,
 	LegendComponent,
 	VisualMapComponent,
+	GraphicComponent,
 } from "echarts/components";
 import { CanvasRenderer } from "echarts/renderers";
 import { CHART_THEME } from "./theme";
@@ -20,6 +21,9 @@ echarts.use([
 	TooltipComponent,
 	LegendComponent,
 	VisualMapComponent,
+	// The donut's centre total is drawn with `graphic`; without this it silently does not
+	// render and ECharts only warns in the console.
+	GraphicComponent,
 	CanvasRenderer,
 ]);
 
@@ -38,7 +42,28 @@ export const EChart = ({ option, height = 320, className = "" }) => {
 	// Init + teardown once.
 	useEffect(() => {
 		chartRef.current = echarts.init(elRef.current, CHART_THEME);
-		const observer = new ResizeObserver(() => chartRef.current?.resize());
+		// ⚠️ A ResizeObserver fires once immediately on observe, reporting the size the
+		// element already had. Acting on it calls `resize()` on a chart that is mid-draw,
+		// which cancels the build-in animation and repaints the final frame: the chart
+		// appears fully formed instead of drawing itself.
+		//
+		// Skipping that first callback outright is wrong too, because a chart initialised
+		// before layout starts at 0×0 and that callback is what gives it a size. So compare
+		// instead: resize only when the size actually differs from the one the chart was
+		// last rendered at. A no-op resize is the only one that costs an animation.
+		let last = {
+			w: elRef.current.clientWidth,
+			h: elRef.current.clientHeight,
+		};
+		const observer = new ResizeObserver(() => {
+			const el = elRef.current;
+			if (!el) return;
+			const w = el.clientWidth;
+			const h = el.clientHeight;
+			if (w === last.w && h === last.h) return;
+			last = { w, h };
+			chartRef.current?.resize();
+		});
 		observer.observe(elRef.current);
 		return () => {
 			observer.disconnect();
