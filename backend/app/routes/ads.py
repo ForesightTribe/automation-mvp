@@ -6,16 +6,10 @@ from app.schemas.ads import (
     AdMarketplaceRow,
     AdPerformancePoint,
     AdsSummary,
-    BidOptimizerLogEntry,
-    BidOptimizerRule,
-    BudgetSchedule,
     BudgetSplitRow,
-    CampaignKeyword,
-    CampaignProduct,
     CampaignRow,
     CollectionRow,
     KeywordRow,
-    SchedulerLogEntry,
     SponsoredSovRow,
     VisibilityPlanRow,
 )
@@ -183,87 +177,3 @@ async def visibility_plans(session: SessionDep, client: ClientDep):
 @router.get("/collections", response_model=list[CollectionRow])
 async def collections(session: SessionDep, client: ClientDep):
     return await ads_service.get_collections(session, tenant_id=client.id)
-
-
-# ── Budget scheduling ─────────────────────────────────────────────────────────
-
-@router.get("/budget-schedules/history", response_model=list[SchedulerLogEntry])
-async def scheduler_history(session: SessionDep, client: ClientDep):
-    return await ads_service.get_scheduler_log(session, client.id)
-
-
-@router.get("/budget-schedules", response_model=list[BudgetSchedule])
-async def get_budget_schedules(session: SessionDep, client: ClientDep):
-    return await ads_service.get_budget_schedules(session, client.id)
-
-
-@router.post("/budget-schedules", response_model=BudgetSchedule, status_code=201)
-async def add_budget_schedule(body: BudgetSchedule, session: SessionDep, client: ClientDep):
-    return await ads_service.add_budget_schedule(session, client.id, body.model_dump())
-
-
-@router.patch("/budget-schedules/{campaign_id}/toggle", response_model=BudgetSchedule)
-async def toggle_budget_schedule(campaign_id: int, session: SessionDep, client: ClientDep):
-    result = await ads_service.toggle_budget_schedule(session, client.id, campaign_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Schedule not found")
-    return result
-
-
-@router.delete("/budget-schedules/{campaign_id}", status_code=204)
-async def delete_budget_schedule(campaign_id: int, session: SessionDep, client: ClientDep):
-    if not await ads_service.remove_budget_schedule(session, client.id, campaign_id):
-        raise HTTPException(status_code=404, detail="Schedule not found")
-
-
-# ── Bid Optimizer ────────────────────────────────────────────────────────────
-
-@router.get("/bid-optimizer/rules", response_model=list[BidOptimizerRule])
-async def get_bid_optimizer_rules(session: SessionDep, client: ClientDep):
-    return await ads_service.get_bid_optimizer_rules(session, client.id)
-
-
-@router.post("/bid-optimizer/rules", response_model=BidOptimizerRule, status_code=201)
-async def add_bid_optimizer_rule(body: BidOptimizerRule, session: SessionDep, client: ClientDep):
-    return await ads_service.add_bid_optimizer_rule(session, client.id, body.model_dump())
-
-
-@router.delete("/bid-optimizer/rules/{rule_id}", status_code=204)
-async def delete_bid_optimizer_rule(rule_id: str, session: SessionDep, client: ClientDep):
-    if not await ads_service.remove_bid_optimizer_rule(session, client.id, rule_id):
-        raise HTTPException(status_code=404, detail="Rule not found")
-
-
-@router.patch("/bid-optimizer/rules/{rule_id}/toggle", response_model=BidOptimizerRule)
-async def toggle_bid_optimizer_rule(rule_id: str, session: SessionDep, client: ClientDep):
-    result = await ads_service.toggle_bid_optimizer_rule(session, client.id, rule_id)
-    if not result:
-        raise HTTPException(status_code=404, detail="Rule not found")
-    return result
-
-
-@router.get("/bid-optimizer/history", response_model=list[BidOptimizerLogEntry])
-async def bid_optimizer_history(session: SessionDep, client: ClientDep):
-    return await ads_service.get_bid_optimizer_log(session, client.id)
-
-
-# ── Campaign detail (cached, read-only) ───────────────────────────────────────
-
-@router.get("/campaigns/{campaign_id}/products", response_model=list[CampaignProduct])
-async def campaign_products(campaign_id: int, session: SessionDep, client: ClientDep):
-    import traceback
-    try:
-        return await ads_service.get_campaign_products(client.id, campaign_id)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@router.get("/campaigns/{campaign_id}/keywords", response_model=list[CampaignKeyword])
-async def campaign_keywords(campaign_id: int, session: SessionDep, client: ClientDep):
-    import traceback
-    try:
-        return await ads_service.get_campaign_keywords(client.id, campaign_id)
-    except Exception as e:
-        traceback.print_exc()
-        raise HTTPException(status_code=400, detail=str(e))

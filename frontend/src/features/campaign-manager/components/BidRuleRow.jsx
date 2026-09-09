@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { Button } from "../../../components/ui/Button";
 import { AutomateBidForm } from "./AutomateBidForm";
+import { JobStatus } from "./JobStatus";
 import {
 	Action,
 	ConfirmDelete,
@@ -27,12 +28,29 @@ const Detail = ({ label, children }) => (
 /**
  * A bid automation as one wide row: the keyword it chases, the position it targets, the
  * bid range it may spend inside, and when it runs. Expanding shows where position is
- * measured and the rule's date bounds, plus edit and the pause/stop/delete controls.
+ * measured and the rule's date bounds, plus edit and the pause/reset/delete controls.
+ *
+ * ⚠️ **Pause does not lower the bid.** Freezing the automation stops it deciding; the
+ * keyword keeps whatever bid it last climbed to until Reset, or until the next window
+ * opens at the floor. The footer says so, because it is the one thing about these controls
+ * that costs money if you assume otherwise.
  */
-export const BidRuleRow = ({ rule, onAction, onDelete }) => {
+export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
 	const [open, setOpen] = useState(false);
 	const [editing, setEditing] = useState(false);
+	const [error, setError] = useState(null);
 	const t = timingOf(rule);
+
+	// Every action reports its own refusal. The API answers 409 with a sentence written
+	// for the person reading it ("This automation is running right now — pause it first…"),
+	// and axios normalises that into `error.message`, so showing it verbatim is both the
+	// simplest and the most informative thing this row can do.
+	const guard = { onError: (e) => setError(e.message) };
+	const act = (action) => {
+		setError(null);
+		onAction(rule.id, action, guard);
+	};
+	const running = rule.status === "running";
 
 	const openEdit = () => {
 		setOpen(true);
@@ -88,7 +106,7 @@ export const BidRuleRow = ({ rule, onAction, onDelete }) => {
 						<Button
 							size="sm"
 							variant="secondary"
-							onClick={() => onAction(rule.id, "resume")}
+							onClick={() => act("resume")}
 						>
 							Resume
 						</Button>
@@ -97,7 +115,7 @@ export const BidRuleRow = ({ rule, onAction, onDelete }) => {
 						<Button
 							size="sm"
 							variant="secondary"
-							onClick={() => onAction(rule.id, "pause")}
+							onClick={() => act("pause")}
 						>
 							Pause
 						</Button>
@@ -151,21 +169,55 @@ export const BidRuleRow = ({ rule, onAction, onDelete }) => {
 							<Action tone="primary" onClick={openEdit}>
 								Edit rule
 							</Action>
-							{rule.state !== "stopped" && (
-								<Action
-									onClick={() => onAction(rule.id, "stop")}
-								>
-									Stop
-								</Action>
+							<Action
+								disabled={running}
+								title={
+									running
+										? "Pause it first — the next check would bid it straight back up."
+										: `Put the bid back to its ₹${rule.min_bid} floor`
+								}
+								onClick={() => {
+									setError(null);
+									onReset(rule.id, guard);
+								}}
+							>
+								Reset bid to floor
+							</Action>
+							{resetJob?.ruleId === rule.id && (
+								<JobStatus jobId={resetJob.jobId} />
 							)}
 							<span className="ml-auto">
 								<ConfirmDelete
-									onConfirm={() => onDelete(rule.id)}
+									onConfirm={() => {
+										setError(null);
+										onDelete(
+											{ ruleId: rule.id, reset: false },
+											guard,
+										);
+									}}
+									onConfirmAlt={() => {
+										setError(null);
+										onDelete(
+											{ ruleId: rule.id, reset: true },
+											guard,
+										);
+									}}
+									altLabel="Reset & delete"
 								>
 									Delete rule
 								</ConfirmDelete>
 							</span>
 						</div>
+
+						{error && (
+							<p className="mt-2 text-xs text-danger">{error}</p>
+						)}
+
+						<p className="mt-2 text-[11px] text-content-subtle">
+							Pausing freezes the automation but leaves the bid
+							where it is — use “Reset bid to floor” to bring it
+							back down.
+						</p>
 					</>
 				))}
 		</RowShell>

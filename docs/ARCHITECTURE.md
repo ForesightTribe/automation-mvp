@@ -5,7 +5,8 @@
 There are **four top-level Python packages** under `backend/`, each a peer:
 `app/` (the API + shared application core), `cli/` (terminal entry point),
 `scraper/` (the browser work), `jobs/` (the job/runner/scheduler subsystem), plus
-`ad_campaigns/` (the coworker-owned campaign manager). `app/` is **not** API-only —
+`campaign_manager/` (campaign automation; the v1 `ad_campaigns/` was deleted 2026-09-03).
+`app/` is **not** API-only —
 it holds the shared core (`core/`, `models/`, `utils/`, `services/`) that every
 entry point imports, alongside the API layer (`routes/`, `router.py`, `schemas/`).
 
@@ -27,11 +28,11 @@ automation-mvp/
 │   │   │   ├── search.py              # SearchSnapshot, SearchListing, SkuSnapshot, SkuMap, MarketplaceLocation, TenantLocation, InventoryDepth
 │   │   │   ├── blinkit_seller.py      # BlinkitSellerSale, BlinkitPO, BlinkitSOH, BlinkitScorecard*
 │   │   │   ├── blinkit_marketing.py   # BlinkitAdCampaign(Daily/Detail), SponsoredSOV, BrandCollection, VisibilityPlan
-│   │   │   ├── campaign_manager.py    # BudgetSchedule*, BidOptimizer* (coworker)
+│   │   │   ├── campaign_manager_v2.py # Cm* tables — the campaign manager's own
 │   │   │   └── explorer.py            # ExplorerRun
 │   │   ├── routes/                    # FastAPI route handlers (thin — call services)
 │   │   ├── services/                  # SHARED business logic — called by BOTH routes and CLI commands
-│   │   │   ├── ads_service.py         # marketing + campaign-manager orchestration (coworker-adjacent)
+│   │   │   ├── ads_service.py         # ads ANALYTICS only, read-only (its v1 automation half was deleted 2026-09-03)
 │   │   │   ├── job_service.py         # reads the scrape_jobs audit table (NOT the jobs queue — that's jobs/)
 │   │   │   ├── sku_map_service.py     # CLI-only service (imported by cli/commands/sku_map.py)
 │   │   │   └── … (analytics, auth, client, competition, inventory, overview, …)
@@ -48,7 +49,7 @@ automation-mvp/
 │   │   ├── scheduler.py               # cron producer: reads job_schedules, enqueues when due (catchup/misfire logic)
 │   │   ├── monitor.py                 # deadman/heartbeat: last-success-per-schedule + disk check → ERROR logs
 │   │   └── maintenance.py             # prune_logs() — the maint.log_cleanup job
-│   ├── ad_campaigns/                  # coworker-owned campaign manager (budget scheduler + bid optimizer) — OFF-LIMITS
+│   ├── campaign_manager/              # campaign automation: budget scheduler, bid optimizer, reconciler, gated writes
 │   ├── alembic/                       # DB migrations (env.py imports app.models for autogenerate)
 │   ├── scraper/
 │   │   ├── platforms/
@@ -60,7 +61,7 @@ automation-mvp/
 │   │   │   │   │   └── seller/        # scraper.py, parser.py, storage.py
 │   │   │   │   └── public_data/       # endpoints.py, scraper.py (one session, lat/lon swap), parser.py, storage.py, sku_storage.py
 │   │   │   ├── instamart/             # public_data/ — stub, NOT wired (old one-shot interface)
-│   │   │   └── zepto/                 # public_data/ — dead stub; see docs/zepto.md (planned)
+│   │   │   └── zepto/                 # public_data/ — SHIPPED; see docs/zepto-public.md
 │   │   ├── public/                    # MARKETPLACE-AGNOSTIC scrape engine — nothing here imports a platform
 │   │   │   ├── providers.py           # marketplace registry: slug → open_session/search/close_session/parse + cap floors
 │   │   │   ├── orchestrator.py        # keyword scrape (worker pool), mp_slug-parameterised
@@ -88,8 +89,9 @@ automation-mvp/
 > **Naming caution:** "job" and "scheduler" each name two unrelated things.
 > `scraper/utils/jobs.py` + `scrape_jobs` table = a scrape's *internal* progress
 > (drives `--resume`); `jobs/` + the `jobs` table = the *work-order queue*, which
-> links to the former via `ref_job_id`. And `ad_campaigns/scheduler.py` (coworker,
-> ad-budget timing) is unrelated to `jobs/scheduler.py` (infra cron). See docs/jobs.md.
+> links to the former via `ref_job_id`. The same trap existed in `ad_campaigns/scheduler.py`
+> (ad-budget timing) vs `jobs/scheduler.py` (infra cron) until the former was deleted on
+> 2026-09-03. See docs/jobs.md.
 
 ---
 
@@ -160,7 +162,7 @@ The runner is a thin dispatch layer above this diagram — see docs/jobs.md.
 | Table | Key columns | Notes |
 |---|---|---|
 | `search_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `mp_slug`, `keyword`, `city`, `pincode`, `lat`/`lon`, `brand_rank`, `brand_sov`, `total_results` | **keyword scrape header** — one row per (tenant, keyword, location, scrape) |
-| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `is_combo`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product in the result page (lat/lon via `snapshot_id → search_snapshots`) |
+| `search_listings` | `snapshot_id`, `tenant_id`, `mp_slug`, `brand_slug`, `is_brand`, `is_combo`, `is_ad`, `position`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `extra` | **keyword scrape detail** — one row per product placement in the result page (lat/lon via `snapshot_id → search_snapshots`). A product holding both an organic and a sponsored slot is **two rows** differing only in `is_ad` |
 | `sku_snapshots` | `tenant_id`, `job_id`, `brand_slug`, `platform_product_id` (key), `product_name`, `is_combo`, `merchant_id`, `city`, `lat`/`lon`, `price`, `mrp`, `discount_pct`, `in_stock`, `inventory`, `rating` | **targeted own-SKU scrape** — one flat row per (own product × location × scrape) |
 | `sku_map` | `tenant_id`, `item_id`, `platform_product_id`, `product_name`, `match_method` | bridges private `item_id` ↔ public `platform_product_id` (name-matched; `cli sku-map`) |
 | `marketplace_locations` | `mp_slug`, `merchant_id` (key), `city`, `state`, `region`, `lat`/`lon` | shared darkstore catalog (from `config.xlsx`) |
@@ -188,6 +190,15 @@ one store can answer several coordinates. So public read metrics should
 `is_combo` separates combos/multipacks from main SKUs (`?kind=main|combo|all`). The
 old `search_results`/`competitor_rankings`/`brand_snapshots`/`scraped_products`
 tables were dropped in migration `f3a9c1d7b2e5`.
+
+`is_ad` separates **bought** placements from **earned** ones (migration `f2a71c4d8e93`),
+so SoV and rank can be read paid-vs-organic instead of over a blend of the two. Both
+marketplaces report it — Blinkit from `tracking.common_attributes.ads_campaign_id`, Zepto
+from `meta.tagsV2[*].tagType == "SPONSORED"` — and the campaign ids travel in `extra`
+rather than in columns (~8% of rows are sponsored). Two things to know before querying it:
+**Blinkit rows before 2026-09-04 all read `false`** and cannot be backfilled (the flag was
+never captured), and the **keyword** scrape dedupes on `(product, is_ad)` while the
+**targeted** scrape collapses the pair — see `scraper/public/providers.py`.
 
 ### Blinkit marketing tables (tenant-scoped)
 
@@ -236,8 +247,12 @@ Re-running the same scrape updates existing rows rather than creating duplicates
 
 The darkstore catalog, per-tenant keywords, and coverage live in `config.xlsx` and
 are synced to the DB by `cli sync` (`marketplace_locations`, `tenant_watchlist`,
-`tenant_locations`). `scraper/utils/cities.py` is **legacy and being retired** — the
-scraper reads locations from the DB, not from it. Blinkit selects the dark store
+`tenant_locations`). `scraper/utils/cities.py` — a hardcoded city→zone→lat/lon table
+predating the catalog, whose own docstring called its coordinates unverified
+placeholders — was **deleted 2026-09-04**, along with the `GET /reference/cities`
+endpoint that served it and the fallback inside `list_blinkit_zones`. The catalog is
+now the only answer to "where is this city"; `scraper/utils/locations.py` resolves a
+city name to a real store for the ad-hoc scrape path. Blinkit selects the dark store
 from the **lat/lon** in the request headers; `pincode`/`location_name`/`address` are
 metadata only. `marketplace_locations` is keyed on `merchant_id` — one row per
 **express** store, holding the coordinate to probe it at.
@@ -393,7 +408,7 @@ Explorer and the `marketplace=` job param.
 another platform's coordinates. A store's probe point is that platform's catchment.
 
 Check whether the platform's API blocks direct httpx — if so, use the in-page fetch
-technique (as Blinkit does). Worked example + open questions: [zepto.md](zepto.md).
+technique (as Blinkit does). Worked example + open questions: [zepto-public.md](zepto-public.md).
 
 ### Private scraper (Instamart, Zepto seller dashboards)
 

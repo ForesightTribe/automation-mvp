@@ -41,13 +41,6 @@ from app.models.blinkit_marketing import (
     BlinkitVisibilityPlan,
 )
 from app.models.explorer import ExplorerRun
-from app.models.campaign_manager import (
-    BudgetScheduleDB,
-    BudgetScheduleRuleDB,
-    BudgetSchedulerLogDB,
-    BidOptimizerRuleDB,
-    BidOptimizerLogDB,
-)
 from app.models.campaign_manager_v2 import (
     CmBudgetSchedule,
     CmBudgetRule,
@@ -72,7 +65,5 @@ __all__ = [
     "BlinkitAdCampaignKeyword",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
     "ExplorerRun",
-    "BudgetScheduleDB", "BudgetScheduleRuleDB", "BudgetSchedulerLogDB",
-    "BidOptimizerRuleDB", "BidOptimizerLogDB",
     "CmBudgetSchedule", "CmBudgetRule", "CmBidRule", "CmBidRuntime", "CmRunLog",
 ]

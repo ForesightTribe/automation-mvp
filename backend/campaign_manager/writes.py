@@ -13,7 +13,94 @@ so the safety logic is verifiable without Blinkit.
 from campaign_manager import config, logs
 
 
+class SessionExpired(RuntimeError):
+    """The marketplace answered as if we are logged out.
+
+    Lives here, beside `WriteRefused`, because the ENGINES have to act on it and they are
+    marketplace-agnostic — an adapter-specific exception class would make `bid.py` import
+    from `marketplaces/blinkit/`.
+
+    Deliberately distinct from "the marketplace refused this change". Blinkit's `_fetch`
+    used to turn a login redirect into `{}`, which every caller reads as a rejection — so a
+    session dying mid-run logged `not applied — Blinkit rejected the change to ₹250` for
+    every remaining keyword. A false statement about the marketplace, and it hid the fault.
+
+    A client that CAN re-authenticate does so first and only raises this if that fails, so
+    reaching an engine means the run genuinely cannot continue.
+
+    Subclasses RuntimeError because `adapter.setup()` failures are already caught as
+    RuntimeError and reported as an expired session — this keeps startup behaviour identical.
+    """
+
+
+class WriteRefused(Exception):
+    """A payload builder refused to send a write it could not build safely.
+
+    Raised from deep inside an adapter — where the marketplace's own payload shape is
+    known — and caught here, at the choke point, because refusing is a POLICY outcome:
+    it is one failed write with a readable reason, not a crashed run.
+
+    That distinction matters. The engines wrap their per-campaign loops in `try/finally`,
+    not `try/except`, so any other exception escaping a write aborts the whole run and
+    every campaign after it is silently skipped. Only refusals are caught here — a dead
+    session or a network failure must still abort, because continuing would mean firing
+    the same broken call at fifty more campaigns.
+
+    The case that created it: a Blinkit campaign reporting `region_type=CITY` whose
+    `region_ids` cannot be read. Sending the pan-India default would broaden a live
+    campaign (docs §8.2b), so the builder refuses instead.
+    """
+
+
+class WriteUnverified(RuntimeError):
+    """The write WAS SENT and the marketplace's answer does not say whether it worked.
+
+    Not the same as a refusal. A refusal is the marketplace telling us no; this is the
+    marketplace telling us nothing — an empty body, a gateway timeout page, a 200 with no
+    success marker. The write may have landed.
+
+    Why it exists (2026-09-07, Blinkit, campaign 637511, keyword "soda"). Two ticks failed
+    the same way and meant opposite things:
+
+      12:16  body `{"message": ""}`  → the bid did NOT change (next tick read the old value)
+      18:15  body not JSON at all    → the bid DID change (₹421 was live on Blinkit)
+
+    Both raised a bare `RuntimeError`, both aborted the whole run, and neither was
+    distinguishable in the logs. The 18:15 one was the expensive kind: the marketplace was
+    mutated, we reported failure, and — because the exception escaped past the engine's
+    `finally` — the run never wrote its runtime state, so the 90-minute drift pause that
+    recovery had just earned was silently lost.
+
+    So this is raised instead, and `apply_bid` answers the question by READING THE BID BACK
+    rather than guessing. Guessing "failed" is not the safe default when a write may have
+    landed: it makes the engine's memory disagree with the marketplace.
+    """
+
+
 # ── Pure guardrail logic (unit-tested, no I/O) ──────────────────────────────
+
+def _why(resp: dict | None) -> str:
+    """The marketplace's own reason a write was refused.
+
+    It was always in the response and never logged: a failed budget write recorded
+    `applied=False` and "₹201 → ₹250", with the reason dropped on the floor. That is
+    half of why a delisted-catalog retry could sit in `apply_budget` for months looking
+    like it did something — nobody ever saw either message.
+
+    Blinkit puts it in `message`, as a string or a list of them; Zepto uses `error` or
+    `detail`. Falls back to naming the shape of the response, because "no reason given"
+    is itself worth knowing — it means the refusal came back empty, not that we lost it.
+    """
+    if not isinstance(resp, dict):
+        return f"no reason given ({type(resp).__name__})"
+    for key in ("message", "error", "detail", "errors"):
+        val = resp.get(key)
+        if isinstance(val, (list, tuple)):
+            val = "; ".join(str(v) for v in val if v)
+        if val:
+            return str(val)[:200]
+    return f"no reason given (keys: {', '.join(sorted(resp)) or 'none'})"
+
 
 def _money(v) -> str:
     """Render a budget the way it will actually be SENT.
@@ -201,10 +288,20 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
         return True
 
     # LIVE — the single real budget mutation.
-    resp = await adapter.apply_budget(client, campaign_id, target)
+    try:
+        resp = await adapter.apply_budget(client, campaign_id, target)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e))
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
+                          detail=f"refused — {e}")
+        return False
     ok = bool(resp.get("status") or resp.get("success"))
+    detail = f"{_money(current)} → {_money(target)}"
+    if not ok:
+        detail = f"{detail} — {_why(resp)}"
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=f"{_money(current)} → {_money(target)}")
+                      detail=detail)
     return ok
 
 
@@ -244,8 +341,55 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         return True
 
     # LIVE — the single real Blinkit bid mutation.
-    resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+    try:
+        resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e), keyword=keyword)
+        return False
+    except WriteUnverified as e:
+        # The write went out and we did not get a usable answer. Ask the marketplace what
+        # the bid IS now, rather than assuming the worst — see WriteUnverified.
+        return await verify_bid(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                                keyword=keyword, intended=clamped, why=str(e))
     return bool(resp.get("status") or resp.get("success"))
+
+
+async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
+                     intended: int, why: str) -> bool:
+    """Did an unacknowledged bid write actually land? Read the bid back and see.
+
+    Returns True only when the marketplace now reports the value we sent. Anything else —
+    a different value, an unreadable keyword, a failed read — is False, because "we could
+    not confirm it" must never be logged as an applied write.
+
+    Compares against `adapter.read_bids`, which is the SAME source the engine reads
+    `current_cpm` from, so a confirmation here means the next tick will agree with us.
+    """
+    read = getattr(adapter, "read_bids", None)
+    if read is None:                              # a marketplace with no read-back path
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; this marketplace cannot be read back",
+                             keyword=keyword)
+        return False
+    try:
+        live = await read(client, campaign_id)
+    except Exception as e:                        # the read is best-effort by definition
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; reading the bid back failed too ({e})",
+                             keyword=keyword)
+        return False
+
+    current = live.get(keyword)
+    if current is not None and int(current) == int(intended):
+        logs.note(run_id, f'"{keyword}" — {why}, but the bid IS now ₹{intended} on the '
+                          f"marketplace, so the change did land", level="warning")
+        return True
+    shown = f"₹{int(current)}" if current is not None else "unreadable"
+    logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                         reason=f"{why}; the bid is still {shown}, so it did not land",
+                         keyword=keyword)
+    return False
 
 
 def _status_detail(target: str, budget: float | None) -> str:
@@ -322,7 +466,14 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         return True
 
     # LIVE — the single real status mutation.
-    resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
+    try:
+        resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e))
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
+                          detail=f"refused — {e}")
+        return False
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       detail=_status_detail(target, budget))

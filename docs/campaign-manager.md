@@ -103,7 +103,7 @@ Concurrent browsers = the RAM bill (~1 GB each).
 | Lane          | Jobs                                              | Why |
 |---------------|---------------------------------------------------|-----|
 | `cm_bid`      | `cm.bid_optimizer`                                | The control loop. Isolated so nothing can starve it |
-| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaign_data` | Latency-tolerant, share one browser's worth of RAM |
+| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaigns` | Latency-tolerant, share one browser's worth of RAM |
 | `interactive` | `cm.reconcile`                                    | No browser at all — it only writes our own rows |
 
 **`cm_bid` and `cm_ops` run at the same time.** That parallelism is the source of several ordering
@@ -118,7 +118,7 @@ subtleties below — most importantly that both engines issue *whole-campaign* P
 | `cm.reconcile`          | `interactive` | `live`            | Recompile rules → `job_schedules` |
 | `cm.set_budget`         | `cm_ops`      | `campaign`, `budget`, `live` | On-demand budget write |
 | `cm.set_activation`     | `cm_ops`      | `campaign`, `action`, `live` | On-demand start/stop |
-| `cm.sync_campaign_data` | `cm_ops`      | —                 | Cache campaign keywords/products |
+| `cm.sync_campaigns`     | `cm_ops`      | `days`            | Re-read the account's campaigns + statuses into the catalogue (a READ) |
 
 ---
 
@@ -332,6 +332,23 @@ Blinkit change is fixed once.
 > returned was flagged organic, which `match_position` can only read as "skip". It never
 > once produced a usable bid decision.
 
+> **The sponsored predicate is shared, not copied** (2026-09-04). "A non-empty
+> `ads_campaign_id` under `tracking.common_attributes` means this slot was bought" now
+> lives once, in `scraper/platforms/blinkit/public_data/ads.py`, and both readers call it:
+> this scraper and the public keyword scrape (which had never read the marker at all —
+> every Blinkit listing ever stored says organic). Two definitions of "sponsored" drifting
+> apart is not hypothetical here; a second copy of the payload builder is exactly how the
+> `city_ids` bug hid for months (§8.2b).
+>
+> ⚠️ The same key appears in `widget_meta` / `entry_source_map` on promotional BANNERS.
+> Reading it off the snippet at large — rather than off a product's `common_attributes` —
+> would flag a banner carousel as a sponsored product.
+>
+> `_parse_snippets` now also returns `campaign_id`, i.e. WHOSE ad it is. Nothing acts on it
+> yet: `match_position` treats any sponsored slot matching our product as ours, which is
+> right today (we match on our own PIDs and brand tokens) but cannot tell us apart from a
+> reseller advertising the same SKU. Carrying the id is what makes that check possible.
+
 ### 7.3 Holding — "at target **or better**"
 
 Being better than target is a **success, not an error to correct.** Sponsored slots sit on a sparse
@@ -361,8 +378,12 @@ Four rules make it safe:
 - **`last_holding_cpm` is refreshed on every holding tick**, not just the first, so the snap-back
   tracks the market instead of returning to a price that worked an hour ago.
 
-`CM_BID_DRIFT_PCT=0` is the default and a **true revert** — at 0 the decision logic is behaviourally
-identical to pre-drift (freeze at target, step down only when strictly better).
+⚠️ **The default is `CM_BID_DRIFT_PCT=7` — drift is ARMED and running on live campaigns.**
+This paragraph used to say the default was `0`; it was wrong, and wrong in the direction that
+matters: a reader would conclude cost minimisation was switched off when it is not. Setting it
+to `0` is a **true revert** — at 0 the decision logic is behaviourally identical to pre-drift
+(freeze at target, step down only when strictly better) — so it remains the kill switch, but
+it is not where the system ships.
 
 ### 7.5 Unreachable target
 
@@ -544,6 +565,263 @@ Consequences:
   our PUT echoes the old budget back.
 - The payload also does `total_budget = detail.get("campaign_budget", 0)` — a thin detail read would
   write a budget of zero.
+- **Every field the builder does not read off the campaign, it overwrites with whatever it
+  hardcodes.** That is not a theoretical risk — see 8.2b.
+
+### 8.2b City targeting — the field that got overwritten (fixed 2026-09-03)
+
+`campaign_targeting.city_ids` is rewritten by *all three* write paths. `"-1"` means **all of
+India**, and Blinkit accepts it silently on a campaign that was targeted at one city.
+
+`update_keyword_bids` sent a hardcoded `"city_ids": "-1"`, while `update_campaign` and
+`restart.build` each read `region_ids` off the campaign. So from mid-July every **keyword-bid**
+write silently broadened its campaign to pan-India. Budget writes and restarts were never
+affected — which is why it survived so long, and how it was finally confirmed:
+
+| campaign | bid writes | budget / restart writes | targeting after |
+|---|---|---|---|
+| `Sprite [Delhi NCR]` | 1 | 11 / 4 | **PAN_INDIA** |
+| `Sprite [BLR]` | 0 | 5 / 1 | CITY (1) |
+| `Sprite [Mumbai]` | 0 | 9 / 1 | CITY (1) |
+
+Across the whole account: **9 of 9** campaigns that ever took a live bid write were pan-India;
+**all 7** the manager had touched that still held city targeting had taken none — one of them
+after 23 budget writes and 10 restarts. The legacy `ad_campaigns` optimizer carried the same
+hardcode and cost campaign 568887 its Delhi-NCR targeting on 2026-07-13.
+
+There is now **one** implementation — `payload.city_ids`, in
+[`marketplaces/blinkit/payload.py`](../backend/campaign_manager/marketplaces/blinkit/payload.py)
+— and all three builders call it. It lives beside its own inverse deliberately (§8.2c): a
+field whose writer and reader sit in different files is free to drift apart, which is this
+bug in miniature.
+
+It also **fails closed**: a campaign reporting `region_type=CITY` whose `region_ids` cannot
+be read raises `writes.WriteRefused` instead of falling back to `-1`. A refused write is
+visible; a broadened campaign is not. The choke point catches that one exception type and
+turns it into a rejected write — the engines wrap their loops in `try/finally`, so anything
+escaping a write aborts the whole run and silently skips every campaign after it. Only
+*refusals* are caught; a dead session still aborts, because continuing would fire the same
+broken call at fifty more campaigns.
+
+`tests/test_payload_invariant.py` covers both directions: it greps the builders for the
+hardcoded literal, pins the fail-closed cases, and asserts a refusal costs one write rather
+than the run. `tests/test_builders_pass_invariant.py` drives the real builders through a
+fake transport to prove the check is not so strict that it refuses legitimate writes.
+
+⚠️ **The damage is not self-healing.** A broadened campaign stays broadened until someone
+re-enters its cities in the Blinkit dashboard, and our own record of what they were is gone:
+the `region_type`/`cities` columns only landed 2026-08-27, after most of the writes. The
+campaign names (`[Mumbai]`, `(Hyderabad)`, `[ROI]`) are the best surviving evidence of intent.
+`scripts/snapshot_campaign_state.py` captures what is *still* correct, to a local file — run it
+before any work that touches the payload builders.
+
+✅ **`region_type` is never sent, and must stay that way — settled by capture 2026-09-05.**
+This used to read "still never sent … what the UI sends for a `CITY` campaign is unknown",
+because the only captured dashboard payload came from a pan-India campaign. That unknown sat
+on the exact field family that broadened nine live campaigns, so it was worth closing properly.
+
+**How.** Playwright drove Blinkit's own dashboard on campaign 574687 (PRODUCT_LISTING,
+targeting Mumbai + Pune, `region_ids [2, 787]`) through *Details → Budget details → Edit →
+Next → Update Campaign*, with every `PUT`/`PATCH`/`DELETE` intercepted and **aborted before
+it left the browser**. The UI composed a real payload; it was never sent. Verified after:
+budget still 201, `region_type` still `CITY`, `region_ids` still `[2, 787]`, keyword
+`pink toffee` still at ₹201.
+
+**What it says.** `region_type` appears **nowhere** in the dashboard's payload. Its targeting
+block is `campaign_targeting.city_ids: "2,787"` and nothing else — byte-identical to ours. So
+`region_type` is read-only, derived server-side from `city_ids`, and **adding it to our
+payloads would put an unverified field into the write path for no benefit.** Do not.
+
+**The same capture found a real defect.** `campaign_start`: the dashboard sends `"7/15/2026"`
+where we send `"7/14/2026"`. `start_ts` is `2026-07-14T18:30:00+00:00`, and 18:30 UTC **is**
+midnight IST on the 15th — but `build.fmt_date` strips the timezone rather than converting it
+(`.replace("+00:00", "")`). Every Indian campaign starts at midnight IST: **260 of 260 have a
+`start_ts` at ≥18:30 UTC**, so every UPDATE payload we build carries a start date one day
+early. Blinkit has evidently ignored it on update (the campaign still shows 15 Jul after our
+live writes), but it is a wrong value in a whole-campaign PUT — the same class as `city_ids`
+— and the invariant cannot catch it, because it compares our output against our own
+derivation of the same field. Self-consistency, which §8.2c exists to distrust. `RESTART`
+uses `fmt_date(today)` and needs checking with it.
+
+Remaining differences are shape, not correctness — our writes work. The dashboard also sends
+`image_url`, `preview_image_url`, `store_name`, `collection_id`, `creative_type`,
+`highlighted_pids`, and `days_of_week` + `timeslots` inside `campaign_targeting`; we send
+`brand_ids`, `infinite_campaign`, `is_extendable`, `pids` and `negative_keywords` instead.
+This is the first time both payloads have been compared side by side.
+
+### 8.2c The write invariant — what a PUT may change
+
+Every builder now answers one question before its request goes out:
+
+> Does this payload say the same thing as the campaign we just read, except for the change
+> we intended?
+
+[`marketplaces/blinkit/payload.py`](../backend/campaign_manager/marketplaces/blinkit/payload.py)
+holds the rules; each builder calls `verify()` immediately before the PUT, and a failure
+raises `WriteRefused` — caught at the choke point, so one bad campaign costs one write
+rather than the run.
+
+**It compares against the campaign, not against another payload.** This is the whole
+design, and the obvious cheaper version does not work: building the payload twice (once
+with the change, once without) and diffing them is blind to a hardcoded constant, because
+both copies contain it. The `-1` bug would have sailed straight through such a check. So
+every rule carries an **inverse** — it reads the payload's own value back into the
+campaign's vocabulary (`"2010,2013"` → `{2010, 2013}`) and compares that to what Blinkit
+reported. A constant can only pass if it happens to equal the campaign's real value.
+`test_payload_invariant.py::test_a_self_consistency_check_would_not_have_caught_it` pins
+the distinction so it cannot be "simplified" away later.
+
+**Coverage: 21 of the 27 fields the builder sends** (§8.2d). The six that remain are
+constants or addressing — `source_platform`, `requested_by`, `campaign_request_type`,
+`campaign_id`, `is_extendable`, `preview_image_url` — which have no counterpart on the
+campaign to compare against, and whose failure mode is a *rejected request* rather than
+silent damage. `test_payload_invariant.py::test_every_derived_field_is_checked` is a
+**ratchet**: add a row to the field table and the suite fails until you either write a rule
+or state in `UNCHECKABLE` why the field cannot have one. That gap is what let coverage sit
+at 8/27 unnoticed.
+
+Two fields are guarded **structurally** rather than against the campaign, because Blinkit
+publishes no counterpart:
+
+- **`advertiser_id`** — the account a write lands in. A wrong one spends against someone
+  else's account, and `client.get_advertiser_id()` still falls back to the stale pre-split
+  `234` when its read comes back without the field. Now refused outright, along with `0` on
+  an UPDATE and any non-zero value on a RESTART (AD4).
+- **`brand_name`** — compared to the campaign on updates, exempt on RESTART, which blanks it
+  deliberately.
+
+Each rule declares how the sent value must relate to the campaign's:
+
+- **EXACT** — identical, for anything where both gaining and losing is damage. City
+  targeting is the canonical case: `-1` *adds* the whole country.
+- **NO_LOSS** — the campaign's value must survive; additions are allowed. For collections
+  where dropping is the damage and adding is a legitimate operation: a bid write may
+  introduce a keyword, but nothing may silently delete one.
+
+Three properties the first version got wrong, found by probing it and now pinned by tests:
+
+| | |
+|---|---|
+| A field sent as **null** is a value, not an omission | `city_ids: None` was collapsed into "absent" and skipped unexamined |
+| A **bid** write may not drop keywords | The first version exempted the keyword rule for bid writes — blinding the check for the exact operation that caused the incident. The rule checks the keyword *set*; a bid write changes a CPM, so it never needed exempting |
+| A **thin detail** refuses instead of passing | `_fetch` turns a Blinkit error page into `{}`. Every rule compares against the detail, so an empty one makes the check vacuous — it would wave anything through, exactly when the payload built from that same failed read is most dangerous |
+
+Each write shape declares what it is *allowed* to change:
+
+| Shape | May change | Because |
+|---|---|---|
+| `BID` | the keyword bids | that is the call |
+| `BUDGET` | the budget | that is the call |
+| `RESTART` | budget, `campaign_start`, `campaign_end` | a restart re-submits the campaign and stamps today + the no-end sentinel (AD4/AD5) |
+Three shapes. There was a fourth, `BUDGET_NO_PIDS`, which alone was allowed to rewrite the
+**product list** — `adapter.apply_budget` retried a rejected budget write with `pids: ""` to
+work around a delisted catalog. **Removed 2026-09-05**, and worth recording why, because the
+reasoning generalises.
+
+Tested live 2026-09-04 (campaign 574687, PRODUCT_LISTING, one valid pid):
+
+1. It does **not** clear the products — Blinkit does not read an empty list as "set to
+   none". So it was never another instance of the city bug.
+2. It does not work either. Blinkit **rejects the whole request** with
+   `["Please select atleast one PID"]`. That validator fires on the payload *having* no
+   pids, which an empty list always does — so it could not rescue any `PRODUCT_LISTING`
+   write. A safety net that never caught anything.
+
+The deciding argument was not that it was useless but that it was **costing us the
+diagnosis**: the retry's rejection replaced the first response, so a failed budget write
+reported an error about a payload we invented rather than the one that was asked for. That is
+the scorecard pattern — a fallback that cannot fire, whose message stands in for the truth.
+`BANNER_LISTING` stayed untested (its pid validator may not apply, the one case where this
+could have worked), but none of the 17 such campaigns is under automation, so it could not
+help anything we actually write to.
+
+Removing it also removed the only write shape permitted to touch products, so the invariant
+got **simpler by one shape** — the tell that the fallback was always the anomaly. In its place
+`writes.apply_budget` now logs the marketplace's own reason (`writes._why`), which had been
+sitting in the response and going unread all along: a failed write logged `applied=False` and
+`₹201 → ₹250`, and nothing about why.
+
+⚠️ **This narrows the blast radius; it does not eliminate it.** A field with no rule is
+unchecked, and a field a shape is allowed to change is unchecked for that shape. The
+structural fix — building the payload by echoing the read instead of hand-listing fields,
+so an un-enumerated field round-trips rather than resetting — is still outstanding. The
+invariant is what holds until then, and stays useful afterwards.
+
+### 8.2d The payload is derived, not typed (Layer 1)
+
+The invariant in 8.2c catches a bad payload. This removes the way bad payloads were made.
+
+Until 2026-09-03 each builder spelled the body out as literals — ~26 fields per shape,
+every one an author's decision, and a field nobody thought of simply absent, which for a
+whole-campaign PUT means *reset*. `city_ids: "-1"` was one such decision.
+
+[`marketplaces/blinkit/build.py`](../backend/campaign_manager/marketplaces/blinkit/build.py)
+replaces all three hand-written dicts with one **field table** — a row per field saying
+where it goes, how to derive it from the campaign, and which shapes carry it. `build()`
+walks the table. Three properties now come from the structure rather than from diligence:
+
+- **A field cannot be forgotten** — nobody types fields any more.
+- **A field cannot be quietly hardcoded** — a constant must be an explicit `const(...)` row,
+  visible in review, not a literal buried mid-dict.
+- **Coverage stops being a maintained list.** The table *is* the payload.
+
+**It is a refactor, and that is proven, not asserted.**
+`tests/test_build_equivalence.py` freezes what the OLD builders produced for 9 campaign
+shapes × 4 write types — 36 payloads — and asserts the table reproduces them exactly, down
+to types (`502` vs `502.0`, `""` vs `None`). Those fixtures are a record of what shipped,
+not a specification of what is right: matching them is what proves nothing changed. The
+restart golden test, pinned against a real captured Blinkit payload, also still passes.
+
+#### The dead UI write path is gone
+
+`client.update_campaign_budget_via_ui` — 269 lines that drove the real Blinkit dashboard
+with Playwright (find the campaign row, open the edit panel, type a budget, click Update)
+and intercepted the resulting PUT — was **deleted on 2026-09-04**. Its only caller was
+`ad_campaigns/main.py`, removed with the v1 engine. It was also the one write path the
+invariant could never cover, because the payload was Blinkit's own. `client.py` went from
+780 lines to 511.
+
+#### What building the table exposed
+
+Writing the derivations down in one place made two long-standing inconsistencies visible
+that nobody could have seen while they were spread across three files:
+
+| Found | Status |
+|---|---|
+| **The three builders disagreed about where keywords live.** Bid and restart read nested-first with a top-level fallback; the budget builder read the **top level only** — so on a normal campaign it found none and omitted `keyword_targeting` from the PUT entirely | **Reproduced deliberately.** The omission is evidently safe (budget writes run constantly, keywords survive), and "fixing" it would make budget writes start restating the keyword list — *enlarging* their blast radius. That is a behaviour change needing its own decision, not a silent ride-along in a refactor |
+| The budget builder discards each keyword's `max_boost` and sends null; bid and restart preserve it | Reproduced; harmless, but now written down |
+
+Both are encoded as explicit flags on `build.keywords()` with the reasoning attached, so the
+next person sees a decision rather than an accident.
+
+### 8.2e Validated live (2026-09-04)
+
+The write path had never been exercised against a real Blinkit account end to end. It has
+now, on **574687 (Foresight | Tech Test)**, through the table-driven builder and the
+invariant, with the campaign restored afterwards each time.
+
+The campaign was given **Mumbai + Pune targeting (`region_ids: [2, 787]`)** specifically so
+the original failure would be reproducible — a pan-India campaign passes the city check
+trivially and proves nothing.
+
+| Test | Result |
+|---|---|
+| **LIVE bid write on a CITY-targeted campaign** (₹201→₹202) | **cities unchanged `[2, 787]`** — this is the exact operation that broadened nine campaigns |
+| **LIVE budget write on the same** (₹201→₹202) | cities unchanged |
+| Products, name, start/end across both | unchanged |
+| Restored to ₹201 / ₹201 | ✅ campaign exactly as found |
+| Earlier pan-India run (budget + bid) | applied cleanly; keyword survived the budget write |
+| `empty_pids` fallback | safe but non-functional — **removed 2026-09-05**, see §8.2c |
+
+Two things this settles that argument could not:
+
+- **The fix works against a live account, not just in tests.** Every prior assurance rested
+  on unit tests plus DB forensics.
+- **A budget write does not delete keywords.** The keyword survived at its original bid, so
+  an omitted `keyword_targeting` block genuinely means "leave them alone" (§8.2d).
+
+It also produced the **first live bid write the campaign manager has ever made** — that loop
+had never run end to end before, which is why the doc used to carry a ❌ against it.
 
 ### 8.3 Status vocabulary
 
@@ -583,11 +861,74 @@ minute from a parallel lane, and its RESTART can land on top of our write.
 authoritative for the resume direction only — the stop is a different endpoint that never appears
 there, so gating on it would block every stop.
 
-### 8.5 Sessions
+### 8.4b A reply that never arrives is not a refusal
+
+Blinkit can answer a bid PUT with nothing usable — an empty body, a non-JSON gateway page, a 200
+with no success marker. **That does not mean the write failed.** On 2026-09-07, campaign 637511,
+keyword `soda`, two ticks failed identically and meant opposite things:
+
+| Tick | What came back | What the bid actually did |
+|---|---|---|
+| 12:16 | `{"message": ""}` (valid JSON, empty message) | **unchanged** — the next tick read the old value |
+| 18:15 | not JSON at all → `_fetch` returns `{}` | **changed** — ₹421 was live on Blinkit |
+
+Both took 35–42 s, which is a timeout, not a validator. Both raised a bare `RuntimeError` that
+escaped the choke point, escaped the engine's per-rule loop, and escaped past its `finally` — so the
+run died *before* `write_bid_runtime` and `write_run_log`. The 18:15 tick was a drift **recovery**:
+it had snapped the bid back to the last price known to hold and should have paused trimming for 90
+minutes. That pause was never persisted, so the following tick trimmed straight back to the price
+that had just lost the slot.
+
+Three things changed:
+
+- **`writes.WriteUnverified`** — raised instead of `RuntimeError` when the marketplace's answer does
+  not say whether the write worked. `writes.apply_bid` resolves it by **reading the bid back**
+  (`verify_bid`) and reports applied only when the marketplace now holds the value we sent. Guessing
+  "failed" is not the safe default when a write may have landed: it makes our memory disagree with
+  the account.
+- **`bid._safe_apply_bid`** wraps all three of the optimizer's write sites (window-open floor, bounds
+  correction, the optimizer decision). One failed write is now one failed write — an `error` row in
+  History with the marketplace's own reason — and the run continues to its bookkeeping.
+  `SessionExpired` still aborts, because every remaining keyword would fail identically.
+- **The HTTP status is carried.** `_fetch` kept `__status` only long enough to detect 401/403 and
+  then dropped it, which is why the two rows above were indistinguishable in the logs. The client now
+  stashes the status and (for a non-JSON body) its first bytes, and puts them in the error.
+
+Covered by `tests/test_write_survives.py`, including a guard that the engine never calls
+`writes.apply_bid` directly.
+
+### 8.5 Sessions — including one that dies mid-run
 
 The campaign manager **consumes** the same `(tenant, "blinkit")` session as the scrapers and owns no
 auth code of its own. Sessions live encrypted in the DB, not on disk. Engines call `ensure()`, so an
 expired session self-heals. See [platform-auth.md](platform-auth.md).
+
+**That used to be true only at run START.** `setup()` ran once and `ensure()` with it; a session that
+died thirty seconds later was never noticed, because `_fetch` turned Blinkit's login redirect into
+`{}` — which every caller reads as *"the marketplace refused this change"*. So a dead session logged
+
+> not applied — Blinkit rejected the change to ₹250
+
+for every remaining keyword: a false statement about Blinkit, and one that hid the real fault. A bid
+run lasts minutes and writes real money, so losing its back half to a silent auth failure is not
+acceptable.
+
+Since 2026-09-04 `_fetch` carries the HTTP status out alongside the body, and on a 401/403 or a
+login-page redirect it **re-authenticates once and replays the call**. Replaying a write is safe: an
+auth failure means the request never reached the campaign.
+
+| | |
+|---|---|
+| **How many attempts, really** | One `_fetch` retry, but `ensure()` is a LADDER — probe → refresh → full login, and the login rung itself retries `MAX_LOGIN_ATTEMPTS` (2) with a 5 s backoff. So a single recovery is up to four escalating attempts |
+| **Why not more rounds** | A second ladder 200 ms later is identical to the first. What reaches it — broken config, dead inbox, Blinkit refusing us — does not resolve on that timescale, while retrying reliably burns OTP quota and hammers a login endpoint from one datacentre IP. `MAX_LOGIN_ATTEMPTS` is the honest lever, because it has backoff |
+| **Parallel lanes** | `ensure()` locks per (tenant, platform), so the bid and budget engines cannot double-login — the second waits and finds the session already fixed |
+| **If login is broken** | Ticks 1–3 each attempt and fail; the circuit breaker (`MAX_CONSECUTIVE_FAILURES = 3`) then refuses **before any network call**, naming the manual fix command. Fail fast three times, then fail cheaply. Bids stay where they are — not reset, not raised |
+| **It swaps the CONTEXT, not the browser** | The engine holds `pw`/`browser` from `setup()` and closes them in a `finally`. Launching a second Chromium would leak ~1 GB and leave the caller closing the wrong one |
+| **Giving up** | `writes.SessionExpired` (a `RuntimeError`, so startup behaviour is unchanged). The engine catches it, logs a genuine session-expired and reports *"stopped after 7 of 20 automations"* rather than grinding on |
+
+⚠️ `setup_with_state` can be handed a bare storage state with **no tenant**. Such a client cannot look
+up credentials and so cannot self-heal — it raises `SessionExpired` saying exactly that, rather than
+pretending it re-authenticated.
 
 ### 8.6 The Blinkit API surface
 
@@ -640,19 +981,19 @@ Everything below is the actual behaviour of the current code.
 
 | Scenario | What happens |
 |---|---|
-| Position worse than target | Raise by the distance-scaled step |
+| Position worse than target | Raise by `next_raise_step` — **percentage-based, not distance-scaled**. Base is `max(min_step, bid × pct)`; it escalates ×`ESCALATE` while the position refuses to move and resets to base once it does. The old ₹100/50/25/12.5 distance tiers are gone |
 | Raised, no improvement, <10 min since | HOLD — wait for the marketplace to reflect it |
-| Position unreadable / product not found | Skip. No write, **no runtime stamp** → next tick retries |
-| Organic-only (ad not serving) | Skip |
+| Position unreadable (scrape failed) | Error row, counted; run continues to the next keyword |
+| **Ad not on the page** (organic-only, or product not in results) | **Raises**, on both marketplaces since 2026-09-04. Treated as position `len(results)+1` — a genuine lower bound that keeps escalation honest. Was a skip on Blinkit, which meant a keyword outbid off the page could never climb back, and the next window open wrote `min_bid`, lower still. ⚠️ A broken product match therefore climbs to `max_bid` and stays: the ceiling is the only bound (accepted) |
 | Position scrape throws | Error row, counted; the run continues to the next keyword |
 | Reached `max_bid`, target still missed | See [9.4](#94-target-unreachable) |
 
 ### 9.3 At target
 
-| Scenario | Drift **off** (default) | Drift **on** |
+| Scenario | Drift **off** (`BID_DRIFT_PCT=0`, the kill switch) | Drift **on** (**the default — `7`**) |
 |---|---|---|
 | Exactly at target | Freeze — pays the climb price all day | Shave `DRIFT_PCT`%/tick |
-| Better than target (pos 1, target 3) | Steps *down* toward target | Counts as holding, shave |
+| Better than target (pos 1, target 3) | **Freeze.** The ₹100/50/25/12.5 step-down ladder was removed 2026-09-01 — rupee-denominated steps cannot be right on two marketplaces whose bids differ ~40× | Counts as holding, shave |
 | Held once only | — | Wait for a second confirmation |
 | Shave went too far, position lost | — | Snap back **precisely** to `last_holding_cpm`, pause |
 | Outbid during the pause | Raise normally | **Raise normally** — the pause only blocks decreases |
@@ -694,6 +1035,78 @@ Everything below is the actual behaviour of the current code.
 | Keyword still covered by another in-window rule | Left alone |
 | One keyword's write throws | Caught — the other keywords still get de-escalated |
 | Reset fire missed (runner down >5 min) | Dropped until tomorrow. Window-open covers it |
+| Rule **paused** before the window closed | No reset fires — Resume repairs it, or Reset does. See [9.6b](#96b-pause--resume--reset--delete) |
+
+### 9.6b Pause / Resume / Reset / Delete
+
+A bid rule is **`active` or `paused`**. There is no third state: `stopped` was mechanically
+identical to `paused` (every engine check is `state == "active"`) — two words for one
+behaviour, and a Stop button with no undo. Removed 2026-09-07, along with `POST
+/bid-rules/{id}/stop`.
+
+**Pause freezes; it does not lower the bid.** Pausing is not a decision about price, so the
+keyword stays wherever the optimizer left it. What pause *does* remove is the automation's
+schedules — including its **end-of-window reset**, which is why Resume and Reset both know
+how to put that right.
+
+| Rule state | Pause | Resume | Reset | Delete | Delete + reset |
+|---|---|---|---|---|---|
+| **running** (active, in window) | ✅ | 409 | **409** | ✅ | ✅ |
+| **scheduled** (active, before the window) | ✅ | 409 | ✅ | ✅ | ✅ |
+| **paused** | 409 | ✅ | ✅ | ✅ | ✅ |
+| **ended** | 409 | 409 | ✅ | ✅ | ✅ |
+
+Two of those cells carry the whole design:
+
+- **Reset is refused only while the rule is RUNNING.** There the next tick undoes it inside
+  15 minutes, so refusing states that plainly instead of spending a write that gets
+  reverted.
+- **Reset IS allowed on an ended rule**, and that is the case that matters. A rule paused
+  across its window end never got its de-escalation, and Resume is refused on an ended rule
+  — so Reset is the only thing left that can bring that bid down.
+
+Gates read `state` and `_bid_ended()` directly, never the computed `status`: a paused rule
+whose window has since ended still reports `paused`, because the state the user chose
+outranks the calendar.
+
+**Resume decides from current facts.** It clears every learned value —
+`last_cpm`, `last_position`, `last_bid_updated_at`, `last_holding_cpm`,
+`drift_paused_until`, `effective_target`, `effective_at_max_bid`, `raise_step` — because a
+rule paused for six hours knows nothing useful about the auction and each of those is an
+input to a decision. Clearing `last_cpm` is what makes the next tick read the **live** bid
+rather than trusting its own memory.
+
+> ⚠️ **`updated_at` is kept, deliberately.** The engine decides whether a window has already
+> been opened with `runtime.updated_at >= window_start`, so preserving it makes both cases
+> correct with no special-casing: paused and resumed **inside** one window → carry on from
+> the live bid; paused **across** a window start → the next tick re-opens at the floor. This
+> is also why `repo.clear_bid_runtime` cannot use `write_bid_runtime`, which stamps
+> `updated_at = now()` on every call — doing so would make every resume look mid-window and
+> silently skip the floor.
+
+Resume also **repairs a window that closed during the pause**: if the window is shut when
+you resume, the reset the pause removed is enqueued there and then.
+
+**The write itself is `cm.set_bid`** — one keyword, one value, `cpm = the rule's min_bid`.
+It takes plain values rather than a rule id because Delete-with-reset removes the rule
+before the job runs, so anything that had to look one up would find nothing. It refuses to
+touch a keyword an active, in-window rule is bidding on, and the floor is re-resolved
+against the marketplace's published minimum at execution time, not at enqueue time.
+
+Two scheduling details make these feel immediate:
+
+- **Lane `cm_ops`, not `cm_bid`.** `cm_bid` has one slot and an optimizer tick holds it for
+  87–547 s, so a reset queued there would wait minutes for the very engine it is
+  countermanding. `cm_ops` runs in parallel and is nearly idle. Sharing its single slot with
+  the other campaign writes is a bonus: two whole-campaign PUTs can never overlap.
+- **`priority=10`** against a default of 100 — the queue claims by
+  `(priority, scheduled_for)`, so a reset someone is waiting on jumps pending scheduled work.
+
+And because a reset can now genuinely run beside an in-flight optimizer tick, the optimizer
+**re-reads the rule's `state` immediately before every write** and skips if it is no longer
+active or no longer exists (`bid._still_active`). That closes the pause, reset and delete
+races in one place. It also skips the runtime write in that case — writing runtime would
+bump `updated_at`, which is exactly what Resume depends on.
 
 ### 9.7 Budget engine
 
@@ -715,11 +1128,88 @@ Everything below is the actual behaviour of the current code.
 |---|---|
 | Tenant not armed (`live_armed=false`) | Everything computes and logs; **nothing is written** |
 | No `advertiser_id` stored | Live run refused outright — it can't be derived, so it must be configured |
-| Session expired | Run aborts cleanly, error logged |
+| Session expired **mid-run** | Re-authenticates once and replays the call (§8.5). If that fails, the run aborts and says how far it got |
+| Session expired **at startup** | Run aborts cleanly — and now writes **one History row per affected automation** saying it could not sign in, so the client sees a reason instead of a gap |
 | Campaign detail read fails | Status treated as *unknown*, not stopped — a read blip must not silently pause optimization |
+| **Bid write not acknowledged** (empty / non-JSON reply) | The bid is **read back** and the outcome decided on what the marketplace actually holds — see [8.4b](#84b-a-reply-that-never-arrives-is-not-a-refusal) |
+| **A bid write throws** | One `error` row in History with the marketplace's reason; the run continues and still persists its runtime + history |
 | >`MAX_WRITES_PER_WINDOW` writes on a keyword | Rate limit blocks further writes |
 | Computed budget is 0 or absurd | Rejected by the bounds guardrail, never sent |
 | `CM_BID_DRIFT_PCT=0` | True revert to pre-drift behaviour |
+
+---
+
+## 9b. History — what the client sees, and why
+
+`cm_run_log` is on its way to being a client-facing record: *what did the automation do to my
+campaign, and why*. Three changes on 2026-09-04 made it one.
+
+### Every tick is recorded, not just the changes
+
+A tick that changed nothing used to write no row. "Held at ₹201 because the position is already at
+target" existed only in Cloud Logging — which is not joinable to our data, has its own retention, and
+cannot be shown in the product. But those are the ticks a per-automation view needs *most*: **"why has
+my bid not moved for six hours"** is answered by them and by nothing else.
+
+They are now written with `hold` (off target, waiting for the marketplace to reflect the last change)
+or `no-op` (nothing to do).
+
+The old reasoning — that a row every 15 minutes would bury the real changes — was right about the
+symptom and wrong about the cure. The noise belonged in the default **view**, not in what we are
+willing to remember. So `/history` **defaults to changes only**, and `?include_unchanged=true` returns
+the full per-tick record. `?campaign_id=` / `?rule_id=` narrow it.
+
+### Three columns that make a decision explainable
+
+| Column | Why |
+|---|---|
+| `rule_id` | Which automation the decision belongs to — the key a per-automation view groups by. **TEXT**, because a bid rule's id is a uuid hex string. **Not a foreign key**: history must outlive the rule it describes, and budget/activation rows point at a different table |
+| `position` | The observed search position — THE input to every bid decision, and previously only prose inside `reason` |
+| `target` | The effective target it was judged against, which differs from the rule's whenever one has been relaxed |
+
+Without the last two a UI can show *that* a decision happened but never *why*, which is the whole
+point of showing it.
+
+> ⚠️ **`rule_id` shipped as INTEGER and broke every bid tick for three days** (2026-09-04 →
+> 2026-09-07, fixed by migration `a4e7c2f19b83`). The only writer is the bid engine passing
+> `cm_bid_rules.id` — a uuid hex string — so the INSERT died with an asyncpg `DataError`,
+> **after** the bids had already been PUT to Blinkit. Two things that made it worse than a
+> lost log row: the run exited 1, so a healthy optimizer alerted as a failing job every tick;
+> and `repo.recent_write_count` — the runaway-write guard — counts `cm_run_log` rows with
+> `dry_run = false`, so with nothing landing it counted zero and the cap was not counting at
+> all. The row-shape tests missed it because they only inspect a dict; the type is now pinned
+> against the model in `test_history_reasons.py`.
+
+### Reasons are written for a client, not for a log reader
+
+Every row already carried a `reason`; three of them were engineer-speak, and one was worse:
+
+| Before | Now |
+|---|---|
+| `window opened → min` | "the window opened, so the bid starts at its ₹200 floor" |
+| `window closed → min (campaign running)` | "the window closed, so the bid goes back to its ₹200 floor" |
+| `live bid above — forced into [200–400]` | "the live bid of ₹450 was above the ₹400 limit, so it was brought back to ₹400" |
+| `Zepto blocked the search: HTTP 299 {
+ "error_code": …` — **four lines of raw JSON** | "could not check the search position, so the bid was left unchanged (… HTTP 299 { "error_code": "LOGIN_REQUIRED" })" |
+
+`bid._plain()` collapses an exception to one line and caps it at 120 characters. The full text stays
+in Cloud Logging where support can find it. `tests/test_history_reasons.py` greps the source for the
+two mistakes that actually happened — arrow jargon in a reason, and `str(e)` passed straight in.
+
+The `compute_bid` reasons were already right and are untouched: *"raising to ₹25 (+₹3) because
+position 24 is worse than target 3"* is the register the whole column aims at.
+
+### A blocked run explains itself too
+
+A run that dies at `setup()` returns before writing anything, so History showed bids not moving for
+hours with no row saying why. All six early exits — session and account-arming failures, across the
+optimizer, the end-of-window reset and the budget engine — now write **one row per affected
+automation**, per campaign rather than per run, because that is how the question is asked.
+
+The write is wrapped: a bookkeeping failure must never mask the auth failure underneath it.
+
+⚠️ **This table now grows with TIME rather than with ACTIVITY** — roughly 4 rows/hour per in-window
+keyword, where it previously wrote none. It needs a retention policy; none is implemented.
 
 ---
 
@@ -772,10 +1262,11 @@ Everything defaults to dry-run. `--live` is always explicit.
 
 1. Apply any migration (shown and confirmed first — shared DB).
 2. Merge to `main` and pull on the VM. **The VM runs `main`; nothing on a feature branch exists there.**
-3. Create one bid rule on a **low-stakes campaign**, with drift off.
+3. Create one bid rule on a **low-stakes campaign**, with drift off — which now takes an
+   explicit `CM_BID_DRIFT_PCT=0`, because the default is `7` (armed).
 4. Watch a day of `cm_run_log` + Cloud Logging: does the window-open floor land, does the end reset
    fire, does anything get refused?
-5. Only then arm drift (`CM_BID_DRIFT_PCT=7` + runner restart) on that one keyword, and measure.
+5. Only then restore drift (drop the `0` override + runner restart) on that one keyword, and measure.
 
 ### What to watch first
 
@@ -789,6 +1280,31 @@ Everything defaults to dry-run. `--live` is always explicit.
 ---
 
 ## 12. Known gaps & parked
+
+### v1 retirement (completed 2026-09-03)
+
+The v1 engine is **gone**, code and data. Deleted in one pass: `ad_campaigns/`, the
+`cli ads` command group, the three `ads.*` job types, ~21 functions in `ads_service`, the
+`/ads/budget-schedules` + `/ads/bid-optimizer` routes and their schemas, the v1 UI
+(`frontend/src/features/campaign-manager/`), and — via migration **`e7a3c85f2b19`** — its
+eight tables. That also removed the `bid_optimizer_rules.json` side-write, a global,
+non-tenant-scoped file that three *live* API routes were still writing to.
+
+Dropped tables: `budget_schedules`, `budget_schedule_rules`, `budget_scheduler_log`,
+`bid_optimizer_rules`, `bid_optimizer_log`, `campaign_data_cache`, plus the long-dead
+`ad_automation_rules` / `ad_automation_actions` (an older abandoned experiment from
+revision `9cba1aca0fa7` that never had a model or a caller). ~7,400 rows, reviewed as
+stale before the drop. `downgrade()` restores the schema, never the rows.
+
+With v1 gone, the surviving manager took its plain name back: the UI route is
+`/campaign-manager` again and `/campaign-manager-v2` redirects to it.
+
+**Two things deliberately survived the deletion:**
+
+| Kept | Why |
+|---|---|
+| `Lane.budget_scheduler` / `bid_optimizer` / `sync_campaign_data` | ~3,700 historical `jobs` rows carry these values and `lane` is a str-Enum column — dropping a member breaks every read of that history. They have no `LANE_SLOTS` entry, so `lane_slots.get(lane.value, 0)` gives them zero slots and nothing can ever be claimed into them. And Postgres has **no `ALTER TYPE ... DROP VALUE` at all**: removing one means recreating the type and rewriting the column, on a shared DB with a live runner. Verified after the drop — `cli status --days 60` renders all 3,703 legacy rows fine, as raw type names rather than friendly labels (`label_for()`'s deliberate fallback for unknown types) |
+| `/ads/campaigns/{id}/keywords` — **no**, this one went too | It was the last v1 route with a live consumer: the bid form's keyword autocomplete. It served `campaign_data_cache`, unrefreshed since 2026-07-29, while `bid-context` served the *same* campaign's keywords from the nightly scrape. Two sources for one fact, one of them five weeks stale. The form now derives its suggestions from `bid-context`, and the route, service function and schema are deleted |
 
 ### Deliberately parked
 
@@ -805,22 +1321,25 @@ Everything defaults to dry-run. `--live` is always explicit.
 | Gap | Consequence |
 |---|---|
 | Reset schedule is `catchup=False` | A firing missed while the runner is down waits until tomorrow. Window-open covers it, so lower priority |
-| Reset and optimizer share the overlap-guard key `(job_type, tenant_id)` | A reset can be swallowed by an in-flight optimizer run. Harmless at ~30 s runs; bites around 20–30 keywords. Fix: a distinct job type, or include params in the guard |
+| Reset and optimizer share the overlap-guard key `(job_type, tenant_id)` | **Fixed** 2026-09-05 — `uq_jobs_active` now includes `params->>'reset'` (migration `a2d5f81c9b34`) |
+| One on-demand bid reset per client at a time | `uq_jobs_active` keys `cm.set_bid` on (type, tenant, marketplace), so resetting two automations in the same few seconds returns 409 "try again in a minute". Fine at one write per minute; add the keyword to the guard if it ever bites |
 | Bid window scheduling is hour-granular | A 09:30 start rounds to the 09:00 hour; `_in_window` filters the early ticks, so it's cosmetic |
 | Stale boundary crons after expiry | Expiry fires a reset one-shot but leaves the now-inert boundary crons; the daily cleanup prunes them |
 | `cm_run_log` has no retention policy | Grows unbounded against a 500 MB quota |
-| `cm_campaign_catalog` not built | `cm.sync_campaign_data` is a stub; the optimizer fetches products live. Not needed for bid floors or cities — those ride the daily scrape |
-| Drift is shipped at `CM_BID_DRIFT_PCT=0` | Cost minimisation is off. Before arming: confirm on real History rows that position is flat across wide bid ranges now the store is fixed per rule, then arm ONE keyword and measure |
+| `cm_campaign_catalog` not built | The optimizer fetches products live. Not needed for bid floors or cities — those ride the daily scrape. The `cm.sync_campaign_data` stub that was to fill it was deleted 2026-09-03 along with `campaign_data_cache`; do not confuse it with `cm.sync_campaigns`, the live catalogue refresh behind the UI's Refresh button |
+| **`campaign_start` is sent one day early on every UPDATE** | `fmt_date` strips the timezone (`.replace("+00:00","")`) instead of converting it, and `start_ts` is midnight IST = 18:30 UTC the day before. **260 of 260 campaigns** are affected. Blinkit appears to ignore the field on update, but it is a wrong value in a whole-campaign PUT, and the invariant cannot see it — it checks our output against our own derivation of the same field. Found by the 2026-09-05 dashboard capture (§8.2b). Check `RESTART`'s `fmt_date(today)` with it |
 | Coworker's `ADVERTISER_ID = 234` is stale | Their v1 writes would hit the dead pre-split account (the real one is 19802). Ours sends the stored id. Needs coordinating, not silently changing |
 | Nine stores have no canonical city | Four `up-ncr` at `2032xx` (Bulandshahr-district, matching no ad-city), `pilkhuwa`, and three Zepto stores with **transposed pincodes** in the `locations` sheet (`120001`, `210305`×2). They are simply not offered as measurement points |
 | No `pytest` | Suites are standalone assert-based. Fine, but a team call eventually |
+| **~13 campaigns are still pan-India after the `city_ids` bug (§8.2b)** | The code is fixed, the accounts are not. Their city lists must be re-entered in the Blinkit dashboard by hand — we never recorded what they were. Until then those campaigns spend nationally, and the metro/ROI splits overlap each other |
+| ~~Write payloads are hand-listed field sets~~ | **FIXED 2026-09-03** — payloads are derived from the field table in `build.py` (§8.2d), so a field cannot be forgotten or silently hardcoded. Equivalence with the old builders is pinned by 36 golden payloads |
 
 ### ⚠️ Validation status against the live marketplace
 
 | | |
 |---|---|
 | ✅ Validated live | Budget write (₹205 → 574687, reverted). Bid floors read per keyword. City targeting resolved on real campaigns. The scrape's write path. |
-| ❌ Not yet | The bid **write** loop end to end — window-open floor, reset, drift, relaxation and bounds enforcement have still not run against a real campaign. Everything so far is unit tests plus a fake-adapter simulation. |
+| ⚠️ Partly | The bid **write** itself now HAS run live (2026-09-04, §8.2e) and preserved city targeting. What is still unexercised against a real campaign is the surrounding bid ENGINE — window-open floor, reset, drift, relaxation and bounds enforcement. |
 
 ---
 

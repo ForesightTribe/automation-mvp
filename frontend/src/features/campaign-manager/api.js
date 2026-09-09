@@ -1,59 +1,118 @@
-﻿import { api } from "../../lib/axios";
+import { api } from "../../lib/axios";
 
-export const getCampaigns = (clientId) => {
-    const end = new Date().toISOString().split("T")[0];
-    const start = new Date(Date.now() - 365 * 24 * 60 * 60 * 1000).toISOString().split("T")[0];
-    return api.get(`/clients/${clientId}/ads/campaigns`, { params: { limit: 500, start, end, recent_only: true } });
-};
+/**
+ * Campaign Manager endpoints — thin wrappers over the shared `api` client.
+ * All under /clients/{clientId}/campaign-manager (see api-reference). The response
+ * interceptor unwraps `.data`, so each call resolves to the payload directly.
+ *
+ * The backend is thin: rule edits only write DB rows + enqueue `cm.reconcile`;
+ * on-demand actions enqueue a job and return `{ job_id }` for the UI to poll.
+ */
+const base = (clientId) => `/clients/${clientId}/campaign-manager`;
 
-export const getBudgetSchedules = (clientId) =>
-    api.get(`/clients/${clientId}/ads/budget-schedules`);
+// ── Budget schedules + rules ────────────────────────────────────────────────
+export const getBudgetSchedules = (clientId) => api.get(`${base(clientId)}/budget-schedules`);
 
-export const addBudgetSchedule = (clientId, data) =>
-    api.post(`/clients/${clientId}/ads/budget-schedules`, data);
+export const createBudgetSchedule = (clientId, body) =>
+	api.post(`${base(clientId)}/budget-schedules`, body);
 
-export const deleteBudgetSchedule = (clientId, campaignId) =>
-    api.delete(`/clients/${clientId}/ads/budget-schedules/${campaignId}`);
+export const deleteBudgetSchedule = (clientId, scheduleId) =>
+	api.delete(`${base(clientId)}/budget-schedules/${scheduleId}`);
 
-export const toggleBudgetSchedule = (clientId, campaignId) =>
-    api.patch(`/clients/${clientId}/ads/budget-schedules/${campaignId}/toggle`);
+export const updateBudgetSchedule = (clientId, scheduleId, body) =>
+	api.patch(`${base(clientId)}/budget-schedules/${scheduleId}`, body);
 
-export const getSchedulerHistory = (clientId) =>
-    api.get(`/clients/${clientId}/ads/budget-schedules/history`);
+export const addBudgetRule = (clientId, scheduleId, body) =>
+	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/rules`, body);
 
-export const runScheduler = (clientId) =>
-    api.post(`/clients/${clientId}/ads/budget-schedules/run`);
+export const updateBudgetRule = (clientId, ruleId, body) =>
+	api.patch(`${base(clientId)}/budget-rules/${ruleId}`, body);
 
-export const setCampaignBudget = (clientId, campaignId, budget) =>
-    api.post(`/clients/${clientId}/ads/campaigns/${campaignId}/set-budget`, { budget });
+export const deleteBudgetRule = (clientId, ruleId) =>
+	api.delete(`${base(clientId)}/budget-rules/${ruleId}`);
 
-export const getLivePositions = (clientId, keyword, lat, lon) =>
-    api.get(`/clients/${clientId}/ads/live-position`, { params: { keyword, lat, lon } });
+export const resetBudgetSchedule = (clientId, scheduleId) =>
+	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/reset`);
 
-export const getLiveBudget = (clientId, campaignId) =>
-    api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/live-budget`);
+// ── Bid rules + lifecycle ───────────────────────────────────────────────────
+export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
-export const getCampaignProducts = (clientId, campaignId) =>
-    api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/products`);
+export const createBidRule = (clientId, body) => api.post(`${base(clientId)}/bid-rules`, body);
 
-export const getCampaignKeywords = (clientId, campaignId) =>
-    api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/keywords`);
+export const updateBidRule = (clientId, ruleId, body) =>
+	api.patch(`${base(clientId)}/bid-rules/${ruleId}`, body);
 
-export const getBidOptimizerRules = (clientId) =>
-    api.get(`/clients/${clientId}/ads/bid-optimizer/rules`);
+// `reset` also puts the keyword's bid back to the automation's floor before the rule
+// goes. Without it the bid stays wherever the optimizer left it, with no automation left
+// to bring it down — the marketplace does not care that we deleted a row.
+export const deleteBidRule = (clientId, ruleId, { reset = false } = {}) =>
+	api.delete(`${base(clientId)}/bid-rules/${ruleId}`, {
+		params: reset ? { reset: true } : undefined,
+	});
 
-export const addBidOptimizerRule = (clientId, data) =>
-    api.post(`/clients/${clientId}/ads/bid-optimizer/rules`, data);
+// pause | resume. There is no `stop`: it was mechanically identical to pause and gave
+// this row a button with no undo (removed 2026-09-07).
+export const setBidState = (clientId, ruleId, action) =>
+	api.post(`${base(clientId)}/bid-rules/${ruleId}/${action}`);
 
-export const deleteBidOptimizerRule = (clientId, ruleId) =>
-    api.delete(`/clients/${clientId}/ads/bid-optimizer/rules/${ruleId}`);
+// Put the keyword back to the automation's `min_bid` → enqueue → poll, like the budget
+// reset. **409 while the automation is running** — the next optimizer check would bid it
+// straight back up, so the API refuses rather than spending a write that gets reverted.
+export const resetBidRule = (clientId, ruleId) =>
+	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
 
-export const toggleBidOptimizerRule = (clientId, ruleId) =>
-    api.patch(`/clients/${clientId}/ads/bid-optimizer/rules/${ruleId}/toggle`);
+// ── On-demand actions (enqueue → poll) ──────────────────────────────────────
+export const setBudgetNow = (clientId, body) => api.post(`${base(clientId)}/set-budget`, body);
 
-export const getBidOptimizerHistory = (clientId) =>
-    api.get(`/clients/${clientId}/ads/bid-optimizer/history`);
+// Start / stop a campaign. body = { status: "running" | "paused", budget? }.
+// `budget` is for a resume only — Blinkit's restart re-submits the campaign and sets its
+// budget; omitting it lets the VM reuse the campaign's current one from a fresh read.
+export const setActivationNow = (clientId, campaignId, body) =>
+	api.post(`${base(clientId)}/campaigns/${campaignId}/activation`, body);
 
-export const runBidOptimizer = (clientId) =>
-    api.post(`/clients/${clientId}/ads/bid-optimizer/run`);
+export const runEngine = (clientId, which) =>
+	api.post(`${base(clientId)}/run/${which}`); // budget-scheduler | bid-optimizer
+
+// ── Status + history ────────────────────────────────────────────────────────
+export const getJob = (clientId, jobId) => api.get(`${base(clientId)}/jobs/${jobId}`);
+
+export const getHistory = (clientId, { page = 1, limit = 20, kind } = {}) =>
+	api.get(`${base(clientId)}/history`, { params: { page, limit, kind } });
+
+// ── Advertiser account ──────────────────────────────────────────────────────
+export const getAdvertiser = (clientId) => api.get(`${base(clientId)}/advertiser`);
+
+export const setAdvertiser = (clientId, advertiserId) =>
+	api.put(`${base(clientId)}/advertiser`, { advertiser_id: advertiserId });
+
+// ── Campaign catalogue (for the name/id pickers) ────────────────────────────
+// Reuses the Ads campaigns endpoint. A wide window (days=365) so campaigns without
+// recent spend still list; the picker only needs id + name + status.
+//
+// `recent_only` keeps ONLY campaigns seen in the most recent catalogue sync, and it is
+// what stops a dead account's campaigns from being selectable here. Dobra's dashboard
+// moved to a new email in June 2026: the old account's 186 campaigns are still in the
+// table (we never delete data) but can no longer be read or written, while 38 of their
+// NAMES also exist in the live account — several reading ACTIVE on both sides. Picking
+// one is unrecoverable-looking, so the write surfaces must never offer them.
+//
+// This filters on scrape freshness rather than an id cutoff because the catalogue comes
+// from a single all-or-nothing list call: a campaign the account no longer returns keeps
+// its old timestamp and drops out by itself. Ads Analytics deliberately does NOT filter —
+// the client keeps their full pre-migration reporting history.
+export const getCampaigns = (clientId) =>
+	api.get(`/clients/${clientId}/ads/campaigns`, {
+		params: { days: 365, limit: 250, sort: "spend", order: "desc", recent_only: true },
+	});
+
+// Refresh the campaign catalogue from the live account (enqueue → poll, like the other
+// on-demand actions). One list call on the VM, not a full marketing scrape.
+export const refreshCampaigns = (clientId) =>
+	api.post(`${base(clientId)}/campaigns/refresh`);
+
+// Blinkit's published bid range per keyword + the campaign's city targeting, from the
+// daily scrape (V7.4). Never 404s: an unscraped campaign returns empty fields, and the
+// form falls back to its pre-V7 behaviour rather than blocking.
+export const getBidContext = (clientId, campaignId) =>
+	api.get(`${base(clientId)}/campaigns/${campaignId}/bid-context`);
 

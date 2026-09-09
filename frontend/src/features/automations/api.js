@@ -1,13 +1,13 @@
 import { api } from "../../lib/axios";
 
 /**
- * Automations — a new, independent view over the SAME Campaign Manager v2
- * backend (/clients/{clientId}/campaign-manager, plus the Ads campaign/keyword
- * catalogue). Deliberately NOT imported from features/campaign-manager-v2/api.js:
+ * Automations — an independent view over the SAME Campaign Manager backend
+ * (/clients/{clientId}/campaign-manager, plus the Ads campaign/keyword
+ * catalogue). Deliberately NOT imported from features/campaign-manager/api.js:
  * this feature owns its own thin API layer, the same way zepto_ads.py stays a
  * separate module from ads.py so one page's changes can never affect the
  * other. No backend changes — every call below hits an endpoint that already
- * exists and is already used by the existing Campaign Manager page.
+ * exists and is already used by the Campaign Manager page.
  */
 const base = (clientId) => `/clients/${clientId}/campaign-manager`;
 

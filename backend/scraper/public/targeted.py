@@ -25,7 +25,7 @@ from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
 from scraper.public import staging
-from scraper.public.orchestrator import _clamp_workers
+from scraper.public.orchestrator import _clamp_workers, warn_if_co_located
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.search_result import classify_products
@@ -124,11 +124,18 @@ async def _worker(
                     # re-staging its catalogue up to 8 times — 748 rows of which 474
                     # were duplicates, and 108 stores never scraped at all. The
                     # keyword orchestrator has always passed it; this path did not.
+                    #
+                    # `distinct_ad_slots=False`: this scrape asks what a product's
+                    # state is AT A STORE, not where it sat on a page. A brand-name
+                    # query is exactly where a brand-defence ad appears, and keeping
+                    # the sponsored and organic sightings as two rows would file the
+                    # same product's inventory twice under one store.
                     res = await provider.search(
                         session, query, brand_cap,
                         lat=loc.lat, lon=loc.lon,
                         merchant_id=loc.merchant_id,
                         follow_similarity=True,
+                        distinct_ad_slots=False,
                     )
                 except Exception as e:
                     res = {"ok": False, "products": [], "error": f"{type(e).__name__}: {e}"}
@@ -176,6 +183,7 @@ async def _worker(
                             lat=loc.lat, lon=loc.lon,
                             merchant_id=loc.merchant_id,
                             follow_similarity=True,
+                            distinct_ad_slots=False,
                         )
                     except Exception as e:
                         res = {"ok": False, "products": [],
@@ -270,12 +278,14 @@ async def _retry_worker(
 
             query = _brand_query(brand_slug, aliases)
             try:
-                # Bind by store id, same as the main pass — see the note there.
+                # Bind by store id and collapse ad slots, same as the main pass —
+                # see the notes there.
                 res = await provider.search(
                     session, query, brand_cap,
                     lat=loc.lat, lon=loc.lon,
                     merchant_id=loc.merchant_id,
                     follow_similarity=True,
+                    distinct_ad_slots=False,
                 )
             except Exception as e:
                 res = {"ok": False, "products": [],
@@ -400,6 +410,7 @@ async def run_targeted(
                     f"targeted: tenant {tid} on {mp_slug} — {n_workers} workers × "
                     f"{total} stores, {len(brands)} brand(s)"
                 )
+                warn_if_co_located(locations, "targeted")
                 tasks = [
                     asyncio.create_task(_worker(
                         w, provider, browser, seed, queue, brands, done,

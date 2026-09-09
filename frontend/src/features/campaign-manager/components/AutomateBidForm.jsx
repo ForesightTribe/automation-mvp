@@ -1,7 +1,8 @@
 import { useEffect, useMemo, useState } from "react";
 import { Button } from "../../../components/ui/Button";
-import { useBidContext, useCampaignKeywords, useCreateBidRule, useUpdateBidRule } from "../hooks";
+import { useBidContext, useCreateBidRule, useUpdateBidRule } from "../hooks";
 import { CampaignPicker } from "./CampaignPicker";
+import { KeywordPicker } from "./KeywordPicker";
 import { TimingFields, emptyTiming, timingFromRule, timingPayload } from "./TimingFields";
 
 const FIELD =
@@ -39,11 +40,9 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 	const create = useCreateBidRule();
 	const update = useUpdateBidRule();
 	const mutation = isEdit ? update : create;
-	const { data: kwData } = useCampaignKeywords(campaign.id || null);
 	const { data: ctx } = useBidContext(campaign.id || null);
 	const set = (k) => (e) => setF({ ...f, [k]: e.target.value });
 
-	const suggestions = (kwData ?? []).map((k) => k.keyword);
 
 	// Blinkit's published floor for the keyword being typed. It varies per keyword (₹50 on
 	// "mango", ₹400 on "cocktail"), so it can only be looked up once a keyword is chosen.
@@ -131,20 +130,19 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 				</Field>
 				<Field
 					label="Keyword"
-					hint={campaign.id ? "Suggestions come from this campaign." : "Pick a campaign for suggestions."}
+					hint={
+						campaign.id
+							? "This campaign's keywords, with what it bids and Blinkit's floor."
+							: "Pick a campaign to see its keywords."
+					}
 				>
-					<input
-						list="cm2-keyword-suggestions"
+					<KeywordPicker
 						value={f.keyword}
-						onChange={set("keyword")}
-						placeholder="goli soda"
-						className={FIELD}
+						onChange={(kw) => setF((prev) => ({ ...prev, keyword: kw }))}
+						keywords={ctx?.keywords}
+						scrapedAt={ctx?.scraped_at}
+						campaignId={campaign.id}
 					/>
-					<datalist id="cm2-keyword-suggestions">
-						{suggestions.map((k) => (
-							<option key={k} value={k} />
-						))}
-					</datalist>
 				</Field>
 				<Field label="Target position" hint="Where you want to rank (1 = top).">
 					<input

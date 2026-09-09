@@ -37,10 +37,7 @@ export const NAV_ITEMS = [
 			{ label: "Ad Automation", path: "/ads/automation" },
 		],
 	},
-	// The v1 Campaign Manager is hidden from the rail — v2 below supersedes it. Its route
-	// still exists, so /campaign-manager remains reachable by URL until v1 is removed.
-	// { label: "Campaign Manager", path: "/campaign-manager", icon: Target },
-	{ label: "Campaign Manager", path: "/campaign-manager-v2", icon: Target },
+	{ label: "Campaign Manager", path: "/campaign-manager", icon: Target },
 	{ label: "Competition", path: "/competition", icon: Gauge },
 	{ label: "Scorecard", path: "/scorecard", icon: FileText },
 	{ label: "Reports", path: "/reports", icon: FileText },

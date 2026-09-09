@@ -150,6 +150,14 @@ keyword set returns 4-16 rows and never does.
 and page 1 repeated 29% of page 0. Key on `variant_id` falling back to
 `product_id`, and keep the FIRST sighting — it carries the true best rank.
 
+**But key on `(product, is_ad)`, not on the product alone.** A product can hold two
+REAL slots on one page — its organic placement and a sponsored one (`sourdough bread`
+showed one SKU organic at 1/2/4 and sponsored at 7/9/13). The "3 duplicates in a
+30-item page" cited above were almost certainly those pairs rather than artifacts.
+The targeted own-SKU scrape passes `distinct_ad_slots=False` to collapse them back,
+because it measures a product's state at a store, not its placements on a page — see
+`scraper/public/providers.py`.
+
 ---
 
 ## Pack size and combos
@@ -208,10 +216,20 @@ searchFeedOrder · zeptoPassPrice         0 × 557
 The keyword set deliberately included the terms most likely to carry sponsored
 placements (`milk`, `chocolate`, `chips`, `shampoo`). All zero.
 
-**So public data cannot split share of voice by paid vs organic on Zepto.** If
-the dashboard needs that, it has to come from the seller/ads side. An `is_ad`
-column was proposed and **withdrawn** — a column that is always `False` is worse
-than no column, because it reads as a measurement.
+🔴 **Superseded 2026-09-01 — this section once concluded that public data cannot
+split SoV by paid vs organic on Zepto, and that an `is_ad` column was "proposed and
+withdrawn". That was wrong.** Every field listed above is genuinely zeroed, but the
+sponsored marker is not among them: it lives in `productResponse.meta.tagsV2`, keyed
+by badge SLOT (`P0`, `P3`, …) rather than by meaning, which is why a scan of the
+obvious field names missed it. On a live `bread` search, 9 of 24 results were
+sponsored. The column exists, is populated, and carries the `uclId` with it — see
+`platforms/zepto/public_data/ads.py`.
+
+⚠️ `is_fly_wheel_ad` is the trap, not the marker. It sits on the same `meta` block
+and reads `False` even on confirmed sponsored rows (verified on 10 of our own ads).
+It marks Zepto's organic "flywheel" re-ranking. Reading it as the ad flag is what
+made ads look invisible for two days — and is most of why the paragraph above was
+written.
 
 ---
 

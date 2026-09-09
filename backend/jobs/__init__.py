@@ -1,5 +1,5 @@
 """The job/runner/scheduler subsystem — a top-level peer package (sibling to
-`app/`, `cli/`, `scraper/`, `ad_campaigns/`).
+`app/`, `cli/`, `scraper/`, `campaign_manager/`).
 
 - `queue`     — DB operations for the `jobs` queue (enqueue, atomic claim, reaper)
 - `types`     — the job-type registry (type → lane, timeout, argv builder)

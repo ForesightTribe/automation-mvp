@@ -131,6 +131,39 @@ def _first_words(name: str, n: int = 2) -> str:
     return " ".join(words[:n]) if words else "Unknown"
 
 
+def listing_extra(l: dict) -> dict[str, Any]:
+    """The marketplace-specific detail blob for one `search_listings` row.
+
+    Shared because there are TWO write paths into that table — `scraper/public/
+    staging.py` (every real run) and `blinkit/public_data/storage.py` (the ad-hoc
+    `--save`) — and they had drifted: only one of them carried `is_ad`, so the same
+    scrape stored different things depending on how it was invoked. One builder, or
+    the next column added lands in one path again.
+
+    Deliberately lean: `extra` is ~284 bytes/row and more than half the weight of a
+    listing row, on the largest table we write. The ad tracking keys are added ONLY
+    to sponsored rows (~8% of them) rather than sitting NULL on every organic one.
+
+    Both marketplaces' ad ids land here under their own names, because they are not
+    the same thing: Blinkit's `ads_campaign_id` names the campaign, while Zepto's
+    `ucl_id` also names the CAMPAIGN KEYWORD that won the slot — which is not the
+    query that was searched. Flattening them into one field would lose that.
+    """
+    extra: dict[str, Any] = {
+        "group_id": l.get("group_id"), "unit": l.get("unit"),
+        "ptype": l.get("ptype"), "category": l.get("category"),
+        "match_reason": l.get("match_reason"), "image_url": l.get("image_url"),
+    }
+    # Blinkit: {ads_campaign_id, ads_subcampaign_id, ads_cost_id, ads_type}, or {}.
+    extra.update(l.get("ad_meta") or {})
+    # Zepto: parsed since the sponsored marker landed, but dropped at this boundary
+    # until now — the advertiser, campaign and winning keyword were being thrown
+    # away one step before the database. `zepto/public_data/ads.py` decodes it.
+    if l.get("ucl_id"):
+        extra["ucl_id"] = l["ucl_id"]
+    return extra
+
+
 def discount_pct(price: Any, mrp: Any) -> float | None:
     """Discount % off MRP. None when prices are missing/incoherent."""
     try:

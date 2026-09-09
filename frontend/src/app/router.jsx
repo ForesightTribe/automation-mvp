@@ -1,4 +1,4 @@
-import { createBrowserRouter } from "react-router-dom";
+import { createBrowserRouter, Navigate } from "react-router-dom";
 import { AppLayout } from "../layout/AppLayout";
 import { RequireAuth } from "../routes/RequireAuth";
 import { RequireAdmin } from "../routes/RequireAdmin";
@@ -14,7 +14,6 @@ import { InventoryPage } from "../features/inventory/InventoryPage";
 import { AdsPage } from "../features/ads/AdsPage";
 import { InsightsPage } from "../features/ads-insights/InsightsPage";
 import { CampaignManagerPage } from "../features/campaign-manager/CampaignManagerPage";
-import { CampaignManagerV2Page } from "../features/campaign-manager-v2/CampaignManagerV2Page";
 import { AutomationsPage } from "../features/automations/AutomationsPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
@@ -54,15 +53,15 @@ export const router = createBrowserRouter([
 					// Ad Automation and /automations are ONE page under two paths: the Ads
 					// child is where the nav points, and /automations keeps older links working.
 					{ path: "/ads/automation", element: <AutomationsPage /> },
-					{
-						path: "/campaign-manager",
-						element: <CampaignManagerPage />,
-					},
+					{ path: "/automations", element: <AutomationsPage /> },
+					{ path: "/campaign-manager", element: <CampaignManagerPage /> },
+					// v1 was deleted on 2026-09-03 and the surviving manager took its plain
+					// URL back, so `-v2` no longer means anything. Both old paths redirect
+					// rather than 404 — each was live until now, so bookmarks exist for both.
 					{
 						path: "/campaign-manager-v2",
-						element: <CampaignManagerV2Page />,
+						element: <Navigate to="/campaign-manager" replace />,
 					},
-					{ path: "/automations", element: <AutomationsPage /> },
 					{ path: "/competition", element: <CompetitionPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{ path: "/reports", element: <ReportsPage /> },

@@ -7,7 +7,6 @@ from playwright.async_api import TimeoutError as PWTimeout
 
 from app.utils.logger import logger
 from scraper.utils.browser import PLAYWRIGHT_ARGS
-from scraper.utils.cities import CITIES
 from scraper.utils.search_result import HEADERS_COMMON, dig_list, norm_price
 
 _HEADERS = {
@@ -104,28 +103,36 @@ async def _fetch_playwright(keyword: str, lat: float, lon: float) -> list[dict]:
 async def scrape(
     keyword: str,
     brand_slug: str,
-    city_slug: str = "bengaluru",
+    city_slug: str = "",            # label only — carried onto the result
     zone: str = "",
     pincode: str = "",
     lat: float | None = None,
     lon: float | None = None,
     aliases: list[str] | None = None,
 ) -> dict[str, Any]:
-    city = CITIES.get(city_slug, CITIES["bengaluru"])
-    _lat = lat if lat is not None else city["lat"]
-    _lon = lon if lon is not None else city["lon"]
-    _pincode = pincode or city["pincode"]
+    # Coordinates are REQUIRED. This used to fall back to a hardcoded city table whose
+    # own docstring called its coordinates unverified placeholders, so a caller that
+    # forgot them silently scraped a made-up point and got a plausible-looking result.
+    # A scraper has no business owning a city registry; the caller resolves the store
+    # (see scraper/utils/locations.py) and passes real coordinates.
+    if lat is None or lon is None:
+        raise ValueError(
+            "instamart scrape needs lat/lon. Resolve them from the store catalogue "
+            "with scraper.utils.locations.resolve_city(db, 'instamart', city)."
+        )
+    _lat, _lon = float(lat), float(lon)
+    _pincode = pincode
 
     products = await _fetch_api(keyword, _lat, _lon)
     if not products:
         logger.info(
-            f"Instamart API empty for '{keyword}' in {city['name']}"
+            f"Instamart API empty for '{keyword}' in {city_slug}"
             f"{f'/{zone}' if zone else ''}, trying Playwright"
         )
         products = await _fetch_playwright(keyword, _lat, _lon)
     if not products:
         logger.warning(
-            f"Instamart: no products found for '{keyword}' in {city['name']}"
+            f"Instamart: no products found for '{keyword}' in {city_slug}"
             f"{f'/{zone}' if zone else ''}"
         )
 

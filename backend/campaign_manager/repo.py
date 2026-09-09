@@ -426,7 +426,7 @@ async def set_budget_state(schedule_id: int, state: str):
 
 
 async def set_bid_state(rule_id: str, state: str):
-    """Set a bid rule's D19 state (active/paused/stopped). Returns the row or None."""
+    """Set a bid rule's lifecycle state (`active` / `paused`). Returns the row or None."""
     from app.models.campaign_manager_v2 import CmBidRule
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
@@ -437,6 +437,41 @@ async def set_bid_state(rule_id: str, state: str):
         await db.commit()
         await db.refresh(r)
         return r
+
+
+# Everything the engine LEARNED, as opposed to what it did. Cleared on resume: a bid rule
+# that has been paused for six hours knows nothing useful about the auction any more, and
+# every one of these fields is an input to a decision.
+_RUNTIME_MEMORY = ("last_cpm", "last_position", "last_bid_updated_at", "last_holding_cpm",
+                   "drift_paused_until", "effective_target", "effective_at_max_bid",
+                   "raise_step")
+
+
+async def clear_bid_runtime(rule_id: str) -> bool:
+    """Forget everything the engine learned about this rule, but KEEP `updated_at`.
+
+    ⚠️ `updated_at` is load-bearing and must not be touched. The engine decides whether a
+    window has already been opened with `runtime.updated_at >= window_start`, so preserving
+    it makes Resume do the right thing for free:
+
+      paused and resumed INSIDE one window  → updated_at is after the window start
+                                              → carry on from the live bid
+      paused ACROSS a window start          → updated_at is before it
+                                              → the next tick re-opens at the floor
+
+    Which is also why this cannot go through `write_bid_runtime`: that stamps
+    `updated_at = now()` on every call, so using it here would make every resume look
+    mid-window and silently skip the floor.
+    """
+    from app.models.campaign_manager_v2 import CmBidRuntime
+    async with AsyncSessionLocal() as db:
+        rt = await db.get(CmBidRuntime, rule_id)
+        if not rt:
+            return False
+        for field in _RUNTIME_MEMORY:
+            setattr(rt, field, None)
+        await db.commit()
+        return True
 
 
 async def update_budget_schedule(schedule_id: int, fields: dict):
@@ -493,9 +528,22 @@ async def update_bid_rule(rule_id: str, fields: dict):
         return r
 
 
+# Actions that record a tick where NOTHING changed. Stored (a per-automation view is made
+# of them) but filtered out of the default History, which is a list of what the automation
+# DID — a "held at ₹201" row every 15 minutes would bury the changes among them.
+NO_CHANGE_ACTIONS = ("hold", "no-op")
+
+
 async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
-                       kind: str | None = None, limit: int = 50, offset: int = 0):
-    """Recent cm_run_log rows for a tenant (newest first) + total count."""
+                       kind: str | None = None, limit: int = 50, offset: int = 0,
+                       campaign_id: int | None = None, rule_id: str | None = None,
+                       include_unchanged: bool = False):
+    """Recent cm_run_log rows for a tenant (newest first) + total count.
+
+    Defaults to CHANGES ONLY. Pass `include_unchanged=True` for the full per-tick record —
+    that is the per-automation drill-down, where "we held, and here is why" is the answer
+    being looked for. `campaign_id` / `rule_id` narrow it to one campaign or automation.
+    """
     from sqlalchemy import func
     from app.models.campaign_manager_v2 import CmRunLog
 
@@ -504,6 +552,12 @@ async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
                                       CmRunLog.platform == platform)
         if kind:
             base = base.where(CmRunLog.kind == kind)
+        if campaign_id is not None:
+            base = base.where(CmRunLog.campaign_id == campaign_id)
+        if rule_id is not None:
+            base = base.where(CmRunLog.rule_id == rule_id)
+        if not include_unchanged:
+            base = base.where(CmRunLog.action.notin_(NO_CHANGE_ACTIONS))
         total = (await db.execute(
             select(func.count()).select_from(base.subquery())
         )).scalar() or 0

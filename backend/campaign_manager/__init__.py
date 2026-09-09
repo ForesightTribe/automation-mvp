@@ -1,9 +1,9 @@
-"""Campaign Manager v2 — Blinkit budget scheduler + bid optimizer (parallel build).
+"""Campaign Manager — budget scheduler + bid optimizer, across marketplaces.
 
-See docs/campaign-manager.md (the design) and
-docs/campaign-manager.md (the build plan). This package is the
-v2 domain logic; it runs alongside the v1 code in `ad_campaigns/` + `ads_service`
-until cutover, then v1 is deleted.
+See docs/campaign-manager.md. This package is the whole of campaign automation: the v1
+engine it was built to replace (`ad_campaigns/`, plus its half of `ads_service` and the
+`/ads/budget-schedules` + `/ads/bid-optimizer` API and UI) was retired and DELETED on
+2026-09-03. Its DB tables outlive it for now — see the doc's cleanup notes.
 
 Layout:
   config.py       guardrail bounds + the dry-run default

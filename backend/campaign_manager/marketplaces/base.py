@@ -34,11 +34,17 @@ real cost on both marketplaces. In particular:
 
 - `apply_budget`/`apply_bid` on **Zepto** are read-modify-write on the WHOLE
   campaign. A malformed payload there can silently wipe geo targeting, the product
-  list, or every other keyword's bid — a class of damage Blinkit's targeted writes
-  cannot cause. Zepto's adapter therefore enforces its own invariant (re-read, then
-  refuse unless the diff contains exactly the intended field). **That is mechanism,
-  not policy** — it protects against a Zepto-specific hazard, so it lives in the
-  Zepto adapter rather than in `writes.py`.
+  list, or every other keyword's bid. Zepto's adapter therefore enforces its own
+  invariant (re-read, then refuse unless the diff contains exactly the intended field).
+  **That is mechanism, not policy** — it protects against a Zepto-specific hazard, so
+  it lives in the Zepto adapter rather than in `writes.py`.
+  ⚠️ **Blinkit is read-modify-write on the whole campaign too**, and this file used to
+  claim the opposite ("a class of damage Blinkit's targeted writes cannot cause"). That
+  was wrong, and it was wrong in the direction that hurt: a hardcoded `city_ids: "-1"` in
+  the Blinkit bid builder broadened nine live city-targeted campaigns to pan-India before
+  anyone looked (docs §8.2b). Blinkit has exactly ONE write endpoint —
+  `PUT /adservice/v3/campaigns`, full body, `campaign_request_type` as the discriminator —
+  so every Blinkit write carries the same whole-campaign blast radius Zepto's does.
 - Position lookup is a *session* on both, but Blinkit's costs a browser warm-up and
   a per-keyword search; Zepto's shape is still being determined.
 

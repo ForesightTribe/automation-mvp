@@ -70,9 +70,18 @@ Playwright / httpx play-by-play).
 - **Tag a run** for correlation with `logger.bind(tag="...")` (e.g. the campaign-manager
   engines bind `tag="cm[<run_id>]"` so every line of one run greps together; the scheduler
   binds `tag="sched"`).
-- **Keep the History table (`cm_run_log`) for real actions only** — no-op / "nothing changed"
-  narration goes to the log (Cloud Logging), not the DB (D6). High-frequency loops (poll,
-  bid `*/15`) would otherwise bury the real changes.
+- **`cm_run_log` records EVERY tick, including the ones that changed nothing** — and the
+  DEFAULT VIEW filters them out. ⚠️ This reverses the old rule ("real actions only, no-op
+  narration to Cloud Logging, D6"), which was right about the symptom and wrong about the
+  cure: a "held at ₹201" row every 15 minutes does bury the real changes, but the fix
+  belongs in the query, not in what we are willing to remember. Cloud Logging is not
+  joinable to our data, has its own retention, and cannot be shown to a client — and "why
+  has my bid not moved for six hours" is answered by exactly those held ticks. So write
+  them, and have `/history` default to changes only (`?include_unchanged=true` for the
+  per-automation drill-down). See campaign-manager.md §9b.
+- **A `reason` is written for a CLIENT, not for a log reader.** One line, plain words, no
+  arrow notation. Never pass a raw exception in — a Zepto block once landed as four lines
+  of JSON in that column. Summarise it (`bid._plain`) and leave the full text in the log.
 
 ---
 

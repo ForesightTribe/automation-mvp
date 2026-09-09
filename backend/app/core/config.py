@@ -44,11 +44,12 @@ class Settings(BaseSettings):
         "dashboard": 1,
         "live": 1,
         "interactive": 1,
-        "budget_scheduler": 1,     # v1 ads.* — deprecated at cutover
-        "bid_optimizer": 1,        # v1 ads.* — deprecated at cutover
-        "sync_campaign_data": 1,   # v1 ads.* — deprecated at cutover
-        "cm_bid": 1,               # Campaign Manager v2 — bid, isolated
-        "cm_ops": 1,               # Campaign Manager v2 — budget / sync / set-budget
+        "cm_bid": 1,               # Campaign Manager — bid, isolated
+        "cm_ops": 1,               # Campaign Manager — budget / sync / set-budget
+        # No slots for the retired v1 lanes (budget_scheduler / bid_optimizer /
+        # sync_campaign_data). The Lane enum keeps those members so historical job rows
+        # still read, but nothing can be queued into them any more, so they need no
+        # capacity. A lane absent here simply never gets claimed.
     }
     # A job whose subprocess runs longer than its type's ceiling is killed and
     # marked timeout, so a wedged Chromium can't hold a lane forever. Overrides

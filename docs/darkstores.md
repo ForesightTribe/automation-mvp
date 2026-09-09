@@ -47,7 +47,7 @@ what Blinkit actually exposes, what we probed to find out, and what has to chang
 
 - **Model & terms** (Reach vs Distribution, combos, sku_map) → [public-glossary.md](public-glossary.md)
 - **Decisions log & sizing** → [public-scraper-refactor.md](public-scraper-refactor.md)
-- **Schema & internals** → [architecture.md](architecture.md)
+- **Schema & internals** → [architecture.md](ARCHITECTURE.md)
 
 ---
 
@@ -408,9 +408,10 @@ by `merchant_type`, or show the tier beside it.
 4. Cap sizing per tenant for mixed-tier brands — every Delhi stationery keyword hit the
    probe ceiling, i.e. was truncated. Dobra's `keyword_cap=36` is fine because it is
    express-only; a Luxor-shaped brand needs more.
-5. `scraper/utils/cities.py` is still the fallback in `list_blinkit_zones` when the
-   catalog is empty. Now that the catalog is authoritative, that fallback is arguably
-   worse than an empty dropdown.
+5. ~~`scraper/utils/cities.py` is still the fallback in `list_blinkit_zones`~~ —
+   **DONE 2026-09-04.** The fallback is gone (an empty catalog now returns an empty
+   list, which is the honest answer), and so is the file itself, along with the
+   `GET /reference/cities` endpoint that served its placeholder coordinates.
 6. 49 of 2059 stores have an `address` but no `location_name` (the export's own gap) —
    they render as just their city.
 7. Optional: backfill the history (SQL + guard in the `e6c2a9d4f1b8` docstring).

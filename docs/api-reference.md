@@ -3,7 +3,7 @@
 The FastAPI backend lives in `backend/app/`. It serves the React dashboard and
 is organised as **thin routes → services → models**, with Pydantic **schemas**
 as the request/response contracts and **dependencies** as the DI/middleware
-layer. See [architecture.md](architecture.md) for the directory layout.
+layer. See [architecture.md](ARCHITECTURE.md) for the directory layout.
 
 - **Base path:** all endpoints are under `/api`.
 - **Interactive docs:** `GET /docs` (Swagger) — fully typed from the route `response_model`s.
@@ -88,7 +88,7 @@ create` makes an account + its first `admin`; `cli account add-user --account
 an existing account. Both prompt for the password (bcrypt-hashed). Data is
 account-scoped, so every user of an account sees all its clients; `role` only
 gates the admin UI + `require_admin` routes. See
-[setup.md](setup.md) and [cli.md](cli.md).
+[setup.md](SETUP.md) and [cli.md](CLI.md).
 
 ### `clients` — `/api/clients`
 The account's clients + the client picker.
@@ -105,7 +105,7 @@ Global dropdown data (login required, not client-scoped).
 |---|---|---|
 | GET | `/brands` | All brands (slug, name, category, logo, tint). |
 | GET | `/marketplaces` | All marketplaces (slug, name, color). |
-| GET | `/cities` | Cities → per-platform zones, from `scraper/utils/cities.py` (no DB). |
+| GET | `/blinkit-zones` | Active dark stores from `marketplace_locations`, deduped to one per (city, area). **The only source of store locations.** |
 
 ### `analytics` — `/api/clients/{id}/analytics` *(private)*
 Sales rollups over `blinkit_seller_sales` (+ ads for headline KPIs). Every endpoint
@@ -165,11 +165,11 @@ the marketplace filter is a no-op until more platforms connect.
 | GET | `/collections` | Curated brand collections. |
 
 ### `campaign-manager` — `/api/clients/{id}/campaign-manager` *(private, write)*
-Campaign Manager **v2** — automate Blinkit budgets + keyword bids. Thin routes → a service
+Campaign Manager — automate Blinkit budgets + keyword bids. Thin routes → a service
 that only **writes DB rows and enqueues jobs** (no Playwright; browser work runs on the VM).
 Every rule mutation enqueues `cm.reconcile` (the VM compiles rules → `job_schedules`).
 The whole loop is **dry** until the tenant is **armed** (`live_armed` on `cm_platform_accounts`,
-flipped by the `cm arm` CLI — see [cli.md](cli.md)); nothing here touches Blinkit on its own.
+flipped by the `cm arm` CLI — see [cli.md](CLI.md)); nothing here touches Blinkit on its own.
 
 Budget/bid outputs carry a computed **`status`**: `running` (window open now) · `scheduled`
 (upcoming) · `ended` (a `once` window whose date passed) · `paused` · `stopped` — distinct
@@ -188,15 +188,20 @@ from the raw D19 `state`.
 | GET | `/bid-rules` | List keyword bid automations, each with `status`. |
 | POST | `/bid-rules` | Create a bid automation (campaign, keyword, target position, min/max, `city`/`location_id`→store, timing). |
 | PATCH | `/bid-rules/{id}` | Edit target/bids/timing/keyword/location. **400** on a spent `once` rule; campaign not editable (identity). |
-| DELETE | `/bid-rules/{id}` | Delete a bid automation (+ its runtime). |
-| POST | `/bid-rules/{id}/pause` · `/resume` · `/stop` | **D19** lifecycle (paused → resume; active → pause/stop). |
+| DELETE | `/bid-rules/{id}` | Delete a bid automation (+ its runtime). **`?reset=true`** also puts the keyword back to the automation's `min_bid` first — otherwise the bid stays wherever the optimizer left it with no rule left to lower it. The reset is enqueued *before* the delete, so a refused enqueue leaves both alone. |
+| POST | `/bid-rules/{id}/pause` | Freeze it: no optimizer ticks, no end-of-window reset, no writes. **The bid is deliberately left where it is** — pair with `/reset` to lower it. **409** if already paused or if the automation has ended. |
+| POST | `/bid-rules/{id}/resume` | Un-freeze, discarding everything the engine learned before the pause (last bid/position, drift pause, escalation step, relaxed target) so it decides from current facts. If the window closed while it was paused, the end-of-window reset it missed is enqueued now. **409** if already running or ended. |
+| POST | `/bid-rules/{id}/reset` | Put the keyword's bid back to the automation's `min_bid` → enqueues `cm.set_bid` (priority 10, `cm_ops` lane), returns `{job_id}` to poll. **409 while the automation is running** — the next check would bid it straight back up. Allowed while paused, before a window opens, and **on an ended automation**, which is the case Resume cannot reach. |
 | POST | `/set-budget` | One-off "set this campaign's budget now" → enqueues `cm.set_budget`, returns `{job_id}`. 409 if one's active. |
 | POST | `/campaigns/{campaign_id}/activation` | One-off **start/stop** a campaign → enqueues `cm.set_activation`, returns `{job_id}`. Body `{status: running\|paused, budget?}`; `budget` is resume-only (a Blinkit restart re-submits the campaign and sets its budget) and defaults to the campaign's current one. Guardrails run on the VM against a live read, so a refusal comes back on the job, not as a 4xx. 409 if one's active. |
+| GET | `/campaigns/{campaign_id}/bid-context` | What the bid-rule form needs about a campaign: Blinkit's published **minimum bid per keyword** and the **cities it targets**, each resolved to the dark store a rule would measure at. Served from the daily scrape, never Blinkit. **Never 404s** — a campaign scraped since its creation returns an empty shell (`scraped_at: null`) and the form falls back to free city input. Also the source of the keyword autocomplete, since 2026-09-03. |
+| POST | `/campaigns/refresh` | Re-read the account's campaigns + statuses from Blinkit into the catalogue → enqueues `cm.sync_campaigns`, returns `{job_id}`. A READ job (one list call), so it needs no arming. This is how a campaign created since last night's scrape becomes selectable in the pickers. |
+| POST | `/run/budget-scheduler` · `/run/bid-optimizer` | Run an engine now → enqueues the job, returns `{job_id}` to poll. Dry unless the tenant is armed. |
 | GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. |
-| GET | `/history` | Paginated `cm_run_log` — real actions only (no-ops go to logs, not here). `?kind=budget\|bid\|activation`. |
+| GET | `/history` | Paginated `cm_run_log`. **Changes only by default** — since 2026-09-04 the engine records EVERY tick, including the ones where it deliberately did nothing, and a "held at ₹201" row every 15 minutes would bury the real changes. `?include_unchanged=true` returns the full per-tick record (the per-automation drill-down, where "why has my bid not moved for six hours" is the question and the held ticks carry the answer). Narrow with `?campaign_id=` (int) / `?rule_id=` (**string** — a bid rule's id is a uuid hex); filter by `?kind=budget\|bid\|activation`. Rows carry `position` + `target` so a decision explains itself without parsing `reason`. |
 | GET · PUT | `/advertiser` | Get / set the Blinkit ad-account id (B3) live writes send. Captured once from a dashboard PUT. |
 
-Timing shapes on budget/bid rules match the CLI ([cli.md](cli.md)): recurring daily window
+Timing shapes on budget/bid rules match the CLI ([cli.md](CLI.md)): recurring daily window
 (± `days`, date range) or a `once` single-date span; end ≤ start = overnight.
 
 ### `inventory` — `/api/clients/{id}/inventory`

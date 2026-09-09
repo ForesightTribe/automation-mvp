@@ -212,6 +212,30 @@ def set_budget(
                        platform=marketplace))
 
 
+@app.command("set-bid")
+def set_bid(
+    tenant: str = _TENANT,
+    campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
+    keyword: str = typer.Option(..., "--keyword", help="The keyword to write"),
+    cpm: int = typer.Option(..., "--cpm", help="Bid to set (₹). Raised to the "
+                                               "marketplace's own floor if it is higher"),
+    match_type: str = typer.Option("EXACT", "--match-type", help="EXACT | BROAD"),
+    marketplace: str = _MARKETPLACE,
+    live: bool = _LIVE,
+):
+    """One-off: set a single keyword's bid now (dry-run unless --live).
+
+    This is what Reset and Delete-with-reset run: `--cpm` is the automation's `min_bid`.
+    It takes plain values rather than a rule id because Delete removes the rule before this
+    job gets to run. A keyword an ACTIVE, in-window automation is currently bidding on is
+    left alone — flooring it would only start a fight the optimizer wins 15 minutes later.
+    """
+    from campaign_manager import bid
+    asyncio.run(bid.set_bid(uuid.UUID(tenant), campaign_id=campaign, keyword=keyword,
+                            cpm=cpm, match_type=match_type, platform=marketplace,
+                            dry_run=_dry(live)))
+
+
 @app.command("set-activation")
 def set_activation(
     tenant: str = _TENANT,
@@ -316,6 +340,14 @@ def status(
         if platform == "blinkit":
             from campaign_manager.marketplaces.blinkit import restart as restart_mod
             t.add_row("allowed next", str(detail.get("allowed_transitions") or "—"))
+            # City targeting is THE field a whole-campaign PUT silently destroys (docs
+            # §8.2b), so the read-back check has to show it — this command's whole purpose
+            # is comparing a campaign either side of a write, and it used to omit the one
+            # thing most worth comparing. Shown as Blinkit reports it, not as we'd send it.
+            region_type = detail.get("region_type") or "—"
+            region_ids = detail.get("region_ids")
+            t.add_row("targeting", f"{region_type}"
+                                   + (f" · {region_ids}" if region_ids else ""))
             t.add_row("pids", restart_mod.extract_pids(detail) or "—")
             t.add_row("start / end", f"{detail.get('start_ts')} → {detail.get('end_ts')}")
             t.add_row("infinite", str(detail.get("infinite_campaign")))
@@ -332,12 +364,6 @@ def status(
         console.print(t)
 
     asyncio.run(_run())
-
-
-@app.command("sync-campaign-data")
-def sync_campaign_data(tenant: str = _TENANT, marketplace: str = _MARKETPLACE):
-    """Refresh campaign_data_cache (keywords + products) for a tenant. [V-later]"""
-    typer.echo(f"cm sync-campaign-data is a stub (tenant={tenant}).")
 
 
 @app.command("sync-campaigns")

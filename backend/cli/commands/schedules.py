@@ -9,8 +9,9 @@ from sqlmodel import select
 
 from app.core.database import AsyncSessionLocal
 from app.models.job import JobSchedule
+from app.models.tenant import Tenant
 from jobs.scheduler import initial_next_run, validate_cron
-from jobs.types import parse_params, spec_for
+from jobs.types import parse_params, schedule_label, spec_for
 
 app = typer.Typer(help="Recurring + one-shot job schedules (→ queue). See docs/jobs.md.")
 console = Console()
@@ -103,6 +104,9 @@ def list_schedules():
 async def _list() -> None:
     async with AsyncSessionLocal() as db:
         rows = (await db.execute(select(JobSchedule).order_by(JobSchedule.id))).scalars().all()
+        # One lookup for the whole table — the reconciler's names carry a tenant UUID,
+        # which is unreadable, so the label needs the client's actual name.
+        tenants = dict((await db.execute(select(Tenant.id, Tenant.name))).all())
     if not rows:
         console.print("[dim]No schedules. Add one with `cli schedules add`.[/dim]")
         return
@@ -113,7 +117,7 @@ async def _list() -> None:
         when = s.cron if s.repeat and s.cron else "[dim]once[/dim]"
         table.add_row(
             str(s.id),
-            s.name,
+            schedule_label(s.name, tenants.get(s.tenant_id)),
             s.job_type.replace("scrape.", ""),
             when,
             "[green]yes[/green]" if s.enabled else "[red]no[/red]",
@@ -129,6 +133,7 @@ def show_schedule(schedule_id: int = typer.Argument(..., help="Schedule id from 
     async def _run():
         async with AsyncSessionLocal() as db:
             s = await db.get(JobSchedule, schedule_id)
+            tenant_name = (await db.get(Tenant, s.tenant_id)).name if s and s.tenant_id else None
         if not s:
             console.print(f"[red]No schedule #{schedule_id}[/red]")
             raise typer.Exit(1)
@@ -136,9 +141,14 @@ def show_schedule(schedule_id: int = typer.Argument(..., help="Schedule id from 
         params = " ".join(f"{k}={v}" for k, v in (s.params or {}).items()) or "—"
         timing = (f"{s.cron}  [dim](IST)[/dim]" if s.repeat and s.cron
                   else "[dim]one-shot — fires once, then disables[/dim]")
+        label = schedule_label(s.name, tenant_name)
         rows = [
             ("id", str(s.id)),
-            ("name", s.name),
+            ("name", label),
+            # The detail view keeps the raw key: it is what `reconciler._apply` matches
+            # on and what a SQL query or a `_is_managed` question needs. Only shown when
+            # it differs from the label, so hand-made schedules don't print twice.
+            *([("key", f"[dim]{s.name}[/dim]")] if label != s.name else []),
             ("job_type", f"{s.job_type}  [dim](lane: {spec.lane.value})[/dim]"),
             ("tenant", str(s.tenant_id) if s.tenant_id else "—"),
             ("schedule", timing),
