@@ -10,12 +10,13 @@ from datetime import date, datetime, timedelta
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.blinkit_marketing import BlinkitAdCampaignDaily
+from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchListing
 from app.services import zepto_ads, zepto_reports
 from scraper.utils.pack import per_unit_price
 from app.schemas.reports import (
+    CampaignHalf,
     CompetitionReport,
     CompGroup,
     CompRow,
@@ -28,7 +29,12 @@ from app.schemas.reports import (
     PivotSku,
     PivotSplit,
     PivotWeek,
+    AdTypeSection,
+    BannerRow,
     SalesPivot,
+    WeekendBlock,
+    WeekendCampaign,
+    WeekendPlanning,
 )
 
 UNCATEGORISED = "Uncategorised"
@@ -487,3 +493,319 @@ async def get_competition_report(
     return CompetitionReport(
         client_id=tenant_id, start=start, end=end, kind=kind, groups=out
     )
+
+
+# ── Weekend planning ───────────────────────────────────────────────────────
+
+# Blinkit's campaign types in the words the client's own sheet uses. Its enum is
+# precise and unread; these are what someone planning a weekend calls them.
+AD_TYPE_LABELS = {
+    "PRODUCT_LISTING": "Keyword Ads",
+    "PRODUCT_RECOMMENDATION": "Recommendation Ads",
+    "BANNER_LISTING": "Banner Listing Ads",
+    "BANNER_DIY": "Banner Ads",
+    "SHELF_DIY": "Shelf Ads",
+    "SEARCH_SUGGESTION": "Search Suggestion Ads",
+}
+
+# Banner placements carry no revenue attribution, so they are reported on cost
+# per impression instead and live on their own sheet.
+BANNER_TYPES = {"BANNER_LISTING", "BANNER_DIY"}
+
+
+def _weekend_blocks(start: date, end: date) -> list[WeekendBlock]:
+    """Every Fri–Sun weekend that OVERLAPS the window, labelled by its Friday.
+
+    Overlap, not containment: a window ending on a Saturday still contains two
+    thirds of that weekend, and dropping it would silently lose the most recent
+    days — the ones anyone opening this report is looking for. The block is
+    clamped to the window so its numbers only ever cover days that were asked
+    for.
+    """
+    blocks: list[WeekendBlock] = []
+    cur = start - timedelta(days=(start.weekday() - 4) % 7)   # the Friday on or before
+    while cur <= end:
+        fri, sun = cur, cur + timedelta(days=2)
+        if sun >= start:
+            lo, hi = max(fri, start), min(sun, end)
+            n = len(blocks) + 1
+            blocks.append(
+                WeekendBlock(
+                    label=f"Weekend {n} ({fri:%d %b})",
+                    index=n,
+                    start=lo,
+                    end=hi,
+                    days=(hi - lo).days + 1,
+                )
+            )
+        cur += timedelta(days=7)
+    return blocks
+
+
+def _half(spend: float, revenue: float, impressions: int) -> CampaignHalf:
+    return CampaignHalf(
+        spend=round(spend, 2),
+        revenue=round(revenue, 2),
+        roas=round(revenue / spend, 4) if spend else None,
+        impressions=impressions,
+    )
+
+
+async def get_weekend_planning(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+) -> WeekendPlanning:
+    """Spend, revenue and RoAS per campaign, one column group per weekend.
+
+    The client's own planning sheet: weekends side by side so the effect of a
+    push on one is visible against the others, with the weekdays alongside as the
+    baseline it is being judged against.
+
+    Fri–Sun is the client's definition of a weekend and is the same one the sales
+    pivot uses, so the two reports cannot disagree about which days those are.
+    """
+    conds = [
+        BlinkitAdCampaignDaily.tenant_id == tenant_id,
+        BlinkitAdCampaignDaily.date >= start,
+        BlinkitAdCampaignDaily.date <= end,
+    ]
+    if marketplaces:
+        conds.append(BlinkitAdCampaignDaily.platform.in_(marketplaces))
+
+    rows = (
+        await session.execute(
+            select(
+                BlinkitAdCampaignDaily.campaign_id,
+                BlinkitAdCampaignDaily.campaign_type,
+                BlinkitAdCampaignDaily.date,
+                func.sum(BlinkitAdCampaignDaily.budget_consumed),
+                func.sum(BlinkitAdCampaignDaily.ad_sales),
+                func.sum(BlinkitAdCampaignDaily.impressions),
+            )
+            .where(*conds)
+            .group_by(
+                BlinkitAdCampaignDaily.campaign_id,
+                BlinkitAdCampaignDaily.campaign_type,
+                BlinkitAdCampaignDaily.date,
+            )
+        )
+    ).all()
+
+    names = dict(
+        (
+            await session.execute(
+                select(BlinkitAdCampaign.campaign_id, BlinkitAdCampaign.name).where(
+                    BlinkitAdCampaign.tenant_id == tenant_id
+                )
+            )
+        ).all()
+    )
+
+    blocks = _weekend_blocks(start, end)
+    index = {}
+    for i, b in enumerate(blocks):
+        d = b.start
+        while d <= b.end:
+            index[d] = i
+            d += timedelta(days=1)
+
+    # campaign → {"w": [ [spend, rev, impr] per weekend ], "d": [...] }
+    acc: dict[int, dict] = {}
+    for cid, ctype, day, spend, revenue, impressions in rows:
+        slot = acc.setdefault(
+            cid,
+            {
+                "type": ctype,
+                "w": [[0.0, 0.0, 0] for _ in blocks],
+                "d": [0.0, 0.0, 0],
+            },
+        )
+        target = slot["w"][index[day]] if day in index else slot["d"]
+        target[0] += float(spend or 0)
+        target[1] += float(revenue or 0)
+        target[2] += int(impressions or 0)
+
+    def _campaign(cid: int, slot: dict, name: str) -> WeekendCampaign:
+        weekends = [_half(*w) for w in slot["w"]]
+        weekday = _half(*slot["d"])
+        weekend_total = _half(
+            sum(w[0] for w in slot["w"]),
+            sum(w[1] for w in slot["w"]),
+            sum(w[2] for w in slot["w"]),
+        )
+        # The ceiling this campaign has actually reached: the busiest weekend's
+        # spend divided by the days of that weekend inside the window, so a
+        # weekend clipped by the date picker is not scored as if it were short.
+        max_daily = max(
+            (w[0] / b.days for w, b in zip(slot["w"], blocks, strict=True) if b.days),
+            default=0.0,
+        )
+        return WeekendCampaign(
+            campaign_id=cid,
+            name=name,
+            ad_type=slot["type"],
+            weekends=weekends,
+            weekend_total=weekend_total,
+            weekday=weekday,
+            total=_half(
+                weekend_total.spend + weekday.spend,
+                weekend_total.revenue + weekday.revenue,
+                weekend_total.impressions + weekday.impressions,
+            ),
+            max_daily_spend=round(max_daily, 2),
+        )
+
+    def _roll(rows: list[WeekendCampaign], cid: int, name: str, ad_type) -> WeekendCampaign:
+        """A subtotal row, in the same shape as a campaign row so one renderer
+        draws both. Ratios come from the summed inputs, never from averaging the
+        rows' own ratios."""
+        return WeekendCampaign(
+            campaign_id=cid,
+            name=name,
+            ad_type=ad_type,
+            weekends=[
+                _half(
+                    sum(r.weekends[i].spend for r in rows),
+                    sum(r.weekends[i].revenue for r in rows),
+                    sum(r.weekends[i].impressions for r in rows),
+                )
+                for i in range(len(blocks))
+            ],
+            weekend_total=_half(
+                sum(r.weekend_total.spend for r in rows),
+                sum(r.weekend_total.revenue for r in rows),
+                sum(r.weekend_total.impressions for r in rows),
+            ),
+            weekday=_half(
+                sum(r.weekday.spend for r in rows),
+                sum(r.weekday.revenue for r in rows),
+                sum(r.weekday.impressions for r in rows),
+            ),
+            total=_half(
+                sum(r.total.spend for r in rows),
+                sum(r.total.revenue for r in rows),
+                sum(r.total.impressions for r in rows),
+            ),
+            # A subtotal's ceiling is the sum of its campaigns' ceilings: what the
+            # block could spend in a day if every campaign hit its own best weekend.
+            max_daily_spend=round(sum(r.max_daily_spend for r in rows), 2),
+        )
+
+    everyone = [
+        _campaign(cid, slot, names.get(cid) or f"Campaign {cid}") for cid, slot in acc.items()
+    ]
+    everyone.sort(key=lambda c: -c.total.spend)
+
+    # Banner campaigns are pulled out: with no revenue they would sit in the
+    # planning table as permanent zero-RoAS rows and drag every subtotal.
+    banner_rows = [c for c in everyone if (c.ad_type or "") in BANNER_TYPES]
+    planning = [c for c in everyone if (c.ad_type or "") not in BANNER_TYPES]
+
+    sections: list[AdTypeSection] = []
+    for ad_type in dict.fromkeys(c.ad_type for c in planning):
+        rows_of = [c for c in planning if c.ad_type == ad_type]
+        sections.append(
+            AdTypeSection(
+                ad_type=ad_type or "OTHER",
+                label=AD_TYPE_LABELS.get(ad_type or "", ad_type or "Other Ads"),
+                campaigns=rows_of,
+                subtotal=_roll(rows_of, 0, f"{AD_TYPE_LABELS.get(ad_type or '', 'Other')} Total", ad_type),
+            )
+        )
+
+    banners = [
+        BannerRow(
+            campaign_id=c.campaign_id,
+            name=c.name,
+            spend=c.total.spend,
+            impressions=c.total.impressions,
+            spend_per_impression=(
+                round(c.total.spend / c.total.impressions * 1000, 2)
+                if c.total.impressions
+                else None
+            ),
+        )
+        for c in sorted(banner_rows, key=lambda c: -c.total.spend)
+    ]
+
+    totals = _roll(planning, 0, "Grand Total", None)
+
+    return WeekendPlanning(
+        client_id=tenant_id,
+        start=start,
+        end=end,
+        weekends=blocks,
+        sections=sections,
+        totals=totals,
+        banners=banners,
+    )
+
+
+async def get_raw_ad_rows(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    campaign_type: str,
+) -> list[dict]:
+    """The platform's own per-day export rows for one campaign type.
+
+    Straight columns off `blinkit_ad_campaign_detail`, which is already at the
+    grain the export uses: one row per date, campaign and targeting value. No
+    aggregation, so these sheets are the raw material the pivots above are built
+    from and can be checked against them.
+    """
+    from app.models.blinkit_marketing import BlinkitAdCampaignDetail
+
+    rows = (
+        await session.execute(
+            select(BlinkitAdCampaignDetail, BlinkitAdCampaign.name, BlinkitAdCampaign.pacing_type)
+            .join(
+                BlinkitAdCampaign,
+                (BlinkitAdCampaign.campaign_id == BlinkitAdCampaignDetail.campaign_id)
+                & (BlinkitAdCampaign.tenant_id == BlinkitAdCampaignDetail.tenant_id),
+                isouter=True,
+            )
+            .where(
+                BlinkitAdCampaignDetail.tenant_id == tenant_id,
+                BlinkitAdCampaignDetail.snapshot_date >= start,
+                BlinkitAdCampaignDetail.snapshot_date <= end,
+                BlinkitAdCampaignDetail.campaign_type == campaign_type,
+            )
+            .order_by(
+                BlinkitAdCampaignDetail.snapshot_date,
+                BlinkitAdCampaignDetail.campaign_id,
+            )
+        )
+    ).all()
+
+    return [
+        {
+            "date": d.snapshot_date,
+            "campaign_id": d.campaign_id,
+            "campaign_name": name or f"Campaign {d.campaign_id}",
+            "targeting_type": "Keyword" if d.target_type == "keyword" else "Recommendation",
+            "targeting_value": d.target,
+            "match_type": d.match_type,
+            "most_viewed_position": d.most_viewed_position,
+            "pacing_type": pacing,
+            "cpm": d.cpm,
+            "impressions": d.impressions,
+            "direct_atc": d.direct_atc,
+            "indirect_atc": d.indirect_atc,
+            "direct_quantities_sold": d.direct_quantities_sold,
+            "indirect_quantities_sold": d.indirect_quantities_sold,
+            "direct_sales": d.direct_sales,
+            "indirect_sales": d.indirect_sales,
+            "new_users_acquired": d.new_users_acquired,
+            "budget_consumed": d.budget_consumed,
+            "direct_roas": d.direct_roas,
+            "total_roas": d.total_roas,
+        }
+        for d, name, pacing in rows
+    ]

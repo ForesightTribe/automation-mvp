@@ -274,7 +274,7 @@ def _table(ws: Worksheet, section: Section, start: int) -> int:
         own = bool(section.highlight_key and row.get(section.highlight_key))
         for j, col in enumerate(cols, 1):
             value = row.get(col.key)
-            cell = _put(ws, r, j, value, col, no_rule=dense)
+            cell = _put(ws, r, j, value, col, no_rule=dense, blank_empty=col.blank_empty)
             if dense:
                 continue
             if _chip(cell, col, value):
@@ -335,9 +335,9 @@ def _finish(ws: Worksheet, group: str) -> None:
 
 # ── Sheets ────────────────────────────────────────────────────────────────────
 
-def _section_sheet(wb: Workbook, section: Section, name: str) -> None:
+def _section_sheet(wb: Workbook, section: Section, name: str, *, link_back: bool = True) -> None:
     ws = wb.create_sheet(name)
-    _head_block(ws, section, link_back=True)
+    _head_block(ws, section, link_back=link_back)
 
     row = t.ROW_SPACER + 1
     if section.kpis:
@@ -472,17 +472,28 @@ def write_workbook(report: Report, path: str) -> str:
     used: set[str] = {_CONTENTS.lower(), _GLOSSARY.lower()}
     named = [(s, _sheet_name(s.title, used)) for s in report.sections]
 
+    # ⚠️ The "← Contents" link only makes sense when there IS a contents sheet. A
+    # single-sheet report has none (see below), and a link to a sheet that does not
+    # exist is a dead cell in the corner of every download.
+    solo = len(named) == 1
     for section, name in named:
-        _section_sheet(wb, section, name)
+        _section_sheet(wb, section, name, link_back=not solo)
 
     # Both are prepended, so build the contents list first and insert in reverse:
     # glossary at 0, then the cover at 0 pushes it to 1. Reading order ends up
     # Contents → How to read this → sections.
-    contents = [(name, section.description) for section, name in named]
-    if report.glossary:
-        _glossary_sheet(wb, report)
-        contents.insert(0, (_GLOSSARY, "Every term in this workbook, in plain English."))
-    _cover_sheet(wb, report, contents)
+    #
+    # ⚠️ A ONE-sheet report gets neither. The client-format reports exist to drop
+    # into a process that already expects a particular workbook, and a contents
+    # page in front of a single sheet is a change to that process: the sheet
+    # everyone opens is suddenly not the first one. A multi-sheet report still
+    # gets both, where a contents page earns its place.
+    if len(named) > 1:
+        contents = [(name, section.description) for section, name in named]
+        if report.glossary:
+            _glossary_sheet(wb, report)
+            contents.insert(0, (_GLOSSARY, "Every term in this workbook, in plain English."))
+        _cover_sheet(wb, report, contents)
 
     wb.active = 0
     wb.save(path)

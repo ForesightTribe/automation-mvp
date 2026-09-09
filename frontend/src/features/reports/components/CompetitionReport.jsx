@@ -1,7 +1,5 @@
-import { useState } from "react";
 import { useCompetition } from "../hooks";
 import { formatCurrency, formatUnitPrice } from "../../../lib/format";
-import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 
@@ -12,7 +10,7 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
  * search). The per-unit index compares each competitor against the own reference.
  */
 
-const KINDS = [
+export const KINDS = [
 	{ value: "main", label: "Singles" },
 	{ value: "combo", label: "Combos" },
 	{ value: "all", label: "All" },
@@ -44,16 +42,16 @@ const packLabel = (row) => {
 	return row.pack_count > 1 ? `${base} ×${row.pack_count}` : base;
 };
 
-export const CompetitionReport = () => {
-	const [kind, setKind] = useState("main");
+/**
+ * `kind` is owned by the PAGE, not here: the Export button has to send the same
+ * value this table is showing, and a control the exporter cannot see is a file
+ * that quietly disagrees with the screen.
+ */
+export const CompetitionReport = ({ kind }) => {
 	const { data, isLoading, error, refetch } = useCompetition(kind);
 
 	return (
 		<div className="flex flex-col gap-4">
-			<div className="flex justify-end">
-				<ViewToggle options={KINDS} value={kind} onChange={setKind} />
-			</div>
-
 			{isLoading && <Loading label="Loading competition report…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading && !error && data && !data.groups.length && (

@@ -77,6 +77,13 @@ class Column(BaseModel):
     width: int | None = None       # override the computed width; rarely needed
     wrap: bool = False             # long free text (a note column)
 
+    # ⚠️ An empty cell normally renders as a muted em dash, because a blank reads
+    # as zero and that is a different claim. This opts out, for a LABEL column in
+    # a pivot where a blank means "same as the row above" — the convention every
+    # spreadsheet uses and the one the client's own workbook follows. Never set
+    # it on a column that carries a number.
+    blank_empty: bool = False
+
     # Status chips: cell value → "good" | "warn" | "bad". Declared explicitly by
     # the section rather than guessed from the text, so a wording change can't
     # silently turn a red cell green.
