@@ -186,6 +186,17 @@ def _cm_set_budget(tenant_id, p):
     return a
 
 
+def _cm_set_bid(tenant_id, p):
+    a = ["cm", "set-bid", "--tenant", str(tenant_id)]
+    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--campaign", p.get("campaign"))
+    _opt(a, "--keyword", p.get("keyword"))
+    _opt(a, "--cpm", p.get("cpm"))
+    _opt(a, "--match-type", p.get("match_type"))
+    _flag(a, "--live", p.get("live"))
+    return a
+
+
 def _cm_set_activation(tenant_id, p):
     a = ["cm", "set-activation", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
@@ -273,6 +284,18 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     "cm.set_budget": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("marketplace", "campaign", "budget", "live"),
         label="Campaign budget change",
+    ),
+    # Reset one keyword's bid to its floor — behind the dashboard's Reset, and behind
+    # Delete-with-reset. Deliberately in cm_ops, NOT cm_bid: cm_bid has one slot and an
+    # optimizer tick holds it for 87-547s, so a reset queued there would wait minutes for
+    # the very engine it is countermanding. cm_ops runs in parallel with cm_bid and is
+    # nearly idle (an hourly ~15s budget run), and sharing a single-slot lane with the
+    # other campaign writes is a bonus: two whole-campaign PUTs can never overlap.
+    # Priority is set by the caller (the API enqueues these ahead of scheduled work).
+    "cm.set_bid": JobTypeSpec(
+        Lane.cm_ops, 10 * 60, _cm_set_bid,
+        param_keys=("marketplace", "campaign", "keyword", "cpm", "match_type", "live"),
+        label="Campaign bid reset",
     ),
     # On-demand campaign start/stop (the dashboard's Start/Pause buttons). Shares the
     # cm_ops lane with the other latency-tolerant campaign writes, so it can never run

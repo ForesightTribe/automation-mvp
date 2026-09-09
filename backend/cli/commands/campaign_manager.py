@@ -212,6 +212,30 @@ def set_budget(
                        platform=marketplace))
 
 
+@app.command("set-bid")
+def set_bid(
+    tenant: str = _TENANT,
+    campaign: int = typer.Option(..., "--campaign", help="Campaign id"),
+    keyword: str = typer.Option(..., "--keyword", help="The keyword to write"),
+    cpm: int = typer.Option(..., "--cpm", help="Bid to set (₹). Raised to the "
+                                               "marketplace's own floor if it is higher"),
+    match_type: str = typer.Option("EXACT", "--match-type", help="EXACT | BROAD"),
+    marketplace: str = _MARKETPLACE,
+    live: bool = _LIVE,
+):
+    """One-off: set a single keyword's bid now (dry-run unless --live).
+
+    This is what Reset and Delete-with-reset run: `--cpm` is the automation's `min_bid`.
+    It takes plain values rather than a rule id because Delete removes the rule before this
+    job gets to run. A keyword an ACTIVE, in-window automation is currently bidding on is
+    left alone — flooring it would only start a fight the optimizer wins 15 minutes later.
+    """
+    from campaign_manager import bid
+    asyncio.run(bid.set_bid(uuid.UUID(tenant), campaign_id=campaign, keyword=keyword,
+                            cpm=cpm, match_type=match_type, platform=marketplace,
+                            dry_run=_dry(live)))
+
+
 @app.command("set-activation")
 def set_activation(
     tenant: str = _TENANT,

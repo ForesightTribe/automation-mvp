@@ -97,8 +97,15 @@ class CmBidRule(SQLModel, table=True):
     start_date: str | None = None
     stop_date: str | None = None
     active: bool = True
-    # D19 lifecycle: "active" | "paused" | "stopped". active → optimizer runs; paused →
-    # frozen (no control cron, resumable); stopped → off. Bid never auto-resets (freeze).
+    # Lifecycle: "active" | "paused". active → the optimizer runs; paused → frozen (no
+    # control cron, no end-of-window reset, no writes at all), resumable.
+    #
+    # ⚠️ Pausing does NOT lower the bid — it is not a decision about price, and the keyword
+    # stays wherever the optimizer left it until Reset or the next window opens.
+    #
+    # There used to be a third value, "stopped". It was mechanically identical to "paused"
+    # (every engine check is `state == "active"`), so it was two words for one behaviour
+    # plus a Stop button with no undo. Removed 2026-09-07; no rows carried it.
     state: str = "active"
     lat: float | None = None
     lon: float | None = None

@@ -18,6 +18,7 @@ sourcing lives behind `adapter.resolve_position` (D17). MVP scrapes every keywor
 tiering (cheap sources for at-target keywords) is deferred — see the impl-doc backlog.
 """
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from app.utils.time import now_ist
@@ -33,6 +34,12 @@ _DEFAULT_LAT, _DEFAULT_LON = 12.9767, 77.5713   # Bengaluru fallback when a rule
 # window as closed; it must exceed the reconciler's lead so a few seconds of browser-setup
 # drift can't land it back inside the window.
 RESET_LOOKAHEAD_MINUTES = 2
+
+# Said when an automation is paused or deleted while a tick is mid-flight (see
+# `_still_active`). One sentence, in the client's language, because it lands in the log
+# beside the decision it is cancelling.
+_PAUSED_MIDRUN = ("this automation was paused or deleted while the run was in progress — "
+                  "leaving the bid alone")
 
 
 # ── Pure decision logic (unit-tested) ────────────────────────────────────────
@@ -519,6 +526,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              msg="first run of today's window — resetting to the floor "
                                  "before optimising")
+                if not await _still_active(rule.id):
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                 level="warning", msg=_PAUSED_MIDRUN)
+                    skipped += 1
+                    continue
                 ok, write_error = await _safe_apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=min_bid, current_cpm=live_cpm, min_bid=min_bid,
@@ -571,6 +583,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                  msg=f"live bid ₹{live_cpm} is {why} ₹{limit} limit — "
                                      f"forcing it back into range")
+                    if not await _still_active(rule.id):
+                        logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                     level="warning", msg=_PAUSED_MIDRUN)
+                        skipped += 1
+                        continue
                     ok, write_error = await _safe_apply_bid(
                         adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=min_bid,
@@ -833,6 +850,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
                 kind="bid", keyword=kw,
             )
+            if not await _still_active(rule.id):
+                # No runtime row either: `write_bid_runtime` stamps `updated_at`, and a
+                # paused rule's `updated_at` is exactly what Resume reads to decide whether
+                # the window still counts as opened.
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                             level="warning", msg=_PAUSED_MIDRUN)
+                skipped += 1
+                continue
             ok, write_error = await _safe_apply_bid(
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=min_bid,
@@ -906,12 +931,30 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
 
 
+@dataclass
+class _Target:
+    """One keyword to floor. Field names match what `_record_run_blocked` and `_row` read
+    off a rule, so a target can stand in for one — which is the point: an on-demand reset
+    may outlive the rule that asked for it (Delete + reset), so it cannot hold a reference
+    to one."""
+    campaign_id: int
+    keyword: str
+    min_bid: int                            # the requested floor, before the marketplace's
+    campaign_name: str | None = None
+    match_type: str = "EXACT"
+    max_bid: int | None = None
+    id: str | None = None                   # rule id, for History; None once the rule is gone
+    target_position: int | None = None
+
+
 async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                      run_id: str, dry_run: bool) -> dict:
     """End-of-window reset: set each just-closed keyword's bid back to its `min_bid`, so a
     bid the optimizer pushed up doesn't keep spending high after the window. No position
     scrape (cheap). Skips a keyword still covered by an in-window rule, and any bid already
-    at/below its floor. Only a real (live) write updates runtime `last_cpm`."""
+    at/below its floor. Only a real (live) write updates runtime `last_cpm`.
+
+    Selection only — the writing is `_floor_bids`, shared with the on-demand reset."""
     # Windows are evaluated slightly AHEAD of now, because the reconciler fires this run a
     # minute BEFORE the window's stop time — so the bid drops back before the budget engine
     # (a parallel lane) can stop the campaign, after which Blinkit refuses bid writes. At
@@ -920,11 +963,85 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
     at = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
     active = [r for r, _ in pairs if r.state == "active"]
     live_keys = {(r.campaign_id, r.keyword) for r in active if _in_window(_rule_dict(r), at)}
-    to_reset = [r for r in active
+    to_reset = [_target_of(r) for r in active
                 if not _in_window(_rule_dict(r), at)
                 and (r.campaign_id, r.keyword) not in live_keys]
+    return await _floor_bids(tenant_id, platform, to_reset, run_id=run_id, dry_run=dry_run,
+                             phrase="the window closed",
+                             empty_note="No keyword windows are closing right now")
+
+
+def _target_of(rule) -> _Target:
+    return _Target(campaign_id=rule.campaign_id, keyword=rule.keyword,
+                   min_bid=rule.min_bid, campaign_name=rule.campaign_name,
+                   match_type=rule.match_type or "EXACT", max_bid=rule.max_bid,
+                   id=rule.id, target_position=rule.target_position)
+
+
+async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: int,
+                  match_type: str = "EXACT", platform: str = "blinkit",
+                  dry_run: bool | None = None) -> dict:
+    """Write ONE keyword's bid, now. The mechanism behind Reset (and Delete + reset).
+
+    Deliberately takes plain values rather than a rule id: Delete + reset removes the rule
+    before this job runs, so anything that had to look one up would have nothing to find.
+    A rule that IS still there is used only to enrich the History row (name, target) and to
+    honour its ceiling.
+
+    Refuses to touch a keyword that an ACTIVE, in-window rule is currently bidding on —
+    flooring a bid another automation is defending would just start a fight it wins 15
+    minutes later.
+    """
+    dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
+    run_id = logs.new_run_id()
+    logs.run_start(run_id, "set_bid", tenant_id, dry_run=dry_run, platform=platform,
+                   tenant_name=await repo.get_tenant_name(tenant_id))
+
+    now = now_ist()
+    mine = None
+    for r, _rt in await repo.get_bid_rules(tenant_id, platform):
+        if r.campaign_id != campaign_id or r.keyword != keyword:
+            continue
+        if r.state == "active" and _in_window(_rule_dict(r), now):
+            logs.note(run_id, f'"{keyword}" is being bid on by an active automation right '
+                              f"now — leaving it alone", dry_run=dry_run, level="warning")
+            logs.run_summary(run_id, "set_bid", dry_run=dry_run, unit="keywords",
+                             processed=1, applied=0, skipped=1, errors=0)
+            return {"processed": 1, "applied": 0, "skipped": 1, "errors": 0}
+        mine = mine or r
+
+    target = _Target(campaign_id=campaign_id, keyword=keyword, min_bid=int(cpm),
+                     campaign_name=mine.campaign_name if mine else
+                     await _campaign_name(tenant_id, campaign_id, platform),
+                     match_type=(mine.match_type if mine else match_type) or "EXACT",
+                     max_bid=mine.max_bid if mine else None,
+                     id=mine.id if mine else None,
+                     target_position=mine.target_position if mine else None)
+    return await _floor_bids(tenant_id, platform, [target], run_id=run_id, dry_run=dry_run,
+                             phrase="this automation was reset", empty_note="")
+
+
+async def _campaign_name(tenant_id: uuid.UUID, campaign_id: int, platform: str) -> str | None:
+    """The campaign's name from the catalogue, for a History row whose rule is already gone.
+    Best-effort — a nameless row is worse than one from a stale scrape, not worse than one
+    that failed to render."""
+    try:
+        campaign, _ = await repo.get_bid_context(tenant_id, campaign_id, platform)
+        return getattr(campaign, "name", None)
+    except Exception:
+        return None
+
+
+async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Target], *,
+                      run_id: str, dry_run: bool, phrase: str, empty_note: str) -> dict:
+    """Write each target's bid down to its floor. Shared by the end-of-window reset and the
+    on-demand one — one writer, two selectors, so a fix to either reaches both.
+
+    `phrase` is the client-facing reason ("the window closed" / "this automation was
+    reset"); everything else about the write is identical."""
     if not to_reset:
-        logs.note(run_id, "No keyword windows are closing right now", dry_run=dry_run)
+        if empty_note:
+            logs.note(run_id, empty_note, dry_run=dry_run)
         logs.run_summary(run_id, "bid_reset", dry_run=dry_run, unit="keywords",
                          processed=0, applied=0, skipped=0, errors=0)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
@@ -938,8 +1055,8 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
         logs.session_expired(run_id, dry_run=dry_run)
         await _record_run_blocked(
             tenant_id, platform, run_id, to_reset,
-            _plain(e, f"could not sign in to {mp}, so the end-of-window reset did not run — "
-                      f"these bids stay where the window left them"), dry_run)
+            _plain(e, f"could not sign in to {mp}, so the bid was not reset to its floor — "
+                      f"it stays where the automation left it"), dry_run)
         logs.run_summary(run_id, "bid_reset", dry_run=dry_run, unit="keywords",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
@@ -953,8 +1070,8 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
             logs.live_refused(run_id, reason=str(e))
             await _record_run_blocked(
                 tenant_id, platform, run_id, to_reset,
-                _plain(e, "the ad account could not be confirmed, so the end-of-window "
-                          "reset did not run"), dry_run)
+                _plain(e, "the ad account could not be confirmed, so the bid was not "
+                          "reset to its floor"), dry_run)
             if browser is not None:
                 await browser.close()
             if pw is not None:
@@ -963,7 +1080,8 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                              processed=0, applied=0, skipped=0, errors=1)
             return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
-    logs.note(run_id, f"{len(to_reset)} keywords closing their window", dry_run=dry_run)
+    logs.note(run_id, f"{len(to_reset)} keyword{'' if len(to_reset) == 1 else 's'} to reset "
+                      f"to the floor — {phrase}", dry_run=dry_run)
 
     processed = applied = skipped = errors = 0
     runtime_rows: list[dict] = []
@@ -1004,7 +1122,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
             current = bids_cache[cid].get(kw)
             shown = f"₹{current}" if current is not None else "unknown"
             logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                          msg=f'keyword "{kw}" · window closed · current bid {shown}')
+                          msg=f'keyword "{kw}" · {phrase} · current bid {shown}')
 
             if current is not None and int(current) <= int(min_bid):
                 # Genuinely already at the floor. Skipped rather than written because a
@@ -1017,7 +1135,7 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                      "skip", current, min_bid,
-                                     f"the window closed and the bid is already at its "
+                                     f"{phrase} and the bid is already at its "
                                      f"₹{current} floor, so nothing to change", dry_run, True,
                                      rule_id=r.id, target=r.target_position))
                 continue
@@ -1029,8 +1147,9 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
             # A rejected write must not abort the whole reset either — one dark campaign
             # shouldn't cost every other keyword its de-escalation.
             logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                         msg=f"resetting to the ₹{min_bid} floor so it does not spend high "
-                             f"overnight (campaign is {status or 'in an unknown state'})")
+                         msg=f"{phrase} — resetting to the ₹{min_bid} floor so it does not "
+                             f"keep spending high (campaign is "
+                             f"{status or 'in an unknown state'})")
             try:
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
@@ -1049,15 +1168,14 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                               else f"applied — bid is now ₹{min_bid}" if ok
                               else f"not applied — {mp} rejected the reset"
                                    + (f" ({err})" if err else "")))
-            if ok and not dry_run:
+            # `r.id` is None once the rule is gone (Delete + reset), and a runtime row
+            # cannot exist without one.
+            if ok and not dry_run and r.id:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(min_bid)})
+            done = f"{phrase}, so the bid goes back to its ₹{min_bid} floor"
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                  "reset", current, min_bid,
-                                 _plain(err, f"the window closed, so the bid goes back to its "
-                                             f"₹{min_bid} floor") if err else
-                                 f"the window closed, so the bid goes back to its "
-                                 f"₹{min_bid} floor",
-                                 dry_run, ok,
+                                 _plain(err, done) if err else done, dry_run, ok,
                                  rule_id=r.id, target=r.target_position))
     finally:
         if browser is not None:
@@ -1095,6 +1213,19 @@ async def _record_run_blocked(tenant_id, platform: str, run_id: str, rules, reas
         await repo.write_run_log(rows)
     except Exception as e:                     # never let bookkeeping mask the real fault
         logs.note(run_id, f"could not record why the run was blocked: {e}", dry_run=dry_run)
+
+
+async def _still_active(rule_id: str) -> bool:
+    """Is this automation STILL active, right now, immediately before we write?
+
+    A tick reads its rules once and then spends 30-60s scraping positions. Pause, Reset and
+    Delete are meant to take effect at once — they run on a priority path in a parallel lane
+    — so without this an in-flight tick could re-raise a bid a second after the user floored
+    it, or write for a rule that no longer exists. One cheap read per write closes all three
+    races in the same place.
+    """
+    rule = await repo.get_bid_rule(rule_id)
+    return bool(rule and rule.state == "active")
 
 
 async def _safe_apply_bid(adapter, client, **kw) -> tuple[bool, Exception | None]:

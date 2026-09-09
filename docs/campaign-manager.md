@@ -1035,6 +1035,78 @@ Everything below is the actual behaviour of the current code.
 | Keyword still covered by another in-window rule | Left alone |
 | One keyword's write throws | Caught — the other keywords still get de-escalated |
 | Reset fire missed (runner down >5 min) | Dropped until tomorrow. Window-open covers it |
+| Rule **paused** before the window closed | No reset fires — Resume repairs it, or Reset does. See [9.6b](#96b-pause--resume--reset--delete) |
+
+### 9.6b Pause / Resume / Reset / Delete
+
+A bid rule is **`active` or `paused`**. There is no third state: `stopped` was mechanically
+identical to `paused` (every engine check is `state == "active"`) — two words for one
+behaviour, and a Stop button with no undo. Removed 2026-09-07, along with `POST
+/bid-rules/{id}/stop`.
+
+**Pause freezes; it does not lower the bid.** Pausing is not a decision about price, so the
+keyword stays wherever the optimizer left it. What pause *does* remove is the automation's
+schedules — including its **end-of-window reset**, which is why Resume and Reset both know
+how to put that right.
+
+| Rule state | Pause | Resume | Reset | Delete | Delete + reset |
+|---|---|---|---|---|---|
+| **running** (active, in window) | ✅ | 409 | **409** | ✅ | ✅ |
+| **scheduled** (active, before the window) | ✅ | 409 | ✅ | ✅ | ✅ |
+| **paused** | 409 | ✅ | ✅ | ✅ | ✅ |
+| **ended** | 409 | 409 | ✅ | ✅ | ✅ |
+
+Two of those cells carry the whole design:
+
+- **Reset is refused only while the rule is RUNNING.** There the next tick undoes it inside
+  15 minutes, so refusing states that plainly instead of spending a write that gets
+  reverted.
+- **Reset IS allowed on an ended rule**, and that is the case that matters. A rule paused
+  across its window end never got its de-escalation, and Resume is refused on an ended rule
+  — so Reset is the only thing left that can bring that bid down.
+
+Gates read `state` and `_bid_ended()` directly, never the computed `status`: a paused rule
+whose window has since ended still reports `paused`, because the state the user chose
+outranks the calendar.
+
+**Resume decides from current facts.** It clears every learned value —
+`last_cpm`, `last_position`, `last_bid_updated_at`, `last_holding_cpm`,
+`drift_paused_until`, `effective_target`, `effective_at_max_bid`, `raise_step` — because a
+rule paused for six hours knows nothing useful about the auction and each of those is an
+input to a decision. Clearing `last_cpm` is what makes the next tick read the **live** bid
+rather than trusting its own memory.
+
+> ⚠️ **`updated_at` is kept, deliberately.** The engine decides whether a window has already
+> been opened with `runtime.updated_at >= window_start`, so preserving it makes both cases
+> correct with no special-casing: paused and resumed **inside** one window → carry on from
+> the live bid; paused **across** a window start → the next tick re-opens at the floor. This
+> is also why `repo.clear_bid_runtime` cannot use `write_bid_runtime`, which stamps
+> `updated_at = now()` on every call — doing so would make every resume look mid-window and
+> silently skip the floor.
+
+Resume also **repairs a window that closed during the pause**: if the window is shut when
+you resume, the reset the pause removed is enqueued there and then.
+
+**The write itself is `cm.set_bid`** — one keyword, one value, `cpm = the rule's min_bid`.
+It takes plain values rather than a rule id because Delete-with-reset removes the rule
+before the job runs, so anything that had to look one up would find nothing. It refuses to
+touch a keyword an active, in-window rule is bidding on, and the floor is re-resolved
+against the marketplace's published minimum at execution time, not at enqueue time.
+
+Two scheduling details make these feel immediate:
+
+- **Lane `cm_ops`, not `cm_bid`.** `cm_bid` has one slot and an optimizer tick holds it for
+  87–547 s, so a reset queued there would wait minutes for the very engine it is
+  countermanding. `cm_ops` runs in parallel and is nearly idle. Sharing its single slot with
+  the other campaign writes is a bonus: two whole-campaign PUTs can never overlap.
+- **`priority=10`** against a default of 100 — the queue claims by
+  `(priority, scheduled_for)`, so a reset someone is waiting on jumps pending scheduled work.
+
+And because a reset can now genuinely run beside an in-flight optimizer tick, the optimizer
+**re-reads the rule's `state` immediately before every write** and skips if it is no longer
+active or no longer exists (`bid._still_active`). That closes the pause, reset and delete
+races in one place. It also skips the runtime write in that case — writing runtime would
+bump `updated_at`, which is exactly what Resume depends on.
 
 ### 9.7 Budget engine
 
@@ -1249,7 +1321,8 @@ With v1 gone, the surviving manager took its plain name back: the UI route is
 | Gap | Consequence |
 |---|---|
 | Reset schedule is `catchup=False` | A firing missed while the runner is down waits until tomorrow. Window-open covers it, so lower priority |
-| Reset and optimizer share the overlap-guard key `(job_type, tenant_id)` | A reset can be swallowed by an in-flight optimizer run. Harmless at ~30 s runs; bites around 20–30 keywords. Fix: a distinct job type, or include params in the guard |
+| Reset and optimizer share the overlap-guard key `(job_type, tenant_id)` | **Fixed** 2026-09-05 — `uq_jobs_active` now includes `params->>'reset'` (migration `a2d5f81c9b34`) |
+| One on-demand bid reset per client at a time | `uq_jobs_active` keys `cm.set_bid` on (type, tenant, marketplace), so resetting two automations in the same few seconds returns 409 "try again in a minute". Fine at one write per minute; add the keyword to the guard if it ever bites |
 | Bid window scheduling is hour-granular | A 09:30 start rounds to the 09:00 hour; `_in_window` filters the early ticks, so it's cosmetic |
 | Stale boundary crons after expiry | Expiry fires a reset one-shot but leaves the now-inert boundary crons; the daily cleanup prunes them |
 | `cm_run_log` has no retention policy | Grows unbounded against a 500 MB quota |
