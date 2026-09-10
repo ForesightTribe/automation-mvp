@@ -26,15 +26,15 @@ export const NAV_ITEMS = [
 	{ label: "Inventory", path: "/inventory", icon: Warehouse },
 	// A plain top-level entry, deliberately outside the AdsBeta group below.
 	{ label: "Ads", path: "/ads", icon: Megaphone },
-	
-	{
-		label: "AdsBeta",
-		icon: FlaskConical,
-		children: [
-			{ label: "Insights", path: "/ads/insights" },
-			{ label: "Ad Automation", path: "/ads/automation" },
-		],
-	},
+
+	// {
+	// 	label: "AdsBeta",
+	// 	icon: FlaskConical,
+	// 	children: [
+	// 		{ label: "Insights", path: "/ads/insights" },
+	// 		{ label: "Ad Automation", path: "/ads/automation" },
+	// 	],
+	// },
 	{ label: "Campaign Manager", path: "/campaign-manager", icon: Target },
 	{ label: "Competition", path: "/competition", icon: Gauge },
 	{ label: "Scorecard", path: "/scorecard", icon: FileText },
