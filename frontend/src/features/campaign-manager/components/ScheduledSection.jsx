@@ -8,6 +8,7 @@ import {
 	useDeleteBidRule,
 	useDeleteBudgetRule,
 	useDeleteBudgetSchedule,
+	useResetBidRule,
 	useResetBudgetSchedule,
 	useSetBidState,
 } from "../hooks";
@@ -21,7 +22,6 @@ const STATUSES = [
 	["running", "Running"],
 	["scheduled", "Scheduled"],
 	["paused", "Paused"],
-	["stopped", "Stopped"],
 	["ended", "Ended"],
 ];
 
@@ -105,7 +105,9 @@ export const ScheduledSection = () => {
 	const reset = useResetBudgetSchedule();
 	const delBid = useDeleteBidRule();
 	const setBidState = useSetBidState();
+	const resetBid = useResetBidRule();
 	const [resetJob, setResetJob] = useState(null);
+	const [bidResetJob, setBidResetJob] = useState(null);
 	const [query, setQuery] = useState("");
 	const [status, setStatus] = useState("");
 
@@ -113,6 +115,15 @@ export const ScheduledSection = () => {
 		reset.mutate(scheduleId, {
 			onSuccess: (data) =>
 				setResetJob({ scheduleId, jobId: data.job_id }),
+		});
+
+	// The bid reset is enqueue→poll like the budget one, so the row shows a JobStatus
+	// rather than a changed value: the write happens on the VM, minutes of browser work
+	// away. `guard` comes from the row and carries its 409 message back to it.
+	const doBidReset = (ruleId, guard) =>
+		resetBid.mutate(ruleId, {
+			...guard,
+			onSuccess: (data) => setBidResetJob({ ruleId, jobId: data.job_id }),
 		});
 
 	const loading = budgets.isLoading || bids.isLoading;
@@ -214,13 +225,17 @@ export const ScheduledSection = () => {
 									<BidRuleRow
 										key={r.id}
 										rule={r}
-										onAction={(ruleId, action) =>
-											setBidState.mutate({
-												ruleId,
-												action,
-											})
+										onAction={(ruleId, action, guard) =>
+											setBidState.mutate(
+												{ ruleId, action },
+												guard,
+											)
 										}
-										onDelete={(id) => delBid.mutate(id)}
+										onReset={doBidReset}
+										resetJob={bidResetJob}
+										onDelete={(vars, guard) =>
+											delBid.mutate(vars, guard)
+										}
 									/>
 								))}
 							</ul>

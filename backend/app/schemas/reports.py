@@ -188,3 +188,94 @@ class CompetitionReport(BaseModel):
     end: date
     kind: str  # "main" | "combo" | "all"
     groups: list[CompGroup]
+
+
+# ── Weekend planning ───────────────────────────────────────────────────────
+
+
+class WeekendBlock(BaseModel):
+    """One Fri–Sun weekend. `label` is "Weekend 1 (07 Aug)": the client's own
+    numbering, plus the date so a reader can tell WHICH weekend without counting.
+    `days` is how many of its three days fall inside the selected window, which is
+    what the per-day figures divide by."""
+
+    label: str
+    index: int
+    start: date
+    end: date
+    days: int
+
+
+class CampaignHalf(BaseModel):
+    """A campaign's numbers for one weekend, or for the weekdays. `roas` is
+    recomputed from the summed spend and revenue, never averaged across days."""
+
+    spend: float
+    revenue: float
+    roas: float | None
+    impressions: int
+
+
+class WeekendCampaign(BaseModel):
+    """One campaign across every weekend in the window, plus its weekdays.
+
+    `max_daily_spend` is the highest average day of spend the campaign reached in
+    any single weekend. It is the planning number the client's sheet exists to
+    produce: the ceiling this campaign has demonstrated it can spend to, rather
+    than a budget someone hopes it will use.
+
+    `ad_type` is the campaign's own type (PRODUCT_LISTING, BANNER_LISTING, …),
+    which is the "Ad Type" column of the client's sheet. `weekends[i]` aligns to
+    `WeekendPlanning.weekends`; a weekend the campaign did not run in is present
+    with zeros rather than missing, so every row has the same shape."""
+
+    campaign_id: int
+    name: str
+    ad_type: str | None
+    weekends: list[CampaignHalf]
+    weekend_total: CampaignHalf      # every weekend summed: the sheet's Grand Total group
+    weekday: CampaignHalf
+    total: CampaignHalf
+    max_daily_spend: float
+
+
+class AdTypeSection(BaseModel):
+    """One ad-type block: its campaigns and the block's own subtotal row.
+
+    Named the way the client names them ("Keyword Ads", "Recommendation Ads")
+    rather than by Blinkit's enum, because that is the vocabulary the sheet is
+    read in."""
+
+    ad_type: str
+    label: str
+    campaigns: list[WeekendCampaign]
+    subtotal: WeekendCampaign
+
+
+class BannerRow(BaseModel):
+    """A banner campaign. No revenue: banner placements carry no attribution, so
+    they are judged on what an impression cost rather than on RoAS."""
+
+    campaign_id: int
+    name: str
+    spend: float
+    impressions: int
+    spend_per_impression: float | None
+
+
+class WeekendPlanning(BaseModel):
+    """Campaign spend and return, split Fri–Sun against Mon–Thu.
+
+    ⚠️ Unlike the sales pivot's weekday/weekend split, these are SUMS, not per-day
+    averages. This sheet compares one weekend with another, which is like for
+    like; the sales pivot compares a 4-day half with a 3-day half, which is not,
+    and averages there for exactly that reason."""
+
+    client_id: uuid.UUID
+    start: date
+    end: date
+    weekends: list[WeekendBlock]
+    sections: list[AdTypeSection]
+    totals: WeekendCampaign
+    # Their third sheet. Empty when no banner campaign ran in the window.
+    banners: list[BannerRow]

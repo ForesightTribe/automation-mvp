@@ -31,6 +31,13 @@ class EditError(ValueError):
     """A rejected edit (e.g. editing a spent one-time rule) — the route maps it to 400."""
 
 
+class StateError(ValueError):
+    """The action is fine, the automation is just not in a state where it makes sense —
+    resuming one that is already running, pausing one that has ended, resetting one that
+    the optimizer will bid straight back up. Mapped to 409, not 400: nothing about the
+    REQUEST is wrong, and the same call may well succeed a minute later."""
+
+
 # ── helpers ─────────────────────────────────────────────────────────────────
 
 async def _reconcile(session, tenant_id: uuid.UUID) -> None:
@@ -117,8 +124,11 @@ def _budget_status(schedule, rules, now) -> str:
 
 
 def _bid_status(r, now) -> str:
+    # A paused rule reports `paused` even if its window has since ended — the state the
+    # user chose outranks the calendar. The lifecycle gates in pause/resume/reset read
+    # `state` and `_bid_ended()` directly and never this, precisely because of that.
     if r.state != "active":
-        return r.state                            # paused / stopped
+        return r.state                            # paused (the raw value, whatever it is)
     if _in_window(_bid_dict(r), now):
         return "running"
     if _expired(type_=r.type, date=r.date, end_date=r.stop_date,
@@ -388,22 +398,141 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
     return _bid_out(r)
 
 
-async def delete_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> bool:
+async def delete_bid_rule(session, tenant_id: uuid.UUID, rule_id: str, *,
+                          reset: bool = False) -> bool:
+    """Delete an automation, optionally putting its bid back to the floor first.
+
+    Order matters. The reset is enqueued BEFORE the rule goes, so a refused enqueue leaves
+    the rule (and its bid) exactly as they were rather than orphaning a high bid with no
+    automation left to bring it down. The job itself carries plain values, so it does not
+    care that the rule is gone by the time it runs.
+    """
     r = await repo.get_bid_rule(rule_id)
     if not r or r.tenant_id != tenant_id:
         return False
+    if reset:
+        await _enqueue_bid_reset(session, tenant_id, r)
     await repo.delete_bid_rule(rule_id)
     await _reconcile(session, tenant_id)
     return True
 
 
-async def set_bid_state(session, tenant_id: uuid.UUID, rule_id: str, state: str) -> BidRuleOut | None:
+# ── Pause / Resume / Reset ──────────────────────────────────────────────────
+#
+# A bid rule is `active` or `paused` — there is no third state. Pause was always
+# mechanically identical to the old `stopped` (every engine check is `state == "active"`),
+# so keeping both meant two words for one behaviour and a Stop button that could not be
+# undone. Removed 2026-09-07.
+
+def _bid_ended(r) -> bool:
+    """Has this automation's last window already passed? Nothing will fire for it again, so
+    pause and resume are meaningless — but Reset is NOT: a rule paused across its window
+    end never got its end-of-window de-escalation, and its bid is still sitting high."""
+    return _expired(type_=r.type, date=r.date, end_date=r.stop_date,
+                    start_time=r.start_time, end_time=r.stop_time)
+
+
+async def pause_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
+    """Freeze the automation: no optimizer ticks, no end-of-window reset, no writes at all.
+
+    The bid is deliberately left where it is — pausing is not a decision about price. Use
+    Reset (allowed on a paused rule) to bring it back to the floor.
+
+    Runtime is NOT cleared here. `updated_at` decides whether the window counts as opened,
+    and Resume needs it intact; everything stale is cleared then, when we know what we are
+    resuming into.
+    """
     r = await repo.get_bid_rule(rule_id)
     if not r or r.tenant_id != tenant_id:
         return None
-    r = await repo.set_bid_state(rule_id, state)
+    if r.state == "paused":
+        raise StateError("This automation is already paused.")
+    if _bid_ended(r):
+        raise StateError("This automation has already ended, so there is nothing to pause.")
+    r = await repo.set_bid_state(rule_id, "paused")
     await _reconcile(session, tenant_id)
     return _bid_out(r)
+
+
+async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
+    """Un-freeze, and make the engine decide from CURRENT facts rather than pre-pause ones.
+
+    Two things happen:
+
+    1. **Every learned value is cleared** (`repo.clear_bid_runtime`) — last bid, last
+       position, the drift pause, the escalation step, a relaxed target. A rule paused for
+       six hours knows nothing useful about the auction, and each of those is an input to a
+       decision. `updated_at` is kept, which is what makes the window behaviour correct
+       with no special-casing: resumed inside the same window → carry on from the live bid;
+       resumed after a new window has started → the next tick re-opens at the floor.
+
+    2. **A window that ended during the pause is repaired.** Pausing removes the
+       end-of-window reset, so if the window has since closed the bid is still at whatever
+       the optimizer climbed to. Resume enqueues that reset itself.
+    """
+    r = await repo.get_bid_rule(rule_id)
+    if not r or r.tenant_id != tenant_id:
+        return None
+    if r.state == "active":
+        raise StateError("This automation is already running.")
+    if _bid_ended(r):
+        raise StateError("This automation has already ended — change its dates to run it again.")
+    await repo.clear_bid_runtime(rule_id)
+    r = await repo.set_bid_state(rule_id, "active")
+    await _reconcile(session, tenant_id)
+    if not _in_window(_bid_dict(r), now_ist()):
+        await _enqueue_bid_reset(session, tenant_id, r)
+    return _bid_out(r)
+
+
+async def reset_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> uuid.UUID | None:
+    """Put this automation's keyword back to its floor now. Returns the job id to poll.
+
+    Refused only while the rule is RUNNING (active and inside its window) — there the next
+    tick would undo it within 15 minutes, so refusing says so instead of spending a write
+    that gets reverted. Allowed while paused, before a window opens, and after a rule has
+    ended: that last case is the one that matters, because a rule paused across its window
+    end never got its de-escalation and Resume is not available to repair it.
+    """
+    r = await repo.get_bid_rule(rule_id)
+    if not r or r.tenant_id != tenant_id:
+        return None
+    if r.state == "active" and _in_window(_bid_dict(r), now_ist()):
+        raise StateError(
+            "This automation is running right now — pause it first, or the next check "
+            "will bid it straight back up.")
+    return await _enqueue_bid_reset(session, tenant_id, r)
+
+
+async def _enqueue_bid_reset(session, tenant_id: uuid.UUID, rule) -> uuid.UUID:
+    """Queue the one write that Reset (and Delete-with-reset) performs.
+
+    `priority=10` against a default of 100: the queue claims by `(priority, scheduled_for)`,
+    so a reset a person is waiting on jumps any scheduled work already pending in the lane.
+    The lane itself (`cm_ops`) is what keeps it from queueing behind a bid-optimizer tick —
+    see the job registry.
+    """
+    from jobs.queue import DuplicateActiveJob
+    # The rule's OWN marketplace, not this service's `PLATFORM` default. The rest of the
+    # CM API is Blinkit-only, but `get_bid_rule` looks up by id and does not filter — so a
+    # Zepto rule reaching here would otherwise be enqueued as a Blinkit job (the argv
+    # builder defaults `marketplace` to blinkit) and armed against Blinkit's `live_armed`.
+    # That means a Zepto campaign id, sent to the wrong ad account, with real writes on.
+    marketplace = getattr(rule, "platform", None) or PLATFORM
+    params = {"marketplace": marketplace,
+              "campaign": str(rule.campaign_id), "keyword": rule.keyword,
+              "cpm": str(rule.min_bid), "match_type": rule.match_type or "EXACT"}
+    if await repo.get_armed(tenant_id, marketplace):
+        params["live"] = "true"
+    try:
+        job = await enqueue(session, job_type="cm.set_bid", tenant_id=tenant_id,
+                            params=params, priority=10)
+    except DuplicateActiveJob:
+        # One bid reset per client at a time (`uq_jobs_active`). It is a single write and
+        # takes about a minute, so saying "wait" beats silently dropping the second one.
+        raise StateError(
+            "Another bid reset is already running for this client — try again in a minute.")
+    return job.id
 
 
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────

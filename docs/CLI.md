@@ -638,10 +638,17 @@ unless `--live`, except `status`, which is read-only.
 ```bash
 python -m cli cm status         -t <id> --campaign <cid>   # live state: status, budget, bids, dates
 python -m cli cm set-budget     -t <id> --campaign <cid> --budget 5000
+python -m cli cm set-bid        -t <id> --campaign <cid> --keyword "soda" --cpm 100
 python -m cli cm set-activation -t <id> --campaign <cid> --status paused|running
 python -m cli cm stop           -t <id> --campaign <cid>   # shorthand for --status paused
 python -m cli cm restart        -t <id> --campaign <cid>   # shorthand for the reverse
 ```
+
+`set-bid` writes ONE keyword's bid and is what the dashboard's **Reset** (and
+Delete-with-reset) runs — `--cpm` is the automation's `min_bid`, raised to the
+marketplace's own floor if that is higher. It takes plain values rather than a rule id
+because Delete removes the rule before the job gets to run. A keyword an *active,
+in-window* automation is currently bidding on is left alone.
 
 Two more rule commands not shown above:
 

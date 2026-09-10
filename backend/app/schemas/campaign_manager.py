@@ -127,7 +127,7 @@ class BidRuleOut(BaseModel):
     lon: float | None = None
     location_name: str | None = None
     state: str
-    status: str = "scheduled"           # running | scheduled | ended | paused | stopped (computed)
+    status: str = "scheduled"           # running | scheduled | ended | paused (computed)
     platform: str
 
 

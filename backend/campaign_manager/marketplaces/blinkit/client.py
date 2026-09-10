@@ -16,7 +16,7 @@ from playwright.async_api import async_playwright, Page
 from app.core.database import AsyncSessionLocal
 from platform_auth import service as auth_service
 from scraper.utils.browser import create_browser_context, new_context
-from campaign_manager.writes import SessionExpired
+from campaign_manager.writes import SessionExpired, WriteUnverified
 from campaign_manager.marketplaces.blinkit import build
 from campaign_manager.marketplaces.blinkit import payload as payload_check
 
@@ -90,6 +90,14 @@ class BlinkitClient:
         # Needed to re-authenticate mid-run. None for a client built straight from a stored
         # state (no tenant to look up), which then cannot self-heal — it raises instead.
         self._tenant_id = tenant_id
+        # The last response's HTTP status and (when the body was not JSON) its first bytes.
+        # `_fetch` returns only the parsed body, so without these a failure could not say
+        # whether Blinkit answered 400, 502 or 200-with-nothing — and on 2026-09-07 that
+        # was the difference between "the bid did not change" and "the bid changed and we
+        # did not know". Kept on the client rather than in the return value so every
+        # existing caller is untouched.
+        self._last_status: int | None = None
+        self._last_body: str | None = None
 
     async def _fetch(self, method: str, path: str, body: dict | None = None,
                      *, _retrying: bool = False) -> dict:
@@ -139,6 +147,7 @@ class BlinkitClient:
         )
 
         status, payload = raw.get("__status"), raw.get("__body")
+        self._last_status, self._last_body = status, raw.get("__html")
         if status in (401, 403) or (payload is None and _looks_logged_out(raw.get("__html"))):
             if _retrying or not self._tenant_id:
                 raise SessionExpired(
@@ -412,8 +421,26 @@ class BlinkitClient:
         if resp.get("status") or resp.get("success"):
             return resp
 
-        msg = resp.get("message") or resp
-        raise RuntimeError(f"Blinkit bid update failed: {msg}")
+        # NOT a plain failure. Blinkit answered without a success marker, which can mean it
+        # refused OR that the write landed and the reply was lost (both happened on
+        # 2026-09-07 — see WriteUnverified). The choke point reads the bid back to decide;
+        # this raise only reports what came back, with the HTTP status that used to be
+        # thrown away by `_fetch`.
+        raise WriteUnverified(
+            f"Blinkit did not acknowledge the bid update ({self._why(resp)})")
+
+    def _why(self, resp: dict) -> str:
+        """What the last response actually was — status first, then whatever explanation
+        exists. Blinkit's own `message`/`error` when the body parsed; otherwise the first
+        bytes of the raw body, because a non-JSON reply (a gateway error page) reaches
+        `_fetch` as `{}` and those bytes are then the only evidence of what happened."""
+        for key in ("message", "error", "detail"):
+            val = resp.get(key) if isinstance(resp, dict) else None
+            if val:
+                return f"HTTP {self._last_status}: {str(val)[:160]}"
+        detail = (self._last_body or "").strip().replace("\n", " ")
+        return f"HTTP {self._last_status}" + (f", body: {detail[:160]}" if detail
+                                              else ", empty body")
 
     async def get_advertiser_id(self) -> int:
         """The ad account this session belongs to, derived live from Blinkit (B3).

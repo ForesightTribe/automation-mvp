@@ -17,7 +17,7 @@ from app.schemas.campaign_manager import (
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
-from app.services.campaign_manager_service import EditError
+from app.services.campaign_manager_service import EditError, StateError
 from campaign_manager.repo import DuplicateSchedule
 from jobs.queue import DuplicateActiveJob
 
@@ -129,13 +129,23 @@ async def update_bid_rule(client: ClientDep, session: SessionDep, rule_id: str, 
 
 
 @router.delete("/bid-rules/{rule_id}", status_code=204)
-async def delete_bid_rule(client: ClientDep, session: SessionDep, rule_id: str):
-    if not await svc.delete_bid_rule(session, client.id, rule_id):
+async def delete_bid_rule(client: ClientDep, session: SessionDep, rule_id: str,
+                          reset: bool = False):
+    """Delete an automation. `?reset=true` also puts its keyword back to the floor first —
+    otherwise the bid stays wherever the optimizer left it, with no rule left to lower it."""
+    try:
+        deleted = await svc.delete_bid_rule(session, client.id, rule_id, reset=reset)
+    except StateError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    if not deleted:
         raise _NOT_FOUND
 
 
-async def _set_bid_state(client, session, rule_id: str, state: str) -> BidRuleOut:
-    rule = await svc.set_bid_state(session, client.id, rule_id, state)
+async def _bid_lifecycle(action, client, session, rule_id: str) -> BidRuleOut:
+    try:
+        rule = await action(session, client.id, rule_id)
+    except StateError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     if rule is None:
         raise _NOT_FOUND
     return rule
@@ -143,17 +153,29 @@ async def _set_bid_state(client, session, rule_id: str, state: str) -> BidRuleOu
 
 @router.post("/bid-rules/{rule_id}/pause", response_model=BidRuleOut)
 async def pause_bid_rule(client: ClientDep, session: SessionDep, rule_id: str):
-    return await _set_bid_state(client, session, rule_id, "paused")
+    """Freeze the automation. The bid is left where it is — pair with `/reset` to lower it."""
+    return await _bid_lifecycle(svc.pause_bid_rule, client, session, rule_id)
 
 
 @router.post("/bid-rules/{rule_id}/resume", response_model=BidRuleOut)
 async def resume_bid_rule(client: ClientDep, session: SessionDep, rule_id: str):
-    return await _set_bid_state(client, session, rule_id, "active")
+    """Un-freeze, discarding everything the engine learned before the pause. If the window
+    closed while it was paused, the end-of-window reset it missed is enqueued now."""
+    return await _bid_lifecycle(svc.resume_bid_rule, client, session, rule_id)
 
 
-@router.post("/bid-rules/{rule_id}/stop", response_model=BidRuleOut)
-async def stop_bid_rule(client: ClientDep, session: SessionDep, rule_id: str):
-    return await _set_bid_state(client, session, rule_id, "stopped")
+@router.post("/bid-rules/{rule_id}/reset", response_model=EnqueuedOut)
+async def reset_bid_rule(client: ClientDep, session: SessionDep, rule_id: str):
+    """Put the keyword's bid back to the automation's `min_bid` → enqueues the write,
+    returns `{job_id}` to poll. **409 while the automation is running** — the next check
+    would bid it straight back up."""
+    try:
+        job_id = await svc.reset_bid_rule(session, client.id, rule_id)
+    except StateError as e:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    if job_id is None:
+        raise _NOT_FOUND
+    return EnqueuedOut(job_id=job_id)
 
 
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────

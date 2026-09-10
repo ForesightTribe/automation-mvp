@@ -32,6 +32,8 @@ src/
     axios.js               # shared axios instance `api` + interceptors (token/log/errors/401)
     logger.js              # leveled logger + request/response; silenced in prod
     format.js              # INR currency / number / date formatters
+    dates.js               # date-window helpers
+    exportTable.js         # client-side CSV export (sections → one file)
     constants.js           # storage keys, presets, default days/page size, event names
 
   config/
@@ -56,6 +58,13 @@ src/
   features/                # ONE folder per dashboard page (= per question)
     overview/              # reference impl: api.js + hooks.js + OverviewPage + components/
     analytics/ products/ inventory/ ads/ competition/ scorecard/ settings/
+
+    automations/           # a feature with pure logic of its own:
+      api.js               #   HTTP wrappers over the shared client
+      hooks.js             #   React Query
+      automation.js        #   pure functions — no React, no network
+      AutomationsPage.jsx
+      components/
 ```
 
 ## Key decisions
@@ -64,6 +73,19 @@ src/
   is a self-contained `features/<x>/` folder owning its `api.js`, `hooks.js`,
   page, and `components/`. Globals (`ui`, `layout`, the two contexts) stay shared.
   Rationale: everything for one feature is in one place; delete = delete the folder.
+- **A feature's own logic lives in the feature; anything beyond it lives in
+  `lib/`.** `api.js` is HTTP, `hooks.js` is React Query, `components/` renders —
+  none of them is a home for pure functions, so a feature that has some puts them
+  in a module at its own root, named for its subject
+  (`automations/automation.js`, `ads-insights/buBands.js`). No React, no network:
+  a file that imports either belongs in `hooks.js` or `components/`.
+  **The moment a second feature needs it, it is no longer that feature's logic
+  and it moves out** — to `lib/` for a general helper, or
+  `components/charts/options.js` for chart config. That promotion is the only
+  reason to reach across, because **a feature must never import from another
+  feature.** Past three such modules the root gets noisy and they group into a
+  feature-local `lib/`; below that a folder holding one file costs more than it
+  saves.
 - **State split:** Context owns *what the app owns* (auth token, current user,
   active client, date range). React Query owns *what the backend owns* (every
   dashboard fetch). They coexist: `ClientContext`/`DateRangeContext` hold the
@@ -116,5 +138,5 @@ src/
 
 1. Add an entry to `config/nav.js` (label, path, icon).
 2. Create `features/<name>/` with `<Name>Page.jsx` (+ `api.js`/`hooks.js` when it
-   fetches).
+   fetches, + a `<subject>.js` at the root for pure logic it does not share).
 3. Register the route in `app/router.jsx` under the `AppLayout` children.

@@ -426,7 +426,7 @@ async def set_budget_state(schedule_id: int, state: str):
 
 
 async def set_bid_state(rule_id: str, state: str):
-    """Set a bid rule's D19 state (active/paused/stopped). Returns the row or None."""
+    """Set a bid rule's lifecycle state (`active` / `paused`). Returns the row or None."""
     from app.models.campaign_manager_v2 import CmBidRule
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
@@ -437,6 +437,41 @@ async def set_bid_state(rule_id: str, state: str):
         await db.commit()
         await db.refresh(r)
         return r
+
+
+# Everything the engine LEARNED, as opposed to what it did. Cleared on resume: a bid rule
+# that has been paused for six hours knows nothing useful about the auction any more, and
+# every one of these fields is an input to a decision.
+_RUNTIME_MEMORY = ("last_cpm", "last_position", "last_bid_updated_at", "last_holding_cpm",
+                   "drift_paused_until", "effective_target", "effective_at_max_bid",
+                   "raise_step")
+
+
+async def clear_bid_runtime(rule_id: str) -> bool:
+    """Forget everything the engine learned about this rule, but KEEP `updated_at`.
+
+    ⚠️ `updated_at` is load-bearing and must not be touched. The engine decides whether a
+    window has already been opened with `runtime.updated_at >= window_start`, so preserving
+    it makes Resume do the right thing for free:
+
+      paused and resumed INSIDE one window  → updated_at is after the window start
+                                              → carry on from the live bid
+      paused ACROSS a window start          → updated_at is before it
+                                              → the next tick re-opens at the floor
+
+    Which is also why this cannot go through `write_bid_runtime`: that stamps
+    `updated_at = now()` on every call, so using it here would make every resume look
+    mid-window and silently skip the floor.
+    """
+    from app.models.campaign_manager_v2 import CmBidRuntime
+    async with AsyncSessionLocal() as db:
+        rt = await db.get(CmBidRuntime, rule_id)
+        if not rt:
+            return False
+        for field in _RUNTIME_MEMORY:
+            setattr(rt, field, None)
+        await db.commit()
+        return True
 
 
 async def update_budget_schedule(schedule_id: int, fields: dict):

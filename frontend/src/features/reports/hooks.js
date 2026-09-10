@@ -1,10 +1,16 @@
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { CUSTOM_RANGE_KEY } from "../../lib/constants";
 import { toISODate } from "../../lib/dates";
-import { getSalesPivot, getMarketing, getCompetition } from "./api";
+import {
+	getCompetition,
+	getMarketing,
+	getRawAds,
+	getSalesPivot,
+	getWeekendPlanning,
+} from "./api";
 
 /**
  * Blinkit reports on a T-1 basis, so reports must not include today. The global
@@ -36,7 +42,14 @@ export const useSalesPivot = (metric) => {
 	const { selected } = useMarketplaces();
 	const { start, end } = reportWindow(range, activePreset);
 	return useQuery({
-		queryKey: ["reports-sales-pivot", activeClientId, start, end, selected, metric],
+		queryKey: [
+			"reports-sales-pivot",
+			activeClientId,
+			start,
+			end,
+			selected,
+			metric,
+		],
 		queryFn: () =>
 			getSalesPivot(activeClientId, {
 				start,
@@ -74,7 +87,14 @@ export const useCompetition = (kind) => {
 	const { selected } = useMarketplaces();
 	const { start, end } = reportWindow(range, activePreset);
 	return useQuery({
-		queryKey: ["reports-competition", activeClientId, start, end, selected, kind],
+		queryKey: [
+			"reports-competition",
+			activeClientId,
+			start,
+			end,
+			selected,
+			kind,
+		],
 		queryFn: () =>
 			getCompetition(activeClientId, {
 				start,
@@ -83,5 +103,63 @@ export const useCompetition = (kind) => {
 				kind,
 			}),
 		enabled: Boolean(activeClientId),
+	});
+};
+
+/** Campaign spend and return with each Fri–Sun weekend as its own column group.
+ *  Keyed on client + window + marketplace, like every other report here. */
+export const useWeekendPlanning = () => {
+	const { activeClientId } = useClient();
+	const { range, activePreset } = useDateRange();
+	const { selected } = useMarketplaces();
+	const { start, end } = reportWindow(range, activePreset);
+	return useQuery({
+		queryKey: [
+			"reports-weekend-planning",
+			activeClientId,
+			start,
+			end,
+			selected,
+		],
+		queryFn: () =>
+			getWeekendPlanning(activeClientId, {
+				start,
+				end,
+				marketplaces: selected,
+			}),
+		enabled: Boolean(activeClientId),
+	});
+};
+
+/**
+ * A raw export sheet, one page at a time.
+ *
+ * `enabled` is passed by the caller so the rows are fetched only when that sheet
+ * is actually opened: these run to tens of thousands of rows and nobody opens
+ * the report to look at them first.
+ */
+export const useRawAds = (campaignType, page, enabled) => {
+	const { activeClientId } = useClient();
+	const { range, activePreset } = useDateRange();
+	const { start, end } = reportWindow(range, activePreset);
+	return useQuery({
+		queryKey: [
+			"reports-raw-ads",
+			activeClientId,
+			start,
+			end,
+			campaignType,
+			page,
+		],
+		queryFn: () =>
+			getRawAds(activeClientId, {
+				start,
+				end,
+				campaignType,
+				page,
+				limit: 100,
+			}),
+		enabled: Boolean(activeClientId && enabled),
+		placeholderData: keepPreviousData,
 	});
 };

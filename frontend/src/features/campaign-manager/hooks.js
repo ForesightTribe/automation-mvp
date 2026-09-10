@@ -15,6 +15,7 @@ import {
 	getHistory,
 	getJob,
 	refreshCampaigns,
+	resetBidRule,
 	resetBudgetSchedule,
 	runEngine,
 	setActivationNow,
@@ -144,7 +145,7 @@ const useOptimistic = (queryKeyName, mutationFn, updater) => {
 	});
 };
 
-const BID_STATE = { pause: "paused", resume: "active", stop: "stopped" };
+const BID_STATE = { pause: "paused", resume: "active" };
 
 export const useCreateBudgetSchedule = () => {
 	const { activeClientId } = useClient();
@@ -216,9 +217,23 @@ export const useUpdateBidRule = () => {
 };
 
 export const useDeleteBidRule = () =>
-	useOptimistic(BID_RULES, deleteBidRule, (list, ruleId) =>
-		list.filter((r) => r.id !== ruleId),
+	useOptimistic(
+		BID_RULES,
+		(clientId, { ruleId, reset }) => deleteBidRule(clientId, ruleId, { reset }),
+		(list, { ruleId }) => list.filter((r) => r.id !== ruleId),
 	);
+
+/**
+ * Reset a bid back to its floor. Not optimistic: nothing in the row changes — the write
+ * happens on the VM and the outcome arrives as a job, so the row shows a JobStatus rather
+ * than a new value. Rejected with 409 while the automation is running.
+ */
+export const useResetBidRule = () => {
+	const { activeClientId } = useClient();
+	return useMutation({
+		mutationFn: (ruleId) => resetBidRule(activeClientId, ruleId),
+	});
+};
 
 export const useSetBidState = () =>
 	useOptimistic(

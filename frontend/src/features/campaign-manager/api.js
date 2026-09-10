@@ -34,7 +34,7 @@ export const deleteBudgetRule = (clientId, ruleId) =>
 export const resetBudgetSchedule = (clientId, scheduleId) =>
 	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/reset`);
 
-// ── Bid rules + D19 lifecycle ───────────────────────────────────────────────
+// ── Bid rules + lifecycle ───────────────────────────────────────────────────
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
 export const createBidRule = (clientId, body) => api.post(`${base(clientId)}/bid-rules`, body);
@@ -42,11 +42,24 @@ export const createBidRule = (clientId, body) => api.post(`${base(clientId)}/bid
 export const updateBidRule = (clientId, ruleId, body) =>
 	api.patch(`${base(clientId)}/bid-rules/${ruleId}`, body);
 
-export const deleteBidRule = (clientId, ruleId) =>
-	api.delete(`${base(clientId)}/bid-rules/${ruleId}`);
+// `reset` also puts the keyword's bid back to the automation's floor before the rule
+// goes. Without it the bid stays wherever the optimizer left it, with no automation left
+// to bring it down — the marketplace does not care that we deleted a row.
+export const deleteBidRule = (clientId, ruleId, { reset = false } = {}) =>
+	api.delete(`${base(clientId)}/bid-rules/${ruleId}`, {
+		params: reset ? { reset: true } : undefined,
+	});
 
+// pause | resume. There is no `stop`: it was mechanically identical to pause and gave
+// this row a button with no undo (removed 2026-09-07).
 export const setBidState = (clientId, ruleId, action) =>
-	api.post(`${base(clientId)}/bid-rules/${ruleId}/${action}`); // pause | resume | stop
+	api.post(`${base(clientId)}/bid-rules/${ruleId}/${action}`);
+
+// Put the keyword back to the automation's `min_bid` → enqueue → poll, like the budget
+// reset. **409 while the automation is running** — the next optimizer check would bid it
+// straight back up, so the API refuses rather than spending a write that gets reverted.
+export const resetBidRule = (clientId, ruleId) =>
+	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
 
 // ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 export const setBudgetNow = (clientId, body) => api.post(`${base(clientId)}/set-budget`, body);
