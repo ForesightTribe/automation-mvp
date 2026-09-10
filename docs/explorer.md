@@ -9,7 +9,7 @@ Its job: profile a **prospect** (not yet a client) or run a one-off deep-dive in
 minutes, with **nothing persisted into client data**.
 
 > Status: **CLI shipped (Phases 0–3).** Runnable via `cli explore` — see
-> [cli.md](cli.md). The admin API + React page (Phase 4) are still to build; this
+> [cli.md](CLI.md). The admin API + React page (Phase 4) are still to build; this
 > doc remains the design + decisions log.
 >
 > **2026-08-10 — the workbook moved onto the shared exports renderer**

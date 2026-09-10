@@ -24,15 +24,3 @@ class MarketplaceOut(BaseModel):
     # scrape only. Lets the UI hide metrics a marketplace can't structurally supply
     # instead of showing them blank.
     data_scope: str = "public"
-
-
-class ZoneOut(BaseModel):
-    zone: str
-    pincode: str
-
-
-class CityOut(BaseModel):
-    slug: str
-    name: str
-    state: str
-    platforms: dict[str, list[ZoneOut]]  # platform -> its zones

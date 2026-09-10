@@ -40,7 +40,6 @@ from playwright.async_api import TimeoutError as PWTimeout
 
 from app.utils.logger import logger
 from scraper.utils.browser import PLAYWRIGHT_ARGS
-from scraper.utils.cities import CITIES
 from scraper.utils.search_result import HEADERS_COMMON
 from scraper.platforms.zepto.public_data import ads
 from scraper.platforms.zepto.public_data import endpoints as ep
@@ -414,6 +413,7 @@ async def search(
     lat: float | None = None, lon: float | None = None,
     merchant_id: str | None = None,
     follow_similarity: bool = False,
+    distinct_ad_slots: bool = True,
 ) -> dict:
     """One keyword search in an open session, paging up to `cap`.
 
@@ -428,6 +428,9 @@ async def search(
 
     `follow_similarity` is accepted and unused: Zepto has no basic->similarity
     relevance switch, so there is no tail to follow.
+
+    `distinct_ad_slots` decides whether a product's sponsored and organic
+    placements are two rows or one — see the dedupe loop below.
 
     Returns {products, total_results, merchant_id, ok, error, blocked, kind}.
     """
@@ -496,10 +499,18 @@ async def search(
         #
         # Rank is unaffected: `classify_products` takes min(position) over our rows,
         # so the best placement still wins regardless of how many are kept.
+        #
+        # ⚠️ `distinct_ad_slots=False` collapses the pair back to one row, and the
+        # TARGETED own-SKU scrape needs exactly that. It measures a product's STATE
+        # at a store (price, stock, inventory) rather than its placements on a page,
+        # and writes `sku_snapshots` — where a second row for the same product at the
+        # same store double-counts the inventory it is there to report. A brand-name
+        # query is precisely where a brand-defence ad shows up, so this is not
+        # hypothetical. Two scrapes, two questions, two keys.
         for p in page_rows:
             pid = p.get("variant_id") or p.get("product_id")
             if pid:
-                key = (pid, bool(p.get("is_ad")))
+                key = (pid, bool(p.get("is_ad")) and distinct_ad_slots)
                 if key in seen:
                     continue
                 seen.add(key)
@@ -534,7 +545,7 @@ async def search(
 async def scrape(
     keyword: str,
     brand_slug: str,
-    city_slug: str = "bengaluru",
+    city_slug: str = "",            # label only — carried onto the result
     zone: str = "",
     pincode: str = "",
     lat: float | None = None,
@@ -544,10 +555,18 @@ async def scrape(
 ) -> dict[str, Any]:
     """Scrape one keyword at one location (opens + closes its own session).
     The orchestrator reuses one session across keywords instead."""
-    city = CITIES.get(city_slug, CITIES["bengaluru"])
-    _lat = lat if lat is not None else city["lat"]
-    _lon = lon if lon is not None else city["lon"]
-    _pincode = pincode or city["pincode"]
+    # Coordinates are REQUIRED. This used to fall back to a hardcoded city table whose
+    # own docstring called its coordinates unverified placeholders, so a caller that
+    # forgot them silently scraped a made-up point and got a plausible-looking result.
+    # A scraper has no business owning a city registry; the caller resolves the store
+    # (see scraper/utils/locations.py) and passes real coordinates.
+    if lat is None or lon is None:
+        raise ValueError(
+            "zepto scrape needs lat/lon. Resolve them from the store catalogue "
+            "with scraper.utils.locations.resolve_city(db, 'zepto', city)."
+        )
+    _lat, _lon = float(lat), float(lon)
+    _pincode = pincode
     _cap = cap if cap is not None else ep.RESULT_CAP
 
     products: list[dict] = []
@@ -569,7 +588,7 @@ async def scrape(
 
     if not products:
         logger.warning(
-            f"Zepto: no products for '{keyword}' in {city['name']}"
+            f"Zepto: no products for '{keyword}' in {city_slug}"
             f"{f'/{zone}' if zone else ''}"
         )
 

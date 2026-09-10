@@ -13,13 +13,17 @@ from campaign_manager.marketplaces import get_adapter
 
 # ── who opts in ──────────────────────────────────────────────────────────────
 
-def test_zepto_opts_in_and_blinkit_does_not():
-    """Blinkit's DOM fallback could report every result as organic, so 'absent' there
-    might mean a broken SOURCE rather than a missing ad. Zepto marks sponsored rows
-    positively (`tagsV2`) and names the winning campaign (`uclId`), so absence is a
-    fact about the auction."""
+def test_both_live_marketplaces_opt_in():
+    """Blinkit joined Zepto on 2026-09-04.
+
+    It was excluded because its DOM fallback reported every result as organic, so "absent"
+    could mean a broken SOURCE rather than a missing ad. That fallback was since DELETED —
+    it could not read `ads_campaign_id`, which is now the sole source of the sponsored flag
+    — so the reason for excluding it no longer exists. Zepto marks sponsored rows positively
+    (`tagsV2` + `uclId`); Blinkit uses `ads_campaign_id` with its `"0"`/`"null"` sentinels.
+    Both are facts about the auction."""
     assert getattr(get_adapter("zepto"), "RAISE_WHEN_ABSENT", False) is True
-    assert getattr(get_adapter("blinkit"), "RAISE_WHEN_ABSENT", False) is False
+    assert getattr(get_adapter("blinkit"), "RAISE_WHEN_ABSENT", False) is True
 
 
 def test_an_adapter_that_says_nothing_keeps_the_old_behaviour():
@@ -88,6 +92,20 @@ def test_a_real_position_can_still_relax():
     """The guard must not disable relaxation generally — it is still the answer when a
     real, measured position cannot be improved at the ceiling."""
     assert bid.should_relax_target(9, 3, 25, 25, 9) is True
+
+
+def test_the_ceiling_is_the_only_thing_bounding_a_broken_match():
+    """⚠️ Accepted exposure (2026-09-04). If the product match breaks — a pid changes, a
+    name drifts — every tick reads "absent" and the bid climbs until it pins at `max_bid`,
+    paying the ceiling for a slot it never had. Relaxation cannot rescue it (see the test
+    above), so `max_bid` is the ONLY bound. This test states that plainly rather than
+    leaving it to be discovered from a bill."""
+    cpm, last = 100, None
+    for _ in range(20):
+        step = bid.next_raise_step(cpm, last, improved=False, min_step=50, pct=8,
+                                   escalate=1.5)
+        cpm, last = min(cpm + step, 400), step
+    assert cpm == 400, "a permanently-absent keyword settles at max_bid, not above it"
 
 
 if __name__ == "__main__":

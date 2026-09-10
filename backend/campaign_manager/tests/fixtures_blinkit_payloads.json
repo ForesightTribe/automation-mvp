@@ -1,0 +1,1983 @@
+{
+ "city_targeted": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "pan_india": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "PAN_INDIA",
+   "region_ids": null,
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "-1",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "-1",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "-1",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "banner_listing": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "BANNER_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "BANNER_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "BANNER_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "highlighted_pids": ""
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "BANNER_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "no_keywords": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": []
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "pids_as_list": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": [
+    787339,
+    554784
+   ],
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "pids_from_products": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "products": [
+    {
+     "pid": 787339
+    },
+    {
+     "pid": 554784
+    }
+   ]
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "with_campaign_data": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": {
+    "brand_ids": "42",
+    "category_ids": "7",
+    "ro_details": {
+     "ro_number": "RO1",
+     "ro_amount": 5,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "42",
+    "category_ids": "7",
+    "ro_details": {
+     "ro_number": "RO1",
+     "ro_amount": 5,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "42",
+    "category_ids": "7",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": "RO1",
+     "ro_amount": 5,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "with_negative_kw": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "negative_keywords": [
+    "pepsi"
+   ]
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [
+     "pepsi"
+    ],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 500
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [
+     "pepsi"
+    ]
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ },
+ "with_repeat_order": {
+  "detail": {
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_type": "PRODUCT_LISTING",
+   "objective_type": "PERFORMANCE",
+   "campaign_budget": 502,
+   "pacing_type": "DAILY",
+   "cpm": 0,
+   "creative_type": "",
+   "collection_id": "",
+   "header_title": "",
+   "store_name": "",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": null,
+   "mobile_image_url": "",
+   "pids": "787339,554784",
+   "start_ts": "2026-09-01 18:30:00+00:00",
+   "end_ts": "9999-12-31 18:29:59+00:00",
+   "infinite_campaign": true,
+   "region_type": "CITY",
+   "region_ids": [
+    787
+   ],
+   "campaign_data": null,
+   "campaign_targeting": {
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "repeat_order_suggestion": {
+    "bidding_strategy": {
+     "cpm": 300
+    }
+   }
+  },
+  "bid": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "brand_page_id": "",
+   "collection_id": "",
+   "cpm": 0,
+   "creative_type": "",
+   "header_title": "",
+   "highlighted_pids": "787339,554784",
+   "image_url": "",
+   "is_extendable": null,
+   "store_name": "",
+   "pids": "787339,554784",
+   "campaign_data": {
+    "pids": "787339,554784",
+    "brand_ids": "",
+    "category_ids": null,
+    "ro_details": {
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 502,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": [],
+    "repeat_order_suggestion": {
+     "bidding_strategy": {
+      "cpm": 300
+     }
+    },
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 111,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   }
+  },
+  "budget": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 19802,
+   "campaign_request_type": "UPDATE",
+   "campaign_id": 637511,
+   "asset_type": "PRODUCT_LISTING",
+   "name": "Foresight | Soda KW (Pune)",
+   "infinite_campaign": true,
+   "campaign_start": "9/1/2026",
+   "campaign_end": "12/31/9999",
+   "objective_type": "PERFORMANCE",
+   "pids": "787339,554784",
+   "brand_ids": "",
+   "brand_name": "Dobra",
+   "cpm": 0,
+   "header_title": "",
+   "is_extendable": null,
+   "bidding_strategy": {
+    "total_budget": 900.0,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "negative_keywords": []
+   },
+   "campaign_data": {
+    "creative_type": "",
+    "collection_id": "",
+    "pids": "787339,554784"
+   }
+  },
+  "restart": {
+   "source_platform": "diy_dashboard_web",
+   "requested_by": "ops@foresighttribe.com",
+   "advertiser_id": 0,
+   "brand_name": "",
+   "campaign_id": 637511,
+   "objective_type": "PERFORMANCE",
+   "asset_type": "PRODUCT_LISTING",
+   "image_url": "",
+   "header_title": "",
+   "creative_type": "",
+   "highlighted_pids": "787339,554784",
+   "collection_id": "",
+   "store_name": "",
+   "name": "Foresight | Soda KW (Pune)",
+   "campaign_start": "9/3/2026",
+   "campaign_end": "12/31/9999",
+   "cpm": 0,
+   "campaign_data": {
+    "brand_ids": "",
+    "category_ids": "",
+    "pids": "787339,554784",
+    "products": [],
+    "ro_details": {
+     "ro_number": null,
+     "ro_amount": null,
+     "ro_issue_date": null,
+     "proof_url": null
+    }
+   },
+   "bidding_strategy": {
+    "total_budget": 900,
+    "pacing_type": "DAILY"
+   },
+   "campaign_targeting": {
+    "city_ids": "787",
+    "is_extendable": false,
+    "keyword_targeting": {
+     "keywords": [
+      {
+       "keyword": "soda",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 101,
+         "max_boost": null
+        }
+       ]
+      },
+      {
+       "keyword": "cola",
+       "bids": [
+        {
+         "match_type": "EXACT",
+         "cpm": 150,
+         "max_boost": null
+        }
+       ]
+      }
+     ]
+    }
+   },
+   "campaign_request_type": "RESTART",
+   "preview_image_url": ""
+  }
+ }
+}

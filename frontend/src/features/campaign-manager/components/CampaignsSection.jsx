@@ -168,8 +168,8 @@ export const CampaignsSection = () => {
 			else setJob(null);
 			return;
 		}
-		qc.invalidateQueries({ queryKey: ["cm2-campaigns", activeClientId] });
-		qc.invalidateQueries({ queryKey: ["cm2-history", activeClientId] });
+		qc.invalidateQueries({ queryKey: ["cm-campaigns", activeClientId] });
+		qc.invalidateQueries({ queryKey: ["cm-history", activeClientId] });
 		setJob(null);
 	};
 

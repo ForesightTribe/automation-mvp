@@ -28,6 +28,17 @@ async def create_browser_context(
         headless=headless,
         args=["--no-sandbox", "--disable-blink-features=AutomationControlled", "--disable-dev-shm-usage"],
     )
+    context = await new_context(browser, storage_state)
+    return browser, context
+
+
+async def new_context(browser: Browser, storage_state: dict | None = None) -> BrowserContext:
+    """A context on an EXISTING browser, with the same fingerprint settings.
+
+    Split out of `create_browser_context` so a session can be rebuilt mid-run without
+    launching a second Chromium: re-authenticating swaps the context, not the browser, which
+    keeps ~1 GB of RAM and the caller's `browser` handle intact.
+    """
     context = await browser.new_context(
         viewport={"width": 1280, "height": 900},
         user_agent=_USER_AGENT,
@@ -37,7 +48,7 @@ async def create_browser_context(
     await context.add_init_script(
         "Object.defineProperty(navigator, 'webdriver', {get: () => undefined})"
     )
-    return browser, context
+    return context
 
 
 async def write_blocker(route: Route, request: Request) -> None:

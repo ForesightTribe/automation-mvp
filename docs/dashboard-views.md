@@ -6,7 +6,7 @@ tables+columns that must be clubbed, and the API that serves it. Living doc —
 update as views are built and the schema evolves.
 
 See [api-reference.md](api-reference.md) for the existing endpoint surface and
-[architecture.md](architecture.md) for the DB schema.
+[architecture.md](ARCHITECTURE.md) for the DB schema.
 
 ---
 

@@ -330,7 +330,29 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     pairs = await repo.get_bid_rules(tenant_id, platform)
     if reset:                                   # end-of-window de-escalation, not optimization
         return await _reset_run(tenant_id, platform, pairs, now, run_id, dry_run)
-    active = [(r, rt) for r, rt in pairs if r.state == "active" and _in_window(_rule_dict(r), now)]
+    # Open NOW *and* still open once the reset's look-ahead has passed.
+    #
+    # The second half is what keeps the optimizer and the reset off the same keyword. The
+    # reset evaluates windows at `now + RESET_LOOKAHEAD_MINUTES` (it is fired a minute early
+    # so the bid drops before the budget engine can stop the campaign), so for ~2 minutes at
+    # window close it considers a keyword closed while this loop still considered it open.
+    # While the job guard treated a reset as an optimizer run they could never overlap, so
+    # that sliver was harmless. Now that they can run together (migration a2d5f81c9b34) it
+    # would be a genuine race over one bid — the optimizer raising it at the same moment the
+    # reset drops it, last writer wins, which is exactly what the reset exists to prevent.
+    #
+    # Skipping it costs nothing: a keyword two minutes from closing is about to be reset to
+    # its floor, so raising its bid was always money spent on a position we are about to
+    # give up.
+    #
+    # ⚠️ BOTH tests are needed, not just the look-ahead one. Testing only `now + lookahead`
+    # would also open every window two minutes EARLY, which would start bidding before the
+    # window the client configured.
+    soon = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
+    active = [(r, rt) for r, rt in pairs
+              if r.state == "active"
+              and _in_window(_rule_dict(r), now)
+              and _in_window(_rule_dict(r), soon)]
     if not active:
         logs.note(run_id, "No keyword automations are in window right now", dry_run=dry_run)
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
@@ -346,8 +368,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     pw = browser = None
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
-    except RuntimeError:
+    except RuntimeError as e:
         logs.session_expired(run_id, dry_run=dry_run)
+        await _record_run_blocked(
+            tenant_id, platform, run_id, [r for r, _ in active],
+            _plain(e, f"could not sign in to {mp}, so no bids were changed"), dry_run)
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
@@ -360,6 +385,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   await repo.get_advertiser(tenant_id, platform))
         except RuntimeError as e:
             logs.live_refused(run_id, reason=str(e))
+            await _record_run_blocked(
+                tenant_id, platform, run_id, [r for r, _ in active],
+                _plain(e, "the ad account could not be confirmed, so no bids were changed"),
+                dry_run)
             if browser is not None:
                 await browser.close()
             if pw is not None:
@@ -504,7 +533,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   f"not applied — {mp} rejected the change to ₹{min_bid}"))
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "open" if ok else "skip", live_cpm, min_bid,
-                                     "window opened → min", dry_run, ok))
+                                     f"the window opened, so the bid starts at its "
+                                     f"₹{min_bid} floor", dry_run, ok,
+                                     rule_id=rule.id, target=rule.target_position))
                 # No runtime row on purpose: `updated_at` must stay behind the window start
                 # so the next tick re-checks that the floor actually stuck. Dry-run never
                 # changes the live bid, though, so it would re-open every tick forever and
@@ -543,8 +574,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                       f"not applied — {mp} rejected the change to ₹{bounded}"))
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                          "bounds" if ok else "skip", live_cpm, bounded,
-                                         f"live bid {why} — forced into [{min_bid}–"
-                                         f"{ceiling}]", dry_run, ok))
+                                         f"the live bid of ₹{live_cpm} was {why} "
+                                         f"₹{limit} limit, so it was brought back to "
+                                         f"₹{bounded}", dry_run, ok,
+                                         rule_id=rule.id, target=rule.target_position))
                     if ok and not dry_run:
                         runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
                     continue               # no position scrape — the bid just moved
@@ -601,7 +634,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                               msg=f"could not check position — {e}. Bid left unchanged")
                 errors += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     "error", current_cpm, current_cpm, str(e), dry_run, False))
+                                     "error", current_cpm, current_cpm,
+                                     _plain(e, "could not check the search position, so the "
+                                               "bid was left unchanged"), dry_run, False,
+                                     rule_id=rule.id, target=rule.target_position))
                 continue
 
             # What the search saw. A rule reusing this run's scrape says so, rather than
@@ -625,19 +661,19 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # the next tick is still absent the position has not improved, so the step
             # grows exactly as it would for a real slot.
             #
-            # ⚠️ OPT-IN PER MARKETPLACE (`getattr(..., False)`), because the guard this
-            # replaces was protecting against something real on Blinkit: its DOM fallback
-            # reported every result as organic, so "absent" could mean a broken SOURCE
-            # rather than a missing ad, and raising against that is bidding on garbage.
-            # Zepto's marker is positive and verified (`tagsV2` + `uclId`), so absence
-            # there is a fact about the auction. Blinkit declares nothing and is unchanged.
+            # ⚠️ OPT-IN PER MARKETPLACE (`getattr(..., False)`), so a new marketplace never
+            # starts bidding against a signal nobody has verified it can read. BOTH live
+            # marketplaces now opt in: Zepto's marker is positive (`tagsV2` + `uclId`), and
+            # Blinkit's is `ads_campaign_id` — the DOM fallback that made its `is_ad`
+            # untrustworthy was deleted, so absence there is a fact about the auction too.
             absent = position is None
             if absent and not getattr(adapter, "RAISE_WHEN_ABSENT", False):
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning", msg=f"{seen} — {source}, leaving the bid unchanged")
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     "skip", current_cpm, current_cpm, source, dry_run, True))
+                                     "skip", current_cpm, current_cpm, source, dry_run, True,
+                                     rule_id=rule.id, target=rule.target_position))
                 continue
             if absent:
                 position = float(len(results) + 1)
@@ -698,7 +734,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                      "relax", current_cpm, current_cpm,
                                      f"target position {rule.target_position} unreachable at "
                                      f"max ₹{ceiling} — now holding position {target}",
-                                     dry_run, True))
+                                     dry_run, True,
+                                     rule_id=rule.id, position=position, target=target))
 
             new_cpm, reason = compute_bid(
                 position, target, current_cpm, min_bid, ceiling,
@@ -749,12 +786,25 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # outbidding us during the pause is still answered immediately.
                 rt["drift_paused_until"] = now + timedelta(minutes=config.bid_tuning(platform, "BID_DRIFT_PAUSE_MINUTES"))
 
-            # No change (target held, HOLD, awaiting confirmation, or drift paused): record
-            # the observed position, but do NOT write a History row — those every 15 min
-            # would bury the real changes (narrated to Cloud Logging above; D6).
+            # No change (target held, HOLD, awaiting confirmation, or drift paused).
+            #
+            # These USED to be dropped, on the grounds that a row every 15 minutes would
+            # bury the real changes in History. That was solved in the wrong place: the
+            # noise belonged in the default VIEW, not in what we are willing to remember.
+            # A per-automation drill-down needs exactly these ticks — "why did my bid not
+            # move for six hours" is answered by them and by nothing else — so they are
+            # recorded, and `/history` filters them out of the default view instead.
+            #
+            # `hold` when we are off target and waiting for the marketplace to reflect the
+            # last change; `no-op` when there was simply nothing to do.
             if new_cpm is None:
                 skipped += 1
                 runtime_rows.append(rt)
+                log_rows.append(_row(
+                    tenant_id, platform, run_id, cid, rule.campaign_name, kw,
+                    "hold" if position > target else "no-op",
+                    current_cpm, current_cpm, reason, dry_run, True,
+                    rule_id=rule.id, position=position, target=target))
                 continue
 
             # Per-KEYWORD rate limit: the guard exists to catch a runaway loop, and a
@@ -794,7 +844,17 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             drifted = drift_pct > 0 and position <= target
             action = "recover" if recovering else ("drift" if drifted else "apply")
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                 action if ok else "skip", current_cpm, new_cpm, reason, dry_run, True))
+                                 action if ok else "skip", current_cpm, new_cpm, reason, dry_run, True,
+                                 rule_id=rule.id, position=position, target=target))
+    except writes.SessionExpired as e:
+        # The client already tried to re-authenticate once and could not. Continuing would
+        # fire the same doomed call at every remaining keyword while logging that the
+        # MARKETPLACE rejected the bids — which is the misreporting this whole path exists
+        # to stop. Abort, and say what actually happened.
+        logs.session_expired(run_id, dry_run=dry_run)
+        logs.note(run_id, f"stopped after {processed} of {len(active)} automations — {e}",
+                  dry_run=dry_run)
+        errors += 1
     finally:
         await adapter.close_position_session(pos_session)
         if browser is not None:
@@ -841,8 +901,12 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
     pw = browser = None
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
-    except RuntimeError:
+    except RuntimeError as e:
         logs.session_expired(run_id, dry_run=dry_run)
+        await _record_run_blocked(
+            tenant_id, platform, run_id, to_reset,
+            _plain(e, f"could not sign in to {mp}, so the end-of-window reset did not run — "
+                      f"these bids stay where the window left them"), dry_run)
         logs.run_summary(run_id, "bid_reset", dry_run=dry_run, unit="keywords",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
@@ -854,6 +918,10 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                                   await repo.get_advertiser(tenant_id, platform))
         except RuntimeError as e:
             logs.live_refused(run_id, reason=str(e))
+            await _record_run_blocked(
+                tenant_id, platform, run_id, to_reset,
+                _plain(e, "the ad account could not be confirmed, so the end-of-window "
+                          "reset did not run"), dry_run)
             if browser is not None:
                 await browser.close()
             if pw is not None:
@@ -916,7 +984,9 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                      "skip", current, min_bid,
-                                     f"window closed · already at min ₹{current}", dry_run, True))
+                                     f"the window closed and the bid is already at its "
+                                     f"₹{current} floor, so nothing to change", dry_run, True,
+                                     rule_id=r.id, target=r.target_position))
                 continue
 
             # No status gate. `held` (ON_HOLD) is a RUNNING campaign whose budget ran out —
@@ -950,8 +1020,12 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(min_bid)})
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                  "reset", current, min_bid,
-                                 err or f"window closed → min (campaign {status or 'unknown'})",
-                                 dry_run, ok))
+                                 _plain(err, f"the window closed, so the bid goes back to its "
+                                             f"₹{min_bid} floor") if err else
+                                 f"the window closed, so the bid goes back to its "
+                                 f"₹{min_bid} floor",
+                                 dry_run, ok,
+                                 rule_id=r.id, target=r.target_position))
     finally:
         if browser is not None:
             await browser.close()
@@ -966,7 +1040,46 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
     return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
 
 
-def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, dry_run, success) -> dict:
+async def _record_run_blocked(tenant_id, platform: str, run_id: str, rules, reason: str,
+                              dry_run: bool) -> None:
+    """Write a History row per affected automation when a run cannot start at all.
+
+    Without this the run dies at `setup()` having written nothing, and History shows a
+    silent gap: the bid simply stops moving for hours with no row saying why. That is the
+    one question a client actually asks of this screen, so "the automation could not sign
+    in to Blinkit, so nothing was changed" has to be IN it.
+
+    One row per rule rather than one per run, because the question is asked per campaign —
+    a run-level row is invisible from a campaign's own history.
+    """
+    if not rules:
+        return
+    rows = [_row(tenant_id, platform, run_id, r.campaign_id, r.campaign_name, r.keyword,
+                 "error", None, None, reason, dry_run, False,
+                 rule_id=r.id, target=r.target_position)
+            for r in rules]
+    try:
+        await repo.write_run_log(rows)
+    except Exception as e:                     # never let bookkeeping mask the real fault
+        logs.note(run_id, f"could not record why the run was blocked: {e}", dry_run=dry_run)
+
+
+def _plain(err, what: str) -> str:
+    """A failure a CLIENT can read, for the History row.
+
+    Raw exceptions leak into this column otherwise — a Zepto block landed as four lines of
+    JSON (`HTTP 299 {"error_code": "LOGIN_REQUIRED"…`), which is meaningless to the person
+    reading their campaign's history and enough to break a table layout. The full text is
+    still in Cloud Logging, where support can find it; this is the sentence.
+    """
+    detail = " ".join(str(err).split())          # collapse newlines — one row, one line
+    if len(detail) > 120:
+        detail = detail[:117] + "…"
+    return f"{what} ({detail})" if detail else what
+
+
+def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, dry_run,
+         success, *, rule_id=None, position=None, target=None) -> dict:
     # `timestamp` is stamped HERE, when the decision is made — not left to the model
     # default. The rows are all persisted in one batch at the end of the run, so the
     # default fired at insert time and gave every row the SAME timestamp: a run spanning
@@ -976,5 +1089,8 @@ def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, 
         "tenant_id": tenant_id, "platform": platform, "run_id": run_id, "kind": "bid",
         "campaign_id": cid, "campaign_name": cname, "keyword": kw, "action": action,
         "old_value": old, "new_value": new, "reason": reason,
+        # The decision's inputs, so a per-automation view can explain itself without
+        # parsing prose out of `reason`.
+        "rule_id": rule_id, "position": position, "target": target,
         "dry_run": dry_run, "success": success, "timestamp": now_ist(),
     }

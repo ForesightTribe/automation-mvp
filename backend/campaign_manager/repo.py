@@ -493,9 +493,22 @@ async def update_bid_rule(rule_id: str, fields: dict):
         return r
 
 
+# Actions that record a tick where NOTHING changed. Stored (a per-automation view is made
+# of them) but filtered out of the default History, which is a list of what the automation
+# DID — a "held at ₹201" row every 15 minutes would bury the changes among them.
+NO_CHANGE_ACTIONS = ("hold", "no-op")
+
+
 async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
-                       kind: str | None = None, limit: int = 50, offset: int = 0):
-    """Recent cm_run_log rows for a tenant (newest first) + total count."""
+                       kind: str | None = None, limit: int = 50, offset: int = 0,
+                       campaign_id: int | None = None, rule_id: str | None = None,
+                       include_unchanged: bool = False):
+    """Recent cm_run_log rows for a tenant (newest first) + total count.
+
+    Defaults to CHANGES ONLY. Pass `include_unchanged=True` for the full per-tick record —
+    that is the per-automation drill-down, where "we held, and here is why" is the answer
+    being looked for. `campaign_id` / `rule_id` narrow it to one campaign or automation.
+    """
     from sqlalchemy import func
     from app.models.campaign_manager_v2 import CmRunLog
 
@@ -504,6 +517,12 @@ async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
                                       CmRunLog.platform == platform)
         if kind:
             base = base.where(CmRunLog.kind == kind)
+        if campaign_id is not None:
+            base = base.where(CmRunLog.campaign_id == campaign_id)
+        if rule_id is not None:
+            base = base.where(CmRunLog.rule_id == rule_id)
+        if not include_unchanged:
+            base = base.where(CmRunLog.action.notin_(NO_CHANGE_ACTIONS))
         total = (await db.execute(
             select(func.count()).select_from(base.subquery())
         )).scalar() or 0

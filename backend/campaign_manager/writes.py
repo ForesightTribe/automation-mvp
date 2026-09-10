@@ -13,7 +13,69 @@ so the safety logic is verifiable without Blinkit.
 from campaign_manager import config, logs
 
 
+class SessionExpired(RuntimeError):
+    """The marketplace answered as if we are logged out.
+
+    Lives here, beside `WriteRefused`, because the ENGINES have to act on it and they are
+    marketplace-agnostic — an adapter-specific exception class would make `bid.py` import
+    from `marketplaces/blinkit/`.
+
+    Deliberately distinct from "the marketplace refused this change". Blinkit's `_fetch`
+    used to turn a login redirect into `{}`, which every caller reads as a rejection — so a
+    session dying mid-run logged `not applied — Blinkit rejected the change to ₹250` for
+    every remaining keyword. A false statement about the marketplace, and it hid the fault.
+
+    A client that CAN re-authenticate does so first and only raises this if that fails, so
+    reaching an engine means the run genuinely cannot continue.
+
+    Subclasses RuntimeError because `adapter.setup()` failures are already caught as
+    RuntimeError and reported as an expired session — this keeps startup behaviour identical.
+    """
+
+
+class WriteRefused(Exception):
+    """A payload builder refused to send a write it could not build safely.
+
+    Raised from deep inside an adapter — where the marketplace's own payload shape is
+    known — and caught here, at the choke point, because refusing is a POLICY outcome:
+    it is one failed write with a readable reason, not a crashed run.
+
+    That distinction matters. The engines wrap their per-campaign loops in `try/finally`,
+    not `try/except`, so any other exception escaping a write aborts the whole run and
+    every campaign after it is silently skipped. Only refusals are caught here — a dead
+    session or a network failure must still abort, because continuing would mean firing
+    the same broken call at fifty more campaigns.
+
+    The case that created it: a Blinkit campaign reporting `region_type=CITY` whose
+    `region_ids` cannot be read. Sending the pan-India default would broaden a live
+    campaign (docs §8.2b), so the builder refuses instead.
+    """
+
+
 # ── Pure guardrail logic (unit-tested, no I/O) ──────────────────────────────
+
+def _why(resp: dict | None) -> str:
+    """The marketplace's own reason a write was refused.
+
+    It was always in the response and never logged: a failed budget write recorded
+    `applied=False` and "₹201 → ₹250", with the reason dropped on the floor. That is
+    half of why a delisted-catalog retry could sit in `apply_budget` for months looking
+    like it did something — nobody ever saw either message.
+
+    Blinkit puts it in `message`, as a string or a list of them; Zepto uses `error` or
+    `detail`. Falls back to naming the shape of the response, because "no reason given"
+    is itself worth knowing — it means the refusal came back empty, not that we lost it.
+    """
+    if not isinstance(resp, dict):
+        return f"no reason given ({type(resp).__name__})"
+    for key in ("message", "error", "detail", "errors"):
+        val = resp.get(key)
+        if isinstance(val, (list, tuple)):
+            val = "; ".join(str(v) for v in val if v)
+        if val:
+            return str(val)[:200]
+    return f"no reason given (keys: {', '.join(sorted(resp)) or 'none'})"
+
 
 def _money(v) -> str:
     """Render a budget the way it will actually be SENT.
@@ -201,10 +263,20 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
         return True
 
     # LIVE — the single real budget mutation.
-    resp = await adapter.apply_budget(client, campaign_id, target)
+    try:
+        resp = await adapter.apply_budget(client, campaign_id, target)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e))
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
+                          detail=f"refused — {e}")
+        return False
     ok = bool(resp.get("status") or resp.get("success"))
+    detail = f"{_money(current)} → {_money(target)}"
+    if not ok:
+        detail = f"{detail} — {_why(resp)}"
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=f"{_money(current)} → {_money(target)}")
+                      detail=detail)
     return ok
 
 
@@ -244,7 +316,12 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         return True
 
     # LIVE — the single real Blinkit bid mutation.
-    resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+    try:
+        resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e), keyword=keyword)
+        return False
     return bool(resp.get("status") or resp.get("success"))
 
 
@@ -322,7 +399,14 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         return True
 
     # LIVE — the single real status mutation.
-    resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
+    try:
+        resp = await adapter.apply_status(client, campaign_id, target, budget=budget)
+    except WriteRefused as e:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
+                             passed=False, reason=str(e))
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
+                          detail=f"refused — {e}")
+        return False
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       detail=_status_detail(target, budget))

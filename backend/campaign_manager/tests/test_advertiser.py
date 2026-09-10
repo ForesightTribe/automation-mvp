@@ -33,7 +33,7 @@ class WriteCaptureClient:
     async def get_campaign_detail(self, cid):
         return ({"pacing_type": "DAILY"}, {})
 
-    async def update_campaign(self, cid, changes, *, empty_pids=False, advertiser_id=None):
+    async def update_campaign(self, cid, changes, *, advertiser_id=None):
         self.captured = advertiser_id
         return {"success": True}
 
@@ -48,7 +48,7 @@ class Obj:
 
 
 def test_resolve_returns_derived():
-    assert _r(adapter.resolve_advertiser(DeriveClient(234))) == 234
+    assert _r(adapter.resolve_advertiser(DeriveClient(19802))) == 19802
 
 
 def test_set_advertiser_sets_attr():

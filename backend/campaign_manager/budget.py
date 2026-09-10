@@ -191,8 +191,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     pw = browser = None
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
-    except RuntimeError:
+    except RuntimeError as e:
         logs.session_expired(run_id, dry_run=dry_run)
+        await _record_run_blocked(
+            tenant_id, platform, run_id, schedules,
+            f"could not sign in to {platform.title()}, so the budget was not changed "
+            f"({' '.join(str(e).split())[:110]})", dry_run)
         logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
@@ -205,6 +209,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   await repo.get_advertiser(tenant_id, platform))
         except RuntimeError as e:
             logs.live_refused(run_id, reason=str(e))
+            await _record_run_blocked(
+                tenant_id, platform, run_id, schedules,
+                f"the ad account could not be confirmed, so the budget was not changed "
+                f"({' '.join(str(e).split())[:110]})", dry_run)
             if browser is not None:
                 await browser.close()
             if pw is not None:
@@ -370,6 +378,24 @@ async def _restart(adapter, client, run_id, campaign_id, budget, detail, dry_run
             tenant_id, campaign_id, window_minutes=config.RATE_WINDOW_MINUTES,
             kind="activation"),
     )
+
+
+async def _record_run_blocked(tenant_id, platform: str, run_id: str, schedules,
+                              reason: str, dry_run: bool) -> None:
+    """A History row per campaign when a budget run cannot start at all.
+
+    The same silent gap the bid engine had: the run dies at `setup()` having written
+    nothing, so History shows the budget simply not changing, with no row saying why.
+    """
+    if not schedules:
+        return
+    rows = [_row(tenant_id, platform, run_id, sched.campaign_id, sched.campaign_name,
+                 "error", None, None, reason, dry_run, False)
+            for sched, _ in schedules if sched.state == "active"]
+    try:
+        await repo.write_run_log(rows)
+    except Exception as e:                     # bookkeeping must never mask the real fault
+        logs.note(run_id, f"could not record why the run was blocked: {e}", dry_run=dry_run)
 
 
 def _row(tenant_id, platform, run_id, cid, cname, action, old, new, reason, dry_run,

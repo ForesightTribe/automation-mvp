@@ -128,6 +128,38 @@ async def _competitor_list(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple
     return [(e.brand_slug, e.aliases or []) for e in rows]
 
 
+def warn_if_co_located(locations, label: str) -> int:
+    """Warn when several catalog rows share one coordinate. Returns the wasted count.
+
+    The search API picks the dark store FROM THE COORDINATE, so two catalog rows at the
+    same lat/lon send an identical request and get an identical response — the second is
+    pure waste, and the response cannot even tell you it happened, because it names the
+    store that served rather than the row we asked for.
+
+    This was real: the catalog once held 2,216 rows across 1,924 distinct coordinates,
+    so ~13% of every national run was duplicate work — roughly ten hours a cycle, for
+    months, entirely silently. It is 0 today (2,059 rows, 2,059 coordinates), fixed as a
+    side effect of a `cli sync --prune` rather than by intent, which is exactly why it is
+    worth a line: nothing would announce its return either.
+
+    Deliberately a WARNING and not a filter. Duplicate coordinates are a CATALOG problem
+    — two rows describing one probe point — and silently deduping here would hide it
+    while leaving `config.xlsx` wrong and every other consumer still double-counting.
+    `--resume` already skips these (it keys on `(keyword, lat, lon)`); a fresh run does
+    not.
+    """
+    coords = {(l.lat, l.lon) for l in locations}
+    wasted = len(locations) - len(coords)
+    if wasted:
+        logger.warning(
+            f"{label}: {len(locations)} stores share only {len(coords)} distinct "
+            f"coordinates — {wasted} ({wasted / len(locations) * 100:.0f}%) will be "
+            f"scraped twice for an identical response. Fix the catalog (`cli sync`), "
+            f"not the scrape."
+        )
+    return wasted
+
+
 async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
                      mp_slug: str) -> list[MarketplaceLocation]:
     return (await db.execute(
@@ -483,6 +515,7 @@ async def run_tenant(
                     f"orchestrator: tenant {tid} on {mp_slug} — {n_workers} workers × "
                     f"{total} stores, cap={cap}"
                 )
+                warn_if_co_located(locations, "orchestrator")
                 tasks = [
                     asyncio.create_task(_worker(
                         w, provider, browser, seed, queue, kw_map, competitor_list, done,

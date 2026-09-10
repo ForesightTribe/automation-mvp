@@ -10,6 +10,7 @@ in the existing CLI commands.
 """
 
 import uuid
+from datetime import datetime
 from typing import Any, Callable, NamedTuple
 
 from app.models.job import Lane
@@ -146,20 +147,10 @@ def _public_skus(tenant_id, p):
     return a
 
 
-def _budget_scheduler(tenant_id, p):
-    return ["ads", "budget-scheduler", "--tenant", str(tenant_id)]
-
-
-def _bid_optimizer(tenant_id, p):
-    return ["ads", "bid-optimizer", "--tenant", str(tenant_id)]
-
-
-def _sync_campaign_data(tenant_id, p):
-    return ["ads", "sync-campaign-data", "--tenant", str(tenant_id)]
-
-
-# Campaign Manager v2 (cm.*) — parallel to ads.* (deleted at cutover). Dry-run by
-# default; the `live` param maps to --live to arm a real write (only at/after cutover).
+# Campaign Manager (cm.*). Dry-run by default; the `live` param maps to --live to arm a
+# real write. The legacy `ads.*` job types this once ran parallel to were deleted with the
+# v1 engine on 2026-09-03 — see the Lane note in app/models/job.py for why their LANES
+# survive the deletion.
 #
 # `marketplace` selects the adapter (see campaign_manager/marketplaces/__init__.py).
 #
@@ -193,12 +184,6 @@ def _cm_reconcile(tenant_id, p):
     a = ["cm", "reconcile", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
     _flag(a, "--live", p.get("live"))
-    return a
-
-
-def _cm_sync_campaign_data(tenant_id, p):
-    a = ["cm", "sync-campaign-data", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
     return a
 
 
@@ -319,20 +304,7 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         param_keys=("marketplace", "city", "brand_cap", "workers", "resume"),
         label="Public own-SKU scrape",
     ),
-    # Ad automations — each has its own dedicated lane so they never block each other.
-    "ads.budget_scheduler": JobTypeSpec(
-        Lane.budget_scheduler, 5 * 60, _budget_scheduler,
-        label="Budget scheduler (legacy v1)",
-    ),
-    "ads.bid_optimizer": JobTypeSpec(
-        Lane.bid_optimizer, 5 * 60, _bid_optimizer,
-        label="Bid optimizer (legacy v1)",
-    ),
-    "ads.sync_campaign_data": JobTypeSpec(
-        Lane.sync_campaign_data, 2 * 60 * 60, _sync_campaign_data,
-        label="Campaign data sync (legacy v1)",
-    ),
-    # Campaign Manager v2 — its OWN lanes (D18): bid isolated in cm_bid (latency-
+    # Campaign Manager — its OWN lanes (D18): bid isolated in cm_bid (latency-
     # critical); budget + set-budget + sync share cm_ops (latency-tolerant); reconcile
     # is no-browser → the shared interactive lane (prompt).
     "cm.budget_scheduler": JobTypeSpec(
@@ -354,11 +326,6 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         Lane.cm_ops, 10 * 60, _cm_set_activation,
         param_keys=("marketplace", "campaign", "status", "budget", "live"),
         label="Campaign start/pause",
-    ),
-    "cm.sync_campaign_data": JobTypeSpec(
-        Lane.cm_ops, 2 * 60 * 60, _cm_sync_campaign_data,
-        param_keys=("marketplace",),
-        label="Campaign performance sync",
     ),
     # Catalogue refresh — a READ (one list call), so it never writes to Blinkit and needs
     # no `live` param. Short timeout: it is a browser launch plus two requests, and it
@@ -428,3 +395,121 @@ def label_for(job_type: str) -> str:
     """
     spec = JOB_TYPES.get(job_type)
     return (spec.label if spec and spec.label else job_type)
+
+
+# ── Schedule names ───────────────────────────────────────────────────────────
+#
+# The campaign manager's reconciler generates its schedule names as MACHINE KEYS:
+#
+#   auto:cm:budget:a870fd8d-7373-47ec-ad69-5dd08ce35542:blinkit:0200
+#
+# and that is the right shape for what they are — `reconciler._apply` matches desired
+# rows against existing ones BY NAME, and `_is_managed` parses the platform out of
+# them, so the format is load-bearing and must stay stable and deterministic.
+#
+# The mistake was showing it to people. It surfaces in `cli schedules list/show`, in
+# `cli status`, and — worst — inside the overdue-schedule ALERTS raised by
+# `jobs/monitor.py::check_deadman`, where someone reading a 2am page gets a 36-char
+# UUID and `0200` instead of "the 02:00 budget run". The tenant is already its own
+# column everywhere it is displayed, so the UUID tells a reader nothing at all.
+#
+# So: render, don't rename. Nothing about the stored key changes, which means live
+# client automations are not churned by a cosmetic fix.
+#
+# ⚠️ COUPLED TO `campaign_manager/reconciler.py`. If a new `Desired(...)` name shape
+# is added there, add it here too — `campaign_manager/tests/test_schedule_labels.py`
+# feeds every real reconciler-generated name through this and fails if one falls back
+# to the raw key.
+
+_SCHEDULE_PREFIX = "auto:cm:"
+
+_KIND_LABELS = {
+    "budget": "budget",
+    "bid": "bids",
+    "cleanup": "automations",
+}
+
+
+def _hhmm(token: str) -> str | None:
+    """'0200' → '02:00'. None if it isn't a four-digit time."""
+    if len(token) == 4 and token.isdigit() and int(token[:2]) < 24 and int(token[2:]) < 60:
+        return f"{token[:2]}:{token[2:]}"
+    return None
+
+
+def _when(token: str) -> str | None:
+    """A one-shot's fire time: '20260904T0200' → '04 Sep 02:00', '20260904' → '04 Sep'."""
+    for fmt, out in (("%Y%m%dT%H%M", "%d %b %H:%M"), ("%Y%m%d", "%d %b")):
+        try:
+            return datetime.strptime(token, fmt).strftime(out)
+        except ValueError:
+            continue
+    return None
+
+
+def schedule_label(name: str | None, tenant: str | None = None) -> str:
+    """A reconciler schedule name → something a person can read.
+
+    Any other name (a hand-made `schedules add` row, which is already written for
+    humans) is returned unchanged, as is anything unparseable — same rule as
+    `label_for`: a name we don't recognise must still be printable, because the case
+    that produces one is a format change, exactly when a readable message matters.
+
+    `tenant` prefixes the client in the same `DOBRA | …` style the hand-made rows
+    already use, so every row in a listing reads the same way. It matters more than it
+    looks: the table is multi-tenant, and "'Blinkit budget · 02:00' is overdue" does
+    not say WHOSE budget run — with two active clients that is a real question at 2am.
+    Omitted when unknown rather than guessed.
+
+        auto:cm:budget:<uuid>:blinkit:0200            -> Blinkit budget · 02:00
+        auto:cm:budget:<uuid>:blinkit:poll            -> Blinkit budget · hourly catch-up
+        auto:cm:budget:<uuid>:blinkit:once:20260904T0200
+                                                      -> Blinkit budget · one-off 04 Sep 02:00
+        auto:cm:budget:<uuid>:blinkit:expire:42       -> Blinkit budget · reset after rule 42 ends
+        auto:cm:bid:<uuid>:blinkit:opt                -> Blinkit bids · optimiser
+        auto:cm:bid:<uuid>:blinkit:reset:1930         -> Blinkit bids · reset 19:30
+        auto:cm:bid:<uuid>:blinkit:reset:20260904T1930
+                                                      -> Blinkit bids · reset 04 Sep 19:30
+        auto:cm:bid:<uuid>:blinkit:once:20260904      -> Blinkit bids · one-off 04 Sep
+        auto:cm:cleanup:<uuid>:blinkit                -> Blinkit automations · nightly tidy-up
+    """
+    if not name or not name.startswith(_SCHEDULE_PREFIX):
+        # A hand-made row already carries its own client prefix; adding another would
+        # render "DOBRA | DOBRA | Blinkit seller daily".
+        return name or ""
+    parts = name.split(":")
+    if len(parts) < 5:
+        return name
+    kind, platform, rest = parts[2], parts[4], parts[5:]
+
+    head = f"{platform.title()} {_KIND_LABELS.get(kind, kind)}"
+    tail = _schedule_tail(kind, rest)
+    label = f"{head} · {tail}" if tail else head
+    return f"{tenant.upper()} | {label}" if tenant else label
+
+
+def _schedule_tail(kind: str, rest: list[str]) -> str | None:
+    """The part after the platform — what this particular row does."""
+    if kind == "cleanup" and not rest:
+        return "nightly tidy-up"
+    if not rest:
+        return None
+
+    head, arg = rest[0], (rest[1] if len(rest) > 1 else "")
+
+    if head == "poll":
+        return "hourly catch-up"
+    if head == "opt":
+        return "optimiser"
+    if head == "once":
+        when = _when(arg)
+        return f"one-off {when}" if when else "one-off"
+    if head == "expire":
+        # `arg` is a rule id — kept verbatim, because it is the one thing that lets
+        # someone find the rule this row was created to clean up after.
+        return f"reset after rule {arg} ends" if arg else "reset after the rule ends"
+    if head == "reset":
+        return f"reset {_hhmm(arg) or _when(arg) or arg}".strip()
+
+    # A bare recurring time, e.g. `…:blinkit:0200`.
+    return _hhmm(head) or head

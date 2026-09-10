@@ -26,6 +26,7 @@ from app.models.job import JobSchedule
 from app.utils.logger import logger
 from app.utils.time import IST, now_ist
 from jobs.queue import DuplicateActiveJob, enqueue
+from jobs.types import schedule_label
 
 log = logger.bind(tag="sched")          # every scheduler line carries the "sched" tag
 
@@ -72,7 +73,28 @@ async def _fire(sched: JobSchedule, now: datetime) -> str | None:
         except DuplicateActiveJob:
             # The previous run of this schedule is still pending/running — don't
             # pile up. This is expected for a slow scrape vs a frequent cron.
-            log.warning(f"'{sched.name}': previous run still active — skipped")
+            #
+            # ⚠️ A DROPPED FIRE LEAVES NO TRACE. There is no `jobs` row, so `cli status`
+            # and the deadman check cannot see it: the schedule simply did not run, and
+            # the only evidence is this line. That is fine when it is the expected case
+            # (a slow scrape lapping its own cron) and bad when it is not — an
+            # end-of-window bid reset skipped this way leaves bids at their raised level
+            # overnight, and nothing anywhere would say so.
+            #
+            # Named at WARNING with the schedule's readable label so it is greppable and
+            # so an alert can be built on it. Deferring the fire instead of dropping it
+            # would be better still, but that is a scheduler change with its own
+            # semantics (how long to wait, how many to hold) and is not this fix.
+            nxt = ""
+            if sched.repeat and sched.cron:
+                try:
+                    nxt = f"; next fire {next_fire_after(sched.cron, now):%Y-%m-%d %H:%M IST}"
+                except Exception:
+                    nxt = ""
+            log.warning(
+                f"'{schedule_label(sched.name)}': a {sched.job_type} run for this tenant "
+                f"is still active — THIS FIRE IS DROPPED, not deferred{nxt}"
+            )
             return None
         except Exception as e:
             log.error(f"'{sched.name}': enqueue failed: {e}")

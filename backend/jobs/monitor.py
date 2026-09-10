@@ -15,9 +15,11 @@ from sqlmodel import select
 from app.core.config import settings
 from app.core.database import AsyncSessionLocal
 from app.models.job import Job, JobStatus, JobSchedule
+from app.models.tenant import Tenant
 from app.utils.logger import logger
 from app.utils.time import now_ist
 from jobs.scheduler import next_fire_after
+from jobs.types import schedule_label
 
 try:
     import psutil
@@ -50,6 +52,9 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
         scheds = (
             await db.execute(select(JobSchedule).where(JobSchedule.enabled == True))  # noqa: E712
         ).scalars().all()
+        # One lookup for the run: an alert must say WHOSE schedule is overdue, and the
+        # reconciler's names carry only a tenant UUID.
+        tenants = dict((await db.execute(select(Tenant.id, Tenant.name))).all())
 
         for s in scheds:
             if s.job_type in _SELF_MONITORING_TYPES:
@@ -87,14 +92,18 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
 
             hrs = age.total_seconds() / 3600
             win_hrs = window.total_seconds() / 3600
+            # Read the SCHEDULE's label, not its raw name: a reconciler-owned row is
+            # named `auto:cm:budget:<uuid>:blinkit:0200`, and an alert is the worst
+            # possible place to make someone decode one.
+            who = schedule_label(s.name, tenants.get(s.tenant_id))
             if last is None:
                 issues.append(
-                    f"'{s.name}' ({s.job_type}): never succeeded since it was created "
+                    f"'{who}' ({s.job_type}): never succeeded since it was created "
                     f"{hrs:.0f}h ago (expected every {win_hrs:.0f}h)"
                 )
             else:
                 issues.append(
-                    f"'{s.name}' ({s.job_type}): last success {last:%Y-%m-%d %H:%M} "
+                    f"'{who}' ({s.job_type}): last success {last:%Y-%m-%d %H:%M} "
                     f"({hrs:.0f}h ago) exceeds window {win_hrs:.0f}h"
                 )
     return issues

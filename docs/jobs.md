@@ -110,9 +110,11 @@ ambiguity is the single biggest source of confusion here, so it is worth being b
 a scrape, driving `--resume`. `jobs` (new) = the **work order** — what to run, when, and
 how it went. Linked by `ref_job_id`.
 
-**"schedule" means two things.** `budget_schedules` is a *domain* concept (what ad budget
-to apply at what time of day — the campaign manager, coworker-owned). `job_schedules` is
-*infrastructure* (run this job at this cron time). Unrelated; must not be merged.
+**"schedule" means two things.** `cm_budget_schedules` is a *domain* concept (what ad
+budget to apply at what time of day — the campaign manager). `job_schedules` is
+*infrastructure* (run this job at this cron time). Unrelated; must not be merged. This
+warning originally named the v1 table `budget_schedules`, which was dropped with the rest
+of that engine on 2026-09-03.
 
 ### The OS vocabulary
 
@@ -556,14 +558,28 @@ full sweep monthly) would cut the 75 h *and* the proxy bill by ~5–6×. It is a
 costs nothing. **Deferred by decision (2026-07-14)** — build against current volume, revisit when
 brands 2–5 are onboarded.
 
-### Open bug: co-located rows are scraped twice
+### ~~Open bug: co-located rows are scraped twice~~ — GONE, and now guarded
 
-`_locations()` ([orchestrator.py:84](../backend/scraper/public/orchestrator.py#L84)) returns
-**2,216** rows, but there are only **1,924 distinct `(lat, lon)`**. The search API selects the
-dark store *from the coordinate*, so two catalog rows sharing a lat/lon send an identical request
-and get an identical response — **~13% of every public run is duplicate work** (~10 h/cycle at
-medium scale). The `--resume` path already keys on `(keyword, lat, lon)` and would skip them; a
-fresh run does not. Fix is a `DISTINCT ON (lat, lon)`. **Not yet fixed.**
+`_locations()` once returned **2,216** rows across only **1,924 distinct `(lat, lon)`**. The
+search API selects the dark store *from the coordinate*, so two catalog rows sharing a lat/lon
+send an identical request and get an identical response — **~13% of every public run was
+duplicate work**, roughly ten hours a cycle, entirely silently.
+
+**Re-measured 2026-09-05: 2,059 rows, 2,059 distinct coordinates — zero duplicates.** Not just
+on exact match; there are no near-duplicates either, down to ~110 m (only at ~1.1 km do 44
+collapse, and stores a kilometre apart are genuinely different catchments). Zepto is likewise
+clean at 1,229/1,229.
+
+⚠️ **Nobody fixed it.** The catalog shrank 2,216 → 2,059 rows in a `cli sync --prune`, and the
+292 duplicate coordinates went with it as a side effect. It was never anyone's intent, which
+means nothing would have stopped it coming back either.
+
+So the `DISTINCT ON (lat, lon)` this entry proposed was deliberately **not** written: it is a
+no-op today, and it would paper over what is really a *catalog* problem — two rows describing
+one probe point — while leaving `config.xlsx` wrong and every other consumer double-counting.
+Instead both orchestrators now call `warn_if_co_located()` at run start, which is silent when
+the catalog is clean and names the waste as a percentage when it is not. `--resume` already
+skipped these (it keys on `(keyword, lat, lon)`); a fresh run did not.
 
 ### The end state
 

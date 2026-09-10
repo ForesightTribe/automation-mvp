@@ -265,7 +265,7 @@ cli monitor heartbeat --disk-pct 90   # only complain about disk at 90%+
 | `batch`       | `public_keyword`, `public_skus`, `log_cleanup`                  | hours; nobody waiting      |
 | `dashboard`   | `marketing`, `seller`, `scorecard`                              | minutes; scheduled         |
 | `interactive` | `heartbeat`, `cm.reconcile`                                     | must fire promptly         |
-| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.sync_campaign_data` | latency-tolerant CM writes |
+| `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaigns` | latency-tolerant CM writes + the catalogue refresh |
 | `cm_bid`      | `cm.bid_optimizer`                                              | latency **is** the product |
 
 Lanes run **in parallel**; each is sequential inside itself. So a 5-hour public scrape

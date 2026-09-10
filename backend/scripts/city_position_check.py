@@ -68,7 +68,9 @@ BENGALURU_ZONES = [
 
 
 async def check_position(keyword: str, lat: float, lon: float, brand: str) -> dict:
-    from ad_campaigns.live_position import get_live_positions
+    # Was `ad_campaigns.live_position` — that package was deleted with the v1 engine on
+    # 2026-09-03. This is the same module, vendored into the campaign manager in 2026-07.
+    from campaign_manager.marketplaces.blinkit.live_position import get_live_positions
 
     try:
         results = await get_live_positions(keyword, lat=lat, lon=lon)

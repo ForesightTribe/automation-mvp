@@ -1059,21 +1059,28 @@ def _print_scorecard_key_skus(key_skus: list) -> None:
 def scrape_public(
     keyword: str = typer.Option(..., "--keyword", "-k", help="Search keyword (e.g. 'cola', 'sunflower oil')"),
     brand: str = typer.Option(..., "--brand", "-b", help="Brand slug for classification (e.g. 'dobra')"),
-    city: str = typer.Option("bengaluru", "--city", "-c", help="City slug (see scraper/utils/cities.py)"),
+    city: str = typer.Option("bengaluru", "--city", "-c", help="City name from the store catalogue (`cli locations list`)"),
     platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | instamart | all"),
-    all_zones: bool = typer.Option(False, "--all-zones", help="Scrape all zones defined for the city"),
     aliases: Optional[str] = typer.Option(None, "--aliases", help="Comma-separated brand name aliases (e.g. 'dobra,dobra cola')"),
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — required to --save (per-tenant storage)"),
     save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL (requires --tenant)"),
 ):
     """Scrape public product search results — no login required.
 
+    ONE keyword at ONE store, for a quick look. The store is a real one from the
+    catalogue (the lowest merchant_id in the city), not a hardcoded coordinate.
+
+    The `--all-zones` flag was removed with `scraper/utils/cities.py` (2026-09-04): it
+    iterated that file's placeholder zone lists, and the catalogue's equivalent is every
+    store in the city — 162 in Bengaluru, which is a full run, not an ad-hoc look. Use
+    `cli scrape public-run` for that, or `cli explore` for an ad-hoc multi-city sweep.
+
     Without --save it just scrapes and prints (no tenant needed). With --save it
     writes per-tenant header+detail rows (search_snapshots + search_listings) and
     opens a scrape_job, so --tenant is required.
     """
     alias_list = [a.strip() for a in aliases.split(",")] if aliases else None
-    asyncio.run(_scrape_public(keyword, brand, city, platform, all_zones, alias_list, tenant_id, save))
+    asyncio.run(_scrape_public(keyword, brand, city, platform, alias_list, tenant_id, save))
 
 
 async def _scrape_public(
@@ -1081,19 +1088,13 @@ async def _scrape_public(
     brand_slug: str,
     city_slug: str,
     platform: str,
-    all_zones: bool,
     aliases: list[str] | None,
     tenant_id: str | None,
     save: bool,
 ) -> None:
-    from scraper.utils.cities import CITIES, PLATFORM_CITIES
+    from scraper.utils.locations import resolve_city, city_names
     from scraper.platforms.blinkit.public_data import scraper as bl_scraper, parser as bl_parser, storage as bl_storage
     from scraper.platforms.instamart.public_data import scraper as im_scraper, parser as im_parser, storage as im_storage
-
-    city = CITIES.get(city_slug)
-    if not city:
-        console.print(f"[red]Unknown city slug '{city_slug}'. Check scraper/utils/cities.py for valid slugs.[/red]")
-        raise typer.Exit(1)
 
     # Zepto is deliberately NOT here. This command writes straight to Postgres,
     # which is the opposite of the local-first staging path Zepto is built on
@@ -1103,9 +1104,7 @@ async def _scrape_public(
     SUPPORTED = {"blinkit", "instamart"}
 
     platforms_to_run = (
-        [p for p in ["blinkit", "instamart"] if p in city["platforms"]]
-        if platform == "all"
-        else [platform]
+        ["blinkit", "instamart"] if platform == "all" else [platform]
     )
     if "zepto" in platforms_to_run:
         console.print(
@@ -1139,37 +1138,49 @@ async def _scrape_public(
 
         try:
             for plat in platforms_to_run:
-                if plat not in city["platforms"]:
-                    console.print(f"  [dim]{plat} not available in {city['name']}[/dim]")
+                # The store comes from the catalogue, per marketplace — so "not available"
+                # now means we genuinely hold no active store for that pair, rather than
+                # a hardcoded table's opinion. Instamart has no catalogue rows at all,
+                # which this reports honestly instead of scraping an invented point.
+                store = await resolve_city(db, plat, city_slug)
+                if store is None:
+                    known = await city_names(db, plat)
+                    if known:
+                        console.print(
+                            f"  [dim]{plat}: no active store in '{city_slug}'. "
+                            f"{len(known)} cities available, e.g. "
+                            f"{', '.join(known[:6])}…[/dim]"
+                        )
+                    else:
+                        console.print(
+                            f"  [dim]{plat}: no stores in the catalogue at all — "
+                            f"nothing to scrape. Populate it with `cli sync`.[/dim]"
+                        )
                     continue
 
-                plat_zones = city["platforms"][plat]["zones"] if all_zones else [
-                    {"zone": "", "pincode": city["pincode"], "lat": city["lat"], "lon": city["lon"]}
-                ]
-
                 scraper_mod, parser_mod, storage_mod = scrapers[plat]
+                area = store.location_name or store.city
+                console.print(
+                    f"\n[bold cyan]{store.city} — {area}[/bold cyan]  "
+                    f"[dim]{plat} · store {store.merchant_id}[/dim]"
+                )
 
-                for zone_def in plat_zones:
-                    zone_label = zone_def.get("zone", "")
-                    zone_display = f" [{zone_label}]" if zone_label else ""
-                    console.print(f"\n[bold cyan]{city['name']}{zone_display}[/bold cyan]  [dim]{plat}[/dim]")
+                with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
+                    raw = await scraper_mod.scrape(
+                        keyword=keyword,
+                        brand_slug=brand_slug,
+                        city_slug=store.city,
+                        zone=area,
+                        pincode=store.pincode or "",
+                        lat=store.lat,
+                        lon=store.lon,
+                        aliases=aliases,
+                    )
+                result = parser_mod.parse(raw)
+                _print_public_result(plat, result)
 
-                    with console.status(f"  [cyan]Scraping {plat}…[/cyan]"):
-                        raw = await scraper_mod.scrape(
-                            keyword=keyword,
-                            brand_slug=brand_slug,
-                            city_slug=city_slug,
-                            zone=zone_label,
-                            pincode=zone_def.get("pincode", city["pincode"]),
-                            lat=zone_def.get("lat"),
-                            lon=zone_def.get("lon"),
-                            aliases=aliases,
-                        )
-                    result = parser_mod.parse(raw)
-                    _print_public_result(plat, result)
-
-                    if save:
-                        rows_written += await storage_mod.save(db, result, tenant_id, job_id)
+                if save:
+                    rows_written += await storage_mod.save(db, result, tenant_id, job_id)
 
             if save:
                 await complete_scrape_job(db, job_id, rows_written)
