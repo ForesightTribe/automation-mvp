@@ -13,6 +13,18 @@ const ACTION_TONE = {
 	"no-op": "text-content-muted",
 	hold: "text-warning",
 	target: "text-info",
+	ended: "text-content-muted",
+	reopened: "text-info",
+	settled: "text-success",
+	"settle-failed": "text-danger",
+};
+
+// An automation's lifecycle, in the client's words. Every other action shows as recorded.
+// `settled` = its final run after its last window landed, so it will not touch the campaign
+// again; `settle-failed` = that run never landed after every retry, so it was left as it is.
+const ACTION_LABEL = {
+	settled: "Finished",
+	"settle-failed": "Couldn't finish",
 };
 
 const KINDS = [
@@ -35,7 +47,8 @@ const time = (ts) =>
  * Filterable by kind, because the three automations produce very different rows and
  * "why did this campaign stop last night" is a question you ask on its own. Start/stop
  * rows have no numeric change — a status isn't a number, and cm_run_log's value columns
- * are floats — so for those the reason text (`running→paused`) fills the Change column. */
+ * are floats — so for those the reason text (`running→paused`) fills the Change column.
+ * The same goes for lifecycle rows (ended / finished / reopened), which change no value. */
 export const HistoryCard = () => {
 	const [page, setPage] = useState(1);
 	const [kind, setKind] = useState(undefined);
@@ -155,7 +168,7 @@ export const HistoryCard = () => {
 									<td
 										className={`py-2 pr-3 font-medium capitalize ${ACTION_TONE[r.action] ?? ""}`}
 									>
-										{r.action}
+										{ACTION_LABEL[r.action] ?? r.action}
 									</td>
 									<td className="py-2 pr-3 text-content-muted">
 										{r.old_value != null ||

@@ -3,8 +3,9 @@
 Runner-owned: the API enqueues a `cm.reconcile` job on any rule change; this reads
 the current rules and makes `job_schedules` match them, idempotently (deterministic
 names → create missing / update changed / delete no-longer-wanted). It NEVER touches
-Blinkit — it only writes rows into our own `job_schedules` table. Schedules are
-written at edit time and stay dormant until they fire:
+Blinkit — it only writes rows into our own `job_schedules` table, and keeps each
+automation's lifecycle markers true (below). Schedules are written at edit time and stay
+dormant until they fire:
 
   - **Budget boundaries** → one recurring cron `cm.budget_scheduler` per distinct
     transition time (a rule's start_time / end_time) across all of a tenant's enabled
@@ -15,10 +16,16 @@ written at edit time and stay dormant until they fire:
     fires missed while the runner was down.
   - **`once` budget rules** → two one-shot `cm.budget_scheduler` rows: one at the
     rule's start (applies it) and one at its end (reverts to default).
-  - **Expiry** (a recurring rule's end_date) → a one-shot `cm.budget_scheduler` the
-    morning after the last active day, so the campaign is reset to default promptly.
   - **Bid windows** → one recurring `*/15`-within-window `cm.bid_optimizer` per merged
     active window across the tenant's active bid rules.
+
+A rule whose LAST window has closed contributes nothing to any of these. Its final end
+boundary is what tears it down; after that nothing is scheduled for it — except, while that
+teardown has NOT landed, the hourly settle-once safety net (campaign_manager/lifecycle.py).
+
+The **lifecycle sweep** runs on every reconcile: `ended_at` is set when an automation's last
+window has closed and cleared if its dates move so it has not, and latches / attempts that no
+longer apply are cleared. Only rows whose values change are written.
 
 The scheduled jobs run **dry-run** in V3 (empty params → no `--live`); arming them to
 write Blinkit for real is a deliberate cutover step (V5/V6), NOT something reconcile
@@ -37,7 +44,7 @@ from sqlmodel import select
 from app.core.database import AsyncSessionLocal
 from app.models.job import JobSchedule
 from app.utils.time import now_ist
-from campaign_manager import config, logs, repo
+from campaign_manager import config, lifecycle, logs, repo, window
 from jobs.scheduler import initial_next_run, next_fire_after
 
 # Deterministic name prefix for reconciler-owned rows. Format:
@@ -53,6 +60,10 @@ RECONCILE_JOB = "cm.reconcile"
 _SAFETY_POLL_CRON = "0 * * * *"      # hourly drift/missed-fire catch (§7.3)
 _BID_STEP_MIN = 15                   # bid optimizer cadence within an active window
 _CLEANUP_CRON = "0 4 * * *"          # daily 04:00 self-reconcile → prune expired schedules
+# Hourly bid settle pass. Deliberately at :37 — away from the :59 / :29 / :14 / :44 minutes
+# that end-of-window resets fire at for windows ending on the hour or quarter hour, since a
+# reset run already in progress refuses a second one for the same client.
+_BID_SETTLE_CRON = "37 * * * *"
 # The end-of-window bid reset fires this many minutes BEFORE the window's stop time.
 # `cm_bid` and `cm_ops` are PARALLEL lanes, so a reset scheduled at the same minute as a
 # budget window's stop races the budget engine — and once that engine stops the campaign,
@@ -78,20 +89,6 @@ class Desired:
     catchup: bool = False
 
 
-def _parse_hhmm(s: str | None) -> tuple[int, int] | None:
-    """'HH:MM' → (hour, minute); None if unparseable/empty."""
-    if not s:
-        return None
-    try:
-        parts = s.split(":")
-        h, m = int(parts[0]), int(parts[1])
-    except (ValueError, IndexError, AttributeError):
-        return None
-    if 0 <= h <= 23 and 0 <= m <= 59:
-        return h, m
-    return None
-
-
 def _parse_date(s: str | None) -> datetime | None:
     try:
         return datetime.strptime(s, "%Y-%m-%d")
@@ -99,19 +96,28 @@ def _parse_date(s: str | None) -> datetime | None:
         return None
 
 
-def budget_boundaries(schedules) -> set[tuple[int, int]]:
-    """Distinct (hour, minute) transition times across the recurring rules of all
-    ENABLED schedules — the moments a budget can change, one browser handling all
-    campaigns changing then."""
+def _live_recurring(rules, now: datetime) -> list:
+    """A schedule's recurring rules that still have windows left."""
+    return [r for r in rules
+            if r.type != "once" and not window.is_expired(window.from_budget(r), now)]
+
+
+def budget_boundaries(schedules, now: datetime) -> set[tuple[int, int]]:
+    """Distinct (hour, minute) transition times across the recurring rules of all ENABLED
+    schedules that still have windows left — the moments a budget can change, one browser
+    handling all campaigns changing then.
+
+    A rule whose last window has closed contributes nothing. It used to keep its boundaries
+    for as long as the rule existed, so an ended automation fired the budget engine every
+    day — and the daily cleanup could not prune them, because it derived the same crons again.
+    """
     out: set[tuple[int, int]] = set()
     for sched, rules in schedules:
         if sched.state != "active":
             continue
-        for r in rules:
-            if r.type == "once":
-                continue
+        for r in _live_recurring(rules, now):
             for t in (r.start_time, r.end_time):
-                hm = _parse_hhmm(t)
+                hm = window.parse_hhmm(t)
                 if hm:
                     out.add(hm)
     return out
@@ -132,46 +138,17 @@ def _once_fires(schedules, tenant: str, platform: str, now: datetime) -> list[De
         if sched.state != "active":
             continue
         for r in rules:
-            if r.type != "once":
+            if r.type != "once" or _parse_date(r.date) is None:
                 continue
-            base = _parse_date(r.date)
-            if base is None:
-                continue
-            sh = _parse_hhmm(r.start_time) or (0, 0)
-            on_at = base.replace(hour=sh[0], minute=sh[1])
-            eh = _parse_hhmm(r.end_time)
-            if eh is None:
-                off_at = base + timedelta(days=1)               # all-day → revert next midnight
-            elif eh <= sh:
-                off_at = (base + timedelta(days=1)).replace(hour=eh[0], minute=eh[1])  # midnight-crossing
-            else:
-                off_at = base.replace(hour=eh[0], minute=eh[1])
+            # All-day → reverts at the next midnight; an overnight window → the next day.
+            on_at = window.window_open(r.date, r.start_time)
+            off_at = window.window_close(r.date, r.start_time, r.end_time)
             fires |= {t for t in (on_at, off_at) if t > now}
     return [
         Desired(f"{_PREFIX}budget:{tenant}:{platform}:once:{at:%Y%m%dT%H%M}",
                 BUDGET_JOB, None, False, at)
         for at in sorted(fires)
     ]
-
-
-def _expiry_fires(schedules, tenant: str, platform: str, now: datetime) -> list[Desired]:
-    """One-shot reset-to-default the morning after each recurring rule's end_date."""
-    out: list[Desired] = []
-    for sched, rules in schedules:
-        if sched.state != "active":
-            continue
-        for r in rules:
-            if r.type == "once" or not r.end_date:
-                continue
-            base = _parse_date(r.end_date)
-            if base is None:
-                continue
-            at = (base + timedelta(days=1)).replace(hour=0, minute=5)
-            if at > now:
-                out.append(Desired(
-                    f"{_PREFIX}budget:{tenant}:{platform}:expire:{r.id}",
-                    BUDGET_JOB, None, False, at))
-    return out
 
 
 def _lead(hm: tuple[int, int]) -> tuple[int, int]:
@@ -184,8 +161,8 @@ def _rule_hours(start_time: str | None, stop_time: str | None) -> set[int]:
     """Active clock-hours (0–23) for a time window; wraps past midnight when stop ≤ start
     (e.g. 18:00–02:00 → {18..23, 0..1}). No window → all 24. Hour granularity (minute
     precision deferred — see backlog)."""
-    sh = _parse_hhmm(start_time)
-    eh = _parse_hhmm(stop_time)
+    sh = window.parse_hhmm(start_time)
+    eh = window.parse_hhmm(stop_time)
     if not (sh or eh):
         return set(range(24))
     start_h = sh[0] if sh else 0
@@ -197,22 +174,15 @@ def _rule_hours(start_time: str | None, stop_time: str | None) -> set[int]:
     return set(range(start_h, end_h + 1)) if end_h >= start_h else set()
 
 
-def bid_active_hours(bid_rules, now: datetime) -> set[int]:
-    """Union of active clock-hours across active, non-expired bid rules. A `once` rule
-    whose date has passed (or a recurring rule past its stop_date) drops out, so its
-    hours stop keeping the optimizer cron alive."""
-    today = now.strftime("%Y-%m-%d")
-    hours: set[int] = set()
-    for r in bid_rules:
-        if getattr(r, "state", "active") != "active":     # paused/stopped → no control cron
-            continue
-        if getattr(r, "type", "recurring") == "once":
-            if r.date and today > r.date:
-                continue
-        elif r.stop_date and today > r.stop_date:
-            continue
-        hours |= _rule_hours(r.start_time, r.stop_time)
-    return hours
+def _split_tail(start_time: str | None, stop_time: str | None) -> tuple[set[int], set[int]]:
+    """`_rule_hours` split into (hours on the day the window starts, hours of its
+    post-midnight tail). A one-time rule's cron is pinned to a calendar DAY, so an overnight
+    window's tail needs a cron on the next day, or it never runs."""
+    hours = _rule_hours(start_time, stop_time)
+    sh, eh = window.parse_hhmm(start_time), window.parse_hhmm(stop_time)
+    if sh and eh and eh <= sh:
+        return {h for h in hours if h >= sh[0]}, {h for h in hours if h < sh[0]}
+    return hours, set()
 
 
 def _hours_to_cron_field(hours: set[int]) -> str:
@@ -232,23 +202,24 @@ def _hours_to_cron_field(hours: set[int]) -> str:
 
 
 def _bid_split(bid_rules, now: datetime) -> tuple[list, dict[str, list]]:
-    """Active, non-expired bid rules split into (recurring, {date: [once rules]}). A `once`
-    rule past its date, or a recurring rule past its stop_date, drops out. Recurring rules
-    share one daily optimizer cron; each `once` date gets its own date-bound cron so a
-    one-time rule can NEVER recur (the bug where a once rule fired every day)."""
-    today = now.strftime("%Y-%m-%d")
+    """Active bid rules with windows left, split into (recurring, {date: [once rules]}).
+
+    A rule drops out once its LAST window has closed — not when its date passes, which cut
+    an overnight window off at midnight: any reconcile between midnight and the stop time
+    deleted the tail's reset fire. Recurring rules share one daily optimizer cron; each `once`
+    date gets its own date-bound cron so a one-time rule can NEVER recur (the bug where a
+    once rule fired every day)."""
     recurring: list = []
     once_by_date: dict[str, list] = {}
     for r in bid_rules:
         if getattr(r, "state", "active") != "active":
             continue
-        if getattr(r, "type", "recurring") == "once":
-            if not r.date or today > r.date:
-                continue
-            once_by_date.setdefault(r.date, []).append(r)
+        w = window.from_bid(r)
+        if (w.type == "once" and not w.date) or window.is_expired(w, now):
+            continue
+        if w.type == "once":
+            once_by_date.setdefault(w.date, []).append(r)
         else:
-            if r.stop_date and today > r.stop_date:
-                continue
             recurring.append(r)
     return recurring, once_by_date
 
@@ -261,7 +232,7 @@ def _bid_reset_fires(recurring: list, once_by_date: dict[str, list], tenant: str
     one-shot at the stop datetime (overnight → next day). Rules with no stop_time never
     close, so they get no reset. Deduped by time (the engine handles all rules per run)."""
     out: list[Desired] = []
-    rec_stops = {_lead(hm) for r in recurring if (hm := _parse_hhmm(r.stop_time))}
+    rec_stops = {_lead(hm) for r in recurring if (hm := window.parse_hhmm(r.stop_time))}
     for h, m in sorted(rec_stops):
         cron = f"{m} {h} * * *"
         out.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:reset:{h:02d}{m:02d}",
@@ -269,16 +240,13 @@ def _bid_reset_fires(recurring: list, once_by_date: dict[str, list], tenant: str
 
     once_stops: set[datetime] = set()
     for date, rules in once_by_date.items():
-        base = _parse_date(date)
-        if base is None:
+        if _parse_date(date) is None:
             continue
         for r in rules:
-            eh = _parse_hhmm(r.stop_time)
-            if eh is None:
+            if window.parse_hhmm(r.stop_time) is None:
                 continue
-            sh = _parse_hhmm(r.start_time) or (0, 0)
-            off_at = ((base + timedelta(days=1)) if eh <= sh else base).replace(
-                hour=eh[0], minute=eh[1]) - timedelta(minutes=_RESET_LEAD_MINUTES)
+            off_at = (window.window_close(date, r.start_time, r.stop_time)
+                      - timedelta(minutes=_RESET_LEAD_MINUTES))
             if off_at > now:
                 once_stops.add(off_at)
     for at in sorted(once_stops):
@@ -297,21 +265,23 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
     but write nothing. Every Desired here is an engine job, so it's one blanket stamp."""
     d: list[Desired] = []
 
-    for h, m in sorted(budget_boundaries(budget_schedules)):
+    for h, m in sorted(budget_boundaries(budget_schedules, now)):
         cron = f"{m} {h} * * *"
         d.append(Desired(f"{_PREFIX}budget:{tenant}:{platform}:{h:02d}{m:02d}",
                          BUDGET_JOB, cron, True, initial_next_run(cron)))
 
-    # The hourly safety poll (drift / missed-boundary catch) is only for RECURRING windows,
-    # which need ongoing enforcement day after day. A once-only automation is self-contained
-    # (apply + revert one-shots) — giving it a poll made it fire hourly FOREVER after its date.
-    if any(s.state == "active" and any(r.type != "once" for r in rules)
+    # The hourly pass: drift / missed-boundary catch for RECURRING windows that still have days
+    # to run — and the settle-once safety net for a schedule that has ENDED without its final
+    # teardown landing, kept only until that lands (or SETTLE_MAX_AGE_HOURS pass). A once-only
+    # automation is otherwise self-contained (apply + revert one-shots) — giving it a permanent
+    # poll made it fire hourly FOREVER after its date.
+    if any(s.state == "active" and (_live_recurring(rules, now)
+                                    or lifecycle.schedule_needs_settle(s, rules, now))
            for s, rules in budget_schedules):
         d.append(Desired(f"{_PREFIX}budget:{tenant}:{platform}:poll",
                          BUDGET_JOB, _SAFETY_POLL_CRON, True, initial_next_run(_SAFETY_POLL_CRON)))
 
     d += _once_fires(budget_schedules, tenant, platform, now)
-    d += _expiry_fires(budget_schedules, tenant, platform, now)
 
     # ── Bid: optimizer crons + end-of-window reset fires ──
     recurring, once_by_date = _bid_split(bid_rules, now)
@@ -326,27 +296,45 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
         d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:opt",
                          BID_JOB, cron, True, initial_next_run(cron)))
 
-    # Each `once` date → its OWN date-bound optimizer cron (day+month pinned) so a one-time
-    # rule fires only on its date, never daily. The daily cleanup prunes it after the date.
-    for date, rules in sorted(once_by_date.items()):
-        oh: set[int] = set()
-        for r in rules:
-            oh |= _rule_hours(r.start_time, r.stop_time)
+    # `once` rules → optimizer crons pinned to a calendar DAY (day + month), so a one-time rule
+    # fires only on its own dates and never recurs. An overnight window's post-midnight tail
+    # goes on the NEXT day's cron: pinned to the start date alone, those hours never ran. Rules
+    # whose days coincide share a cron; the daily cleanup prunes them once the rules expire.
+    once_hours: dict[str, set[int]] = {}
+    for date, rules in once_by_date.items():
         base = _parse_date(date)
-        if not oh or base is None:
+        if base is None:
             continue
-        cron = f"*/{_BID_STEP_MIN} {_hours_to_cron_field(oh)} {base.day} {base.month} *"
-        d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:once:{date.replace('-', '')}",
+        next_day = (base + timedelta(days=1)).strftime("%Y-%m-%d")
+        for r in rules:
+            day_hours, tail_hours = _split_tail(r.start_time, r.stop_time)
+            once_hours.setdefault(date, set()).update(day_hours)
+            if tail_hours:
+                once_hours.setdefault(next_day, set()).update(tail_hours)
+    for day, hours in sorted(once_hours.items()):
+        if not hours:
+            continue
+        base = _parse_date(day)
+        cron = f"*/{_BID_STEP_MIN} {_hours_to_cron_field(hours)} {base.day} {base.month} *"
+        d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:once:{day.replace('-', '')}",
                          BID_JOB, cron, True, next_fire_after(cron, now)))
 
     d += _bid_reset_fires(recurring, once_by_date, tenant, platform, now)
+
+    # The bid side of the settle-once safety net: an hourly reset run while any rule has ENDED
+    # without its final reset landing. That run picks those rules up (`bid._settle_selection`),
+    # and this row disappears once they have settled or aged out.
+    if any(lifecycle.bid_rule_needs_settle(r, now) for r in bid_rules):
+        d.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:settle", BID_JOB,
+                         _BID_SETTLE_CRON, True, initial_next_run(_BID_SETTLE_CRON),
+                         params={"reset": "true"}))
 
     # Cutover: arm every ENGINE schedule to write live (merge, so reset=true is preserved).
     if live:
         for x in d:
             x.params = {**x.params, "live": "true"}
 
-    # Daily self-reconcile to prune expired schedules (spent `once` crons, past stop_dates,
+    # Daily self-reconcile to prune expired schedules (spent `once` crons, ended rules' crons,
     # phantom polls). Always `--live` (it must WRITE job_schedules to delete them), and only
     # while there's something to maintain. Added AFTER the arm loop so it's live regardless
     # of the tenant's arm state. It re-adds itself each run → self-sustaining until no rules.
@@ -375,6 +363,15 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
         x.params = {**x.params, "marketplace": platform}
 
     return d
+
+
+def lifecycle_sweep(budget_schedules, bid_rules, now: datetime) -> tuple[dict, dict]:
+    """The lifecycle markers to write → ({bid rule id: changes}, {schedule id: changes}).
+    Pure; only automations whose stored markers are wrong appear."""
+    bid = {r.id: c for r in bid_rules if (c := lifecycle.bid_rule_markers(r, now))}
+    budget = {s.id: c for s, rules in budget_schedules
+              if (c := lifecycle.schedule_markers(s, rules, now))}
+    return bid, budget
 
 
 # ── Idempotent apply (DB) ────────────────────────────────────────────────────
@@ -451,16 +448,34 @@ async def reconcile(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     logs.run_start(run_id, "reconcile", tenant_id, dry_run=dry_run, platform=platform,
                    tenant_name=await repo.get_tenant_name(tenant_id))
 
-    budget_schedules = await repo.get_budget_schedules(tenant_id, platform)
-    bid_rules = [r for r, _ in await repo.get_bid_rules(tenant_id, platform)]
+    # Every state and calendar: the planners below own that decision — they are pure, and
+    # tested with paused, stopped and expired inputs — so filtering here would hide it.
+    budget_schedules = await repo.get_budget_schedules(
+        tenant_id, platform, state=repo.ANY_STATE, calendar=repo.ANY_CALENDAR)
+    bid_rules = [r for r, _ in await repo.get_bid_rules(
+        tenant_id, platform, state=repo.ANY_STATE, calendar=repo.ANY_CALENDAR)]
     armed = await repo.get_armed(tenant_id, platform)
 
     now = now_ist()
     desired = desired_schedules(str(tenant_id), platform, budget_schedules, bid_rules,
                                 now, live=armed)
+    bid_markers, budget_markers = lifecycle_sweep(budget_schedules, bid_rules, now)
+    for kind, markers in (("bid rule", bid_markers), ("budget schedule", budget_markers)):
+        for id_, change in markers.items():
+            logs.note(run_id, f"{kind} {id_}: " + ", ".join(
+                f"{column} → {value}" for column, value in change.items()), dry_run=dry_run)
+
+    # History for the transitions, computed now — from the markers as stored BEFORE the sweep.
+    history = lifecycle.sweep_history(budget_schedules, bid_rules, bid_markers, budget_markers,
+                                      tenant_id=tenant_id, platform=platform, run_id=run_id,
+                                      now=now)
 
     async with AsyncSessionLocal() as db:
         created, updated, deleted = await _apply(db, tenant_id, platform, desired, dry_run, run_id)
+    if not dry_run:
+        await repo.write_lifecycle_markers("bid", bid_markers)
+        await repo.write_lifecycle_markers("budget", budget_markers)
+        await repo.write_run_log(history)
 
     logs.run_summary(run_id, "reconcile", dry_run=dry_run, unit="schedules",
                      processed=created + updated + deleted, applied=created + updated,

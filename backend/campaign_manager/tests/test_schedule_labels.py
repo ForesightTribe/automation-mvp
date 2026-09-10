@@ -27,6 +27,7 @@ SHAPES = {
     f"{P}budget:{TENANT}:blinkit:once:20260904T0200":    "Blinkit budget · one-off 04 Sep 02:00",
     f"{P}budget:{TENANT}:blinkit:expire:42":             "Blinkit budget · reset after rule 42 ends",
     f"{P}bid:{TENANT}:blinkit:opt":                      "Blinkit bids · optimiser",
+    f"{P}bid:{TENANT}:blinkit:settle":                   "Blinkit bids · finish ended automations",
     f"{P}bid:{TENANT}:blinkit:reset:1930":               "Blinkit bids · reset 19:30",
     f"{P}bid:{TENANT}:blinkit:reset:20260904T1930":      "Blinkit bids · reset 04 Sep 19:30",
     f"{P}bid:{TENANT}:blinkit:once:20260904":            "Blinkit bids · one-off 04 Sep",

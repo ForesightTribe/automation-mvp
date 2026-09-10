@@ -44,6 +44,14 @@ class CmBudgetSchedule(SQLModel, table=True):
     # restarts a campaign found stopped at a window start. Default False therefore means
     # "never stopped by us", NOT "never written to".
     stop_after_window: bool = Field(default=False)
+    # Settle-once lifecycle (campaign_manager/lifecycle.py). `ended_at` is a MATERIALIZATION
+    # of the rules — written by the reconciler, never an engine gate. `settled_at` is a FACT:
+    # the final teardown landed, and covers the ending whose close it is at or after.
+    # ⚠️ Migration `c1e5a9d3f7b2` first, model second: a model column the DB lacks breaks
+    # every SELECT on this table.
+    ended_at: datetime | None = None
+    settled_at: datetime | None = None
+    settle_attempts: int = Field(default=0)
     created_at: datetime = Field(default_factory=now_ist)
 
 
@@ -107,6 +115,11 @@ class CmBidRule(SQLModel, table=True):
     # (every engine check is `state == "active"`), so it was two words for one behaviour
     # plus a Stop button with no undo. Removed 2026-09-07; no rows carried it.
     state: str = "active"
+    # Settle-once lifecycle — see CmBudgetSchedule and campaign_manager/lifecycle.py.
+    # ⚠️ Migration `c1e5a9d3f7b2` first, model second.
+    ended_at: datetime | None = None
+    settled_at: datetime | None = None
+    settle_attempts: int = Field(default=0)
     lat: float | None = None
     lon: float | None = None
     location_name: str | None = None

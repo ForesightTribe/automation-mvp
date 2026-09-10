@@ -13,5 +13,6 @@ Layout:
   budget.py       budget-scheduler orchestration (MP-agnostic)
   bid.py          bid-optimizer orchestration (MP-agnostic)
   reconciler.py   rules → job_schedules (MP-agnostic)
+  window.py       WHEN a rule applies — windows, expiry, the calendar axis (pure; one copy)
   marketplaces/   the MP seam — all Blinkit-specific code lives under marketplaces/blinkit/
 """

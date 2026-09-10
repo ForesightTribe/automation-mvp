@@ -202,14 +202,69 @@ def test_a_late_fire_within_the_grace_still_stops():
 def test_spent_once_rule_reads_as_ended_the_same_day():
     """It used to compare only `date < today`, so a one-time automation that had already
     run and reverted still showed as upcoming for the rest of the day."""
-    from app.services.campaign_manager_service import _expired, _once_window_end
+    from campaign_manager import window
 
-    assert _once_window_end("2026-08-08", "15:46", "15:49").hour == 15
-    assert _once_window_end("2026-08-08", "19:30", "02:00").day == 9      # overnight tail
-    assert _once_window_end("2026-08-08", "19:30", None).day == 9         # runs to midnight
+    assert window.window_close("2026-08-08", "15:46", "15:49").hour == 15
+    assert window.window_close("2026-08-08", "19:30", "02:00").day == 9     # overnight tail
+    assert window.window_close("2026-08-08", "19:30", None).day == 9        # runs to midnight
+    after = datetime(2026, 8, 8, 15, 50)
+    spent = window.Window(type="once", date="2026-08-08", start_time="15:46", end_time="15:49")
+    assert window.is_expired(spent, after) is True                          # same day, after
+    assert window.calendar_state(spent, after) == "ended"
     # A future-dated rule is never expired.
-    assert _expired(type_="once", date="2099-01-01", end_date=None,
-                    start_time="15:46", end_time="15:49") is False
+    future = window.Window(type="once", date="2099-01-01", start_time="15:46", end_time="15:49")
+    assert window.is_expired(future, after) is False
+
+
+# ── Ended schedules are left alone (2026-09-10) ─────────────────────────────
+#
+# `_in_play` decides whether the engine acts on a schedule at all. Two real campaigns from
+# 2026-09-09 are the cases: both had their budgets overwritten by automations that had ended.
+
+_SODA = {"type": "once", "date": "2026-09-07", "start_time": "16:00", "end_time": "23:00",
+         "budget": 750}
+_TECH_TEST = {"days": ["wednesday"], "start_date": "2026-09-09", "end_date": "2026-09-09",
+              "start_time": "19:40", "end_time": "19:42", "budget": 105}
+
+
+def test_an_ended_schedule_is_out_of_play():
+    """Campaign 637511: restarted by hand at ₹502 on 2026-09-09, set to its ended automation's
+    ₹510 default at 21:01 — two days after the automation's only window."""
+    from campaign_manager.budget import _in_play
+    assert _in_play([_SODA], datetime(2026, 9, 9, 21, 1), 300) is False
+
+
+def test_the_fire_that_closes_the_last_window_is_still_in_play():
+    """That fire reverts the budget and stops the campaign; ending must not cost it."""
+    from campaign_manager.budget import _in_play
+    assert _in_play([_SODA], datetime(2026, 9, 7, 23, 0), 300) is True
+    assert _in_play([_SODA], datetime(2026, 9, 7, 23, 4), 300) is True     # late, inside grace
+    assert _in_play([_SODA], datetime(2026, 9, 7, 23, 10), 300) is False
+
+
+def test_a_recurring_schedule_ends_when_its_last_window_closes_not_at_midnight():
+    """Campaign 574687: last window 19:40–19:42. Set by hand to ₹201 at 19:43, reverted by the
+    20:00 poll, because a recurring rule counted as live until the end of its end DATE."""
+    from campaign_manager.budget import _in_play
+    assert _in_play([_TECH_TEST], datetime(2026, 9, 9, 19, 42), 300) is True    # its own end
+    assert _in_play([_TECH_TEST], datetime(2026, 9, 9, 20, 0), 300) is False    # that poll
+
+
+def test_a_live_schedule_stays_in_play_between_its_windows():
+    """Enforcing the default between windows is the design (the hourly poll) — only ENDED
+    stops it."""
+    from campaign_manager.budget import _in_play
+    daily = {"start_time": "19:00", "end_time": "21:00", "budget": 900}
+    upcoming = {"type": "once", "date": "2026-09-20", "start_time": "10:00",
+                "end_time": "12:00", "budget": 900}
+    assert _in_play([daily], datetime(2026, 9, 9, 3, 0), 300) is True
+    assert _in_play([upcoming], datetime(2026, 9, 9, 3, 0), 300) is True
+    assert _in_play([_SODA, daily], datetime(2026, 9, 9, 3, 0), 300) is True   # one window left
+
+
+def test_a_schedule_with_no_rules_is_always_in_play():
+    from campaign_manager.budget import _in_play
+    assert _in_play([], datetime(2026, 9, 9, 3, 0), 300) is True
 
 
 def _run() -> int:

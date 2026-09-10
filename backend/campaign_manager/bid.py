@@ -21,8 +21,9 @@ import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
+from app.core.config import settings
 from app.utils.time import now_ist
-from campaign_manager import config, logs, repo, writes
+from campaign_manager import config, lifecycle, logs, repo, window, writes
 from campaign_manager.marketplaces import get_adapter
 
 HOLD_MINUTES = 10                       # after a bid change, wait this long before nudging again
@@ -43,86 +44,21 @@ _PAUSED_MIDRUN = ("this automation was paused or deleted while the run was in pr
 
 
 # ── Pure decision logic (unit-tested) ────────────────────────────────────────
-
-def _time_ok(current_time: str, st: str | None, et: str | None) -> bool:
-    """Is `current_time` inside the [st, et] time-of-day window? Handles a window that
-    crosses midnight (et <= st → active after start OR before end). Mirrors budget."""
-    if not (st or et):
-        return True
-    if st and et and et <= st:                   # crosses midnight (e.g. 18:00–02:00)
-        # `et` is EXCLUSIVE, matching the non-overnight branch below. It used to be
-        # `> et`, so an 18:00–02:00 rule was still "in window" AT 02:00 — which would make
-        # the end-of-window reset skip the very keyword it fires for. Same inconsistency
-        # found and fixed in budget._matches_rule on 2026-08-07; the two must stay
-        # symmetric, so it is fixed here too.
-        if current_time < st and current_time >= et:
-            return False
-    else:
-        if st and current_time < st:
-            return False
-        if et and current_time >= et:
-            return False
-    return True
-
+#
+# WHEN a rule applies is answered by `campaign_manager.window`, shared with the budget
+# engine, the reconciler and the API's status. These two are the bid engine's view of it:
+# a rule in bid vocabulary (`stop_time` / `stop_date`) in, translated once.
 
 def _in_window(rule: dict, now: datetime) -> bool:
-    """Is the rule active right now? (mirrors budget rule-matching.) Two shapes —
-    recurring (date range + optional weekday filter) and once (single date). An overnight
-    window's post-midnight tail belongs to the day it STARTED, so a Sun 16:00–02:00 rule
-    runs to Mon 02:00, and a weekday filter of Fri/Sat/Sun still covers Sunday's tail."""
-    current_time = now.strftime("%H:%M")
-    st, et = rule.get("start_time"), rule.get("stop_time")
-    if not _time_ok(current_time, st, et):
-        return False
-
-    overnight = bool(st and et and et <= st)
-    in_tail = overnight and current_time < et
-    eff = (now - timedelta(days=1)) if in_tail else now
-    eff_date = eff.strftime("%Y-%m-%d")
-
-    if rule.get("type") == "once":
-        return eff_date == (rule.get("date") or "")
-
-    if rule.get("start_date") and eff_date < rule["start_date"]:
-        return False
-    if rule.get("stop_date") and eff_date > rule["stop_date"]:
-        return False
-    days = [d.lower() for d in (rule.get("days") or [])]   # empty = every day
-    if not days:
-        return True
-    return eff.strftime("%A").lower() in days
-
-
-def _parse_hhmm(s: str | None) -> tuple[int, int] | None:
-    """'HH:MM' → (hour, minute); None if empty/unparseable. Deliberately a local copy of
-    the reconciler's: this module stays importable without the jobs/scheduler stack so the
-    decision logic is unit-testable with no DB and no Blinkit."""
-    if not s:
-        return None
-    try:
-        parts = s.split(":")
-        h, m = int(parts[0]), int(parts[1])
-    except (ValueError, IndexError, AttributeError):
-        return None
-    return (h, m) if 0 <= h <= 23 and 0 <= m <= 59 else None
+    """Is the rule active right now? — `window.in_window` (overnight tails, the weekday
+    filter, `once` dates, the exclusive end)."""
+    return window.in_window(window.from_bid(rule), now)
 
 
 def _window_start(rule: dict, now: datetime) -> datetime:
-    """The datetime the rule's CURRENT window opened. Only meaningful while the rule is in
-    window (callers filter on `_in_window` first).
-
-    An overnight window's post-midnight tail belongs to the day it STARTED — the same rule
-    `_in_window` uses — so at 01:00 an 18:00–02:00 rule reports YESTERDAY 18:00. That is
-    what keeps "first fire of this window" from resetting itself at midnight. A rule with
-    no start_time opens at midnight of its effective day.
-    """
-    st, et = rule.get("start_time"), rule.get("stop_time")
-    hm = _parse_hhmm(st)
-    sh, sm = hm if hm else (0, 0)
-    overnight = bool(st and et and et <= st)
-    in_tail = overnight and now.strftime("%H:%M") < et
-    eff = (now - timedelta(days=1)) if in_tail else now
-    return eff.replace(hour=sh, minute=sm, second=0, microsecond=0)
+    """When the rule's CURRENT window opened — `window.window_start`. Only meaningful while
+    the rule is in window (callers filter on `_in_window` first)."""
+    return window.window_start(window.from_bid(rule), now)
 
 
 def is_recovery(position: float, target: int, current_cpm: int,
@@ -334,7 +270,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                    tenant_name=await repo.get_tenant_name(tenant_id))
 
     now = started
-    pairs = await repo.get_bid_rules(tenant_id, platform)
+    # Active rules in EVERY calendar state. The optimizer narrows to in-window below. The reset
+    # must still see a rule whose window closed a moment ago — which, if that was its last
+    # window, is already ENDED at that minute — and it picks only those (`_reset_selection`).
+    pairs = await repo.get_bid_rules(tenant_id, platform, state="active",
+                                     calendar=repo.ANY_CALENDAR)
     if reset:                                   # end-of-window de-escalation, not optimization
         return await _reset_run(tenant_id, platform, pairs, now, run_id, dry_run)
     # Open NOW *and* still open once the reset's look-ahead has passed.
@@ -357,8 +297,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     # window the client configured.
     soon = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
     active = [(r, rt) for r, rt in pairs
-              if r.state == "active"
-              and _in_window(_rule_dict(r), now)
+              if _in_window(_rule_dict(r), now)
               and _in_window(_rule_dict(r), soon)]
     if not active:
         logs.note(run_id, "No keyword automations are in window right now", dry_run=dry_run)
@@ -947,6 +886,48 @@ class _Target:
     target_position: int | None = None
 
 
+def _reset_grace_seconds() -> float:
+    """How far back the reset looks for a window that was open: the scheduler's misfire
+    grace — a fire that late still counts as on time — PLUS the look-ahead, because the
+    look-back starts from `now + RESET_LOOKAHEAD_MINUTES`, not from `now`."""
+    return settings.SCHEDULER_MISFIRE_GRACE_SECONDS + RESET_LOOKAHEAD_MINUTES * 60
+
+
+def _reset_selection(rules, at: datetime, grace_seconds: float) -> list:
+    """The rules an end-of-window reset floors at `at`: those whose window JUST closed.
+
+    ⚠️ The edge, not the level. This used to take every rule NOT in window — and a rule that
+    has ENDED is never in window, so every reset fire of ANY automation re-floored every ended
+    rule the tenant had, indefinitely, along with every rule that had not started yet (found
+    2026-09-10). Now only a window that closed within the grace counts. A close missed
+    entirely — the runner was down — is not recovered here: a recurring rule's next window
+    opens at its floor anyway, but a one-time rule's last window stays where it was left.
+
+    A keyword another rule still has open at `at` is left to that rule.
+    """
+    live_keys = {(r.campaign_id, r.keyword) for r in rules if _in_window(_rule_dict(r), at)}
+    return [r for r in rules
+            if window.just_closed(window.from_bid(r), at, grace_seconds)
+            and (r.campaign_id, r.keyword) not in live_keys]
+
+
+def _settle_selection(rules, now: datetime) -> list:
+    """Active rules that ENDED without their final reset landing — the settle-once safety net
+    (campaign_manager/lifecycle.py). Their end-of-window reset never landed (the runner was
+    down, or the write failed), so this floors them once more: within SETTLE_MAX_AGE_HOURS of
+    the close, and at most SETTLE_MAX_ATTEMPTS times. A keyword another rule has open is left
+    to that rule."""
+    live_keys = {(r.campaign_id, r.keyword) for r in rules if _in_window(_rule_dict(r), now)}
+    return [r for r in rules
+            if (r.campaign_id, r.keyword) not in live_keys
+            and lifecycle.bid_rule_needs_settle(r, now)]
+
+
+# What the client reads in History for a keyword floored by the settle pass rather than at
+# its own close.
+_SETTLE_PHRASE = "this automation ended and its final reset never landed"
+
+
 async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
                      run_id: str, dry_run: bool) -> dict:
     """End-of-window reset: set each just-closed keyword's bid back to its `min_bid`, so a
@@ -954,21 +935,32 @@ async def _reset_run(tenant_id: uuid.UUID, platform: str, pairs, now: datetime,
     scrape (cheap). Skips a keyword still covered by an in-window rule, and any bid already
     at/below its floor. Only a real (live) write updates runtime `last_cpm`.
 
-    Selection only — the writing is `_floor_bids`, shared with the on-demand reset."""
+    The same run settles rules that ended without their final reset landing
+    (`_settle_selection`). Wherever a floor is an automation's LAST teardown, landing it
+    latches `settled_at` — see `_floor_bids`.
+
+    Selection only (`_reset_selection`, `_settle_selection`) — the writing is `_floor_bids`,
+    shared with the on-demand reset."""
     # Windows are evaluated slightly AHEAD of now, because the reconciler fires this run a
     # minute BEFORE the window's stop time — so the bid drops back before the budget engine
     # (a parallel lane) can stop the campaign, after which Blinkit refuses bid writes. At
     # the nominal stop time the look-ahead changes nothing, so a reset fired exactly on the
-    # boundary, or by hand mid-window, behaves as it always did.
+    # boundary behaves as it always did.
     at = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
-    active = [r for r, _ in pairs if r.state == "active"]
-    live_keys = {(r.campaign_id, r.keyword) for r in active if _in_window(_rule_dict(r), at)}
-    to_reset = [_target_of(r) for r in active
-                if not _in_window(_rule_dict(r), at)
-                and (r.campaign_id, r.keyword) not in live_keys]
-    return await _floor_bids(tenant_id, platform, to_reset, run_id=run_id, dry_run=dry_run,
+    rules = [r for r, _ in pairs]
+    closing = _reset_selection(rules, at, _reset_grace_seconds())
+    taken = {r.id for r in closing}
+    settling = [r for r in _settle_selection(rules, now) if r.id not in taken]
+    # Which of these floors is its automation's FINAL teardown — and the close it covers.
+    settle_closes = {r.id: close for r in closing + settling
+                     if (close := lifecycle.bid_rule_close(r)) is not None
+                     and close != datetime.min and close <= at}
+    return await _floor_bids(tenant_id, platform, [_target_of(r) for r in closing + settling],
+                             run_id=run_id, dry_run=dry_run,
                              phrase="the window closed",
-                             empty_note="No keyword windows are closing right now")
+                             empty_note="No keyword windows are closing right now",
+                             settle_closes=settle_closes,
+                             phrases={r.id: _SETTLE_PHRASE for r in settling})
 
 
 def _target_of(rule) -> _Target:
@@ -999,7 +991,10 @@ async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: 
 
     now = now_ist()
     mine = None
-    for r, _rt in await repo.get_bid_rules(tenant_id, platform):
+    # Any state: a paused rule for this keyword still names the History row. Whether to refuse
+    # is decided below, and only an active, in-window rule refuses.
+    for r, _rt in await repo.get_bid_rules(tenant_id, platform, state=repo.ANY_STATE,
+                                           calendar=repo.ANY_CALENDAR):
         if r.campaign_id != campaign_id or r.keyword != keyword:
             continue
         if r.state == "active" and _in_window(_rule_dict(r), now):
@@ -1033,12 +1028,16 @@ async def _campaign_name(tenant_id: uuid.UUID, campaign_id: int, platform: str) 
 
 
 async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Target], *,
-                      run_id: str, dry_run: bool, phrase: str, empty_note: str) -> dict:
+                      run_id: str, dry_run: bool, phrase: str, empty_note: str,
+                      settle_closes: dict | None = None, phrases: dict | None = None) -> dict:
     """Write each target's bid down to its floor. Shared by the end-of-window reset and the
     on-demand one — one writer, two selectors, so a fix to either reaches both.
 
     `phrase` is the client-facing reason ("the window closed" / "this automation was
-    reset"); everything else about the write is identical."""
+    reset"), overridable per rule id by `phrases`; everything else about the write is
+    identical. `settle_closes` names the rule ids whose floor is their automation's FINAL
+    teardown, with the close it covers: a floor that lands (or finds the bid already there)
+    latches `settled_at`, one that fails counts an attempt."""
     if not to_reset:
         if empty_note:
             logs.note(run_id, empty_note, dry_run=dry_run)
@@ -1086,6 +1085,8 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
     processed = applied = skipped = errors = 0
     runtime_rows: list[dict] = []
     log_rows: list[dict] = []
+    landed_ids: list[str] = []                 # floors that landed or were already in place
+    failed_ids: list[str] = []
     bids_cache: dict[int, dict] = {}
     status_cache: dict[int, str | None] = {}
     floors_cache: dict[int, dict] = {}
@@ -1093,6 +1094,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
         for r in to_reset:
             processed += 1
             cid, kw = r.campaign_id, r.keyword
+            say = (phrases or {}).get(r.id) or phrase
             logs.blank(run_id, dry_run=dry_run)
             logs.rule_header(run_id, dry_run=dry_run, index=processed, total=len(to_reset),
                              campaign_name=r.campaign_name, campaign_id=cid)
@@ -1122,7 +1124,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             current = bids_cache[cid].get(kw)
             shown = f"₹{current}" if current is not None else "unknown"
             logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                          msg=f'keyword "{kw}" · {phrase} · current bid {shown}')
+                          msg=f'keyword "{kw}" · {say} · current bid {shown}')
 
             if current is not None and int(current) <= int(min_bid):
                 # Genuinely already at the floor. Skipped rather than written because a
@@ -1133,9 +1135,10 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              msg=f"already at the ₹{min_bid} floor — nothing to change")
                 skipped += 1
+                landed_ids.append(r.id)
                 log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                      "skip", current, min_bid,
-                                     f"{phrase} and the bid is already at its "
+                                     f"{say} and the bid is already at its "
                                      f"₹{current} floor, so nothing to change", dry_run, True,
                                      rule_id=r.id, target=r.target_position))
                 continue
@@ -1147,7 +1150,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             # A rejected write must not abort the whole reset either — one dark campaign
             # shouldn't cost every other keyword its de-escalation.
             logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                         msg=f"{phrase} — resetting to the ₹{min_bid} floor so it does not "
+                         msg=f"{say} — resetting to the ₹{min_bid} floor so it does not "
                              f"keep spending high (campaign is "
                              f"{status or 'in an unknown state'})")
             try:
@@ -1163,6 +1166,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                 ok, err = False, str(e)
             applied += int(ok)
             errors += int(not ok)
+            (landed_ids if ok else failed_ids).append(r.id)
             logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                          msg=(f"would set bid to ₹{min_bid} — not sent" if (ok and dry_run)
                               else f"applied — bid is now ₹{min_bid}" if ok
@@ -1172,7 +1176,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             # cannot exist without one.
             if ok and not dry_run and r.id:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(min_bid)})
-            done = f"{phrase}, so the bid goes back to its ₹{min_bid} floor"
+            done = f"{say}, so the bid goes back to its ₹{min_bid} floor"
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                  "reset", current, min_bid,
                                  _plain(err, done) if err else done, dry_run, ok,
@@ -1183,6 +1187,27 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
         if pw is not None:
             await pw.stop()
 
+    # A floor that was its automation's FINAL teardown latches it; one that failed counts an
+    # attempt. Live runs only — a dry run wrote nothing, so nothing has landed. Both are
+    # recorded in History with the run's own rows: finished, or out of retries and left as is.
+    if settle_closes and not dry_run:
+        stamped = now_ist()
+        finished = [i for i in landed_ids if i in settle_closes]
+        await repo.mark_settled("bid", {i: lifecycle.settle_stamp(settle_closes[i], stamped)
+                                        for i in finished})
+        gave_up = await repo.bump_settle_attempts(
+            "bid", [i for i in failed_ids if i in settle_closes]) or []
+        targets = {t.id: t for t in to_reset if t.id}
+        for ids, action, reason in (
+                (finished, lifecycle.SETTLED, lifecycle.settled_reason("bid")),
+                (gave_up, lifecycle.SETTLE_FAILED, lifecycle.settle_failed_reason("bid"))):
+            for i in ids:
+                t = targets[i]
+                log_rows.append(lifecycle.history_row(
+                    tenant_id=tenant_id, platform=platform, run_id=run_id, kind="bid",
+                    action=action, campaign_id=t.campaign_id, campaign_name=t.campaign_name,
+                    keyword=t.keyword, rule_id=t.id, reason=reason, timestamp=now_ist(),
+                    success=action == lifecycle.SETTLED))
     await repo.write_bid_runtime(runtime_rows)
     await repo.write_run_log(log_rows)
     logs.blank(run_id, dry_run=dry_run)
