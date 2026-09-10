@@ -9,7 +9,7 @@ from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
 from platform_auth import service as auth_service
 from campaign_manager.marketplaces.zepto.transport import setup as zepto_setup
-from platform_auth.errors import AuthError
+from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE, AuthError
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
 from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     discover_ids as zepto_discover_ids,
@@ -802,6 +802,10 @@ async def _scrape_zepto_sales(
     save_xlsx: str | None,
     all_cities: bool,
     save: bool,
+    # Pass a client to reuse one session across several sections — that is how
+    # `zepto-seller` runs sales and PO on a single login and a single WAF mint.
+    # None means "build your own", so running this command alone is unchanged.
+    storage_state=None,
 ) -> None:
     yesterday = (_date.today() - timedelta(days=1)).isoformat()
     date_from = date_from or (_date.today() - timedelta(days=8)).isoformat()
@@ -819,9 +823,10 @@ async def _scrape_zepto_sales(
             # anywhere — the Zepto account is shared, and on 2026-09-01 the
             # session was evicted three times in ten minutes. A run that only
             # authenticates at the start dies halfway through.
-            with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-                _, _, storage_state = await zepto_setup(str(tenant_id))
-            console.print("[green]Session healthy.[/green]")
+            if storage_state is None:
+                with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+                    _, _, storage_state = await zepto_setup(str(tenant_id))
+                console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
 
@@ -947,12 +952,21 @@ async def _scrape_zepto_sales(
             # platform_auth already tried to re-login and could not. Usually the
             # circuit breaker: repeated evictions on a shared account trip it, and
             # `auth reset` clears it once the other person has stopped.
+            #
+            # ⚠️ RE-RAISED, not collapsed into typer.Exit(1). cli/main.py maps
+            # AuthError to exit code 3, which the runner records as
+            # `auth_expired`; exiting 1 here buried every Zepto auth failure
+            # among anonymous exit_1s. That is exactly the regression
+            # _scrape_blinkit's own comment warns about — and this handler had
+            # it, while the sales scrape next door got it right.
+            if job_id:
+                await fail_scrape_job(db, job_id, "auth_expired")
             console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
             console.print(
                 "[yellow]Try `cli auth login zepto --tenant <id>`, or "
                 "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
             )
-            raise typer.Exit(1)
+            raise
         except typer.Exit:
             raise
         except ZeptoNoDataYet as e:
@@ -1765,7 +1779,10 @@ def scrape_zepto_ads(
 
 
 async def _scrape_zepto_ads(
-    tenant_id: str, date_from: str | None, date_to: str | None, category: str, save: bool
+    tenant_id: str, date_from: str | None, date_to: str | None, category: str, save: bool,
+    # See the note on _scrape_zepto_sales: pass a client to share one login and
+    # one WAF mint across sections. None means "build your own".
+    storage_state=None,
 ) -> None:
     from scraper.platforms.zepto.dashboard_data.seller import endpoints as zep
 
@@ -1775,11 +1792,12 @@ async def _scrape_zepto_ads(
     async with AsyncSessionLocal() as db:
         job_id = None
         try:
-            with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                # Same shared client. `/ads-bff/*` is the one surface that
-                # genuinely needs the WAF token, which the client already holds.
-                _, _, storage_state = await zepto_setup(str(tenant_id))
-            console.print("[green]Session healthy.[/green]")
+            if storage_state is None:
+                with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
+                    # Same shared client. `/ads-bff/*` is the one surface that
+                    # genuinely needs the WAF token, which the client already holds.
+                    _, _, storage_state = await zepto_setup(str(tenant_id))
+                console.print("[green]Session healthy.[/green]")
 
             with console.status("[cyan]Discovering brand...[/cyan]"):
                 ids = await zepto_discover_ids(storage_state)
@@ -2013,16 +2031,53 @@ async def _scrape_zepto_ads(
             else:
                 console.print("  [yellow]--no-save: nothing written[/yellow]")
 
+            # ⚠️ Everything above already SAVED. Raising here on purpose — same
+            # reasoning as the PO section: a run that lost individual fetches
+            # must not report success, or on the VM nobody is told and the gaps
+            # stay. Only `failed` counts; `not_ready` is Zepto legitimately not
+            # having computed a day yet, which is not our failure and is
+            # correctly skipped rather than written as zero.
+            #
+            # A logger.error alone would not reach the alert: it fires on
+            # `log_id("foresight_runner") AND severity>=ERROR`, and that stream
+            # is only logs/runner.log — a scraper's own output ships with no
+            # severity field at all (deploy/ops-agent-logging.yaml). The runner
+            # logs ERROR when a job exits non-zero; that is the only route.
+            #
+            # Observed 2026-09-05 backfilling July: 10 fetches failed, 297
+            # campaigns saved, job exited 0. Re-running the same window is safe
+            # and picks up what was missed — every row upserts on its key.
+            if failed:
+                logger.error(
+                    f"Zepto ads: {len(failed)} fetch(es) lost — {', '.join(failed[:5])}"
+                    f"{' …' if len(failed) > 5 else ''}. Saved what returned; "
+                    f"re-run the same window to backfill."
+                )
+                console.print(
+                    f"[red]Incomplete: {len(failed)} fetch(es) failed. Data that did "
+                    "return was saved — re-run the same window to backfill.[/red]"
+                )
+                raise typer.Exit(1)
+
         except AuthError as e:
             # platform_auth already tried to re-login and could not. Usually the
             # circuit breaker: repeated evictions on a shared account trip it, and
             # `auth reset` clears it once the other person has stopped.
+            #
+            # ⚠️ RE-RAISED, not collapsed into typer.Exit(1). cli/main.py maps
+            # AuthError to exit code 3, which the runner records as
+            # `auth_expired`; exiting 1 here buried every Zepto auth failure
+            # among anonymous exit_1s. That is exactly the regression
+            # _scrape_blinkit's own comment warns about — and this handler had
+            # it, while the sales scrape next door got it right.
+            if job_id:
+                await fail_scrape_job(db, job_id, "auth_expired")
             console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
             console.print(
                 "[yellow]Try `cli auth login zepto --tenant <id>`, or "
                 "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
             )
-            raise typer.Exit(1)
+            raise
         except typer.Exit:
             raise
         except Exception as e:
@@ -2033,6 +2088,207 @@ async def _scrape_zepto_ads(
 
 
 # ── Zepto PO Management ────────────────────────────────────────────────────────
+
+@app.command("zepto")
+def scrape_zepto(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: 7 days ago)"),
+    date_to: str = typer.Option(None, "--to", help="Sales/ads end date YYYY-MM-DD (default: yesterday)"),
+    sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
+    po: bool = typer.Option(False, "--po", help="Scrape PO/ASN/GRN data"),
+    ads: bool = typer.Option(False, "--ads", help="Scrape ads data"),
+    category: str = typer.Option(
+        "all", "--category",
+        help=(
+            "Ads only: sponsored_products | sponsored_display | sponsored_brands "
+            "| all. Leave at 'all' — the three tabs return DISJOINT campaigns, so "
+            "anything narrower silently drops the others' spend."
+        ),
+    ),
+    po_days_back: int = typer.Option(
+        30, "--po-days-back",
+        help=(
+            "Rolling window for the PO fetch, counted back from TODAY. Separate "
+            "from --from/--to because POs are forward-looking: an order raised "
+            "today expires in three weeks, so the PO window must include today "
+            "while the sales window stops at yesterday."
+        ),
+    ),
+    all_cities: bool = typer.Option(False, "--all-cities", help="Sweep every city for the per-city sales split"),
+    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
+):
+    """Scrape ALL Zepto private data. Pass --sales, --po, --ads, or none for all three.
+
+    THE master Zepto command. Blinkit needs two commands because it has two
+    dashboards behind two separate logins (brands.blinkit.com magic-link,
+    partnersbiz.com OTP) — see platform_auth/registry.py, where that forces two
+    slugs. Zepto has ONE console covering sales, PO and ads alike, so it gets
+    one slug there and one command here. Splitting Zepto's commands would be
+    copying a Blinkit workaround that does not apply.
+
+    The point is the setup cost: `zepto_setup()` is a session probe plus a ~10s
+    headless Chromium launch for the WAF token. Running three commands pays
+    that three times — and each login EVICTS whoever is on the client's Zepto
+    dashboard, since Zepto permits one session per account. One command, one
+    eviction.
+
+    ⚠️ The sections keep their own date windows, deliberately. Sales and ads are
+    bounded by --from/--to and stop at yesterday: Zepto recomputes a day once
+    each morning, so asking for today returns NoDataYet. PO uses
+    --po-days-back through TODAY, because POs are forward-looking — an order
+    raised today expires in three weeks, so stopping at yesterday would miss
+    exactly the ones worth acting on. Blinkit draws the same distinction with
+    its own --po-days-back.
+
+    A section that fails does not abort the others, so one flaky endpoint costs
+    its own data rather than the whole run. The command still exits non-zero if
+    anything failed, so the job runner records a failure instead of a green
+    tick over a silent gap.
+    """
+    try:
+        asyncio.run(_scrape_zepto(
+            tenant_id, date_from, date_to, sales, po, ads, po_days_back,
+            category, all_cities, save,
+        ))
+    except AuthError as e:
+        # ⚠️ This duplicates cli/main.py's global AuthError handler ON PURPOSE,
+        # because that handler never runs. It sits behind
+        # `if __name__ == "__main__"`, and `python -m cli` executes
+        # cli/__main__.py — which does `from cli.main import app; app()` — so
+        # cli/main.py is imported as a module and the guard is never true.
+        # Measured: 0 jobs with exit_code 3 and 0 with error='auth_expired'
+        # across 6,094 runs. Every auth failure has been landing as an
+        # anonymous exit 1, which is exactly the burial the comment in
+        # _scrape_blinkit warns about.
+        #
+        # Scoped to Zepto deliberately. Fixing the global path is a one-line
+        # change to cli/__main__.py, but it alters how EVERY command surfaces
+        # exceptions — including Blinkit's, which is live production on the VM.
+        # That is a call for whoever owns platform_auth, not a side-effect of
+        # this work. Zepto needs it most: it cannot refresh, so it logs in
+        # daily and is the platform most likely to fail this way.
+        logger.error(
+            "AUTH FAILURE — the Zepto scrape could not authenticate.\n"
+            f"    {type(e).__name__}: {e}\n"
+            "    Check: python -m cli auth status -t <tenant>\n"
+            "    Fix:   python -m cli auth login zepto -t <tenant>"
+        )
+        raise typer.Exit(AUTH_EXPIRED_EXIT_CODE)
+
+
+def _why(e: Exception) -> str:
+    """A readable reason for a failed section.
+
+    typer.Exit stringifies to its exit code — "1" — which told the reader
+    nothing. A section that raised it has already printed and logged its own
+    reason, so say that rather than repeating a bare number.
+    """
+    if isinstance(e, typer.Exit):
+        return "section reported failure (see its own error above)"
+    return str(getattr(e, "orig", None) or e)
+
+
+async def _scrape_zepto(
+    tenant_id: str,
+    date_from: str | None,
+    date_to: str | None,
+    sales_flag: bool,
+    po_flag: bool,
+    ads_flag: bool,
+    po_days_back: int,
+    category: str,
+    all_cities: bool,
+    save: bool,
+) -> None:
+    run_all = not sales_flag and not po_flag and not ads_flag
+    run_sales = sales_flag or run_all
+    run_po = po_flag or run_all
+    run_ads = ads_flag or run_all
+
+    # Built ONCE and handed to every section. This is the whole point of the
+    # combined command: `setup()` is a session probe plus a ~10s headless
+    # Chromium launch for the WAF token, and running the three commands
+    # separately pays for it three times — and evicts the client three times.
+    with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+        _, _, client = await zepto_setup(str(tenant_id))
+    console.print("[green]Session healthy.[/green]")
+
+    failed: list[str] = []
+    ran: list[str] = []
+
+    # ⚠️ Section failures log at ERROR, not WARNING. The Cloud Monitoring policy
+    # matches `severity>=ERROR`, so a failure logged any lower is invisible to
+    # the alert — see docs/jobs.md, which records that exact regression. The
+    # command also exits non-zero below, but the ERROR line is what carries the
+    # section name into the alert.
+    if run_sales:
+        console.rule("[bold]Sales")
+        logger.info("Zepto: sales section starting")
+        try:
+            await _scrape_zepto_sales(
+                tenant_id, date_from, date_to, None, all_cities, save,
+                storage_state=client,
+            )
+            ran.append("sales")
+        except AuthError:
+            # Escapes section isolation deliberately. If auth is genuinely gone
+            # — breaker tripped, or re-login exhausted — no later section can
+            # work either, and cli/main.py must see it to exit 3 so the runner
+            # records `auth_expired` instead of an anonymous exit_1. Same
+            # reasoning as _scrape_blinkit.
+            raise
+        except Exception as e:
+            # Deliberately not re-raised: a sales failure must not cost the PO
+            # data, which is a different endpoint family with its own health.
+            failed.append("sales")
+            logger.error(f"Zepto sales section FAILED: {_why(e)}")
+            console.print(f"[yellow]Sales failed — continuing to PO: {_why(e)}[/yellow]")
+
+    if run_po:
+        console.rule("[bold]PO / ASN / GRN")
+        po_from = (_date.today() - timedelta(days=po_days_back)).isoformat()
+        po_to = _date.today().isoformat()
+        logger.info(f"Zepto: PO section starting [{po_from}..{po_to}]")
+        try:
+            await _scrape_zepto_po(tenant_id, po_from, po_to, save, storage_state=client)
+            ran.append("po")
+        except AuthError:
+            raise                      # see the note on the sales section
+        except Exception as e:
+            failed.append("po")
+            logger.error(f"Zepto PO section FAILED: {_why(e)}")
+            console.print(f"[yellow]PO failed — continuing to ads: {_why(e)}[/yellow]")
+
+    if run_ads:
+        console.rule("[bold]Ads")
+        logger.info("Zepto: ads section starting")
+        try:
+            await _scrape_zepto_ads(
+                tenant_id, date_from, date_to, category, save,
+                storage_state=client,
+            )
+            ran.append("ads")
+        except AuthError:
+            raise                      # see the note on the sales section
+        except Exception as e:
+            failed.append("ads")
+            logger.error(f"Zepto ads section FAILED: {_why(e)}")
+            console.print(f"[yellow]Ads failed: {_why(e)}[/yellow]")
+
+    if failed:
+        # Non-zero exit so the job runner records a failure rather than a
+        # success with a quiet gap in the data. The runner turns this into
+        # jobs.status='failed' and its own ERROR line; the per-section ERRORs
+        # above are what say WHICH part broke.
+        logger.error(
+            f"Zepto scrape finished with failures — ok: {', '.join(ran) or 'none'} "
+            f"· failed: {', '.join(failed)}"
+        )
+        console.print(f"[red]Sections failed: {', '.join(failed)}[/red]")
+        raise typer.Exit(1)
+    logger.info(f"Zepto scrape complete — sections: {', '.join(ran)}")
+    console.print("[green]Zepto scrape complete.[/green]")
+
 
 @app.command("zepto-po")
 def scrape_zepto_po(
@@ -2056,7 +2312,8 @@ def scrape_zepto_po(
 
 
 async def _scrape_zepto_po(
-    tenant_id: str, date_from: str | None, date_to: str | None, save: bool
+    tenant_id: str, date_from: str | None, date_to: str | None, save: bool,
+    storage_state=None,
 ) -> None:
     date_to = date_to or _date.today().isoformat()
     date_from = date_from or (_date.today() - timedelta(days=30)).isoformat()
@@ -2065,9 +2322,10 @@ async def _scrape_zepto_po(
         job_id = None
         try:
             # Same shared client as the sales scrape — see the note there.
-            with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-                _, _, storage_state = await zepto_setup(str(tenant_id))
-            console.print("[green]Session healthy.[/green]")
+            if storage_state is None:
+                with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
+                    _, _, storage_state = await zepto_setup(str(tenant_id))
+                console.print("[green]Session healthy.[/green]")
 
             job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")
 
@@ -2075,10 +2333,17 @@ async def _scrape_zepto_po(
             # asn/filter on 2026-08-27 and aborting the run discarded 74 POs and
             # 72 GRNs that had already come back. One flaky endpoint should cost
             # its own data, not the whole scrape.
+            # Endpoints that gave up entirely after exhausting their retries.
+            # Recorded rather than just logged, because a lost endpoint has to
+            # reach the ALERT, and the alert only ever sees a non-zero exit —
+            # see the note at the end of this function.
+            lost: list[str] = []
+
             async def _try(label, coro):
                 try:
                     return await coro
                 except Exception as e:
+                    lost.append(label)
                     logger.warning(f"Zepto {label} failed, continuing without it: {e}")
                     console.print(f"[yellow]{label} failed — continuing[/yellow]")
                     return []
@@ -2127,6 +2392,38 @@ async def _scrape_zepto_po(
                 console.print(f"  [bold]Fill rate: {grn_q:,}/{po_q:,} = {100 * grn_q / po_q:.1f}%[/bold]")
             if save:
                 console.print(f"  Saved to DB: {written} rows")
+
+            # ⚠️ Everything above already SAVED. This raises afterwards on
+            # purpose: the rows that came back are good and must be kept, but a
+            # run that silently lost a whole endpoint must not report success.
+            #
+            # Why an exit code and not just logger.error: the alert is
+            # `log_id("foresight_runner") AND severity>=ERROR`, and that stream
+            # is ONLY logs/runner.log. A scraper's own output ships to
+            # `foresight_<lane>` with no processors and therefore no severity
+            # field at all — see deploy/ops-agent-logging.yaml. So an ERROR
+            # logged in here reaches Cloud Logging as plain text and matches
+            # nothing. The runner logs ERROR when a job exits non-zero; that is
+            # the only path to the alert.
+            #
+            # Observed 2026-09-05: asn/filter 500'd through all of 5/15/45s and
+            # the run still exited 0 — 75 POs and 75 GRNs saved, ASNs 0, job
+            # green. On the VM nobody would have been told, and the ship-vs-
+            # accept split would have quietly gone stale. Re-running fixes it
+            # (ASN rows key on asn_no, no date), but only if someone knows.
+            if lost:
+                logger.error(
+                    f"Zepto PO: endpoint(s) lost after retries — {', '.join(lost)}. "
+                    f"Saved what returned ({written} rows); re-run "
+                    f"`cli scrape zepto --po` to backfill."
+                )
+                console.print(
+                    f"[red]Incomplete: {', '.join(lost)} returned nothing after "
+                    "retries. Data that did return was saved — re-run to backfill.[/red]"
+                )
+                raise typer.Exit(1)
+        except typer.Exit:
+            raise
         except Exception as e:
             if job_id:
                 await fail_scrape_job(db, job_id, str(e))

@@ -166,17 +166,23 @@ async def _post_5xx_retry(
 
 
 async def _fetch_po_paged(
-    client: dict, api: str, body: dict, list_key: str, label: str
+    client: dict, api: str, body: dict, list_key: str, label: str,
+    page_size: int | None = None,
 ) -> list[dict]:
     """Page through one PO-app endpoint until `hasNext` is false.
 
     All three (po/grn/asn) share this shape: offset/limit in, `{list_key: [...],
     total, hasNext}` out. PO_MAX_PAGES bounds the loop so a misreported
     `hasNext` cannot spin forever.
+
+    `page_size` exists because asn/filter cannot take the same page size as its
+    siblings — it 500s at 100 and answers in under a second at 50. See
+    ASN_PAGE_SIZE in endpoints.py for the measurements.
     """
+    size = page_size or ep.PO_PAGE_SIZE
     out: list[dict] = []
     for page in range(ep.PO_MAX_PAGES):
-        payload = {**body, "offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE}
+        payload = {**body, "offset": page * size, "limit": size}
         data = await _post_5xx_retry(
             client, f"{ep.BASE_URL}{api}", payload, f"{label} p{page + 1}"
         )
@@ -252,6 +258,8 @@ async def fetch_asns(
             "poIds": [], "trackingId": "",
         },
         "asnList", f"asn/filter [{date_from}..{date_to}]",
+        # The one endpoint that needs a smaller page — see ASN_PAGE_SIZE.
+        page_size=ep.ASN_PAGE_SIZE,
     )
 
 

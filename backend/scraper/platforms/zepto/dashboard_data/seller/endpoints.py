@@ -54,6 +54,28 @@ PO_PAGE_SIZE = 100
 # Guard against an unbounded loop if `hasNext` ever misbehaves.
 PO_MAX_PAGES = 20
 
+# ⚠️ asn/filter is NOT the same as its two siblings — it 500s at limit=100.
+#
+# Measured 2026-09-05 against the live API, one variable at a time. Identical
+# 31-day window, identical payload, only `limit` changed:
+#
+#     limit=100  ->  HTTP 500 after 20.9s   (their gateway timing out)
+#     limit= 50  ->  HTTP 200,  50 rows, 0.9s
+#     limit= 25  ->  HTTP 200,  25 rows, 0.6s
+#
+# Paginating that same window at 50 collects all 76 ASNs in 1.8s. The failing
+# runs spent two minutes on the 5/15/45s retry ladder and returned nothing.
+#
+# po/filter and grn/filter handle limit=100 fine (75 rows, under a second), so
+# this is specific to the ASN endpoint — which is why it stays a separate
+# constant rather than lowering the page size for all three.
+#
+# This was mistaken for random flakiness for weeks ("~4 failures in 18
+# attempts, randomly distributed"). It was never random: the failures were the
+# WIDE windows, which return more rows. Narrow windows happened to stay under
+# whatever the endpoint chokes on.
+ASN_PAGE_SIZE = 50
+
 
 # ── Ads (`ads-bff`) ─────────────────────────────────────────────────────────────
 # A different service from the analytics endpoints above, and stricter: it
