@@ -148,6 +148,8 @@ export const updateBudgetRule = (clientId, ruleId, body) =>
 export const deleteBudgetRule = (clientId, ruleId) =>
 	api.delete(`${base(clientId)}/budget-rules/${ruleId}`);
 
+// Stops the schedule and puts the campaign back on its default budget. On a
+// stop-after-window schedule it also restarts the campaign. Returns `{job_id}`.
 export const resetBudgetSchedule = (clientId, scheduleId) =>
 	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/reset`);
 
@@ -158,11 +160,21 @@ export const createBidRule = (clientId, body) =>
 export const updateBidRule = (clientId, ruleId, body) =>
 	api.patch(`${base(clientId)}/bid-rules/${ruleId}`, body);
 
-export const deleteBidRule = (clientId, ruleId) =>
-	api.delete(`${base(clientId)}/bid-rules/${ruleId}`);
+// `reset` also puts the keyword's bid back to the rule's min_bid before the rule goes.
+// Without it the bid stays wherever the optimizer left it and no rule remains to lower it.
+export const deleteBidRule = (clientId, ruleId, { reset = false } = {}) =>
+	api.delete(`${base(clientId)}/bid-rules/${ruleId}`, { params: { reset } });
 
+// pause | resume, and nothing else — anything else 404s. The engine holds exactly two
+// states for a bid rule, active and paused, so there is no "stop" to send (the lifecycle
+// block in campaign_manager_service.py is the contract).
 export const setBidState = (clientId, ruleId, action) =>
-	api.post(`${base(clientId)}/bid-rules/${ruleId}/${action}`); // pause | resume | stop
+	api.post(`${base(clientId)}/bid-rules/${ruleId}/${action}`);
+
+// Bid back to the rule's min_bid. Enqueues a write and returns `{job_id}`; the engine
+// refuses with 409 while the rule is running, because the next tick would undo it.
+export const resetBidRule = (clientId, ruleId) =>
+	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
 
 // ── On-demand actions (enqueue → poll) ───────────────────────────────────────
 export const setBudgetNow = (clientId, body) =>
@@ -178,9 +190,13 @@ export const refreshCampaigns = (clientId) =>
 	api.post(`${base(clientId)}/campaigns/refresh`);
 
 /**
- * The city list every tenant shares, for the evaluation-city suggestions.
+ * The dark-store catalogue, which is where the evaluation-city suggestions come from.
  *
- * Not client-scoped, so it sits outside `base()`: these are the cities the platform serves,
- * not this account's.
+ * ⚠️ Read from the STORE catalogue, not from a city list. The catalogue is the only source
+ * that reflects where stores actually are; a standalone city table drifts from it.
+ * The engine resolves an evaluation city by lower-casing it against this same table
+ * (`repo.py::resolve_store`), so a city offered here is one it can genuinely measure at.
+ *
+ * Not client-scoped: these are the platform's stores, not this account's.
  */
-export const getCities = () => api.get("/reference/cities");
+export const getStoreCatalogue = () => api.get("/reference/blinkit-zones");

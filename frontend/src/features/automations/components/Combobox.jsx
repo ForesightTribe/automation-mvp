@@ -29,6 +29,7 @@ export const Combobox = ({
 	const [at, setAt] = useState(null);
 	const [active, setActive] = useState(0);
 	const wrap = useRef(null);
+	const panel = useRef(null);
 	const isOpen = at != null;
 
 	// Substring, not prefix: "delhi" should find "New Delhi", which is how people recall a
@@ -63,10 +64,22 @@ export const Combobox = ({
 
 	useEffect(() => {
 		if (!isOpen) return;
+		// ⚠️ The panel is PORTALLED to the body, so it is not a DOM descendant of `wrap`.
+		// Both rects have to be tested: a mousedown over an option lands outside `wrap`,
+		// and closing there unmounts the list before the option's click can arrive.
 		const onDown = (e) => {
-			if (wrap.current && !wrap.current.contains(e.target)) close();
+			const inField = wrap.current?.contains(e.target);
+			const inPanel = panel.current?.contains(e.target);
+			if (!inField && !inPanel) close();
 		};
-		const onScroll = () => close();
+		// ⚠️ Ignore scrolls that START INSIDE the panel. The listener is on the capture phase
+		// so it sees the page move under a panel anchored to a rect measured once. The panel
+		// scrolling its own list reaches the same handler, and closing on that would take the
+		// list away as soon as anyone reaches for an option below the fold.
+		const onScroll = (e) => {
+			if (panel.current?.contains(e.target)) return;
+			close();
+		};
 		document.addEventListener("mousedown", onDown);
 		window.addEventListener("scroll", onScroll, true);
 		return () => {
@@ -131,6 +144,7 @@ export const Combobox = ({
 			{isOpen &&
 				createPortal(
 					<ul
+						ref={panel}
 						id={`${id}-list`}
 						role="listbox"
 						style={{

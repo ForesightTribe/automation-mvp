@@ -144,6 +144,39 @@ export const nextOpening = (row, now = new Date()) => {
 	return best;
 };
 
+/**
+ * The dates a recurring window actually fires on, inside the automation's run dates.
+ *
+ * "Every Monday" is only true of a window that gets more than one Monday. An automation
+ * that runs from the 10th to the 10th fires at most once, and one whose single day is a
+ * Wednesday never fires a Monday window at all. Both are decided by walking the range, so
+ * the summary can say "On 10 Sept" or "never runs" instead of a repeat that will not happen.
+ *
+ * An open-ended range (no end date) is genuinely recurring and returns null, which callers
+ * read as "describe it as a repeat". Capped at a year so a long range cannot fan out.
+ */
+export const fireDates = (days, startIso, endIso, { cap = 366 } = {}) => {
+	if (!startIso || !endIso) return null;
+	const wanted = new Set(
+		((days ?? []).length ? days : DAY_ORDER).map((d) =>
+			String(d).toLowerCase(),
+		),
+	);
+	// ⚠️ Formatted from LOCAL fields, never via toISOString(): that converts to UTC first,
+	// and local midnight in IST is 18:30 the previous evening, so every date lands a day
+	// early. The two-digit padding keeps the output comparable with the ISO inputs.
+	const iso = (d) =>
+		`${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+	const out = [];
+	const cursor = new Date(`${startIso}T00:00:00`);
+	const end = new Date(`${endIso}T00:00:00`);
+	for (let i = 0; i < cap && cursor <= end; i += 1) {
+		if (wanted.has(DAY_ORDER[cursor.getDay()])) out.push(iso(cursor));
+		cursor.setDate(cursor.getDate() + 1);
+	}
+	return out;
+};
+
 export const WHEN = new Intl.DateTimeFormat("en-IN", {
 	weekday: "short",
 	hour: "numeric",
@@ -216,7 +249,7 @@ export const bidRuleTags = (rule) => {
 	return [
 		{
 			label: `Managed Rank ${rule.target_position}`,
-			detail: `Hold rank #${rule.target_position} (${range})${when ? ` · ${when}` : ""}`,
+			detail: `Target position #${rule.target_position} (${range})${when ? ` · ${when}` : ""}`,
 		},
 	];
 };

@@ -1,9 +1,10 @@
 import { AlertTriangle } from "lucide-react";
-import { ACTIONS } from "./SelectActionModal";
-import { budgetProblem } from "./ActionCards";
+
+import { ACTIONS, budgetProblem } from "./ActionCards";
 import {
 	clockText,
 	crossesMidnight,
+	fireDates,
 	nextOpening,
 	scheduleIssues,
 	WHEN,
@@ -165,7 +166,52 @@ export const WizardSummary = ({
 					type: timing.type,
 					date: timing.date,
 				};
-	const next = nextOpening(pseudo);
+	/** A fire date and a start time as one moment. No start time means "sometime today",
+	 * so it is treated as the end of that day: an all-day window today has not gone by. */
+	const fireMoment = (isoDate, startTime) => {
+		const at = new Date(`${isoDate}T00:00:00`);
+		const [h, m] = startTime
+			? String(startTime).split(":").map(Number)
+			: [23, 59];
+		at.setHours(h || 0, m || 0, 0, 0);
+		return at.getTime();
+	};
+
+	/**
+	 * The first moment this will act, respecting the run dates. `nextOpening` walks
+	 * weekdays from today and knows nothing about the range, so for a bounded automation it
+	 * can name a Monday that falls after the end date. Bounded ranges are walked instead;
+	 * `null` means nothing inside the range matches, which the reader is told outright.
+	 */
+	const firstFire = (() => {
+		if (kind !== "campaign" || !timing.start_date || !timing.end_date)
+			return undefined;
+		const now = Date.now();
+		let best = null;
+		let anyInRange = false;
+		for (const a of scheduled) {
+			for (const t of a.triggers) {
+				const dates = t.date
+					? [t.date]
+					: (fireDates(t.days, timing.start_date, timing.end_date) ??
+						[]);
+				for (const d of dates) {
+					anyInRange = true;
+					const at = fireMoment(d, t.start_time);
+					if (at >= now && (best === null || at < best)) best = at;
+				}
+			}
+		}
+		// Three answers, not two: a date, "already passed", or "never". Collapsing the
+		// last two into one would blame the run dates for a window that merely went by.
+		return best !== null ? new Date(best) : anyInRange ? "past" : null;
+	})();
+	const next =
+		firstFire === undefined
+			? nextOpening(pseudo)
+			: firstFire instanceof Date
+				? firstFire
+				: null;
 
 	const from = dateText(timing.start_date);
 	const to = dateText(timing.end_date);
@@ -191,7 +237,16 @@ export const WizardSummary = ({
 					],
 					["Name", name || "Untitled"],
 					["Active", active],
-					["First check", next ? WHEN.format(next) : "Not scheduled"],
+					[
+						"First check",
+						next
+							? WHEN.format(next)
+							: firstFire === "past"
+								? "Already passed: every chosen time in the run dates has gone by"
+								: firstFire === null
+									? "Never: no chosen day falls inside the run dates"
+									: "Not scheduled",
+					],
 				]
 			: [
 					["Type", "Keyword bid automation"],
@@ -216,7 +271,47 @@ export const WizardSummary = ({
 		const at = clockText(t.start_time) || "the first check of the day";
 		const back = t.revert && t.end_time ? clockText(t.end_time) : null;
 		const over = crossesMidnight(t) ? " the next morning" : "";
-		const on = t.date ? `On ${dateText(t.date)}` : daysText(t.days);
+
+		/**
+		 * "Every Monday" is only true when the run dates hold more than one Monday that has
+		 * not yet happened. The firings still ahead decide the wording: none in the range
+		 * and the window is dead; some in the range but all behind us and it is in the past;
+		 * exactly one ahead and it is a date rather than a repeat; more, and it repeats.
+		 */
+		const inRange = t.date
+			? [t.date]
+			: fireDates(t.days, timing.start_date, timing.end_date);
+		if (inRange && inRange.length === 0) {
+			const names = daysText(t.days).replace(/^Every /, "");
+			return (
+				<span className="text-warning">
+					<AlertTriangle size={13} className="mr-1 inline" />
+					This window never runs:{" "}
+					{t.days?.length > 1
+						? `none of ${names}`
+						: `no ${names}`}{" "}
+					falls between {from} and {to}.
+				</span>
+			);
+		}
+		const ahead = inRange
+			? inRange.filter((d) => fireMoment(d, t.start_time) >= Date.now())
+			: null;
+		if (ahead && ahead.length === 0) {
+			const last = inRange[inRange.length - 1];
+			return (
+				<span className="text-warning">
+					<AlertTriangle size={13} className="mr-1 inline" />
+					This window is in the past: {dateText(last)} at {at} has
+					already gone by, so it will not run.
+				</span>
+			);
+		}
+		const on = ahead
+			? ahead.length === 1
+				? `On ${dateText(ahead[0])}`
+				: daysText(t.days)
+			: daysText(t.days);
 		const amount = a.budget ?? base;
 		const verb =
 			amount > base

@@ -98,3 +98,45 @@ summary {
 		opacity: 1;
 	}
 }
+
+/* Slim scrollbars.
+
+   The tables and the wizard scroll inside their own boxes, and on any machine set to show
+   scrollbars always (or with a mouse attached) the platform default is a ~15px opaque bar
+   that eats a column of the table it belongs to. Thin and translucent keeps the affordance
+   without spending the width.
+
+   Both syntaxes are needed: `scrollbar-width` is the standard one, honoured by Firefox and
+   by Chrome 121+, while `::-webkit-scrollbar` covers Safari and older Chrome. A browser that
+   understands the first ignores the second, so they cannot fight.
+
+   The track stays transparent so a slim bar does not draw a permanent line down the side of
+   every panel; the thumb is the only thing that appears, and it darkens on hover. */
+* {
+	scrollbar-width: thin;
+	scrollbar-color: var(--color-border) transparent;
+}
+
+*::-webkit-scrollbar {
+	width: 8px;
+	height: 8px;
+}
+
+*::-webkit-scrollbar-track {
+	background: transparent;
+}
+
+*::-webkit-scrollbar-thumb {
+	background-color: var(--color-border);
+	border-radius: 9999px;
+}
+
+*::-webkit-scrollbar-thumb:hover {
+	background-color: var(--color-content-subtle);
+}
+
+/* The corner where a horizontal and a vertical bar meet, which otherwise paints as a small
+   opaque square in the platform's own grey. */
+*::-webkit-scrollbar-corner {
+	background: transparent;
+}

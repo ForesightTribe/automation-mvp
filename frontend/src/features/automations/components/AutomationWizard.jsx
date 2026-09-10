@@ -6,6 +6,7 @@ import { CampaignPickerList } from "./CampaignPickerList";
 import { KeywordPicker } from "./KeywordPicker";
 import { ActionCards } from "./ActionCards";
 import { KeywordActionCard } from "./KeywordActionCard";
+import { DatePicker } from "./DatePicker";
 import { Field, FIELD_INPUT } from "./Field";
 import { scheduleIssues } from "../automation";
 import { WizardContext } from "./WizardContext";
@@ -99,7 +100,23 @@ export const AutomationWizard = ({
 	 * beside them. A separate copy lets the two disagree, either drawing no card for a flag
 	 * that is set, or keeping a flag alive after the card for it is removed.
 	 */
-	const stopAfterWindow = actions.some((a) => a.type === "stop");
+	/**
+	 * Two ways to say the same thing, and still only ONE flag.
+	 *
+	 * `stop_after_window` can be set either by adding a Pause Campaign action or by ticking
+	 * "and pause the campaign" on a window's revert row, because that is where the thought
+	 * usually occurs. Both feed a DERIVED value rather than a second stored copy, so the two
+	 * entry points cannot disagree about what will be saved.
+	 */
+	// Set when Continue is pressed on an unsatisfied step, cleared on every step change: the
+	// reader is told what is missing at the moment they ask to move on, not while they are
+	// still filling the step in.
+	const [triedToAdvance, setTriedToAdvance] = useState(false);
+	const [pauseAtEnd, setPauseAtEnd] = useState(
+		isEdit ? Boolean(editRow?.stop_after_window) : false,
+	);
+	const stopAfterWindow =
+		pauseAtEnd || actions.some((a) => a.type === "stop");
 	const [timing, setTiming] = useState(emptyTiming);
 
 	const [targetPosition, setTargetPosition] = useState("");
@@ -333,6 +350,13 @@ export const AutomationWizard = ({
 		if (singleCity && !city && !locationId) setCity(singleCity.name);
 	}, [singleCity, city, locationId]);
 
+	// Clearing this on every step change is what keeps the message tied to the moment
+	// Continue was pressed: it is stale as soon as the step is satisfied, and it must not
+	// follow the reader into the next step.
+	useEffect(() => {
+		setTriedToAdvance(false);
+	}, [step]);
+
 	// Below the floor the engine would raise the bid to it on the first write, so saving a
 	// lower number would quietly not mean what it says — block instead.
 	// Below the exact keyword floor when we know it; otherwise below the campaign's LOWEST
@@ -399,23 +423,42 @@ export const AutomationWizard = ({
 		step === 1 ? canAdvanceFrom1 : step === 2 ? canAdvanceFrom2 : true;
 	const stepReachable = (n) =>
 		n <= step || (n === step + 1 && Boolean(canAdvanceNow));
-	const stepBlockedReason = (n) => {
-		if (n !== step + 1) return `Go through “${STEPS[n - 2]}” first.`;
+	/**
+	 * The ONE thing still missing, in the order the step asks for it.
+	 *
+	 * Not a combined sentence: "pick a campaign and set a budget" keeps naming the campaign
+	 * after one has been picked, so the reader re-reads it looking for what they got wrong.
+	 * Each branch returns only the first unmet requirement, and the message disappears as
+	 * soon as that requirement is met.
+	 */
+	const missingOnThisStep = () => {
 		if (step === 1) {
-			return kind === "campaign"
-				? "Pick a campaign and set a default daily budget first."
-				: "Pick a campaign and a keyword first.";
+			if (!campaign) return "Pick a campaign to continue.";
+			if (kind === "campaign" && !defaultBudget)
+				return "Set a default daily budget to continue.";
+			if (kind === "keyword" && !keyword)
+				return "Pick a keyword to continue.";
+			return null;
 		}
-		if (kind === "campaign")
-			return actions.length === 0
-				? "Add at least one action first. An automation with none would never do anything."
-				: (blocking[0]?.text ??
-						"Give every budget action an amount first.");
+		if (kind === "campaign") {
+			if (actions.length === 0)
+				return "Add at least one action to continue. An automation with none would never do anything.";
+			if (blocking.length) return blocking[0].text;
+			return "Give every budget action an amount to continue.";
+		}
+		if (!targetPosition) return "Set a target position to continue.";
+		if (!minBid) return "Set a minimum bid to continue.";
 		if (belowFloor)
-			return "Raise the min bid to Blinkit's published floor first.";
-		if (!hasLocation) return "Choose where to measure position first.";
-		return "Add a target position and min bid first.";
+			return "Raise the min bid to Blinkit's published floor to continue.";
+		if (!hasLocation)
+			return "Choose where to measure position to continue.";
+		return null;
 	};
+
+	const stepBlockedReason = (n) =>
+		n !== step + 1
+			? `Go through “${STEPS[n - 2]}” first.`
+			: (missingOnThisStep() ?? "");
 
 	// Every (action, trigger) pair is one budget rule — that is the whole mapping.
 	//   increase / decrease → a rule at the action's budget
@@ -767,40 +810,42 @@ export const AutomationWizard = ({
 														: null
 												}
 											>
-												<input
-													type="date"
+												<DatePicker
+													className="w-52"
+													ariaLabel="Start date"
+													disabled={isEdit}
 													value={
 														timing.start_date ?? ""
 													}
-													disabled={isEdit}
-													onChange={(e) =>
+													onChange={(d) =>
 														setTiming({
 															...timing,
-															start_date:
-																e.target.value,
+															start_date: d,
 														})
 													}
-													className={FIELD_INPUT}
 												/>
 											</Field>
 											<Field
 												label="End date"
 												hint="The last day it acts. Leave it off and it keeps running until you stop it."
 											>
-												<input
-													type="date"
+												<DatePicker
+													className="w-52"
+													ariaLabel="End date"
+													disabled={!timing.end_date}
+													min={
+														timing.start_date ||
+														undefined
+													}
 													value={
 														timing.end_date ?? ""
 													}
-													disabled={!timing.end_date}
-													onChange={(e) =>
+													onChange={(d) =>
 														setTiming({
 															...timing,
-															end_date:
-																e.target.value,
+															end_date: d,
 														})
 													}
-													className={FIELD_INPUT}
 												/>
 											</Field>
 											<label className="mt-7 flex cursor-pointer items-center gap-2 text-sm text-content">
@@ -850,6 +895,8 @@ export const AutomationWizard = ({
 										actions={actions}
 										onChange={setActions}
 										defaultBudget={defaultBudget}
+										pauseAtEnd={stopAfterWindow}
+										onPauseAtEnd={setPauseAtEnd}
 									/>
 								) : (
 									<KeywordActionCard
@@ -926,18 +973,33 @@ export const AutomationWizard = ({
 							{step === 1 ? "Cancel" : "Back"}
 						</Button>
 						{step < 3 ? (
-							<Button
-								variant="brand"
-								className="px-8"
-								disabled={
-									step === 1
-										? !canAdvanceFrom1
-										: !canAdvanceFrom2
-								}
-								onClick={() => setStep(step + 1)}
-							>
-								Continue
-							</Button>
+							/* Continue is LIVE even when the step is unsatisfied. A disabled button
+							   cannot be pressed, so it can never explain itself; pressing this one
+							   either moves on or names the one thing still missing. The message
+							   sits beside the button rather than in a tooltip, which is only found
+							   by someone already hunting. */
+							<div className="flex items-center gap-3">
+								{triedToAdvance && !canAdvanceNow && (
+									<span
+										role="alert"
+										className="text-sm text-danger"
+									>
+										{missingOnThisStep()}
+									</span>
+								)}
+								<Button
+									variant="brand"
+									className="px-8"
+									onClick={() => {
+										if (!canAdvanceNow)
+											return setTriedToAdvance(true);
+										setTriedToAdvance(false);
+										setStep(step + 1);
+									}}
+								>
+									Continue
+								</Button>
+							</div>
 						) : (
 							<Button
 								variant="brand"

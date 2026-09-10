@@ -1,4 +1,9 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMemo, useState } from "react";
+import { sortRows } from "../../lib/sortRows";
+
+/** "navi mumbai" reads as "Navi Mumbai". The catalogue stores cities lower-cased. */
+const title = (s) => s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import {
@@ -6,11 +11,12 @@ import {
 	createBidRule,
 	createBudgetSchedule,
 	deleteBidRule,
+	resetBidRule,
 	deleteBudgetRule,
 	deleteBudgetSchedule,
 	getAdvertiser,
 	getBidContext,
-	getCities,
+	getStoreCatalogue,
 	getBidRules,
 	getBudgetSchedules,
 	getCampaignKeywords,
@@ -299,7 +305,17 @@ export const useDeleteBidRule = () => {
 	const { activeClientId } = useClient();
 	const invalidate = useInvalidate(BID_RULES);
 	return useMutation({
-		mutationFn: (ruleId) => deleteBidRule(activeClientId, ruleId),
+		mutationFn: ({ ruleId, reset = false }) =>
+			deleteBidRule(activeClientId, ruleId, { reset }),
+		onSuccess: invalidate,
+	});
+};
+
+export const useResetBidRule = () => {
+	const { activeClientId } = useClient();
+	const invalidate = useInvalidate(BID_RULES);
+	return useMutation({
+		mutationFn: (ruleId) => resetBidRule(activeClientId, ruleId),
 		onSuccess: invalidate,
 	});
 };
@@ -386,10 +402,61 @@ export const useWriteMode = () => {
 	};
 };
 
-/** The shared city list. Global reference data, so it is cached for the session. */
+/**
+ * The cities the platform has stores in, derived from the store catalogue.
+ *
+ * The catalogue is per-store, so several hundred rows collapse to a couple of hundred
+ * cities. Global reference data that changes when the catalogue is re-scraped, so it is
+ * cached for the session rather than refetched per wizard.
+ */
 export const useCities = () =>
 	useQuery({
-		queryKey: ["reference-cities"],
-		queryFn: getCities,
+		queryKey: ["store-catalogue-cities"],
+		queryFn: getStoreCatalogue,
 		staleTime: Infinity,
+		select: (rows) => {
+			const byCity = new Map();
+			for (const r of rows ?? []) {
+				if (!r.city || byCity.has(r.city)) continue;
+				byCity.set(r.city, {
+					slug: r.city,
+					name: title(r.city),
+					state: r.state,
+				});
+			}
+			return [...byCity.values()].sort((a, b) =>
+				a.name.localeCompare(b.name),
+			);
+		},
 	});
+
+/**
+ * Click-to-sort over rows already in hand, for the wizard's picker tables.
+ *
+ * Keys are STRINGS deliberately: an inline accessor is a new function identity on every
+ * render, so comparing keys by function never matches and clicking a column could never
+ * toggle its direction. Clicking the active column flips it; clicking another starts that
+ * one descending, which is what a reader means by "sort by spend".
+ */
+export const useTableSort = (
+	rows,
+	accessors,
+	initialKey,
+	initialOrder = "desc",
+) => {
+	const [sort, setSort] = useState(initialKey);
+	const [order, setOrder] = useState(initialOrder);
+	const sorted = useMemo(
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		() => sortRows(rows, accessors[sort], order),
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+		[rows, sort, order],
+	);
+	const onSort = (key) => {
+		if (key === sort)
+			return setOrder((o) => (o === "desc" ? "asc" : "desc"));
+		setSort(key);
+		setOrder("desc");
+	};
+	return { sorted, sort, order, onSort };
+};
