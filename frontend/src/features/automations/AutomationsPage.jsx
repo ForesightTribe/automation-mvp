@@ -10,17 +10,112 @@ import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
 import { JobLine } from "./components/JobLine";
+import { ConfirmDialog } from "./components/ConfirmDialog";
+import { formatCurrency } from "../../lib/format";
 import {
 	useBudgetSchedules,
 	useBidRules,
-	useCampaignNames,
 	useSetBidState,
 	useSetActivationNow,
 	useDeleteBudgetSchedule,
 	useDeleteBidRule,
-	useSetBudgetNow,
+	useResetBudgetSchedule,
+	useResetBidRule,
 	useRefreshCampaigns,
 } from "./hooks";
+
+/**
+ * What each confirmation says, per action and per kind of automation.
+ *
+ * Kept together and out of the component because the wording is the point of the
+ * dialog: the two kinds of automation share four verbs, and every one of them means
+ * something different on a budget schedule than on a bid rule.
+ */
+const confirmCopy = (action, row) => {
+	const who =
+		row.kind === "campaign"
+			? row.name || row.campaign_name
+			: `“${row.keyword}” on ${row.campaign_name}`;
+
+	if (action === "pause")
+		return {
+			title: "Pause this automation?",
+			confirmLabel: "Pause",
+			body: (
+				<>
+					{who} stops being checked. The campaign keeps running and
+					the bid stays where it is now, so nothing about the ad
+					changes until you resume or reset it.
+				</>
+			),
+		};
+
+	if (action === "resume")
+		return {
+			title: "Resume this automation?",
+			confirmLabel: "Resume",
+			body: (
+				<>
+					{who} starts being checked again at the next run. Everything
+					the engine learned before the pause is discarded, and if a
+					window closed while it was paused the bid it missed lowering
+					is put back first.
+				</>
+			),
+		};
+
+	if (action === "reset" && row.kind === "campaign")
+		return {
+			title: "Stop this automation and put the budget back?",
+			confirmLabel: "Stop and reset",
+			body: (
+				<>
+					{who} goes back to {formatCurrency(row.default_budget)} a
+					day and this automation stops for good. It stays in the list
+					with its history, but it will not run again.
+					{row.stop_after_window
+						? " The campaign is switched back on as part of this, in case the automation had stopped it."
+						: ""}
+				</>
+			),
+		};
+
+	if (action === "reset")
+		return {
+			title: "Put the bid back to the minimum?",
+			confirmLabel: "Reset bid",
+			// The engine refuses this while the rule is running and says why. Saying the
+			// same thing here saves a request that is going to come back a 409.
+			blocked:
+				row.status === "running"
+					? "This automation is running right now. Pause it first, or the next check will bid it straight back up."
+					: null,
+			body: (
+				<>
+					{who} goes back to {formatCurrency(row.min_bid)}. The
+					automation itself is left alone, so it will bid up again the
+					next time its window opens.
+				</>
+			),
+		};
+
+	return {
+		title: "Delete this automation?",
+		confirmLabel: "Delete",
+		danger: true,
+		body:
+			row.kind === "campaign" ? (
+				<>
+					{who} will stop running and can't be recovered. The campaign
+					keeps whatever budget it is on right now, so reset it first
+					if it should go back to {formatCurrency(row.default_budget)}{" "}
+					a day.
+				</>
+			) : (
+				<>{who} will stop running and can't be recovered.</>
+			),
+	};
+};
 
 /**
  * Automations — a new, independently-built management experience over the
@@ -51,26 +146,25 @@ export const AutomationsPage = () => {
 	const [editRow, setEditRow] = useState(null);
 	const [logRow, setLogRow] = useState(null); // null = the unfiltered overlay
 	const [logsOpen, setLogsOpen] = useState(false);
-	const [deleteRow, setDeleteRow] = useState(null);
+	// Pause, resume, reset and delete all run through one dialog: { action, row }.
+	// A single slot is right because they are all row actions and only one row is ever
+	// being acted on.
+	const [confirm, setConfirm] = useState(null);
+	const [confirmError, setConfirmError] = useState(null);
+	// Delete-a-keyword-rule offers to put the bid back first. It defaults to ON because
+	// the alternative leaves a bid the optimizer raised with no rule left to lower it.
+	const [resetBidOnDelete, setResetBidOnDelete] = useState(true);
 	const [detailCampaign, setDetailCampaign] = useState(null);
-	const [budgetRow, setBudgetRow] = useState(null); // set-budget-now target
-	const [budgetAmount, setBudgetAmount] = useState("");
 	// Reset / set-budget / refresh all enqueue a VM job and return its id; one slot is
 	// enough because they are one-at-a-time actions and the line reports the latest.
 	const [actionJob, setActionJob] = useState(null);
-
-	// Campaign status for the Controls switch. Deliberately the NAMES query (recent_only
-	// off): a campaign hidden from the selectable list can still own an automation, and a
-	// missing status locks the switch rather than defaulting it to "off".
-	const { data: allCampaigns } = useCampaignNames();
-	const campaignStatusOf = (id) =>
-		(allCampaigns ?? []).find((c) => c.campaign_id === id)?.status;
 
 	const setBidState = useSetBidState();
 	const setActivationNow = useSetActivationNow();
 	const deleteSchedule = useDeleteBudgetSchedule();
 	const deleteBid = useDeleteBidRule();
-	const setBudgetNow = useSetBudgetNow();
+	const resetSchedule = useResetBudgetSchedule();
+	const resetBid = useResetBidRule();
 	const refreshCampaigns = useRefreshCampaigns();
 
 	const rows = useMemo(() => {
@@ -124,9 +218,13 @@ export const AutomationsPage = () => {
 	const isLoading = loadingSchedules || loadingBidRules;
 	const error = schedulesError || bidRulesError;
 
-	// The switch column is the AUTOMATION's own state, which only bid rules have.
-	const handleToggle = (row, action) =>
-		setBidState.mutate({ ruleId: row.id, action });
+	// Nothing on a row happens on the click itself. Each control only opens the dialog;
+	// `runConfirm` is the single place that talks to the engine.
+	const ask = (action, row) => {
+		setConfirmError(null);
+		setResetBidOnDelete(true);
+		setConfirm({ action, row });
+	};
 
 	// The campaign's state, which is a different thing entirely — enqueued the same way
 	// Campaign Manager v2 does it, and reported through the shared job line.
@@ -138,28 +236,40 @@ export const AutomationsPage = () => {
 		setActionJob(res.job_id);
 	};
 
-	// Ends a keyword rule for good (engine state "stopped"), as distinct from pausing it.
-	// Deleting removes the row; stopping keeps it and its history.
-	const handleStop = (row) =>
-		setBidState.mutate({ ruleId: row.id, action: "stop" });
-
-	const handleDelete = (row) => {
-		if (row.kind === "campaign") {
-			deleteSchedule.mutate(row.id);
-		} else {
-			deleteBid.mutate(row.id);
+	/**
+	 * Carry out whatever the dialog was confirming.
+	 *
+	 * The engine refuses some of these outright — resetting a rule that is running comes
+	 * back a 409 with a sentence explaining why. That sentence is the best copy available
+	 * for the situation, so it is shown in the dialog and the dialog stays open, rather
+	 * than closing on a failure the user never sees.
+	 */
+	const runConfirm = async () => {
+		const { action, row } = confirm;
+		setConfirmError(null);
+		try {
+			if (action === "pause" || action === "resume") {
+				await setBidState.mutateAsync({ ruleId: row.id, action });
+			} else if (action === "reset") {
+				const res =
+					row.kind === "campaign"
+						? await resetSchedule.mutateAsync(row.id)
+						: await resetBid.mutateAsync(row.id);
+				setActionJob(res.job_id);
+			} else if (action === "delete") {
+				if (row.kind === "campaign") {
+					await deleteSchedule.mutateAsync(row.id);
+				} else {
+					await deleteBid.mutateAsync({
+						ruleId: row.id,
+						reset: resetBidOnDelete,
+					});
+				}
+			}
+			setConfirm(null);
+		} catch (err) {
+			setConfirmError(err.message);
 		}
-		setDeleteRow(null);
-	};
-
-	const handleSetBudget = async () => {
-		const res = await setBudgetNow.mutateAsync({
-			campaign_id: budgetRow.campaign_id,
-			budget: Number(budgetAmount),
-		});
-		setActionJob(res.job_id);
-		setBudgetRow(null);
-		setBudgetAmount("");
 	};
 
 	const handleRefreshCampaigns = async () => {
@@ -287,21 +397,13 @@ export const AutomationsPage = () => {
 						<AutomationsTable
 							rows={rows}
 							onEdit={setEditRow}
-							onDelete={setDeleteRow}
-							onToggle={handleToggle}
-							onActivate={handleActivate}
-							campaignStatusOf={campaignStatusOf}
+							onDelete={(row) => ask("delete", row)}
+							onToggle={(row, action) => ask(action, row)}
+							onReset={(row) => ask("reset", row)}
 							onOpenCampaign={setDetailCampaign}
 							onViewLog={(row) => {
 								setLogRow(row);
 								setLogsOpen(true);
-							}}
-							onStop={handleStop}
-							onSetBudget={(row) => {
-								setBudgetRow(row);
-								setBudgetAmount(
-									String(row.default_budget ?? ""),
-								);
 							}}
 						/>
 					</div>
@@ -336,80 +438,44 @@ export const AutomationsPage = () => {
 				locationOf={locationOf}
 			/>
 
-			{budgetRow && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-					<div className="w-full max-w-sm rounded-lg border border-border bg-card p-5">
-						<h3 className="mb-2 font-display text-base font-semibold text-content">
-							Set budget now
-						</h3>
-						<p className="mb-3 text-sm text-content-muted">
-							Pushes a budget to {budgetRow.campaign_name}{" "}
-							immediately. The schedule keeps running, and its
-							next window will override this.
-						</p>
-						<label className="mb-1 block text-xs text-content-muted">
-							Budget (₹)
-						</label>
-						<input
-							type="number"
-							value={budgetAmount}
-							onChange={(e) => setBudgetAmount(e.target.value)}
-							className="mb-4 w-40 rounded-md border border-border bg-card px-2.5 py-1.5 text-sm text-content"
-						/>
-						<div className="flex justify-end gap-2">
-							<Button
-								variant="secondary"
-								size="sm"
-								onClick={() => setBudgetRow(null)}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="brand"
-								size="sm"
-								disabled={
-									!budgetAmount || setBudgetNow.isPending
+			<ConfirmDialog
+				open={Boolean(confirm)}
+				{...(confirm
+					? confirmCopy(confirm.action, confirm.row)
+					: { title: "", body: null })}
+				pending={
+					setBidState.isPending ||
+					resetSchedule.isPending ||
+					resetBid.isPending ||
+					deleteSchedule.isPending ||
+					deleteBid.isPending
+				}
+				error={confirmError}
+				onCancel={() => setConfirm(null)}
+				onConfirm={runConfirm}
+			>
+				{/* Deleting a keyword rule is the one action with a second decision in it:
+				    the bid does not come down on its own once the rule is gone. */}
+				{confirm?.action === "delete" &&
+					confirm.row.kind === "keyword" && (
+						<label className="mb-4 flex items-start gap-2 text-sm text-content">
+							<input
+								type="checkbox"
+								checked={resetBidOnDelete}
+								onChange={(e) =>
+									setResetBidOnDelete(e.target.checked)
 								}
-								onClick={handleSetBudget}
-							>
-								Set budget
-							</Button>
-						</div>
-					</div>
-				</div>
-			)}
-
-			{deleteRow && (
-				<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
-					<div className="w-full max-w-sm rounded-lg border border-border bg-card p-5">
-						<h3 className="mb-2 font-display text-base font-semibold text-content">
-							Delete this automation?
-						</h3>
-						<p className="mb-4 text-sm text-content-muted">
-							{deleteRow.kind === "campaign"
-								? deleteRow.name || deleteRow.campaign_name
-								: `${deleteRow.keyword} · ${deleteRow.campaign_name}`}{" "}
-							will stop running and can't be recovered.
-						</p>
-						<div className="flex justify-end gap-2">
-							<Button
-								variant="secondary"
-								size="sm"
-								onClick={() => setDeleteRow(null)}
-							>
-								Cancel
-							</Button>
-							<Button
-								variant="danger"
-								size="sm"
-								onClick={() => handleDelete(deleteRow)}
-							>
-								Delete
-							</Button>
-						</div>
-					</div>
-				</div>
-			)}
+								className="mt-0.5 accent-brand"
+							/>
+							<span>
+								Put the bid back to{" "}
+								{formatCurrency(confirm.row.min_bid)} first.
+								Without this it stays wherever the automation
+								left it.
+							</span>
+						</label>
+					)}
+			</ConfirmDialog>
 		</div>
 	);
 };

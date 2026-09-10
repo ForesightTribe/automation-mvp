@@ -2,8 +2,7 @@ import {
 	Pencil,
 	Trash2,
 	ScrollText,
-	IndianRupee,
-	CircleStop,
+	RotateCcw,
 	Play,
 	Pause,
 } from "lucide-react";
@@ -14,37 +13,21 @@ import { ChannelBadge } from "./ChannelBadge";
 import { ActionsSummaryPills } from "./ActionsSummaryPills";
 import { budgetScheduleTags, bidRuleTags } from "../automation";
 
-const ToggleSwitch = ({ on, onChange, title, disabled = false }) => (
-	<Tooltip label={title}>
-		<button
-			type="button"
-			role="switch"
-			aria-checked={on}
-			aria-disabled={disabled}
-			disabled={disabled}
-			onClick={onChange}
-			className={`relative h-6 w-11 shrink-0 rounded-full transition-colors ${
-				on ? "bg-success" : "bg-muted"
-			} ${disabled ? "cursor-not-allowed opacity-45" : ""}`}
-		>
-			<span
-				className={`absolute top-0.5 left-0.5 h-5 w-5 rounded-full bg-card shadow-sm transition-transform ${
-					on ? "translate-x-5" : "translate-x-0"
-				}`}
-			/>
-		</button>
-	</Tooltip>
-);
-
-const IconButton = ({ icon: Icon, label, onClick, danger }) => (
+/**
+ * `disabled` keeps a control visible but inert. Tooltip listens on its wrapper span
+ * rather than on the button, so a disabled one still explains itself on hover — a
+ * disabled button emits no mouse events of its own.
+ */
+const IconButton = ({ icon: Icon, label, onClick, danger, disabled }) => (
 	<Tooltip label={label}>
 		<button
 			type="button"
 			aria-label={label}
+			disabled={disabled}
 			onClick={onClick}
-			className={`rounded-md p-1.5 text-content-subtle transition-colors hover:bg-muted ${
+			className={`rounded-md p-1.5 text-content-subtle transition-colors disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent disabled:hover:text-content-subtle ${
 				danger ? "hover:text-danger" : "hover:text-brand"
-			}`}
+			} hover:bg-muted`}
 		>
 			<Icon size={14} />
 		</button>
@@ -65,10 +48,7 @@ export const AutomationsTable = ({
 	onDelete,
 	onToggle,
 	onViewLog,
-	onSetBudget,
-	onStop,
-	onActivate,
-	campaignStatusOf,
+	onReset,
 	onOpenCampaign,
 }) => {
 	const columns = [
@@ -132,12 +112,22 @@ export const AutomationsTable = ({
 			align: "right",
 			render: (r) => (
 				<div className="flex justify-end gap-1">
-					{/* Budget-only actions: a bid rule has no default budget to restore and
-					    no one-off budget to push, so they'd be dead controls on a keyword row. */}
-					{/* Pause / resume, and Stop. All three are real bid-rule verbs in the engine;
-					    a budget schedule has none of them, which is why the on/off column is gone
-					    and these are keyword-only. Stop ends the rule for good, whereas a pause resumes. */}
-					{r.kind === "keyword" && (
+					{/* Every one of these opens a confirmation first. They act on the
+					    AUTOMATION, never on the campaign: a campaign pause is something you
+					    set up inside the automation, on a window's end. Calling both "pause"
+					    without saying which is the most confusing thing on this screen, so
+					    each label names what it touches.
+
+					    Pause and resume are keyword-only because the engine has them only
+					    for bid rules. A budget schedule is active or stopped, and Reset is
+					    what stops it.
+
+					    Neither shows on an automation whose windows have all passed. Nothing
+					    will fire for it again, so there is nothing to freeze, and the engine
+					    refuses the call. Reset stays available there on purpose: a rule
+					    paused across its window end never got its de-escalation and its bid
+					    is still sitting high. */}
+					{r.kind === "keyword" && r.status !== "ended" && (
 						<IconButton
 							icon={r.status === "paused" ? Play : Pause}
 							label={
@@ -153,60 +143,26 @@ export const AutomationsTable = ({
 							}
 						/>
 					)}
-					{/* These act on the AUTOMATION, not on the campaign. A campaign pause is set up
-					    inside the automation, on a window's end. Naming both "pause" without saying
-					    which is the single most confusing thing on this screen. */}
-					{r.kind === "keyword" && r.status !== "stopped" && (
+					{/* Reset means the same thing on both kinds: undo what the engine did and
+					    put the value back where it started. On a campaign that is the default
+					    budget and the automation stops for good; on a keyword it is the rule's
+					    minimum bid and the rule stays. */}
+					{!(r.kind === "campaign" && r.status === "stopped") && (
 						<IconButton
-							icon={CircleStop}
-							label="Stop this automation permanently"
-							onClick={() => onStop(r)}
+							icon={RotateCcw}
+							label={
+								r.kind === "campaign"
+									? "Stop and put the budget back"
+									: "Put the bid back to the minimum"
+							}
+							onClick={() => onReset(r)}
 						/>
 					)}
-					{/* Budget-only, and just the one: "Set budget now" is a deliberate push, whereas
-					    "Reset to default" was a second budget verb sitting next to it doing almost
-					    the same thing. Six icons per row was the noise. */}
-					{r.kind === "campaign" && (
-						<>
-							{/* The CAMPAIGN's own on/off, showing the campaign's actual state rather
-							    than the automation's. Unknown status (a campaign the list no longer
-							    returns) locks the switch instead of guessing a direction, because flipping
-							    the wrong way would stop a live campaign. */}
-							{(() => {
-								const st = campaignStatusOf?.(r.campaign_id);
-								const live = st === "ACTIVE";
-								return (
-									<span className="mr-1 flex items-center gap-1.5">
-										<span className="text-[11px] text-content-subtle">
-											Campaign
-										</span>
-										<ToggleSwitch
-											on={live}
-											disabled={!st}
-											title={
-												!st
-													? "Campaign state unknown. Use Refresh Campaigns"
-													: live
-														? "Stop this campaign now"
-														: "Start this campaign now"
-											}
-											onChange={() =>
-												onActivate(
-													r,
-													live ? "paused" : "running",
-												)
-											}
-										/>
-									</span>
-								);
-							})()}
-							<IconButton
-								icon={IndianRupee}
-								label="Set budget now"
-								onClick={() => onSetBudget(r)}
-							/>
-						</>
-					)}
+					{/* No campaign on/off and no "Set budget now" here. Both write to the live
+					    account the moment they are clicked, and every row in this table acts on a
+					    SCHEDULE instead. Keeping the two kinds apart is what stops an immediate
+					    write sitting one mis-click away from a row someone is only reading; the
+					    immediate ones live on the One-time ops page. */}
 					<IconButton
 						icon={Pencil}
 						label="Edit"

@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 
 /**
  * Time field that looks like the rest of the app — and can be TYPED into.
@@ -76,6 +77,25 @@ export const TimePicker = ({
 	"aria-label": ariaLabel,
 }) => {
 	const [open, setOpen] = useState(false);
+	/**
+	 * ⚠️ The list is `position: fixed` and PORTALLED to the body, anchored to the field's own
+	 * rect. The wizard body scrolls, and an absolutely-positioned panel is clipped by it,
+	 * which leaves the suggestions inside the box where they have to be scrolled to.
+	 * Re-measured on every open, and closed on scroll, because the coordinates are only
+	 * true for where the field was at that moment.
+	 */
+	const [at, setAt] = useState(null);
+	const panelRef = useRef(null);
+	const place = () => {
+		const r = wrap.current?.getBoundingClientRect();
+		if (!r) return;
+		const below = window.innerHeight - r.bottom;
+		setAt(
+			below > 240
+				? { left: r.left, top: r.bottom + 4 }
+				: { left: r.left, top: r.top - 4, flip: true },
+		);
+	};
 	const [text, setText] = useState(clockText(value));
 	const wrap = useRef(null);
 	const listRef = useRef(null);
@@ -88,8 +108,24 @@ export const TimePicker = ({
 
 	useEffect(() => {
 		if (!open) return;
+		// ⚠️ Ignore scrolls that START INSIDE the panel. The listener is on the capture phase
+		// so it sees the page move under a panel anchored to a rect measured once. The panel
+		// scrolling its own list reaches the same handler, and closing on that would take the
+		// list away as soon as anyone reaches for an option below the fold.
+		const onScroll = (e) => {
+			if (panelRef.current?.contains(e.target)) return;
+			setOpen(false);
+		};
+		window.addEventListener("scroll", onScroll, true);
+		return () => window.removeEventListener("scroll", onScroll, true);
+	}, [open]);
+
+	useEffect(() => {
+		if (!open) return;
 		const onDown = (e) => {
-			if (wrap.current && !wrap.current.contains(e.target)) commit();
+			const inField = wrap.current?.contains(e.target);
+			const inPanel = panelRef.current?.contains(e.target);
+			if (!inField && !inPanel) commit();
 		};
 		document.addEventListener("mousedown", onDown);
 		return () => document.removeEventListener("mousedown", onDown);
@@ -173,8 +209,12 @@ export const TimePicker = ({
 				onChange={(e) => {
 					setText(e.target.value);
 					setOpen(true);
+					place();
 				}}
-				onFocus={() => setOpen(true)}
+				onFocus={() => {
+					setOpen(true);
+					place();
+				}}
 				onKeyDown={(e) => {
 					if (e.key === "Enter") {
 						e.preventDefault();
@@ -215,53 +255,67 @@ export const TimePicker = ({
 				))}
 			</div>
 
-			{open && !disabled && (
-				<div className="absolute top-full left-0 z-30 mt-1 w-32 rounded-lg border border-border bg-card shadow-lg">
-					{allowClear && (
-						<button
-							type="button"
-							onClick={() => choose("")}
-							className="w-full border-b border-border px-3 py-1.5 text-left text-xs text-content-subtle hover:bg-muted"
-						>
-							Clear
-						</button>
-					)}
-					<ul
-						ref={listRef}
-						role="listbox"
-						className="max-h-56 overflow-auto py-1"
+			{open &&
+				!disabled &&
+				at &&
+				createPortal(
+					<div
+						ref={panelRef}
+						style={{
+							left: at.left,
+							top: at.top,
+							transform: at.flip
+								? "translateY(-100%)"
+								: undefined,
+						}}
+						className="fixed z-[75] w-32 rounded-lg border border-border bg-card shadow-xl"
 					>
-						{shown.length === 0 && (
-							<li className="px-3 py-2 text-xs text-content-subtle">
-								{parseTime(text)
-									? "Press Enter to use this time"
-									: "Not a time"}
-							</li>
+						{allowClear && (
+							<button
+								type="button"
+								onClick={() => choose("")}
+								className="w-full border-b border-border px-3 py-1.5 text-left text-xs text-content-subtle hover:bg-muted"
+							>
+								Clear
+							</button>
 						)}
-						{shown.map((t) => {
-							const on = t === value;
-							return (
-								<li key={t}>
-									<button
-										type="button"
-										role="option"
-										aria-selected={on}
-										data-selected={on}
-										onClick={() => choose(t)}
-										className={`w-full px-3 py-1.5 text-left text-sm ${
-											on
-												? "bg-muted font-medium text-brand"
-												: "text-content hover:bg-muted"
-										}`}
-									>
-										{to12h(t)}
-									</button>
+						<ul
+							ref={listRef}
+							role="listbox"
+							className="max-h-56 overflow-auto py-1"
+						>
+							{shown.length === 0 && (
+								<li className="px-3 py-2 text-xs text-content-subtle">
+									{parseTime(text)
+										? "Press Enter to use this time"
+										: "Not a time"}
 								</li>
-							);
-						})}
-					</ul>
-				</div>
-			)}
+							)}
+							{shown.map((t) => {
+								const on = t === value;
+								return (
+									<li key={t}>
+										<button
+											type="button"
+											role="option"
+											aria-selected={on}
+											data-selected={on}
+											onClick={() => choose(t)}
+											className={`w-full px-3 py-1.5 text-left text-sm ${
+												on
+													? "bg-muted font-medium text-brand"
+													: "text-content hover:bg-muted"
+											}`}
+										>
+											{to12h(t)}
+										</button>
+									</li>
+								);
+							})}
+						</ul>
+					</div>,
+					document.body,
+				)}
 		</div>
 	);
 };

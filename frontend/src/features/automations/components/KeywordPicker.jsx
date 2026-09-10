@@ -1,4 +1,5 @@
 import { useMemo, useState } from "react";
+import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { useAllKeywordMetrics, useCampaignNames, useCampaigns } from "../hooks";
 import { Loading } from "../../../components/feedback/Loading";
 import { Button } from "../../../components/ui/Button";
@@ -340,25 +341,19 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 	return (
 		<div className="flex flex-col gap-2">
 			<div className="flex flex-wrap items-center justify-between gap-3">
-				<div className="flex rounded-md border border-border p-0.5">
-					{[
-						[BY_KEYWORD, "Keyword × Campaigns"],
-						[BY_CAMPAIGN, "Campaign × Keywords"],
-					].map(([id, label]) => (
-						<button
-							key={id}
-							type="button"
-							onClick={() => setView(id)}
-							className={`rounded px-3 py-1 text-sm font-medium transition-colors ${
-								view === id
-									? "bg-muted text-brand"
-									: "text-content-muted hover:bg-muted"
-							}`}
-						>
-							{label}
-						</button>
-					))}
-				</div>
+				{/* The shared segmented control, not a local copy: it fills the selected
+				    segment and puts white on it, the way every other toggle in the product
+				    does. Brand-red text on a grey fill reads as an error instead of as the
+				    chosen segment on a form this full of validation copy. */}
+				<ViewToggle
+					size="lg"
+					value={view}
+					onChange={setView}
+					options={[
+						{ value: BY_KEYWORD, label: "Keyword × Campaigns" },
+						{ value: BY_CAMPAIGN, label: "Campaign × Keywords" },
+					]}
+				/>
 				{!isComplete && (
 					<span className="text-xs text-content-subtle">
 						Showing the top {rows.length} of {total} by spend.
