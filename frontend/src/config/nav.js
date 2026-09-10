@@ -29,19 +29,28 @@ export const NAV_ITEMS = [
 	// No `path`, deliberately: this is a section label, so clicking it reveals the submenu
 	// instead of navigating somewhere. `children` is optional; an entry without it is a
 	// plain link.
-	{
-		label: "AdsBeta",
-		icon: FlaskConical,
-		children: [
-			{ label: "Insights", path: "/ads/insights" },
-			{ label: "Ad Automation", path: "/ads/automation" },
-		],
-	},
+	//
+	// HIDDEN 2026-09-10 — work in progress, kept out of the nav so the client does
+	// not find it. The ROUTES are untouched: /ads/insights, /ads/automation and
+	// /reports all still resolve for anyone with the URL or a bookmark. Uncomment
+	// to restore; nothing else needs changing.
+	// {
+	// 	label: "AdsBeta",
+	// 	icon: FlaskConical,
+	// 	children: [
+	// 		{ label: "Insights", path: "/ads/insights" },
+	// 		{ label: "Ad Automation", path: "/ads/automation" },
+	// 	],
+	// },
 	{ label: "Campaign Manager", path: "/campaign-manager", icon: Target },
 	{ label: "Competition", path: "/competition", icon: Gauge },
 	{ label: "Scorecard", path: "/scorecard", icon: FileText },
-	{ label: "Reports", path: "/reports", icon: FileText },
+	// { label: "Reports", path: "/reports", icon: FileText },
 	// adminOnly: hidden from members in the Sidebar; the /settings route is also
 	// guarded by RequireAdmin and the backend's require_admin dependency.
-	{ label: "Settings", path: "/settings", icon: Settings, adminOnly: true },
+	//
+	// HIDDEN 2026-09-10 — as above. Note this one was ALREADY invisible to
+	// clients via adminOnly; commenting it out hides it from admins too. The
+	// /settings route stays guarded by RequireAdmin either way.
+	// { label: "Settings", path: "/settings", icon: Settings, adminOnly: true },
 ];
