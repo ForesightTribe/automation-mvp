@@ -1047,12 +1047,12 @@ async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
     if not rows:
         return 0
 
-    # ⚠️ Deliberately excludes the detail-derived columns (region_type / cities / min_cpm /
-    # pacing_type / billed_amount / campaign_cpm, V7). This refresh reads only the campaign
-    # LIST, which carries none of them, so listing them here would blank a campaign's city
-    # targeting and budget floor every time someone clicked Refresh.
+    # ⚠️ Deliberately excludes the detail-derived columns (daily_budget / region_type /
+    # cities / min_cpm / pacing_type / billed_amount / campaign_cpm, V7). This refresh reads
+    # only the campaign LIST, which carries none of them, so listing them here would blank a
+    # campaign's budget, city targeting and budget floor every time someone clicked Refresh.
     updatable = {"name", "type", "status", "start_ts", "end_ts",
-                 "infinite_campaign", "daily_budget", "scraped_at"}
+                 "infinite_campaign", "scraped_at"}
     async with AsyncSessionLocal() as db:
         stmt = insert(BlinkitAdCampaign).values(rows).on_conflict_do_update(
             index_elements=["upsert_key"],
