@@ -1,5 +1,5 @@
 import { ViewToggle } from "../../../components/ui/ViewToggle";
-import { DatePicker } from "./DatePicker";
+import { DatePicker } from "../../../components/ui/DatePicker";
 import { DayPicker } from "./DayPicker";
 import { TimePicker } from "./TimePicker";
 
@@ -10,8 +10,24 @@ import { TimePicker } from "./TimePicker";
  * start_date, end_date, date } value; the caller renames end_time -> stop_time
  * when building a bid-rule payload (the two schemas use different field names
  * for the same concept).
+ *
+ * The two modes answer WHICH DAYS differently, and each needs its own answer in
+ * full: a one-off names the single date it runs on, while a recurring rule names
+ * the span it runs across and then the weekdays inside it. Without that span a
+ * recurring rule has a start but no end and simply runs forever.
+ *
+ * Span first, weekdays second, because that is the order the sentence reads in:
+ * between these dates, on these days, at these times. Asking which weekdays before
+ * saying which weeks they fall in puts the qualifier before the thing it qualifies.
  */
 const LABEL = "mb-1 block text-xs text-content-muted";
+
+/** Today in the local calendar. Never `toISOString()`, which is UTC and lands a day
+ *  early for an IST evening. */
+const todayIso = () => {
+	const d = new Date();
+	return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+};
 
 export const RuleTimingFields = ({ value, onChange }) => {
 	const set = (patch) => onChange({ ...value, ...patch });
@@ -58,13 +74,58 @@ export const RuleTimingFields = ({ value, onChange }) => {
 					/>
 				</div>
 			) : (
-				<div>
-					<span className={LABEL}>On days</span>
-					<DayPicker
-						value={value.days ?? []}
-						onChange={(days) => set({ days })}
-					/>
-				</div>
+				<>
+					{/* The span the weekdays repeat inside. "No end date" is a checkbox
+					    rather than an empty field, because a blank date is ambiguous —
+					    it reads as "not filled in yet" just as easily as "runs forever"
+					    — and this is the difference between an automation that stops and
+					    one that does not. */}
+					<div className="flex flex-wrap items-start gap-5">
+						<div>
+							<span className={LABEL}>Start date</span>
+							<DatePicker
+								className="w-52"
+								ariaLabel="Start date"
+								value={value.start_date ?? ""}
+								onChange={(d) => set({ start_date: d })}
+							/>
+						</div>
+						<div>
+							<span className={LABEL}>End date</span>
+							<DatePicker
+								className="w-52"
+								ariaLabel="End date"
+								disabled={!value.end_date}
+								min={value.start_date || undefined}
+								value={value.end_date ?? ""}
+								onChange={(d) => set({ end_date: d })}
+							/>
+						</div>
+						<label className="mt-6 flex cursor-pointer items-center gap-2 text-sm text-content">
+							<input
+								type="checkbox"
+								className="accent-brand"
+								checked={!value.end_date}
+								onChange={(e) =>
+									set({
+										end_date: e.target.checked
+											? ""
+											: todayIso(),
+									})
+								}
+							/>
+							No end date
+						</label>
+					</div>
+
+					<div>
+						<span className={LABEL}>On days</span>
+						<DayPicker
+							value={value.days ?? []}
+							onChange={(days) => set({ days })}
+						/>
+					</div>
+				</>
 			)}
 
 			<div className="flex flex-wrap items-end gap-3">

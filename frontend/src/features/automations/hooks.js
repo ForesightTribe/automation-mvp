@@ -68,11 +68,27 @@ export const useBidRules = () => {
 	});
 };
 
-export const useHistory = (page = 1, kind) => {
+export const useHistory = (page = 1, kind, opts = {}) => {
 	const { activeClientId } = useClient();
+	const { campaignId, ruleId, includeUnchanged = false } = opts;
 	return useQuery({
-		queryKey: [HISTORY, activeClientId, page, kind ?? "all"],
-		queryFn: () => getHistory(activeClientId, { page, kind }),
+		queryKey: [
+			HISTORY,
+			activeClientId,
+			page,
+			kind ?? "all",
+			campaignId ?? "all",
+			ruleId ?? "all",
+			includeUnchanged,
+		],
+		queryFn: () =>
+			getHistory(activeClientId, {
+				page,
+				kind,
+				campaignId,
+				ruleId,
+				includeUnchanged,
+			}),
 		enabled: Boolean(activeClientId),
 	});
 };

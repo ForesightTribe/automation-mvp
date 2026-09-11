@@ -7,7 +7,7 @@
  */
 export * from "../ads/hooks";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useQueries, useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
@@ -192,10 +192,24 @@ export const useDailyBudgetUtilisation = ({
 
 	// How many days have come back. Each batch that settles releases the next, so the
 	// requests walk the window instead of arriving all at once.
+	//
+	// ⚠️ The counter resets whenever the QUESTION changes — a different client, a different
+	// marketplace filter, a different window. It only climbs while one set of days loads,
+	// so carrying its previous high into a new set makes the gate
+	// `i < settled + BU_CONCURRENCY` release every day at once: a dozen requests against a
+	// pool of ten, where the days that lose the race come back empty.
 	const [settled, setSettled] = useState(0);
+	const question = `${activeClientId}|${selected.join(",")}|${dates.join(",")}|${enabled}`;
+	const asked = useRef(question);
+	// ⚠️ The gate is recomputed DURING render, not reset in an effect. `useQueries` fires on
+	// commit, so an effect that zeroes the counter afterwards runs too late: the render that
+	// first sees the new question has already enabled every day against the old high-water
+	// mark and sent them. Reading 0 for that render is what actually holds the batch.
+	const gate = asked.current === question ? settled : 0;
 	useEffect(() => {
-		if (!enabled) setSettled(0);
-	}, [enabled]);
+		asked.current = question;
+		setSettled(0);
+	}, [question]);
 
 	const results = useQueries({
 		queries: dates.map((date, i) => ({
@@ -210,9 +224,7 @@ export const useDailyBudgetUtilisation = ({
 					limit: 500,
 				}),
 			enabled:
-				enabled &&
-				Boolean(activeClientId) &&
-				i < settled + BU_CONCURRENCY,
+				enabled && Boolean(activeClientId) && i < gate + BU_CONCURRENCY,
 			// A past day never changes once its scrape has landed, so this is cheap to hold.
 			staleTime: 15 * 60 * 1000,
 		})),
@@ -229,8 +241,9 @@ export const useDailyBudgetUtilisation = ({
 	const stamp = results.map((r) => r.dataUpdatedAt ?? 0).join(",");
 	const done = results.filter((r) => r.isSuccess || r.isError).length;
 	useEffect(() => {
+		if (asked.current !== question) return;
 		setSettled((n) => (done > n ? done : n));
-	}, [done]);
+	}, [done, question]);
 
 	const dateKey = dates.join(",");
 	// eslint-disable-next-line react-hooks/exhaustive-deps

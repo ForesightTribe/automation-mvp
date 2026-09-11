@@ -88,12 +88,24 @@ export const MarketplaceProvider = ({ children }) => {
 	const allSelected =
 		connected.length > 0 && effectiveSelected.length === connected.length;
 
+	// A pill row is a choice between marketplaces, not a set of independent checkboxes:
+	// clicking one means "show me this one", and "All" is how you get back to everything.
+	// `toggle` stays for any caller that wants the additive behaviour.
+	const selectOnly = useCallback(
+		(slug) => {
+			if (!connected.includes(slug)) return;
+			persist([slug]);
+		},
+		[connected, persist],
+	);
+
 	const value = {
 		marketplaces, // full list incl. unconnected, for the picker
 		selected: effectiveSelected, // connected + selected slugs (for queryKeys)
 		isLoading,
 		allSelected,
 		toggle,
+		selectOnly,
 		selectAll,
 	};
 

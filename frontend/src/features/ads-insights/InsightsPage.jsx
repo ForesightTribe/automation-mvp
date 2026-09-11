@@ -11,7 +11,7 @@ import { SovTable } from "../ads/components/SovTable";
 import { ZeptoSovTable } from "../ads/components/ZeptoSovTable";
 import { KeywordInsightsCard } from "./components/KeywordInsightsCard";
 import { CategoryInsightsCard } from "./components/CategoryInsightsCard";
-import { ExportButton } from "./components/insightsTable";
+import { ExportButton } from "../../components/ui/ExportButton";
 import { downloadCsv, exportName } from "../../lib/exportTable";
 import { useDateRange } from "../../context/DateRangeContext";
 import { Loading } from "../../components/feedback/Loading";

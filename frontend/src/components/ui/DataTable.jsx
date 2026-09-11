@@ -13,6 +13,16 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
  * its columns, and the first column is pinned so you can still tell which row
  * you are reading. Override `minWidth` for tables with unusually few columns.
  *
+ * `pinLast` pins the LAST column too, for tables whose final column holds the row's
+ * controls: scrolling sideways to read a number and then back again to act on it is how
+ * the wrong row gets clicked.
+ *
+ * ⚠️ A pinned cell must carry its own opaque `bg-card`. The row's background does not
+ * paint under a sticky cell, so without it the columns underneath show straight through
+ * as they scroll past. The header's pinned cells sit a layer above the body's for the
+ * same reason — where the sticky row and the sticky column cross, one of them has to
+ * win, and it has to be the header.
+ *
  * Sorting is on by default and needs no work at the call site: a column sorts on `row[key]`,
  * or on `sortValue(row)` where the raw value is not what the reader sees (a formatted date,
  * a rendered node). Set `sortable: false` on a column that genuinely has no order, or
@@ -25,6 +35,7 @@ export const DataTable = ({
 	rowKey,
 	maxHeight = 360,
 	minWidth = 640,
+	pinLast = false,
 	sortable = true,
 	// The column key to start on. Without one the rows keep the order they arrived in,
 	// which is usually the order the endpoint intended.
@@ -90,7 +101,11 @@ export const DataTable = ({
 									c.align === "right"
 										? "text-right"
 										: "text-left"
-								} ${i === 0 ? "sticky left-0 z-20 bg-card" : ""}`}
+								} ${i === 0 ? "sticky left-0 z-30 bg-card" : ""} ${
+									pinLast && i === columns.length - 1
+										? "sticky right-0 z-30 border-l border-border bg-card"
+										: ""
+								}`}
 							>
 								{canSort(c) ? (
 									<button
@@ -141,7 +156,11 @@ export const DataTable = ({
 										c.align === "right"
 											? "text-right tabular-nums"
 											: "text-left"
-									} ${ci === 0 ? "sticky left-0 z-10 bg-card" : ""}`}
+									} ${ci === 0 ? "sticky left-0 z-20 bg-card" : ""} ${
+										pinLast && ci === columns.length - 1
+											? "sticky right-0 z-20 border-l border-border bg-card"
+											: ""
+									}`}
 								>
 									{c.render ? c.render(row) : row[c.key]}
 								</td>

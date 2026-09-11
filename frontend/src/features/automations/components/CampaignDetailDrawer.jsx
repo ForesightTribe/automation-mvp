@@ -1,5 +1,6 @@
 import { useMemo } from "react";
 import { Drawer } from "../../../components/ui/Drawer";
+import { Stat, Section } from "../../../components/ui/Stat";
 import { Loading } from "../../../components/feedback/Loading";
 import { StatusPill } from "./StatusPill";
 import { ChannelBadge } from "./ChannelBadge";
@@ -8,31 +9,6 @@ import { ActionsSummaryPills } from "./ActionsSummaryPills";
 import { useCampaignsForRange, useHistory, useKeywordMetrics } from "../hooks";
 import { useDateRange } from "../../../context/DateRangeContext";
 import { formatCurrency, formatNumber } from "../../../lib/format";
-
-const Stat = ({ label, value }) => (
-	<div className="bg-card px-4 py-3">
-		<p className="text-[11px] font-semibold tracking-[0.12em] text-content-subtle uppercase">
-			{label}
-		</p>
-		<p className="mt-1 font-display text-lg font-semibold text-content tabular-nums">
-			{value}
-		</p>
-	</div>
-);
-
-const Section = ({ title, hint, children }) => (
-	<section className="mb-6 last:mb-0">
-		<div className="mb-2 flex items-baseline justify-between gap-3">
-			<h3 className="text-[11px] font-semibold tracking-[0.12em] text-content-subtle uppercase">
-				{title}
-			</h3>
-			{hint && (
-				<span className="text-[11px] text-content-subtle">{hint}</span>
-			)}
-		</div>
-		{children}
-	</section>
-);
 
 const when = (iso) =>
 	new Intl.DateTimeFormat("en-IN", {

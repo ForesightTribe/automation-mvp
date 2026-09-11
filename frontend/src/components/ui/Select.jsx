@@ -14,6 +14,11 @@ import { Check, ChevronDown } from "lucide-react";
  * them. Fixed escapes the clip, flips above when there is no room below, and closes on
  * scroll because the coordinates are measured once.
  *
+ * The list stays WHITE. Brand red marks the state without tinting anything: a brand
+ * border on the trigger while open, and brand ink plus a tick on the chosen row. Only
+ * the row under the cursor takes a fill, so "chosen" and "hovered" never look alike and
+ * the panel reads as a list rather than as a stack of highlighted chips.
+ *
  * Keyboard: Enter or Space opens, Escape closes, arrows move, Enter picks.
  *
  * `options` is [value, label, hint] triples. The trigger shows the LABEL only; the `hint`
@@ -113,16 +118,20 @@ export const Select = ({
 				aria-expanded={Boolean(at)}
 				onClick={() => (at ? close() : open())}
 				onKeyDown={onKeyDown}
-				className={`flex items-center gap-1.5 rounded-md border px-2.5 py-1.5 text-xs font-medium transition-colors ${
+				// ⚠️ `bg-card` is not optional. These sit on the page's cream ground, and with
+				// no fill of their own the control is the same colour as what is behind it —
+				// a floating border rather than something you press. Every other control in
+				// a filter row is white on that ground.
+				className={`flex items-center gap-1.5 rounded-md border bg-card px-2.5 py-1.5 text-xs font-medium transition-colors ${
 					at
-						? "border-content-subtle text-content"
-						: "border-border text-content-muted hover:border-content-subtle hover:text-content"
+						? "border-brand text-content"
+						: "border-border text-content-muted hover:border-brand hover:text-content"
 				} ${className}`}
 			>
 				{label}
 				<ChevronDown
 					size={13}
-					className={`text-content-subtle transition-transform ${at ? "rotate-180" : ""}`}
+					className={`transition-transform ${at ? "rotate-180 text-brand" : "text-content-subtle"}`}
 				/>
 			</button>
 
@@ -150,11 +159,11 @@ export const Select = ({
 									aria-selected={on}
 									onMouseEnter={() => setActive(i)}
 									onClick={() => pick(v)}
-									className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-xs font-medium transition-colors ${
-										i === active
-											? "bg-muted text-content"
-											: "text-content-muted"
-									}`}
+									className={`flex w-full items-center gap-3 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors ${
+										on
+											? "font-semibold text-brand"
+											: "font-medium text-content-muted"
+									} ${i === active ? "bg-muted" : "bg-card"}`}
 								>
 									<span className="flex-1 truncate">{l}</span>
 									{hint != null && (

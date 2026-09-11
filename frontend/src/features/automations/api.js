@@ -17,8 +17,31 @@ export const getBudgetSchedules = (clientId) =>
 
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
-export const getHistory = (clientId, { page = 1, limit = 20, kind } = {}) =>
-	api.get(`${base(clientId)}/history`, { params: { page, limit, kind } });
+// `campaign_id` / `rule_id` narrow to ONE automation, server-side. `include_unchanged`
+// adds the ticks where the engine deliberately did nothing, which is the drill-down
+// case: "why has my bid not moved for six hours" is answered by the held ticks, and
+// they are suppressed by default so the unfiltered list is not buried in them.
+export const getHistory = (
+	clientId,
+	{
+		page = 1,
+		limit = 20,
+		kind,
+		campaignId,
+		ruleId,
+		includeUnchanged = false,
+	} = {},
+) =>
+	api.get(`${base(clientId)}/history`, {
+		params: {
+			page,
+			limit,
+			kind,
+			campaign_id: campaignId,
+			rule_id: ruleId,
+			include_unchanged: includeUnchanged,
+		},
+	});
 
 export const getJob = (clientId, jobId) =>
 	api.get(`${base(clientId)}/jobs/${jobId}`);
