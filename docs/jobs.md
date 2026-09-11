@@ -544,10 +544,13 @@ dispatch works: the OOM killer targets the fat scrape, never the daemon.
 
 Read `peak_rss_mb` from `cli jobs list` before changing `LANE_SLOTS`.
 
-**Connections are *not* a wall.** The Supabase pooler is set to **25**. Budget: API 5 + runner 3
-+ two subprocesses ×6 = **20**, leaving 5 for `psql`/migrations/Studio. Two concurrent lanes fit
-today. Note [database.py](../backend/app/core/database.py)'s comment still says the cap is 15 —
-**stale, it is 25.** Connection limits scale with Supabase *compute size*, not plan tier, so
+**Connections are *not* a wall.** The Supabase pooler cap is **45** (raised from 25; session mode,
+so idle pooled connections count too). Each process has its own pool, `DB_POOL_SIZE` (default 4).
+Worst case with every lane busy: runner ~4 + six lane subprocesses × ≤2 + API ~8 ≈ **24**, leaving
+room for developer backends (4 each) and `psql`/migrations/Studio. Measured 2026-09-11: jobs hold
+0–2 connections each (a public scrape holds 0 while it scrapes). That day's pool exhaustion was one
+slow API endpoint holding connections, not job concurrency. Connection limits scale with Supabase
+*compute size*, not plan tier, so
 upgrading to Pro would not buy concurrency (it buys backups and no project pausing — real, but
 different, reasons).
 

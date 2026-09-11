@@ -18,8 +18,8 @@ automation-mvp/
 │   │   ├── router.py                  # aggregates all routers under /api
 │   │   ├── dependencies.py            # get_current_user, ClientDep, SessionDep, require_admin
 │   │   ├── core/
-│   │   │   ├── config.py              # Pydantic Settings — loads .env; BASE_DIR, LOG_DIR, LANE_SLOTS, DB_POOL_SIZE
-│   │   │   ├── database.py            # engine (pool_size=DB_POOL_SIZE), AsyncSessionLocal, get_session()
+│   │   │   ├── config.py              # Pydantic Settings — loads .env; BASE_DIR, LOG_DIR, LANE_SLOTS, DB_POOL_SIZE, DB_IDLE_TX_TIMEOUT_S
+│   │   │   ├── database.py            # engine (pool_size=DB_POOL_SIZE; idle-in-tx timeout SET when DB_IDLE_TX_TIMEOUT_S), AsyncSessionLocal, get_session()
 │   │   │   └── security.py            # JWT encode/decode, password hashing
 │   │   ├── models/                    # SQLModel table classes — source of truth for schema (Alembic autogens from here)
 │   │   │   ├── account.py             # Account

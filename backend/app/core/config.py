@@ -21,11 +21,21 @@ class Settings(BaseSettings):
 
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
-    # Engine pool size PER PROCESS. Supabase's pooler caps total clients (set to
-    # 25). The runner spawns each scrape as its own process, each with its own
-    # engine + pool, so on the VM keep this small (3–5) to stay within budget:
-    # API + runner + N concurrent scrape subprocesses must sum under the cap.
-    DB_POOL_SIZE: int = 10
+    # Engine pool size PER PROCESS — the most DB connections one process holds at once.
+    # Supabase's session pooler caps total clients at 45, and in session mode every OPEN
+    # pooled connection counts, idle ones included. The runner spawns each job as its own
+    # process with its own pool, and every developer's local backend points at the same
+    # pooler, so API + runner + job subprocesses + laptops must all sum under the cap.
+    # Deliberately small by default (4 covers the runner and any CLI job) so a forgotten
+    # environment is safe; set it explicitly on the API (Render, one worker: 10 — divide
+    # across workers if it ever runs more than one). See docs/jobs.md.
+    DB_POOL_SIZE: int = 4
+    # Postgres terminates a connection that sits idle INSIDE a transaction for longer than
+    # this many seconds (0 = never, the server default). A safety net for the API: without
+    # it one stalled request pins a pooler slot until its process dies (37 slots for up to
+    # ~1 h on 2026-09-11). Set ONLY on the API (Render: 60). Leave 0 on the VM — the scrape
+    # loader deliberately holds one long all-or-nothing transaction.
+    DB_IDLE_TX_TIMEOUT_S: int = 0
 
     # --- Job runner (see docs/jobs.md) ---
     # Absolute log root. MUST be absolute: the runner's CWD under systemd is not

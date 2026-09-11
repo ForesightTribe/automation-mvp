@@ -152,7 +152,7 @@ python -m cli runner start                   # the daemon (systemd does this on 
 - **The registry is code** — [jobs/types.py](backend/jobs/types.py) is the single
   extension point (type → lane, timeout, argv builder). Adding a job type = one entry.
 - **Config split:** job types/lanes/timeouts → code · `LANE_SLOTS`/`DB_POOL_SIZE`/
-  `LOG_DIR` → env (all have defaults; **no new `.env` keys required**) · cron/params/
+  `DB_IDLE_TX_TIMEOUT_S`/`LOG_DIR` → env (all have defaults; **no new `.env` keys required**) · cron/params/
   catchup → the `job_schedules` **table**, editable live with no restart.
 - **`--catchup` ≠ "survives restarts"** (everything does — schedules are DB rows). It
   only decides whether a fire **missed while the runner was down** runs once on
