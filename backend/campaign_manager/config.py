@@ -79,6 +79,16 @@ BID_RAISE_ESCALATE: float = float(os.getenv("CM_BID_RAISE_ESCALATE", "1.5"))
 # concluded at changed), which is the correct behaviour — see bid.stored_effective_target.
 BID_MAX_ABSOLUTE: int = int(os.getenv("CM_BID_MAX_ABSOLUTE", "10000"))
 
+# ── Settling an automation that has ended (campaign_manager/lifecycle.py) ───
+#
+# When an automation's last window closes, its own end-of-window run tears it down: the bid
+# back to its floor, the budget back to its default, the campaign stopped if asked. If that
+# run never lands, an hourly settle pass retries it — at most SETTLE_MAX_ATTEMPTS times, and
+# only within SETTLE_MAX_AGE_HOURS of the close. Past that a person has had time to take
+# over, and tearing down would overwrite what they chose.
+SETTLE_MAX_ATTEMPTS: int = int(os.getenv("CM_SETTLE_MAX_ATTEMPTS", "3"))
+SETTLE_MAX_AGE_HOURS: float = float(os.getenv("CM_SETTLE_MAX_AGE_HOURS", "24"))
+
 # ── Per-marketplace tuning ──────────────────────────────────────────────────
 #
 # Everything above is the DEFAULT, and Blinkit uses it unchanged. A marketplace whose

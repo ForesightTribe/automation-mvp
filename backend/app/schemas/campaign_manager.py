@@ -1,11 +1,39 @@
 """Request/response contracts for the Campaign Manager v2 API (V4.3)."""
 import uuid
 from datetime import datetime
-from typing import Literal
+from typing import Annotated, Literal
 
-from pydantic import BaseModel, ConfigDict
+from pydantic import AfterValidator, BaseModel, ConfigDict
+
+from campaign_manager import window
 
 _orm = ConfigDict(from_attributes=True)
+
+
+# ── Time and date formats ───────────────────────────────────────────────────
+#
+# Rule windows are compared as STRINGS (`campaign_manager.window.in_window`), which is only
+# correct for zero-padded 24-hour `HH:MM` and `YYYY-MM-DD`. Until 2026-09-10 nothing here
+# enforced that, so a hand-written "9:00" saved fine and then matched at the wrong times.
+#
+# INPUT models only. The `*Out` models stay permissive, so a row that predates this check
+# can still be listed, shown and corrected rather than breaking the page it is on. `None`
+# stays allowed everywhere: the dashboard clears a field by sending null.
+
+def _time(v: str | None) -> str | None:
+    if v is not None and not window.valid_hhmm(v):
+        raise ValueError(f"{v!r} is not a time — use 24-hour HH:MM, e.g. 09:00 or 23:30")
+    return v
+
+
+def _date(v: str | None) -> str | None:
+    if v is not None and not window.valid_date(v):
+        raise ValueError(f"{v!r} is not a date — use YYYY-MM-DD, e.g. 2026-09-10")
+    return v
+
+
+Time = Annotated[str | None, AfterValidator(_time)]
+Date = Annotated[str | None, AfterValidator(_date)]
 
 
 # ── Budget schedules + rules ────────────────────────────────────────────────
@@ -14,11 +42,11 @@ class BudgetRuleIn(BaseModel):
     budget: float
     type: str = "recurring"                 # "recurring" | "once"
     days: list[str] = []
-    start_time: str | None = None
-    end_time: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
-    date: str | None = None                 # for a "once" rule
+    start_time: Time = None
+    end_time: Time = None
+    start_date: Date = None
+    end_date: Date = None
+    date: Date = None                       # for a "once" rule
 
 
 class BudgetRuleOut(BaseModel):
@@ -40,11 +68,11 @@ class BudgetRuleUpdate(BaseModel):
     budget: float | None = None
     type: str | None = None
     days: list[str] | None = None
-    start_time: str | None = None
-    end_time: str | None = None
-    start_date: str | None = None
-    end_date: str | None = None
-    date: str | None = None
+    start_time: Time = None
+    end_time: Time = None
+    start_date: Date = None
+    end_date: Date = None
+    date: Date = None
 
 
 class BudgetScheduleIn(BaseModel):
@@ -70,6 +98,10 @@ class BudgetScheduleOut(BaseModel):
     status: str = "scheduled"           # running | scheduled | ended | stopped (computed)
     platform: str
     rules: list[BudgetRuleOut] = []
+    # When the last window closed, and when its final teardown landed (lifecycle.py). The
+    # label above is computed live; these are what the reconciler has recorded.
+    ended_at: datetime | None = None
+    settled_at: datetime | None = None
 
 
 class BudgetScheduleUpdate(BaseModel):
@@ -92,12 +124,12 @@ class BidRuleIn(BaseModel):
     max_bid: int | None = None
     match_type: str = "EXACT"
     type: str = "recurring"
-    date: str | None = None
+    date: Date = None
     days: list[str] = []
-    start_time: str | None = None
-    stop_time: str | None = None
-    start_date: str | None = None
-    stop_date: str | None = None
+    start_time: Time = None
+    stop_time: Time = None
+    start_date: Date = None
+    stop_date: Date = None
     lat: float | None = None
     lon: float | None = None
     city: str | None = None                 # resolved to a store's lat/lon if lat/lon omitted
@@ -129,6 +161,9 @@ class BidRuleOut(BaseModel):
     state: str
     status: str = "scheduled"           # running | scheduled | ended | paused (computed)
     platform: str
+    # When the last window closed, and when its final teardown landed (lifecycle.py).
+    ended_at: datetime | None = None
+    settled_at: datetime | None = None
 
 
 class BidRuleUpdate(BaseModel):
@@ -140,12 +175,12 @@ class BidRuleUpdate(BaseModel):
     max_bid: int | None = None
     match_type: str | None = None
     type: str | None = None
-    date: str | None = None
+    date: Date = None
     days: list[str] | None = None
-    start_time: str | None = None
-    stop_time: str | None = None
-    start_date: str | None = None
-    stop_date: str | None = None
+    start_time: Time = None
+    stop_time: Time = None
+    start_date: Date = None
+    stop_date: Date = None
     city: str | None = None
     location_id: str | None = None
 

@@ -524,6 +524,8 @@ def _schedule_tail(kind: str, rest: list[str]) -> str | None:
         return "hourly catch-up"
     if head == "opt":
         return "optimiser"
+    if head == "settle":
+        return "finish ended automations"
     if head == "once":
         when = _when(arg)
         return f"one-off {when}" if when else "one-off"

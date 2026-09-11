@@ -172,8 +172,13 @@ The whole loop is **dry** until the tenant is **armed** (`live_armed` on `cm_pla
 flipped by the `cm arm` CLI — see [cli.md](CLI.md)); nothing here touches Blinkit on its own.
 
 Budget/bid outputs carry a computed **`status`**: `running` (window open now) · `scheduled`
-(upcoming) · `ended` (a `once` window whose date passed) · `paused` · `stopped` — distinct
-from the raw D19 `state`.
+(a window still to come) · `ended` (its **last** window has closed — minute-precise) · `paused` ·
+`stopped` — distinct from the raw `state`. They also carry the recorded lifecycle: `ended_at`
+(when the last window closed, as recorded by the reconciler) and `settled_at` (when its final
+teardown landed). See [campaign-manager.md §5b](campaign-manager.md#5b-when-an-automation-ends).
+
+Rule times must be zero-padded 24-hour `HH:MM` and dates a real `YYYY-MM-DD`; anything else is a
+**422** on create and edit. `null` clears a field.
 
 | Method | Path | Purpose |
 |---|---|---|
@@ -182,12 +187,12 @@ from the raw D19 `state`.
 | PATCH | `/budget-schedules/{id}` | Edit the schedule's own fields (`name`, `default_budget`). Reconciles + re-applies if armed. |
 | DELETE | `/budget-schedules/{id}` | Delete the automation + its windows. |
 | POST | `/budget-schedules/{id}/rules` | Add a window (`budget` + timing). |
-| PATCH | `/budget-rules/{id}` | Edit a window (budget + timing). **400** if it's a spent `once` window (unless the edit moves its date forward). |
+| PATCH | `/budget-rules/{id}` | Edit a window (budget + timing). **400** if the automation has ended, unless the edit moves its dates forward — which reopens it. |
 | DELETE | `/budget-rules/{id}` | Delete a window (schedule + default remain). |
 | POST | `/budget-schedules/{id}/reset` | **D19 Reset** — stop + enqueue a set-budget→default job. Returns `{job_id}` to poll. |
 | GET | `/bid-rules` | List keyword bid automations, each with `status`. |
 | POST | `/bid-rules` | Create a bid automation (campaign, keyword, target position, min/max, `city`/`location_id`→store, timing). |
-| PATCH | `/bid-rules/{id}` | Edit target/bids/timing/keyword/location. **400** on a spent `once` rule; campaign not editable (identity). |
+| PATCH | `/bid-rules/{id}` | Edit target/bids/timing/keyword/location. **400** on an ended automation unless the edit moves its dates forward (which reopens it); campaign not editable (identity). |
 | DELETE | `/bid-rules/{id}` | Delete a bid automation (+ its runtime). **`?reset=true`** also puts the keyword back to the automation's `min_bid` first — otherwise the bid stays wherever the optimizer left it with no rule left to lower it. The reset is enqueued *before* the delete, so a refused enqueue leaves both alone. |
 | POST | `/bid-rules/{id}/pause` | Freeze it: no optimizer ticks, no end-of-window reset, no writes. **The bid is deliberately left where it is** — pair with `/reset` to lower it. **409** if already paused or if the automation has ended. |
 | POST | `/bid-rules/{id}/resume` | Un-freeze, discarding everything the engine learned before the pause (last bid/position, drift pause, escalation step, relaxed target) so it decides from current facts. If the window closed while it was paused, the end-of-window reset it missed is enqueued now. **409** if already running or ended. |
@@ -198,7 +203,7 @@ from the raw D19 `state`.
 | POST | `/campaigns/refresh` | Re-read the account's campaigns + statuses from Blinkit into the catalogue → enqueues `cm.sync_campaigns`, returns `{job_id}`. A READ job (one list call), so it needs no arming. This is how a campaign created since last night's scrape becomes selectable in the pickers. |
 | POST | `/run/budget-scheduler` · `/run/bid-optimizer` | Run an engine now → enqueues the job, returns `{job_id}` to poll. Dry unless the tenant is armed. |
 | GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. |
-| GET | `/history` | Paginated `cm_run_log`. **Changes only by default** — since 2026-09-04 the engine records EVERY tick, including the ones where it deliberately did nothing, and a "held at ₹201" row every 15 minutes would bury the real changes. `?include_unchanged=true` returns the full per-tick record (the per-automation drill-down, where "why has my bid not moved for six hours" is the question and the held ticks carry the answer). Narrow with `?campaign_id=` (int) / `?rule_id=` (**string** — a bid rule's id is a uuid hex); filter by `?kind=budget\|bid\|activation`. Rows carry `position` + `target` so a decision explains itself without parsing `reason`. |
+| GET | `/history` | Paginated `cm_run_log`. **Changes only by default** — since 2026-09-04 the engine records EVERY tick, including the ones where it deliberately did nothing, and a "held at ₹201" row every 15 minutes would bury the real changes. `?include_unchanged=true` returns the full per-tick record (the per-automation drill-down, where "why has my bid not moved for six hours" is the question and the held ticks carry the answer). Narrow with `?campaign_id=` (int) / `?rule_id=` (**string** — a bid rule's id is a uuid hex); filter by `?kind=budget\|bid\|activation`. Rows carry `position` + `target` so a decision explains itself without parsing `reason`. Lifecycle rows — `ended` · `reopened` · `settled` · `settle-failed` — record when an automation ended or was reopened, and whether its final teardown landed. |
 | GET · PUT | `/advertiser` | Get / set the Blinkit ad-account id (B3) live writes send. Captured once from a dashboard PUT. |
 
 Timing shapes on budget/bid rules match the CLI ([cli.md](CLI.md)): recurring daily window

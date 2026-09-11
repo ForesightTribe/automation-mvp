@@ -15,8 +15,8 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from campaign_manager.reconciler import (
-    BID_JOB, BUDGET_JOB, Desired, _differs, _is_managed, bid_active_hours,
-    budget_boundaries, desired_schedules,
+    BID_JOB, BUDGET_JOB, Desired, _bid_split, _differs, _is_managed, budget_boundaries,
+    desired_schedules,
 )
 
 T = "T"                       # fake tenant (name segment only)
@@ -51,8 +51,8 @@ def _by_name(ds):
     return {d.name: d for d in ds}
 
 
-def _desired(budget_schedules=None, bid_rules=None):
-    return desired_schedules(T, MP, budget_schedules or [], bid_rules or [], NOW)
+def _desired(budget_schedules=None, bid_rules=None, now=NOW):
+    return desired_schedules(T, MP, budget_schedules or [], bid_rules or [], now)
 
 
 # ── CREATE: budget ───────────────────────────────────────────────────────────
@@ -109,11 +109,69 @@ def test_once_past_is_skipped():
     assert "auto:cm:budget:T:blinkit:poll" not in _names(ds)  # once-only → no perpetual poll
 
 
-def test_expiry_oneshot():
+def test_no_expiry_oneshot_is_scheduled():
+    """There used to be a one-shot "reset to default" the morning after an end date. The
+    rule's own last end boundary already reverts it, and by that morning the engine leaves an
+    ended schedule alone — so the fire could only ever start a run that did nothing."""
     sched = (bsched(), [brule(id=3, start_time="13:00", end_time="20:00", end_date=FUTURE)])
-    ds = _desired([sched])
-    exp = _by_name(ds)["auto:cm:budget:T:blinkit:expire:3"]
-    assert exp.repeat is False and exp.next_run_at == datetime(2026, 8, 16, 0, 5)
+    assert not any(":expire:" in d.name for d in _desired([sched]))
+
+
+# ── Ended budget rules schedule nothing (2026-09-10) ─────────────────────────
+
+def test_an_ended_recurring_budget_rule_schedules_nothing():
+    """Its boundary crons and the hourly poll used to live as long as the rule did, firing the
+    budget engine every day for an automation that had ended — Dobra's 19:40, 19:42 and hourly
+    crons survived the cleanup that was supposed to prune them."""
+    sched = (bsched(), [brule(start_time="13:00", end_time="20:00", end_date=PAST)])
+    assert _desired([sched]) == []
+
+
+def test_a_rule_ending_today_keeps_its_crons_until_its_last_window_closes():
+    """Pruned at the minute its last window CLOSES — not the midnight after, and not before
+    the end boundary that reverts it has had its chance to fire. Once that teardown has landed
+    (`settled_at`), nothing at all is left for it."""
+    rule = brule(start_time="13:00", end_time="20:00", end_date="2026-08-01")
+    before = _names(_desired([(bsched(), [rule])], now=datetime(2026, 8, 1, 19, 0)))
+    assert {"auto:cm:budget:T:blinkit:1300", "auto:cm:budget:T:blinkit:2000",
+            "auto:cm:budget:T:blinkit:poll"} <= before
+    settled = bsched()
+    settled.settled_at = datetime(2026, 8, 1, 20, 0)
+    assert _desired([(settled, [rule])], now=datetime(2026, 8, 1, 20, 30)) == []
+
+
+# ── The settle-once safety net (lifecycle.py) ───────────────────────────────
+
+def test_an_ended_schedule_whose_teardown_never_landed_keeps_the_hourly_pass():
+    """The budget engine's hourly pass is what settles it, so the poll outlives the boundaries
+    until the teardown lands — and not beyond the settle window."""
+    rule = brule(start_time="13:00", end_time="20:00", end_date="2026-08-01")
+    names = _names(_desired([(bsched(), [rule])], now=datetime(2026, 8, 1, 20, 30)))
+    assert "auto:cm:budget:T:blinkit:poll" in names
+    assert not {"auto:cm:budget:T:blinkit:1300", "auto:cm:budget:T:blinkit:2000"} & names
+    assert _desired([(bsched(), [rule])], now=datetime(2026, 8, 3, 9, 0)) == []
+
+
+def test_an_ended_bid_rule_whose_reset_never_landed_gets_a_settle_pass():
+    rule = bidrule(True, "18:00", "23:00", type="once", date="2026-07-31")
+    settle = _by_name(_desired(bid_rules=[rule]))["auto:cm:bid:T:blinkit:settle"]
+    assert settle.cron == "37 * * * *" and settle.repeat
+    assert settle.params == {"reset": "true", "marketplace": MP}
+    rule.settled_at = datetime(2026, 7, 31, 23, 0)
+    assert _desired(bid_rules=[rule]) == []
+
+
+def test_a_paused_rule_that_ended_is_never_settled_automatically():
+    """Paused means no writes. A person tears it down with Reset."""
+    rule = bidrule(True, "18:00", "23:00", type="once", date="2026-07-31", state="paused")
+    assert _desired(bid_rules=[rule]) == []
+
+
+def test_only_the_live_rules_of_a_schedule_keep_boundaries():
+    sched = (bsched(), [brule(id=1, start_time="13:00", end_time="20:00", end_date=PAST),
+                        brule(id=2, start_time="10:00", end_time="11:00")])
+    assert budget_boundaries([sched], NOW) == {(10, 0), (11, 0)}
+    assert "auto:cm:budget:T:blinkit:poll" in _names(_desired([sched]))
 
 
 # ── CREATE: bid ──────────────────────────────────────────────────────────────
@@ -126,21 +184,21 @@ def test_bid_window_cron():
 
 def test_bid_windows_unioned():
     rules = [bidrule(True, "09:00", "12:00"), bidrule(True, "11:00", "15:00")]
-    assert bid_active_hours(rules, NOW) == {9, 10, 11, 12, 13, 14}
     assert _by_name(_desired(bid_rules=rules))["auto:cm:bid:T:blinkit:opt"].cron == "*/15 9-14 * * *"
 
 
 def test_bid_overnight_window():
     # 18:00–02:00 wraps midnight → hours {18..23, 0..1} → compressed cron field
     rules = [bidrule(True, "18:00", "02:00")]
-    assert bid_active_hours(rules, NOW) == {18, 19, 20, 21, 22, 23, 0, 1}
     assert _by_name(_desired(bid_rules=rules))["auto:cm:bid:T:blinkit:opt"].cron == "*/15 0-1,18-23 * * *"
 
 
 def test_bid_once_expired_dropped():
     live = bidrule(True, "09:00", "12:00", type="once", date=FUTURE)
     dead = bidrule(True, "18:00", "20:00", type="once", date=PAST)
-    assert bid_active_hours([live, dead], NOW) == {9, 10, 11}   # expired once contributes nothing
+    names = _names(_desired(bid_rules=[live, dead]))
+    assert "auto:cm:bid:T:blinkit:once:20260815" in names
+    assert not any(PAST.replace("-", "") in n for n in names)    # expired once contributes nothing
 
 
 def test_bid_once_is_date_bound_not_recurring():
@@ -150,6 +208,27 @@ def test_bid_once_is_date_bound_not_recurring():
     by = _by_name(ds)
     assert "auto:cm:bid:T:blinkit:opt" not in by
     assert by["auto:cm:bid:T:blinkit:once:20260815"].cron == "*/15 16-17 15 8 *"
+
+
+def test_a_one_time_overnight_window_gets_a_cron_for_its_tail():
+    """Pinned to its start date alone, a 19:30–02:00 one-time window's 00:00–02:00 never ran:
+    the optimizer was simply never started for those hours."""
+    by = _by_name(_desired(bid_rules=[bidrule(True, "19:30", "02:00", type="once", date=FUTURE)]))
+    assert by["auto:cm:bid:T:blinkit:once:20260815"].cron == "*/15 19-23 15 8 *"
+    assert by["auto:cm:bid:T:blinkit:once:20260816"].cron == "*/15 0-1 16 8 *"
+
+
+def test_an_overnight_rule_survives_until_its_tail_has_run():
+    """Dropped when its last window CLOSES, not when its date passes. Dropping at midnight
+    deleted the tail's reset fire on any reconcile before 02:00 — and every rule edit
+    triggers one."""
+    once = bidrule(True, "18:00", "02:00", type="once", date="2026-08-01")
+    recurring = bidrule(True, "18:00", "02:00", stop_date="2026-08-01")
+    for rule in (once, recurring):
+        recs, onces = _bid_split([rule], datetime(2026, 8, 2, 1, 0))
+        assert recs or any(onces.values()), f"{rule.type} rule dropped mid-tail"
+        recs, onces = _bid_split([rule], datetime(2026, 8, 2, 3, 0))
+        assert not recs and not any(onces.values()), f"{rule.type} rule kept after its tail"
 
 
 def test_bid_reset_fires_one_minute_BEFORE_the_stop():

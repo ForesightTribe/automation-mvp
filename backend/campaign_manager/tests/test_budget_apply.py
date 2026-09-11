@@ -51,8 +51,10 @@ class FakeAdapter:
         self.status = status
         self.current_budget = current_budget
         self.calls = []
+        self.signed_in = False
 
     async def setup(self, tenant_id):
+        self.signed_in = True
         return None, None, SimpleNamespace(_email="test@example.com")
 
     def set_advertiser(self, client, advertiser_id):
@@ -74,14 +76,30 @@ class FakeAdapter:
         return {"success": True}
 
 
-def _run(*, status: str, toggle: bool, now: datetime, current_budget: float = 500.0) -> list:
-    """Run the engine against one fake campaign; return the marketplace calls it made."""
+def _run(*, status: str, toggle: bool, now: datetime, current_budget: float = 500.0,
+         rules: list | None = None, schedule: dict | None = None) -> list:
+    """Run the engine against one fake campaign; return the marketplace calls it made.
+
+    The adapter is left on `_run.fake` for a test that needs more than the calls — including
+    what the run latched as settled (`fake.settled`, id → stamp) and the teardowns it counted
+    as failed (`fake.failed`). `schedule` overrides fields on the fake schedule. The settle
+    writes are stubbed like every other repo call: nothing here reaches the database."""
     fake = FakeAdapter(status, current_budget)
-    sched, rules = _schedule(toggle=toggle), [_rule()]
+    fake.settled, fake.failed = {}, []
+    _run.fake = fake
+    sched, rules = _schedule(toggle=toggle), (rules if rules is not None else [_rule()])
+    for field, value in (schedule or {}).items():
+        setattr(sched, field, value)
+
+    async def _mark_settled(kind, stamps):
+        fake.settled.update(stamps)
+
+    async def _bump_attempts(kind, ids):
+        fake.failed.extend(ids)
 
     orig = (budget.get_adapter, repo.get_budget_schedules, repo.write_run_log,
             repo.get_advertiser, repo.recent_write_count, budget.now_ist,
-            repo.get_tenant_name)
+            repo.get_tenant_name, repo.mark_settled, repo.bump_settle_attempts)
     budget.get_adapter = lambda platform: fake
     repo.get_budget_schedules = _async_const([(sched, rules)])
     repo.write_run_log = _async_noop
@@ -89,13 +107,15 @@ def _run(*, status: str, toggle: bool, now: datetime, current_budget: float = 50
     repo.get_advertiser = _async_const(19802)
     repo.recent_write_count = _async_const(0)
     repo.get_tenant_name = _async_const("Test Tenant")
+    repo.mark_settled = _mark_settled
+    repo.bump_settle_attempts = _bump_attempts
     budget.now_ist = lambda: now
     try:
         asyncio.run(budget.run(_TENANT, dry_run=False))
     finally:
         (budget.get_adapter, repo.get_budget_schedules, repo.write_run_log,
          repo.get_advertiser, repo.recent_write_count, budget.now_ist,
-         repo.get_tenant_name) = orig
+         repo.get_tenant_name, repo.mark_settled, repo.bump_settle_attempts) = orig
     return fake.calls
 
 
@@ -237,6 +257,75 @@ def test_held_campaign_at_a_window_end_reverts_AND_stops():
     """A held campaign is live, so "off outside the window" applies to it too."""
     calls = _run(status="held", toggle=True, now=NOW_AT_END, current_budget=1500.0)
     assert calls == [("budget", 500.0), ("status", "paused", None)], calls
+
+
+# ── Ended schedules (2026-09-10) ─────────────────────────────────────────────
+#
+# A one-time 19:30–02:00 window on 2026-08-07. Its only window closes at 02:00 on the 8th.
+
+_ONE_TIME = SimpleNamespace(
+    type="once", days=[], time_slots=[], start_time="19:30", end_time="02:00",
+    start_date=None, end_date=None, date="2026-08-07", budget=1500.0,
+)
+_CLOSED = datetime(2026, 8, 8, 2, 0)
+
+
+def test_the_fire_that_closes_the_last_window_still_reverts_and_stops():
+    """The schedule is ENDED from 02:00 — and 02:00 is exactly the fire that must still revert
+    the budget and stop the campaign. Ending cannot cost it its own teardown, and landing
+    that teardown latches it."""
+    calls = _run(status="running", toggle=True, now=NOW_AT_END, current_budget=1500.0,
+                 rules=[_ONE_TIME])
+    assert calls == [("budget", 500.0), ("status", "paused", None)], calls
+    assert _run.fake.settled == {1: _CLOSED} and _run.fake.failed == []
+
+
+def test_a_settled_schedule_is_never_written_to_again():
+    """2026-09-09: a campaign restarted by hand at ₹502 was set to its ENDED automation's ₹510
+    default 39 minutes later. Once the teardown has landed, nothing is written — and the engine
+    does not even sign in, which on a one-session-per-user marketplace would evict whoever is
+    using the dashboard."""
+    calls = _run(status="running", toggle=True, now=datetime(2026, 8, 8, 5, 0),
+                 current_budget=502.0, rules=[_ONE_TIME], schedule={"settled_at": _CLOSED})
+    assert calls == [], calls
+    assert not _run.fake.signed_in, "signed in to the marketplace for an automation that has ended"
+
+
+def test_a_teardown_that_never_landed_is_done_by_the_next_pass():
+    """The runner was down at 02:00. The 03:00 pass — far outside the misfire grace — finds the
+    schedule ended and unsettled, and does what 02:00 should have: revert, THEN stop."""
+    calls = _run(status="running", toggle=True, now=datetime(2026, 8, 8, 3, 0),
+                 current_budget=1500.0, rules=[_ONE_TIME])
+    assert calls == [("budget", 500.0), ("status", "paused", None)], calls
+    assert 1 in _run.fake.settled
+
+
+def test_the_settle_pass_does_no_more_than_the_missed_run_would_have():
+    """With the toggle off, the missed run would only have reverted the budget — so settling
+    never touches the campaign's status either."""
+    calls = _run(status="running", toggle=False, now=datetime(2026, 8, 8, 3, 0),
+                 current_budget=1500.0, rules=[_ONE_TIME])
+    assert calls == [("budget", 500.0)], calls
+
+
+def test_nothing_is_settled_once_a_person_has_had_time_to_take_over():
+    """27 hours after the close is past SETTLE_MAX_AGE_HOURS: no write, no sign-in."""
+    calls = _run(status="running", toggle=True, now=datetime(2026, 8, 9, 5, 0),
+                 current_budget=502.0, rules=[_ONE_TIME])
+    assert calls == [] and not _run.fake.signed_in, calls
+
+
+def test_a_teardown_that_does_not_land_counts_an_attempt():
+    """A status the transition table refuses to stop: nothing landed, so no latch — one attempt."""
+    _run(status="SOMETHING_NEW", toggle=True, now=NOW_AT_END, current_budget=1500.0,
+         rules=[_ONE_TIME])
+    assert _run.fake.settled == {} and _run.fake.failed == [1], (_run.fake.settled, _run.fake.failed)
+
+
+def test_a_window_end_that_is_not_the_last_is_never_latched():
+    """The recurring 19:30–02:00 schedule has no end date: 02:00 is an ordinary window end."""
+    _run(status="running", toggle=True, now=NOW_AT_END, current_budget=1500.0)
+    assert _run.fake.settled == {} and _run.fake.failed == []
 
 
 def _run_all() -> int:

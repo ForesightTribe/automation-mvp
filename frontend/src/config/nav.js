@@ -45,9 +45,5 @@ export const NAV_ITEMS = [
 	{ label: "Reports", path: "/reports", icon: FileText },
 	// adminOnly: hidden from members in the Sidebar; the /settings route is also
 	// guarded by RequireAdmin and the backend's require_admin dependency.
-	//
-	// HIDDEN 2026-09-10 — as above. Note this one is ALREADY invisible to clients via
-	// adminOnly; commenting it out hides it from admins too. The /settings route stays
-	// guarded by RequireAdmin either way.
-	// { label: "Settings", path: "/settings", icon: Settings, adminOnly: true },
+	{ label: "Settings", path: "/settings", icon: Settings, adminOnly: true },
 ];
