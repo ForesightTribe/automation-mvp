@@ -229,7 +229,10 @@ async def get_campaigns(
                     "name": z["name"],
                     "type": z.get("campaign_type"),
                     "status": z.get("status"),
-                    "daily_budget": None,
+                    # Whole rupees on Zepto; CampaignRow types it int.
+                    "daily_budget": (
+                        int(z["daily_budget"]) if z.get("daily_budget") is not None else None
+                    ),
                     "budget_consumed": z["spend"],
                     "impressions": z["impressions"],
                     "atc": z["atc"],

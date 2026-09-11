@@ -228,6 +228,19 @@ async def campaigns(
             .group_by(Ad.campaign_id)
         )
     ).all()
+    # Daily budget is a setting, not a metric: it is stamped on every daily row
+    # and can be changed mid-window, so it is neither summed nor max'd — the
+    # value on the latest scraped day is what the dashboard shows as current.
+    latest_budget = dict(
+        (
+            await session.execute(
+                select(Ad.campaign_id, Ad.daily_budget)
+                .distinct(Ad.campaign_id)
+                .where(*_conds(tenant_id, start, end))
+                .order_by(Ad.campaign_id, Ad.date.desc())
+            )
+        ).all()
+    )
     return [
         {
             # CampaignRow types this as int, and Zepto's ids are numeric.
@@ -241,6 +254,7 @@ async def campaigns(
             "roas": round(float(sales) / float(spend), 4) if spend else None,
             "status": status,
             "campaign_type": ctype,
+            "daily_budget": latest_budget.get(cid),
         }
         for cid, name, spend, impr, sales, atc, units, status, ctype in rows
     ]
