@@ -5,11 +5,13 @@ scoped by tenant_id (+ platform). Kept thin: the orchestration decides *what*, t
 only reads/writes rows.
 """
 import uuid
+from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from sqlmodel import select
 
 from app.core.database import AsyncSessionLocal
+from app.utils.logger import logger
 from app.utils.time import now_ist
 from campaign_manager import window
 
@@ -327,8 +329,9 @@ async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
                           match_type: str = "EXACT", type: str = "recurring", date=None,
                           days: list | None = None, start_time=None, stop_time=None,
                           start_date=None, stop_date=None, lat=None, lon=None,
-                          location_name=None, brand_name=None):
-    """Create a keyword bid rule (runtime row is created lazily by the optimizer)."""
+                          location_name=None, brand_name=None, city_id=None):
+    """Create a keyword bid rule (runtime row is created lazily by the optimizer).
+    `city_id` set → the rule follows that city's frozen store; None → pinned to lat/lon."""
     from app.models.campaign_manager_v2 import CmBidRule
     async with AsyncSessionLocal() as db:
         r = CmBidRule(id=uuid.uuid4().hex, tenant_id=tenant_id, platform=platform,
@@ -337,63 +340,375 @@ async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
                       target_position=target_position, min_bid=min_bid, max_bid=max_bid,
                       start_time=start_time, stop_time=stop_time, start_date=start_date,
                       stop_date=stop_date, lat=lat, lon=lon, location_name=location_name,
-                      brand_name=brand_name, active=True)
+                      brand_name=brand_name, city_id=city_id, active=True)
         db.add(r)
         await db.commit()
         await db.refresh(r)
         return r
 
 
-async def resolve_store(platform: str, *, city: str | None = None,
-                        location_id: str | None = None) -> tuple[float | None, float | None, str] | None:
-    """Resolve a bid rule's measurement point from the darkstore catalog: a specific
-    store by `location_id` (merchant_id), or a representative active store in `city`.
-    Returns (lat, lon, label) or None if nothing matches.
+# ── Measurement stores — where a bid rule reads its position (cm_city_stores) ─
+#
+# A rule names a CITY; which store inside it is a SETTING, not a per-rule choice. One frozen
+# store per (marketplace, city): a GLOBAL row (tenant_id NULL — the default, set from the CLI)
+# and, optionally, a CLIENT row that overrides it. The bid engine resolves it on every run, so
+# changing a city's store moves every automation measuring there from the next tick.
+#
+# Keyed by `merchant_id`, not `marketplace_locations.id`: `cli sync --prune` deletes and
+# re-creates catalog rows, and the merchant id is the store's natural key across that.
 
-    `city` may be OUR catalog name or the MARKETPLACE's own (V7.3) — a campaign's targeting
-    arrives as the latter, and the two disagree wherever our catalog groups cities that the
-    ad platform lists separately (Blinkit's `Gurugram` is inside our `hr-ncr`). Resolution
-    goes through the CANONICAL registry, and the stores themselves carry `city_id`, so the
-    grouped catalog names never have to be understood here:
+PRIMARY_RANK = 1    # the store a city measures at; higher ranks are reserved for multi-store
+                    # measurement, which is not built
 
-        1. `<platform>:ads` alias → canonical city → stores tagged with it;
-        2. a canonical city NAME match, for the names that need no alias;
-        3. the catalog's own `city` text, so a caller passing our name still works;
-        4. nothing — the caller asks the user to pick a store. Never a guess.
+
+class StoreNotInCity(ValueError):
+    """A store that cannot be a city's measurement store: unknown, inactive, without
+    coordinates, or in a different city."""
+
+
+@dataclass(frozen=True)
+class MeasurementStore:
+    """A real dark store to read positions at, and why it was chosen.
+
+    `source`: `tenant` (the client's override) · `global` (the default for the city) ·
+    `catalog` (nothing frozen — the lowest merchant_id in the city, deterministic but
+    arbitrary) · `store` (an explicitly named merchant_id)."""
+    lat: float
+    lon: float
+    label: str
+    merchant_id: str
+    city_id: int | None
+    source: str
+
+
+def store_label(loc) -> str:
+    """A catalog store's human name. `.strip()`: names arrive with stray whitespace
+    ("Financial District\r\n")."""
+    return (loc.location_name or "").strip() or f"{loc.city}/{loc.merchant_id}"
+
+
+def _store_of(loc, source: str) -> MeasurementStore:
+    return MeasurementStore(lat=loc.lat, lon=loc.lon, label=store_label(loc),
+                            merchant_id=loc.merchant_id, city_id=loc.city_id, source=source)
+
+
+def _usable(loc) -> bool:
+    return loc is not None and loc.is_active and loc.lat is not None and loc.lon is not None
+
+
+def pick_city_store(rows, tenant_id: uuid.UUID | None):
+    """Pure. The frozen store in force for ONE city, from its `cm_city_stores` rows joined to
+    the catalog — `[(city_store, catalog_row | None)]`, possibly spanning several clients.
+
+    The client's own row wins, then the global row; other clients' rows are ignored. A row
+    whose store has left the catalog or gone inactive is skipped rather than honoured, so a
+    store closing falls through to the next layer instead of measuring nowhere.
+
+    Returns `(city_store, catalog_row, "tenant" | "global")`, or None when nothing usable is
+    frozen for the city.
     """
+    primary = [(cs, loc) for cs, loc in rows if cs.rank == PRIMARY_RANK and _usable(loc)]
+    if tenant_id is not None:
+        for cs, loc in primary:
+            if cs.tenant_id == tenant_id:
+                return cs, loc, "tenant"
+    for cs, loc in primary:
+        if cs.tenant_id is None:
+            return cs, loc, "global"
+    return None
+
+
+async def _city_store_rows(db, platform: str, city_ids, tenant_ids=None) -> list:
+    """`[(CmCityStore, MarketplaceLocation | None)]` for these cities. `tenant_ids=None` loads
+    every client's rows; a list loads those clients' plus the global ones."""
+    from sqlalchemy import and_, or_
+    from app.models.campaign_manager_v2 import CmCityStore
+    from app.models.search import MarketplaceLocation
+
+    city_ids = [c for c in city_ids if c is not None]
+    if not city_ids:
+        return []
+    q = (select(CmCityStore, MarketplaceLocation)
+         .join(MarketplaceLocation,
+               and_(MarketplaceLocation.mp_slug == CmCityStore.platform,
+                    MarketplaceLocation.merchant_id == CmCityStore.merchant_id),
+               isouter=True)
+         .where(CmCityStore.platform == platform, CmCityStore.city_id.in_(city_ids))
+         .order_by(CmCityStore.city_id, CmCityStore.rank))
+    if tenant_ids is not None:
+        q = q.where(or_(CmCityStore.tenant_id.is_(None),
+                        CmCityStore.tenant_id.in_(list(tenant_ids))))
+    return [(cs, loc) for cs, loc in (await db.execute(q)).all()]
+
+
+async def _resolve_city_id(db, platform: str, city: str | None) -> int | None:
     from sqlalchemy import func
     from app.models.search import City, CityAlias, MarketplaceLocation
 
+    key = (city or "").strip().lower()
+    if not key:
+        return None
+    city_id = (await db.execute(
+        select(CityAlias.city_id).where(
+            CityAlias.source == f"{platform}:ads",
+            CityAlias.alias == key,
+            CityAlias.is_active == True,  # noqa: E712
+        )
+    )).scalars().first()
+    if city_id is None:
+        city_id = (await db.execute(
+            select(City.id).where((func.lower(City.name) == key) | (City.slug == key))
+        )).scalars().first()
+    if city_id is None:
+        # Our catalog's own city text — only when every store under it agrees on one city.
+        # `hr-ncr` is all Gurugram; a grouped name spanning two cities stays unresolved.
+        ids = (await db.execute(
+            select(MarketplaceLocation.city_id).where(
+                MarketplaceLocation.mp_slug == platform,
+                MarketplaceLocation.is_active == True,  # noqa: E712
+                func.lower(MarketplaceLocation.city) == key,
+                MarketplaceLocation.city_id.is_not(None),
+            ).distinct()
+        )).scalars().all()
+        city_id = ids[0] if len(ids) == 1 else None
+    return city_id
+
+
+async def resolve_city_id(platform: str, city: str | None) -> int | None:
+    """A city name → its canonical `cities.id`, or None.
+
+    Accepts the MARKETPLACE's own name (a campaign's targeting), a canonical name or slug, or
+    OUR catalog's city text — they disagree wherever our catalog groups cities the ad platform
+    lists separately (Blinkit's `Gurugram` is inside our `hr-ncr`). In order:
+
+        1. `<platform>:ads` alias;
+        2. a canonical city name or slug;
+        3. the catalog's `city` text, when all its stores carry the same `city_id`;
+        4. nothing — never a guess.
+    """
     async with AsyncSessionLocal() as db:
-        q = select(MarketplaceLocation).where(
+        return await _resolve_city_id(db, platform, city)
+
+
+async def resolve_store(platform: str, *, city: str | None = None,
+                        location_id: str | None = None,
+                        tenant_id: uuid.UUID | None = None) -> MeasurementStore | None:
+    """Where a rule being SAVED would measure, from the darkstore catalog.
+
+    - `location_id` (a merchant_id) → exactly that store (`source="store"`).
+    - `city` → the city's FROZEN store (`tenant_id`'s override, then the global default);
+      with nothing frozen, the lowest merchant_id in the city (`source="catalog"`) — the old
+      behaviour, deterministic but arbitrary, and now only what an unconfigured city gets.
+    - no match → None; the caller asks for a store. Never a guess.
+
+    `city_id` on the result is the STORE's city. Whether the rule then follows that city or
+    stays pinned to this store is the caller's call: saved by city → follows.
+    """
+    from sqlalchemy import func
+    from app.models.search import MarketplaceLocation
+
+    async with AsyncSessionLocal() as db:
+        stores = select(MarketplaceLocation).where(
             MarketplaceLocation.mp_slug == platform,
             MarketplaceLocation.is_active == True,  # noqa: E712
+            MarketplaceLocation.lat.is_not(None),
+            MarketplaceLocation.lon.is_not(None),
         )
         if location_id:
-            q = q.where(MarketplaceLocation.merchant_id == location_id)
-        elif city:
-            key = city.strip().lower()
-            city_id = (await db.execute(
-                select(CityAlias.city_id).where(
-                    CityAlias.source == f"{platform}:ads",
-                    CityAlias.alias == key,
-                    CityAlias.is_active == True,  # noqa: E712
-                )
+            row = (await db.execute(
+                stores.where(MarketplaceLocation.merchant_id == location_id)
             )).scalars().first()
-            if city_id is None:
-                city_id = (await db.execute(
-                    select(City.id).where(func.lower(City.name) == key)
-                )).scalars().first()
-            if city_id is not None:
-                q = q.where(MarketplaceLocation.city_id == city_id)
-            else:
-                q = q.where(func.lower(MarketplaceLocation.city) == key)
-        # Deterministic representative store when a city matches several.
-        row = (await db.execute(q.order_by(MarketplaceLocation.merchant_id).limit(1))).scalars().first()
-        if not row:
+            return _store_of(row, "store") if row else None
+        if not city:
             return None
-        label = row.location_name or f"{row.city}/{row.merchant_id}"
-        return row.lat, row.lon, label
+        city_id = await _resolve_city_id(db, platform, city)
+        if city_id is not None:
+            picked = pick_city_store(
+                await _city_store_rows(db, platform, [city_id], [tenant_id] if tenant_id else []),
+                tenant_id)
+            if picked:
+                return _store_of(picked[1], picked[2])
+            stores = stores.where(MarketplaceLocation.city_id == city_id)
+        else:
+            stores = stores.where(func.lower(MarketplaceLocation.city) == city.strip().lower())
+        # Deterministic representative store when nothing is frozen for the city.
+        row = (await db.execute(
+            stores.order_by(MarketplaceLocation.merchant_id).limit(1)
+        )).scalars().first()
+        return _store_of(row, "catalog") if row else None
+
+
+async def city_stores_for(platform: str, tenant_id: uuid.UUID, city_ids) -> dict:
+    """`{city_id: MeasurementStore}` — each city's frozen store for ONE client, in one query
+    (the bid engine calls this once per run). A city with nothing usable frozen is absent, and
+    the engine keeps each rule's saved store. A frozen store that is no longer an active
+    catalog store is logged: it silently changes where automations measure."""
+    async with AsyncSessionLocal() as db:
+        rows = await _city_store_rows(db, platform, set(city_ids), [tenant_id])
+    by_city: dict[int, list] = {}
+    for cs, loc in rows:
+        by_city.setdefault(cs.city_id, []).append((cs, loc))
+        if cs.rank == PRIMARY_RANK and not _usable(loc):
+            logger.warning(f"cm: frozen {platform} store {cs.merchant_id} for city {cs.city_id} "
+                           f"is not an active catalog store with coordinates — skipped")
+    out = {}
+    for city_id, city_rows in by_city.items():
+        picked = pick_city_store(city_rows, tenant_id)
+        if picked:
+            out[city_id] = _store_of(picked[1], picked[2])
+    return out
+
+
+async def get_city(city_id: int):
+    from app.models.search import City
+    async with AsyncSessionLocal() as db:
+        return await db.get(City, city_id)
+
+
+async def city_store_candidates(platform: str, city_id: int) -> list:
+    """Every active store with coordinates in a city — what its frozen store can be."""
+    from app.models.search import MarketplaceLocation
+    async with AsyncSessionLocal() as db:
+        return list((await db.execute(
+            select(MarketplaceLocation).where(
+                MarketplaceLocation.mp_slug == platform,
+                MarketplaceLocation.city_id == city_id,
+                MarketplaceLocation.is_active == True,  # noqa: E712
+                MarketplaceLocation.lat.is_not(None),
+                MarketplaceLocation.lon.is_not(None),
+            ).order_by(MarketplaceLocation.location_name, MarketplaceLocation.merchant_id)
+        )).scalars().all())
+
+
+async def list_city_stores(platform: str, *, tenant_ids=None, city_id: int | None = None) -> list:
+    """`[(CmCityStore, MarketplaceLocation | None, City | None)]` — frozen stores, for display.
+    `tenant_ids=None` lists every client's overrides as well as the global defaults."""
+    from sqlalchemy import and_, or_
+    from app.models.campaign_manager_v2 import CmCityStore
+    from app.models.search import City, MarketplaceLocation
+
+    async with AsyncSessionLocal() as db:
+        q = (select(CmCityStore, MarketplaceLocation, City)
+             .join(MarketplaceLocation,
+                   and_(MarketplaceLocation.mp_slug == CmCityStore.platform,
+                        MarketplaceLocation.merchant_id == CmCityStore.merchant_id),
+                   isouter=True)
+             .join(City, City.id == CmCityStore.city_id, isouter=True)
+             .where(CmCityStore.platform == platform)
+             .order_by(City.name, CmCityStore.tenant_id.is_not(None), CmCityStore.rank))
+        if city_id is not None:
+            q = q.where(CmCityStore.city_id == city_id)
+        if tenant_ids is not None:
+            q = q.where(or_(CmCityStore.tenant_id.is_(None),
+                            CmCityStore.tenant_id.in_(list(tenant_ids))))
+        return [tuple(r) for r in (await db.execute(q)).all()]
+
+
+async def set_city_store(platform: str, city_id: int, merchant_id: str, *,
+                         tenant_id: uuid.UUID | None) -> tuple[MeasurementStore, int]:
+    """Freeze `merchant_id` as the store `city_id`'s bid automations measure at — for one
+    client, or with `tenant_id=None` as the GLOBAL default for every client without an
+    override. Refuses a store that is unknown, inactive, has no coordinates, or sits in a
+    different city: an automation for Bengaluru must never quietly measure in Mysuru.
+
+    Returns (the store, how many automations were re-pointed at it)."""
+    from app.models.campaign_manager_v2 import CmCityStore
+    from app.models.search import City, MarketplaceLocation
+
+    async with AsyncSessionLocal() as db:
+        loc = (await db.execute(select(MarketplaceLocation).where(
+            MarketplaceLocation.mp_slug == platform,
+            MarketplaceLocation.merchant_id == merchant_id,
+        ))).scalars().first()
+        if not _usable(loc):
+            raise StoreNotInCity(f"{merchant_id!r} is not an active {platform} store with "
+                                 f"coordinates in the catalog")
+        store = _store_of(loc, "global" if tenant_id is None else "tenant")
+        if loc.city_id != city_id:
+            wanted = await db.get(City, city_id)
+            actual = await db.get(City, loc.city_id) if loc.city_id is not None else None
+            raise StoreNotInCity(
+                f"store {merchant_id} ({store.label}) is in "
+                f"{actual.name if actual else 'no registered city'}, not "
+                f"{wanted.name if wanted else f'city {city_id}'}")
+        scope = (CmCityStore.tenant_id.is_(None) if tenant_id is None
+                 else CmCityStore.tenant_id == tenant_id)
+        row = (await db.execute(select(CmCityStore).where(
+            CmCityStore.platform == platform, CmCityStore.city_id == city_id,
+            CmCityStore.rank == PRIMARY_RANK, scope,
+        ))).scalars().first()
+        if row:
+            row.merchant_id, row.updated_at = merchant_id, now_ist()
+        else:
+            db.add(CmCityStore(tenant_id=tenant_id, platform=platform, city_id=city_id,
+                               merchant_id=merchant_id, rank=PRIMARY_RANK))
+        await db.commit()
+        moved = await _repoint_rules(db, platform, city_id, tenant_id)
+    return store, moved
+
+
+async def clear_city_store(platform: str, city_id: int, *,
+                           tenant_id: uuid.UUID | None) -> tuple[bool, int]:
+    """Remove a frozen store — a client's override (its automations move to the global
+    default, if one exists) or, with `tenant_id=None`, the global default (automations with
+    no override then keep the store they were last saved at: nothing moves).
+
+    Returns (removed?, how many automations were re-pointed)."""
+    from app.models.campaign_manager_v2 import CmCityStore
+
+    async with AsyncSessionLocal() as db:
+        scope = (CmCityStore.tenant_id.is_(None) if tenant_id is None
+                 else CmCityStore.tenant_id == tenant_id)
+        row = (await db.execute(select(CmCityStore).where(
+            CmCityStore.platform == platform, CmCityStore.city_id == city_id,
+            CmCityStore.rank == PRIMARY_RANK, scope,
+        ))).scalars().first()
+        if not row:
+            return False, 0
+        await db.delete(row)
+        await db.commit()
+        return True, await _repoint_rules(db, platform, city_id, tenant_id)
+
+
+async def _repoint_rules(db, platform: str, city_id: int, tenant_id: uuid.UUID | None) -> int:
+    """Bring saved automations in line with their city's frozen store after it changes.
+
+    The engine resolves the store on every run anyway (`bid.measurement_point`), so this is
+    not what moves the MEASUREMENT. It keeps the rule row honest for everything that reads it
+    (the automations list, the CLI), and clears what the engine learned at the old store:
+    positions differ between stores, so the last position, the holding price and a relaxed
+    target would each feed the first decision at the new store a fact about another one — the
+    same reason Resume clears them (`_RUNTIME_MEMORY`, `updated_at` deliberately kept).
+
+    Only rules that FOLLOW the city (`city_id` set) move; pinned ones never do. `tenant_id`
+    narrows to one client (their override changed); None covers every client (the global
+    default changed — a client with its own override is unaffected, `pick_city_store` sees to
+    that). A rule whose city is left with nothing frozen keeps its saved store."""
+    from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
+
+    q = select(CmBidRule).where(CmBidRule.platform == platform, CmBidRule.city_id == city_id)
+    if tenant_id is not None:
+        q = q.where(CmBidRule.tenant_id == tenant_id)
+    rules = (await db.execute(q)).scalars().all()
+    if not rules:
+        return 0
+    rows = await _city_store_rows(db, platform, [city_id])
+    moved = 0
+    for r in rules:
+        picked = pick_city_store(rows, r.tenant_id)
+        if not picked:
+            continue
+        store = _store_of(picked[1], picked[2])
+        if (r.lat, r.lon) == (store.lat, store.lon):
+            continue
+        r.lat, r.lon, r.location_name = store.lat, store.lon, store.label
+        rt = await db.get(CmBidRuntime, r.id)
+        if rt:
+            for field in _RUNTIME_MEMORY:
+                setattr(rt, field, None)
+        moved += 1
+    await db.commit()
+    return moved
 
 
 async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str = "blinkit"):

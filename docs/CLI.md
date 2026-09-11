@@ -571,11 +571,36 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 | `--keyword`               | search keyword to chase                                                                                   |
 | `--target`                | target sponsored position (e.g. `3`)                                                                      |
 | `--min-bid` / `--max-bid` | CPM floor / ceiling (₹)                                                                                   |
-| `--lat` / `--lon`         | store to **measure** position at (position is per-store; find one via `cli locations list --city <slug>`) |
+| `--city`                  | measure in this city, at its **frozen store** (`cm stores`, below) — the rule keeps following it          |
+| `--location-id`           | **pin** to one store (merchant_id from `cli locations list --city <slug>`); ignores the city's store      |
+| `--lat` / `--lon`         | pin to raw coordinates (position is per-store) — overrides `--city` / `--location-id`                     |
 | `--location` / `--brand`  | store label / brand-name fallback for product matching                                                    |
 | `--match-type`            | `EXACT` (default) or `BROAD`                                                                              |
 
-> One bid rule per (campaign, keyword) — the bid is campaign-wide; `--lat/--lon` only chooses where you measure.
+> One bid rule per (campaign, keyword) — the bid is campaign-wide; the store only chooses where you measure.
+
+### Measurement stores — `cm stores …`
+
+A bid rule saved with `--city` measures at that city's **frozen store**: a global default per city,
+overridable per client. The engine looks it up on every run, so a change reaches every automation
+following that city on its next tick. Nothing is frozen until you set it — until then each rule keeps
+the store it was saved at. Design: [campaign-manager.md §7.6c](campaign-manager.md#76c-where-a-rule-measures--the-city-registry).
+
+```bash
+python -m cli cm stores show  -m blinkit --city bengaluru [-t <id>]   # current store + why, and every candidate
+python -m cli cm stores set   -m blinkit --city bengaluru --store 30248 --global   # default for every client
+python -m cli cm stores set   -m blinkit --city bengaluru --store 31001 -t <id>    # this client only (wins)
+python -m cli cm stores list  -m blinkit [-t <id>]                    # every frozen store
+python -m cli cm stores clear -m blinkit --city bengaluru -t <id>     # client falls back to the default
+```
+
+- `set` / `clear` need **exactly one** of `-t <id>` or `--global` — a forgotten `-t` must not move the
+  store for every client. Both layers are **CLI-only** for now — there is no API or UI for this until it
+  is proven.
+- `--city` takes any name the city registry resolves: canonical (`Gurugram`), Blinkit's, or our catalog's.
+- `set` refuses a store that is inactive or in a different city, and reports how many saved automations
+  it re-pointed. Re-pointed rules forget what the engine learned at the old store (last position, holding
+  price, relaxed target) — positions differ between stores.
 
 ### Reconcile — rules → schedules
 

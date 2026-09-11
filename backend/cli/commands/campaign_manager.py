@@ -9,6 +9,7 @@ import uuid
 
 import typer
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 
 from campaign_manager import config, repo
@@ -508,8 +509,8 @@ def add_bid(
     days: str = typer.Option(None, "--days", help="Recurring weekday filter, e.g. 'friday,saturday,sunday' (empty = every day)"),
     start_date: str = typer.Option(None, "--start-date", help="Recurring: first active day"),
     stop_date: str = typer.Option(None, "--stop-date", help="Recurring: last active day"),
-    city: str = typer.Option(None, "--city", help="Measure position at a representative store in this city (auto lat/lon from the catalog)"),
-    location_id: str = typer.Option(None, "--location-id", help="Measure at a specific store (merchant_id from `cli locations list`)"),
+    city: str = typer.Option(None, "--city", help="Measure in this city — at its frozen store (`cm stores`), which the rule keeps following; else the city's lowest merchant_id"),
+    location_id: str = typer.Option(None, "--location-id", help="Pin to one specific store (merchant_id from `cli locations list`); ignores the city's frozen store"),
     lat: float = typer.Option(None, "--lat", help="Store latitude — manual override of --city/--location-id"),
     lon: float = typer.Option(None, "--lon", help="Store longitude — manual override"),
     location: str = typer.Option(None, "--location", help="Store label (for logs/UI)"),
@@ -526,17 +527,23 @@ def add_bid(
         console.print("[red]--once needs --date[/red]"); raise typer.Exit(1)
 
     async def _run():
-        rlat, rlon, rloc = lat, lon, location
+        rlat, rlon, rloc, rcity = lat, lon, location, None
         if (lat is None or lon is None) and (city or location_id):
-            store = await repo.resolve_store(platform, city=city, location_id=location_id)
+            store = await repo.resolve_store(platform, city=city, location_id=location_id,
+                                             tenant_id=uuid.UUID(tenant))
             if not store:
                 what = f"location-id {location_id}" if location_id else f"city {city!r}"
                 console.print(f"[red]no active {platform} store found for {what} "
                               f"(try `cli locations list --city …`)[/red]")
                 raise typer.Exit(1)
-            rlat, rlon, catalog_label = store
-            rloc = location or catalog_label
-            console.print(f"[dim]measuring at {rloc} ({rlat}, {rlon})[/dim]")
+            rlat, rlon = store.lat, store.lon
+            rloc = location or store.label
+            # --city → the rule follows the city's frozen store (`cm stores`) from now on;
+            # --location-id → pinned to that one store.
+            rcity = None if location_id else store.city_id
+            follows = " · follows the city's frozen store" if rcity else " · pinned"
+            console.print(f"[dim]measuring at {rloc} ({rlat}, {rlon}) — {store.source}"
+                          f"{follows}[/dim]")
 
         r = await repo.create_bid_rule(
             uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
@@ -544,6 +551,7 @@ def add_bid(
             type="once" if once else "recurring", date=date, days=_days(days),
             start_time=start_time, stop_time=stop_time, start_date=start_date,
             stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
+            city_id=rcity,
         )
         shape = f"once {date}" if once else "recurring"
         band = f"{min_bid}–{max_bid}" if max_bid else f"{min_bid}+ (no ceiling)"
@@ -651,5 +659,156 @@ def remove_bid(rule: str = typer.Option(..., "--rule", help="Bid rule id (full h
         ok = await repo.delete_bid_rule(rule)
         console.print(f"[green]Removed bid rule {rule}[/green]" if ok
                       else f"[red]No bid rule {rule}[/red]")
+
+    asyncio.run(_run())
+
+
+# ── Measurement stores ───────────────────────────────────────────────────────
+# Which dark store each city's bid automations measure at: a GLOBAL default per city, and a
+# per-client override. The engine resolves it on every run, so a change lands on the next
+# tick. The global layer is CLI-only — it applies to every client.
+
+stores_app = typer.Typer(help="Which dark store each city's bid automations measure at "
+                              "(a global default per city, overridable per client).")
+app.add_typer(stores_app, name="stores")
+
+_CITY = typer.Option(..., "--city", help="City — canonical name/slug, the marketplace's name, "
+                                         "or our catalog's city")
+_STORE_TENANT = typer.Option(None, "--tenant", "-t", help="Client UUID — THIS client's override")
+_GLOBAL = typer.Option(False, "--global",
+                       help="The GLOBAL default, used by every client without an override")
+_SOURCE_WORDS = {"tenant": "this client's override", "global": "the global default",
+                 "catalog": "nothing frozen — the city's lowest merchant_id"}
+
+
+def _scope(tenant: str | None, global_: bool) -> uuid.UUID | None:
+    """Whose store this is. Deliberately no default: a forgotten `-t` must not silently move
+    the store for every client."""
+    if bool(tenant) == bool(global_):
+        console.print("[red]Say whose store this is: --tenant <uuid> for one client, or "
+                      "--global for every client without an override.[/red]")
+        raise typer.Exit(1)
+    return uuid.UUID(tenant) if tenant else None
+
+
+async def _city_or_exit(platform: str, city: str):
+    city_id = await repo.resolve_city_id(platform, city)
+    if city_id is None:
+        console.print(f"[red]No city {escape(city)!r} for {platform}[/red] — try a canonical "
+                      f"name (`cli cities status`) or a catalog city (`cli locations list`).")
+        raise typer.Exit(1)
+    return await repo.get_city(city_id)
+
+
+def _moved(n: int) -> str:
+    return (f"{n} saved automation{'s' if n != 1 else ''} re-pointed" if n
+            else "no saved automation needed moving")
+
+
+@stores_app.command("list")
+def stores_list(
+    platform: str = _MARKETPLACE,
+    tenant: str = typer.Option(None, "--tenant", "-t",
+                               help="Only the global defaults + this client's overrides"),
+):
+    """Every frozen store: global defaults and client overrides."""
+    async def _run():
+        rows = await repo.list_city_stores(
+            platform, tenant_ids=[uuid.UUID(tenant)] if tenant else None)
+        if not rows:
+            console.print(f"[dim]No frozen {platform} stores — every city measures at its "
+                          f"lowest merchant_id, or wherever its automations were saved.[/dim]")
+            return
+        table = Table(show_header=True, header_style="bold", title=f"{platform} measurement stores")
+        for col in ("city", "scope", "store", "merchant_id", "rank"):
+            table.add_column(col)
+        for cs, loc, city in rows:
+            label = (escape(repo.store_label(loc)) if loc else "[red]not in catalog[/red]")
+            if loc is not None and not loc.is_active:
+                label += " [red](inactive — skipped)[/red]"
+            table.add_row(city.name if city else str(cs.city_id),
+                          "global" if cs.tenant_id is None else str(cs.tenant_id),
+                          label, cs.merchant_id, str(cs.rank))
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@stores_app.command("show")
+def stores_show(
+    city: str = _CITY,
+    platform: str = _MARKETPLACE,
+    tenant: str = typer.Option(None, "--tenant", "-t",
+                               help="Resolve as this client, so its override applies"),
+):
+    """The store a city measures at right now, and every store it could be."""
+    async def _run():
+        c = await _city_or_exit(platform, city)
+        tid = uuid.UUID(tenant) if tenant else None
+        current = await repo.resolve_store(platform, city=c.name, tenant_id=tid)
+        frozen = {(cs.tenant_id, cs.merchant_id) for cs, _, _ in await repo.list_city_stores(
+            platform, tenant_ids=[tid] if tid else [], city_id=c.id)}
+        if current:
+            console.print(f"[bold]{c.name}[/bold] measures at [bold]{escape(current.label)}"
+                          f"[/bold] ({current.merchant_id}) — {_SOURCE_WORDS[current.source]}")
+        else:
+            console.print(f"[yellow]{c.name} has no active {platform} store in the catalog.[/yellow]")
+        table = Table(show_header=True, header_style="bold", title=f"{c.name} stores")
+        for col in ("merchant_id", "store", "pincode", "frozen as"):
+            table.add_column(col)
+        for loc in await repo.city_store_candidates(platform, c.id):
+            marks = (["global"] if (None, loc.merchant_id) in frozen else []) + \
+                    (["client"] if tid and (tid, loc.merchant_id) in frozen else [])
+            table.add_row(loc.merchant_id, escape(repo.store_label(loc)), loc.pincode or "",
+                          ", ".join(marks))
+        console.print(table)
+
+    asyncio.run(_run())
+
+
+@stores_app.command("set")
+def stores_set(
+    city: str = _CITY,
+    store: str = typer.Option(..., "--store", help="merchant_id (from `cm stores show --city …`)"),
+    platform: str = _MARKETPLACE,
+    tenant: str = _STORE_TENANT,
+    global_: bool = _GLOBAL,
+):
+    """Freeze the store a city's bid automations measure at (next run onwards)."""
+    scope = _scope(tenant, global_)
+
+    async def _run():
+        c = await _city_or_exit(platform, city)
+        try:
+            s, moved = await repo.set_city_store(platform, c.id, store, tenant_id=scope)
+        except repo.StoreNotInCity as e:
+            console.print(f"[red]{escape(str(e))}[/red]")
+            raise typer.Exit(1)
+        who = "every client without an override" if scope is None else f"client {scope}"
+        console.print(f"[green]{c.name}[/green] → {escape(s.label)} ({s.merchant_id}) for {who} "
+                      f"· {_moved(moved)}")
+
+    asyncio.run(_run())
+
+
+@stores_app.command("clear")
+def stores_clear(
+    city: str = _CITY,
+    platform: str = _MARKETPLACE,
+    tenant: str = _STORE_TENANT,
+    global_: bool = _GLOBAL,
+):
+    """Remove a frozen store. A client's override falls back to the global default; clearing
+    the global default leaves automations at the store they were last saved at."""
+    scope = _scope(tenant, global_)
+
+    async def _run():
+        c = await _city_or_exit(platform, city)
+        removed, moved = await repo.clear_city_store(platform, c.id, tenant_id=scope)
+        who = "global default" if scope is None else f"override for client {scope}"
+        if not removed:
+            console.print(f"[yellow]No {who} for {c.name}.[/yellow]")
+            return
+        console.print(f"[green]Removed the {who} for {c.name}[/green] · {_moved(moved)}")
 
     asyncio.run(_run())

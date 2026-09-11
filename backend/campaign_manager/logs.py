@@ -123,7 +123,8 @@ def rule_header(run_id: str, *, dry_run: bool, index: int, total: int,
 
 def rule_context(run_id: str, *, dry_run: bool, campaign_id, keyword: str, target: int,
                  current_cpm: int, min_bid: int, max_bid: int | None,
-                 location_name: str | None, lat: float, lon: float) -> None:
+                 location_name: str | None, lat: float, lon: float,
+                 store_source: str | None = None) -> None:
     limits = f"₹{min_bid}–₹{max_bid}" if max_bid else f"₹{min_bid}–none"
     _emit("info", "rule.config", dry_run,
           f'keyword "{keyword}" · target position {target} · current bid ₹{current_cpm} '
@@ -131,9 +132,21 @@ def rule_context(run_id: str, *, dry_run: bool, campaign_id, keyword: str, targe
           indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
           target_position=target, current_cpm=current_cpm)
     where = location_name or "default store"
-    _emit("info", "rule.store", dry_run, f"measuring at {where} ({lat}, {lon})",
+    why = _STORE_SOURCE.get(store_source)
+    _emit("info", "rule.store", dry_run,
+          f"measuring at {where} ({lat}, {lon})" + (f" · {why}" if why else ""),
           indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
-          lat=lat, lon=lon)
+          lat=lat, lon=lon, store_source=store_source)
+
+
+# Why a rule measured where it did — `bid.measurement_point`'s `source`, in words. A store
+# that moved because someone changed a city's setting should be explainable from the log.
+_STORE_SOURCE = {
+    "tenant": "this client's store for the city",
+    "global": "the default store for the city",
+    "rule": "the store saved on the automation",
+    "default": "no store set, so the Bengaluru fallback",
+}
 
 
 def observed(run_id: str, *, dry_run: bool, campaign_id, keyword: str, msg: str,

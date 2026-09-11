@@ -13,7 +13,7 @@ the v1 tables are untouched until cutover, then dropped (V6). Two deliberate sha
 import uuid
 from datetime import datetime
 
-from sqlalchemy import JSON, Column, ForeignKey, Index, Integer, UniqueConstraint
+from sqlalchemy import JSON, Column, ForeignKey, Index, Integer, UniqueConstraint, text
 from sqlmodel import Field, SQLModel
 
 from app.utils.time import now_ist
@@ -124,6 +124,11 @@ class CmBidRule(SQLModel, table=True):
     lon: float | None = None
     location_name: str | None = None
     brand_name: str | None = None
+    # The city this rule MEASURES in, when it was saved by city. The engine then resolves that
+    # city's frozen store (`cm_city_stores`) on every run, and `lat`/`lon`/`location_name`
+    # above are only the snapshot lists show. NULL = pinned to `lat`/`lon` (saved by an
+    # explicit store or coordinates). ⚠️ Migration `d7c3e9a1f5b2` first, model second.
+    city_id: int | None = Field(default=None, foreign_key="cities.id")
     created_at: datetime = Field(default_factory=now_ist)
 
 
@@ -160,6 +165,47 @@ class CmBidRuntime(SQLModel, table=True):
     # means "start from the base step" — the state at a window open, after a riser is
     # crossed, and for a rule that has never climbed.
     raise_step: int | None = None
+    updated_at: datetime = Field(default_factory=now_ist)
+
+
+class CmCityStore(SQLModel, table=True):
+    """The dark store a CITY's bid automations measure at — frozen, not picked per rule.
+
+    A bid rule names a city. Before this table the store inside it was the city's lowest
+    `merchant_id` — deterministic, but a store nobody chose — baked into the rule at save
+    time, so moving it meant editing every rule.
+
+    Two layers, resolved on every bid run (`repo.pick_city_store`):
+      - `tenant_id` NULL → the GLOBAL default for the city, set from the CLI only (it applies
+        to every client, so no one account's API may move it);
+      - `tenant_id` set  → one client's OVERRIDE — a brand not stocked at the global store needs
+        its own. CLI or API.
+
+    `merchant_id`, not a FK to `marketplace_locations.id`: `cli sync --prune` deletes and
+    re-creates catalog rows, and the merchant id is the store's natural key across that. A
+    frozen store that leaves the catalog is skipped at resolve time, never honoured.
+
+    `rank` 1 is THE store; higher ranks are reserved for measuring at several stores per city,
+    which is not built. The two partial unique indexes give one store per rank per city, for
+    the global layer and per client — a plain UNIQUE would let NULL tenants repeat.
+
+    ⚠️ Migration `d7c3e9a1f5b2` first, model second.
+    """
+    __tablename__ = "cm_city_stores"
+    __table_args__ = (
+        Index("uq_cm_city_store_global", "platform", "city_id", "rank", unique=True,
+              postgresql_where=text("tenant_id IS NULL")),
+        Index("uq_cm_city_store_tenant", "tenant_id", "platform", "city_id", "rank",
+              unique=True, postgresql_where=text("tenant_id IS NOT NULL")),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID | None = Field(default=None, foreign_key="tenants.id")
+    platform: str = "blinkit"
+    city_id: int = Field(foreign_key="cities.id")
+    merchant_id: str
+    rank: int = Field(default=1)
+    created_at: datetime = Field(default_factory=now_ist)
     updated_at: datetime = Field(default_factory=now_ist)
 
 
