@@ -19,7 +19,6 @@ import {
 	getStoreCatalogue,
 	getBidRules,
 	getBudgetSchedules,
-	getCampaignKeywords,
 	getKeywordMetricsPage,
 	getKeywordMetricsRest,
 	getCampaignNames,
@@ -86,16 +85,6 @@ export const useCampaigns = () => {
 		enabled: Boolean(activeClientId),
 		staleTime: 5 * 60 * 1000,
 		select: (page) => page?.items ?? [],
-	});
-};
-
-export const useCampaignKeywords = (campaignId) => {
-	const { activeClientId } = useClient();
-	return useQuery({
-		queryKey: [CAMPAIGNS, activeClientId, "keywords", campaignId],
-		queryFn: () => getCampaignKeywords(activeClientId, campaignId),
-		enabled: Boolean(activeClientId && campaignId),
-		staleTime: 5 * 60 * 1000,
 	});
 };
 
