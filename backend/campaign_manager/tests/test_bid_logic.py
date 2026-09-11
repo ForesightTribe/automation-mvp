@@ -104,8 +104,67 @@ def _optimizer_takes(rule, now):
 
 
 def _reset_takes(rule, now):
-    """`_reset_run`'s test: closed once the look-ahead has passed."""
-    return not _in_window(rule, now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES))
+    """`_reset_run`'s selection for one rule, fired at `now`, isolated from the DB."""
+    from types import SimpleNamespace
+
+    from campaign_manager.bid import _reset_grace_seconds, _reset_selection
+
+    row = SimpleNamespace(campaign_id=1, keyword="k", days=rule.get("days") or [], **{
+        f: rule.get(f) for f in ("type", "date", "start_date", "stop_date",
+                                 "start_time", "stop_time")})
+    at = now + timedelta(minutes=RESET_LOOKAHEAD_MINUTES)
+    return bool(_reset_selection([row], at, _reset_grace_seconds()))
+
+
+# ── the reset acts at the EDGE of a window, never on "not open" (2026-09-10) ──
+#
+# It used to take every rule NOT in window. A rule that has ended — or not started — is
+# never in window, so every reset fire of every automation re-floored all of them.
+
+def test_the_reset_takes_a_window_only_around_its_close():
+    """Swept over a day: taken from the minute the look-ahead reaches the stop, for exactly
+    the look-back grace, and at no other minute."""
+    from campaign_manager.bid import _reset_grace_seconds
+    rule = {"start_time": "09:00", "stop_time": "18:00"}
+    day = datetime(2026, 8, 1)
+    taken = [m for m in range(24 * 60) if _reset_takes(rule, day + timedelta(minutes=m))]
+    grace_minutes = int(_reset_grace_seconds() // 60)
+    assert taken == list(range(taken[0], taken[0] + grace_minutes)), taken
+    assert taken[0] == 18 * 60 - RESET_LOOKAHEAD_MINUTES, "not taken as the look-ahead crosses the stop"
+    assert 17 * 60 + 59 in taken, "the early fire (a minute before the stop) must take it"
+
+
+def test_an_ENDED_rule_is_never_reset_again():
+    """The bug found 2026-09-10: a rule that ended days earlier was re-floored by other
+    automations' reset fires."""
+    ended = {"type": "once", "date": "2026-07-28", "start_time": "18:00", "stop_time": "23:00"}
+    for minute in range(0, 24 * 60, 7):
+        assert not _reset_takes(ended, datetime(2026, 8, 1) + timedelta(minutes=minute))
+
+
+def test_a_rule_that_has_not_started_is_never_reset():
+    """The same bug from the other side: a rule dated next week was floored tonight."""
+    upcoming = {"start_date": "2026-08-10", "start_time": "09:00", "stop_time": "18:00"}
+    for minute in range(0, 24 * 60, 7):
+        assert not _reset_takes(upcoming, datetime(2026, 8, 1) + timedelta(minutes=minute))
+
+
+def test_a_one_time_rule_still_gets_the_reset_at_its_own_close():
+    """Its last window closing IS the edge. Being ended from that minute on must not cost it
+    its one reset."""
+    once = {"type": "once", "date": "2026-08-01", "start_time": "18:00", "stop_time": "23:00"}
+    assert _reset_takes(once, datetime(2026, 8, 1, 22, 59))
+    assert not _reset_takes(once, datetime(2026, 8, 2, 22, 59))
+
+
+def test_a_late_fire_inside_the_misfire_grace_still_resets():
+    """The scheduler still runs a fire this late as on time, so the reset must still see the
+    window it was fired for — and one later than that must not."""
+    from app.core.config import settings
+    rule = {"start_time": "09:00", "stop_time": "18:00"}
+    late = datetime(2026, 8, 1, 17, 59) + timedelta(seconds=settings.SCHEDULER_MISFIRE_GRACE_SECONDS)
+    assert _reset_takes(rule, late)
+    assert not _reset_takes(rule, late + timedelta(minutes=2))
 
 
 def test_a_keyword_about_to_close_is_left_to_the_reset():
@@ -542,6 +601,53 @@ def test_unbounded_rule_can_reach_a_high_target_inside_one_window():
         bid += step
         ticks += 1
     assert bid >= 10000 and ticks <= 15
+
+
+# ── settling a rule whose final reset never landed (lifecycle.py) ───────────
+
+_ENDED_ONCE = {"type": "once", "date": "2026-08-01", "start_time": "18:00", "stop_time": "23:00"}
+
+
+def _settle_takes(rule, now, **stored):
+    """`_settle_selection` for one rule at `now`, with its stored lifecycle markers."""
+    from types import SimpleNamespace
+
+    from campaign_manager.bid import _settle_selection
+
+    row = SimpleNamespace(campaign_id=1, keyword="k", state=rule.get("state", "active"),
+                          days=rule.get("days") or [], **stored, **{
+        f: rule.get(f) for f in ("type", "date", "start_date", "stop_date",
+                                 "start_time", "stop_time")})
+    return bool(_settle_selection([row], now))
+
+
+def test_an_ended_rule_whose_reset_never_landed_is_settled():
+    assert _settle_takes(_ENDED_ONCE, datetime(2026, 8, 2, 9, 37))
+
+
+def test_nothing_is_settled_before_it_ends_or_long_after():
+    assert not _settle_takes(_ENDED_ONCE, datetime(2026, 8, 1, 22, 0))
+    assert not _settle_takes(_ENDED_ONCE, datetime(2026, 8, 3, 9, 37))
+
+
+def test_a_landed_final_reset_is_never_repeated():
+    assert not _settle_takes(_ENDED_ONCE, datetime(2026, 8, 2, 9, 37),
+                             settled_at=datetime(2026, 8, 1, 23, 0))
+
+
+def test_a_latch_from_an_earlier_ending_does_not_cover_this_one():
+    assert _settle_takes(_ENDED_ONCE, datetime(2026, 8, 2, 9, 37),
+                         settled_at=datetime(2026, 7, 20, 23, 0))
+
+
+def test_settling_gives_up_after_its_attempts():
+    from campaign_manager import config
+    assert not _settle_takes(_ENDED_ONCE, datetime(2026, 8, 2, 9, 37),
+                             settle_attempts=config.SETTLE_MAX_ATTEMPTS)
+
+
+def test_a_paused_rule_that_ended_is_left_to_a_person():
+    assert not _settle_takes({**_ENDED_ONCE, "state": "paused"}, datetime(2026, 8, 2, 9, 37))
 
 
 def _run() -> int:

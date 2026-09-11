@@ -5,12 +5,13 @@ scoped by tenant_id (+ platform). Kept thin: the orchestration decides *what*, t
 only reads/writes rows.
 """
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from sqlmodel import select
 
 from app.core.database import AsyncSessionLocal
 from app.utils.time import now_ist
+from campaign_manager import window
 
 
 class DuplicateSchedule(Exception):
@@ -30,17 +31,62 @@ class DuplicateSchedule(Exception):
             "add a window to it instead of creating a second one")
 
 
-async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
-    """Return [(schedule, [rules])] for a tenant. Empty until rules are created."""
+# ── Rule loaders: the caller says WHICH automations, on both axes ────────────
+#
+# `state` is the user axis (what a person chose, stored). `calendar` is the calendar axis
+# (scheduled / running / ended — what the dates say, derived by `window`). Both are REQUIRED
+# keywords with no default. The loaders used to hand back every row and let each engine
+# filter; every engine thought of `state` and none of the calendar, which is how automations
+# that had ENDED kept being reset and kept having their budgets enforced (2026-09-10).
+#
+# `ANY_STATE` / `ANY_CALENDAR` are for callers that genuinely want everything — the point is
+# that "everything" is now written at the call site, where a reviewer can see it.
+
+ANY_STATE = None
+ANY_CALENDAR = window.ANY_CALENDAR
+
+
+def _calendar_filter(calendar, now: datetime | None) -> frozenset | None:
+    """Check a `calendar` argument → the calendar states to keep, or None for "no filter"."""
+    wanted = frozenset(calendar)
+    if not wanted or not wanted <= window.ANY_CALENDAR:
+        raise ValueError(f"calendar must be a non-empty subset of "
+                         f"{sorted(window.ANY_CALENDAR)}, got {sorted(wanted)}")
+    if wanted == window.ANY_CALENDAR:
+        return None
+    if now is None:
+        raise ValueError("filtering on the calendar needs `now` — pass the caller's clock")
+    return wanted
+
+
+def _bid_rule_in_calendar(rule, wanted: frozenset | None, now: datetime | None) -> bool:
+    return wanted is None or window.calendar_state(window.from_bid(rule), now) in wanted
+
+
+def _schedule_in_calendar(rules, wanted: frozenset | None, now: datetime | None) -> bool:
+    return wanted is None or window.schedule_calendar_state(
+        [window.from_budget(r) for r in rules], now) in wanted
+
+
+async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit", *,
+                               state: str | None, calendar, now: datetime | None = None):
+    """Return [(schedule, [rules])] for a tenant — only the schedules asked for.
+
+    `state`: the schedule's user state (`"active"` / `"stopped"`), or `ANY_STATE`.
+    `calendar`: keep schedules whose windows, taken together, are in one of these calendar
+    states at `now` (`window.schedule_calendar_state`), or `ANY_CALENDAR` to skip the check.
+    """
     from app.models.campaign_manager_v2 import CmBudgetSchedule, CmBudgetRule
+    wanted = _calendar_filter(calendar, now)
 
     async with AsyncSessionLocal() as db:
-        schedules = (await db.execute(
-            select(CmBudgetSchedule).where(
-                CmBudgetSchedule.tenant_id == tenant_id,
-                CmBudgetSchedule.platform == platform,
-            )
-        )).scalars().all()
+        query = select(CmBudgetSchedule).where(
+            CmBudgetSchedule.tenant_id == tenant_id,
+            CmBudgetSchedule.platform == platform,
+        )
+        if state is not ANY_STATE:
+            query = query.where(CmBudgetSchedule.state == state)
+        schedules = (await db.execute(query)).scalars().all()
         out = []
         for s in schedules:
             # ORDER BY id is load-bearing, not cosmetic: `budget.target_for_now` takes the
@@ -53,23 +99,35 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit"):
                 select(CmBudgetRule).where(CmBudgetRule.schedule_id == s.id)
                 .order_by(CmBudgetRule.id)
             )).scalars().all()
+            if not _schedule_in_calendar(rules, wanted, now):
+                continue
             out.append((s, list(rules)))
         return out
 
 
-async def get_bid_rules(tenant_id: uuid.UUID, platform: str = "blinkit"):
-    """Return [(rule, runtime_or_None)] for a tenant. Empty until rules are created."""
+async def get_bid_rules(tenant_id: uuid.UUID, platform: str = "blinkit", *,
+                        state: str | None, calendar, now: datetime | None = None):
+    """Return [(rule, runtime_or_None)] for a tenant — only the rules asked for.
+
+    `state`: the rule's user state (`"active"` / `"paused"`), or `ANY_STATE`.
+    `calendar`: keep rules in one of these calendar states at `now`
+    (`window.calendar_state`), or `ANY_CALENDAR` to skip the check.
+    """
     from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
+    wanted = _calendar_filter(calendar, now)
 
     async with AsyncSessionLocal() as db:
-        rules = (await db.execute(
-            select(CmBidRule).where(
-                CmBidRule.tenant_id == tenant_id,
-                CmBidRule.platform == platform,
-            )
-        )).scalars().all()
+        query = select(CmBidRule).where(
+            CmBidRule.tenant_id == tenant_id,
+            CmBidRule.platform == platform,
+        )
+        if state is not ANY_STATE:
+            query = query.where(CmBidRule.state == state)
+        rules = (await db.execute(query)).scalars().all()
         out = []
         for r in rules:
+            if not _bid_rule_in_calendar(r, wanted, now):
+                continue
             runtime = (await db.execute(
                 select(CmBidRuntime).where(CmBidRuntime.rule_id == r.id)
             )).scalars().first()
@@ -688,6 +746,70 @@ async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
         await db.execute(stmt)
         await db.commit()
     return len(rows)
+
+
+# ── Settle-once lifecycle writes (campaign_manager/lifecycle.py) ─────────────
+#
+# `kind` is "bid" (keyed by cm_bid_rules.id) or "budget" (keyed by cm_budget_schedules.id).
+# Every writer is a no-op on empty input, so a run with no ending automation never opens a
+# session for it.
+
+_LIFECYCLE_COLUMNS = frozenset({"ended_at", "settled_at", "settle_attempts"})
+
+
+def _lifecycle_model(kind: str):
+    from app.models.campaign_manager_v2 import CmBidRule, CmBudgetSchedule
+    return {"bid": CmBidRule, "budget": CmBudgetSchedule}[kind]
+
+
+async def mark_settled(kind: str, stamps: dict) -> None:
+    """Latch final teardowns as landed: `settled_at` per id, and attempts back to 0."""
+    if not stamps:
+        return
+    from sqlalchemy import update
+    model = _lifecycle_model(kind)
+    async with AsyncSessionLocal() as db:
+        for id_, stamp in stamps.items():
+            await db.execute(update(model).where(model.id == id_)
+                             .values(settled_at=stamp, settle_attempts=0))
+        await db.commit()
+
+
+async def bump_settle_attempts(kind: str, ids) -> list:
+    """Count one failed final teardown against each id. Returns the ids that have JUST used up
+    `config.SETTLE_MAX_ATTEMPTS` — the settle pass gives up on those, and the caller records
+    that in History exactly once. Read back from the UPDATE itself, so it is the DB's count
+    and not a guess from a row loaded earlier."""
+    ids = list(ids)
+    if not ids:
+        return []
+    from sqlalchemy import update
+    from campaign_manager import config
+    model = _lifecycle_model(kind)
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(update(model).where(model.id.in_(ids))
+                                  .values(settle_attempts=model.settle_attempts + 1)
+                                  .returning(model.id, model.settle_attempts))
+        exhausted = [id_ for id_, attempts in result.all()
+                     if attempts == config.SETTLE_MAX_ATTEMPTS]
+        await db.commit()
+    return exhausted
+
+
+async def write_lifecycle_markers(kind: str, changes: dict) -> None:
+    """Apply the reconciler's sweep: {id: {column: value}}. Refuses anything that is not a
+    lifecycle column, so a bug upstream cannot turn this into a general-purpose UPDATE."""
+    if not changes:
+        return
+    from sqlalchemy import update
+    model = _lifecycle_model(kind)
+    async with AsyncSessionLocal() as db:
+        for id_, values in changes.items():
+            unknown = set(values) - _LIFECYCLE_COLUMNS
+            if unknown:
+                raise ValueError(f"not a lifecycle column: {sorted(unknown)}")
+            await db.execute(update(model).where(model.id == id_).values(**values))
+        await db.commit()
 
 
 async def write_run_log(rows: list[dict]) -> None:

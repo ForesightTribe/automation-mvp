@@ -582,8 +582,11 @@ def list_rules(tenant: str = _TENANT, platform: str = _MARKETPLACE):
     """List a tenant's budget schedules (+ rules) and bid rules."""
     async def _run():
         tid = uuid.UUID(tenant)
-        schedules = await repo.get_budget_schedules(tid, platform)
-        bids = await repo.get_bid_rules(tid, platform)
+        # A listing shows everything — stopped, paused and ended included.
+        schedules = await repo.get_budget_schedules(
+            tid, platform, state=repo.ANY_STATE, calendar=repo.ANY_CALENDAR)
+        bids = await repo.get_bid_rules(
+            tid, platform, state=repo.ANY_STATE, calendar=repo.ANY_CALENDAR)
 
         if not schedules:
             console.print("[dim]No budget schedules.[/dim]")

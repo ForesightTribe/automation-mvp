@@ -1,5 +1,7 @@
 import { useMemo, useState } from "react";
-import { useCampaigns } from "../hooks";
+import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
+import { useCampaigns, useTableSort } from "../hooks";
+import { CampaignStateToggle } from "./CampaignStateToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { formatCurrency, formatNumber } from "../../../lib/format";
 
@@ -34,6 +36,42 @@ const EDGE_LIFTED = "shadow-[6px_0_10px_-6px_rgba(0,0,0,0.35)]";
 
 const formatRoas = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
 
+/** A column heading that sorts on click. The arrow is always drawn, so a sortable column
+ *  looks sortable before it is touched, and it marks the direction once it is. */
+const SortHead = ({ label, sortKey, sort, order, onSort, className = "" }) => {
+	const on = sort === sortKey;
+	return (
+		<th className={`${TH} bg-card ${className}`}>
+			<button
+				type="button"
+				onClick={() => onSort(sortKey)}
+				aria-sort={
+					on
+						? order === "asc"
+							? "ascending"
+							: "descending"
+						: undefined
+				}
+				className={`inline-flex cursor-pointer items-center gap-1 uppercase transition-colors hover:text-content ${on ? "text-content" : ""}`}
+			>
+				{label}
+				{on ? (
+					order === "asc" ? (
+						<ArrowUp size={11} className="text-brand" />
+					) : (
+						<ArrowDown size={11} className="text-brand" />
+					)
+				) : (
+					<ChevronsUpDown
+						size={11}
+						className="text-content-subtle/50"
+					/>
+				)}
+			</button>
+		</th>
+	);
+};
+
 /**
  * Step 1's campaign picker — the performance table, so the choice is made with the
  * campaign's actual numbers in view rather than from its name.
@@ -48,43 +86,6 @@ const formatRoas = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
  * left out rather than drawn as empty columns. Wide, so it scrolls SIDEWAYS only —
  * see the note on the wrapper about why it must not scroll vertically too.
  */
-/**
- * The campaign's own on/off, on its own row.
- *
- * ⚠️ `stopPropagation`: the row is the select target, so without it starting a campaign
- * would also choose it. Disabled where the state is unknown rather than guessing a
- * direction, because flipping the wrong way stops something live.
- */
-const StateToggle = ({ status, onActivate }) => {
-	const live = status === "ACTIVE" || status === "SCHEDULED";
-	const known = Boolean(status);
-	return (
-		<button
-			type="button"
-			disabled={!known}
-			title={
-				!known
-					? "Campaign state unknown"
-					: live
-						? "Stop this campaign now"
-						: "Start this campaign now"
-			}
-			onClick={(e) => {
-				e.stopPropagation();
-				onActivate?.(live ? "paused" : "running");
-			}}
-			className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40 ${
-				live ? "bg-success" : "bg-border"
-			}`}
-		>
-			<span
-				className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-card shadow-sm transition-transform ${
-					live ? "translate-x-4" : ""
-				}`}
-			/>
-		</button>
-	);
-};
 
 export const CampaignPickerList = ({
 	selectedId,
@@ -108,6 +109,27 @@ export const CampaignPickerList = ({
 				String(c.campaign_id).includes(q),
 		);
 	}, [campaigns, search]);
+
+	/** Every column, including the two that fall out of the others by arithmetic. */
+	const ACCESSORS = {
+		name: (c) => c.name ?? "",
+		type: (c) => c.type ?? "",
+		status: (c) => c.status ?? "",
+		spend: (c) => c.budget_consumed,
+		sales: (c) => c.ad_sales,
+		roas: (c) => c.roas,
+		aov: (c) => (c.quantities_sold ? c.ad_sales / c.quantities_sold : null),
+		impressions: (c) => c.impressions,
+		atc: (c) => c.atc,
+		units: (c) => c.quantities_sold,
+		cpm: (c) =>
+			c.impressions ? (c.budget_consumed / c.impressions) * 1000 : null,
+	};
+	const { sorted, sort, order, onSort } = useTableSort(
+		rows,
+		ACCESSORS,
+		"spend",
+	);
 
 	if (isLoading) return <Loading label="Loading campaigns…" />;
 
@@ -152,33 +174,92 @@ export const CampaignPickerList = ({
 							>
 								<span className={PICK_INNER} />
 							</th>
-							<th
-								className={`${TH} ${STICKY_NAME} ${edge} bg-card`}
-							>
-								Campaign Name
-							</th>
-							<th className={`${TH} bg-card`}>Type</th>
-							<th className={`${TH} bg-card`}>Status</th>
-							<th className={`${TH} bg-card text-right`}>
-								Ad Spend
-							</th>
-							<th className={`${TH} bg-card text-right`}>
-								Ad Sales
-							</th>
-							<th className={`${TH} bg-card text-right`}>ROAS</th>
-							<th className={`${TH} bg-card text-right`}>AOV</th>
-							<th className={`${TH} bg-card text-right`}>
-								Impressions
-							</th>
-							<th className={`${TH} bg-card text-right`}>
-								Add to cart
-							</th>
-							<th className={`${TH} bg-card text-right`}>
-								Units
-							</th>
-							<th className={`${TH} bg-card text-right`}>
-								Avg CPM
-							</th>
+							<SortHead
+								label="Campaign Name"
+								sortKey="name"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className={`${STICKY_NAME} ${edge}`}
+							/>
+							<SortHead
+								label="Type"
+								sortKey="type"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+							/>
+							<SortHead
+								label="Status"
+								sortKey="status"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+							/>
+							<SortHead
+								label="Ad Spend"
+								sortKey="spend"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="Ad Sales"
+								sortKey="sales"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="ROAS"
+								sortKey="roas"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="AOV"
+								sortKey="aov"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="Impressions"
+								sortKey="impressions"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="Add to cart"
+								sortKey="atc"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="Units"
+								sortKey="units"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
+							<SortHead
+								label="Avg CPM"
+								sortKey="cpm"
+								sort={sort}
+								order={order}
+								onSort={onSort}
+								className="text-right"
+							/>
 							<th
 								className={`${TH} ${STICKY_CTRL} bg-card text-center`}
 							>
@@ -197,7 +278,7 @@ export const CampaignPickerList = ({
 								</td>
 							</tr>
 						)}
-						{rows.map((c) => {
+						{sorted.map((c) => {
 							const selected = selectedId === c.campaign_id;
 							// Both derived rather than stored: AOV is sales per unit sold, CPM is
 							// spend per thousand impressions. Guarded — a campaign with no
@@ -216,22 +297,45 @@ export const CampaignPickerList = ({
 							return (
 								<tr
 									key={c.campaign_id}
+									role="radio"
+									tabIndex={0}
+									aria-checked={selected}
+									aria-label={c.name}
 									onClick={() => onSelect(c)}
-									aria-selected={selected}
+									onKeyDown={(e) => {
+										if (
+											e.key === "Enter" ||
+											e.key === " "
+										) {
+											e.preventDefault();
+											onSelect(c);
+										}
+									}}
 									className={`group cursor-pointer border-b border-border/60 last:border-0 ${
 										selected
 											? "bg-muted shadow-[inset_3px_0_0_0_var(--color-brand)]"
 											: "hover:bg-muted"
 									}`}
 								>
-									{/* A tick, not a radio: the whole row is the control, and the
-									    highlight is what says "chosen". A radio next to a clickable row
-									    reads as a second, competing target. */}
+									{/* ⚠️ A radio that is VISIBLE WHEN EMPTY. A tick that only appears
+									    once chosen is invisible in the state where it matters: an
+									    unselected row shows a blank cell, so nothing invites the click,
+									    and a search narrowed to a single row reads as already chosen
+									    when it is not. The empty ring is the affordance. */}
 									<td
-										className={`${TD} ${STICKY_PICK} ${cellBg} text-brand`}
+										className={`${TD} ${STICKY_PICK} ${cellBg}`}
 									>
-										<span className={PICK_INNER}>
-											{selected ? "✓" : ""}
+										<span
+											aria-hidden="true"
+											className={`${PICK_INNER} flex h-4 w-4 items-center justify-center rounded-full border-2 transition-colors ${
+												selected
+													? "border-brand"
+													: "border-content-subtle group-hover:border-content"
+											}`}
+										>
+											{selected && (
+												<span className="h-2 w-2 rounded-full bg-brand" />
+											)}
 										</span>
 									</td>
 									{/* No ID column. It costs a column of width and is only ever needed to
@@ -288,7 +392,8 @@ export const CampaignPickerList = ({
 									<td
 										className={`${TD} ${STICKY_CTRL} ${cellBg} text-center`}
 									>
-										<StateToggle
+										<CampaignStateToggle
+											name={c.name}
 											status={c.status}
 											onActivate={(next) =>
 												onActivate?.(c, next)

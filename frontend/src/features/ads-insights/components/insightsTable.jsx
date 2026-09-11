@@ -8,6 +8,7 @@ import {
 	FileSpreadsheet,
 } from "lucide-react";
 import { HoverHint } from "../../../components/ui/HoverHint";
+import { sortRows } from "../../../lib/sortRows";
 
 /**
  * The shared parts of an insights table.
@@ -75,21 +76,7 @@ export const useClientSort = (
 	const [order, setOrder] = useState(initialOrder);
 
 	const sorted = useMemo(() => {
-		const pick = accessors[sort];
-		if (!pick) return rows;
-		const dir = order === "asc" ? 1 : -1;
-		return [...rows].sort((a, b) => {
-			const x = pick(a);
-			const y = pick(b);
-			// Blanks sink to the bottom in both directions: a missing number is not a small
-			// one, and floating them to the top of an ascending sort buries the real rows.
-			if (x == null && y == null) return 0;
-			if (x == null) return 1;
-			if (y == null) return -1;
-			return typeof x === "string"
-				? dir * x.localeCompare(y)
-				: dir * (x - y);
-		});
+		return sortRows(rows, accessors[sort], order);
 		// `accessors` is rebuilt each render by design (it closes over the row shape), so it
 		// is deliberately not a dependency; the key string is what decides the order.
 		// eslint-disable-next-line react-hooks/exhaustive-deps

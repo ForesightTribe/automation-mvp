@@ -1,3 +1,5 @@
+import { ViewToggle } from "../../../components/ui/ViewToggle";
+import { DatePicker } from "./DatePicker";
 import { DayPicker } from "./DayPicker";
 import { TimePicker } from "./TimePicker";
 
@@ -9,6 +11,8 @@ import { TimePicker } from "./TimePicker";
  * when building a bid-rule payload (the two schemas use different field names
  * for the same concept).
  */
+const LABEL = "mb-1 block text-xs text-content-muted";
+
 export const RuleTimingFields = ({ value, onChange }) => {
 	const set = (patch) => onChange({ ...value, ...patch });
 
@@ -26,43 +30,36 @@ export const RuleTimingFields = ({ value, onChange }) => {
 		});
 
 	return (
-		<div className="flex flex-col gap-3">
-			<div className="flex gap-4">
-				<label className="flex items-center gap-1.5 text-sm text-content">
-					<input
-						type="radio"
-						checked={value.type === "recurring"}
-						onChange={() => setType("recurring")}
-					/>
-					Recurring
-				</label>
-				<label className="flex items-center gap-1.5 text-sm text-content">
-					<input
-						type="radio"
-						checked={value.type === "once"}
-						onChange={() => setType("once")}
-					/>
-					One-time
-				</label>
+		// gap-5, not gap-3: three separate decisions live here (how often, which days or
+		// which date, at what times) and at the tighter spacing the rows read as one
+		// crowded block.
+		<div className="flex flex-col gap-5">
+			{/* A segmented control, in the same shape as the other fields on this card.
+			    No label above it: the two options say what the choice is on their own. */}
+			<div>
+				<ViewToggle
+					value={value.type ?? "recurring"}
+					onChange={setType}
+					options={[
+						{ value: "recurring", label: "Recurring" },
+						{ value: "once", label: "One-time" },
+					]}
+				/>
 			</div>
 
 			{value.type === "once" ? (
 				<div>
-					<label className="mb-1 block text-xs text-content-muted">
-						Date
-					</label>
-					<input
-						type="date"
+					<span className={LABEL}>Date</span>
+					<DatePicker
+						className="w-52"
+						ariaLabel="Date"
 						value={value.date ?? ""}
-						onChange={(e) => set({ date: e.target.value })}
-						className="rounded-md border border-border bg-card px-2.5 py-1.5 text-sm text-content"
+						onChange={(d) => set({ date: d })}
 					/>
 				</div>
 			) : (
 				<div>
-					<label className="mb-1 block text-xs text-content-muted">
-						On days
-					</label>
+					<span className={LABEL}>On days</span>
 					<DayPicker
 						value={value.days ?? []}
 						onChange={(days) => set({ days })}
@@ -72,9 +69,7 @@ export const RuleTimingFields = ({ value, onChange }) => {
 
 			<div className="flex flex-wrap items-end gap-3">
 				<div>
-					<label className="mb-1 block text-xs text-content-muted">
-						Start time
-					</label>
+					<span className={LABEL}>Start time</span>
 					<TimePicker
 						aria-label="Start time"
 						value={value.start_time ?? ""}
@@ -82,9 +77,7 @@ export const RuleTimingFields = ({ value, onChange }) => {
 					/>
 				</div>
 				<div>
-					<label className="mb-1 block text-xs text-content-muted">
-						End time
-					</label>
+					<span className={LABEL}>End time</span>
 					<TimePicker
 						aria-label="End time"
 						value={value.end_time ?? ""}

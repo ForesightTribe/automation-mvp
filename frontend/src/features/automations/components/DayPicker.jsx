@@ -18,8 +18,8 @@ const ALL = DAYS.map((d) => d.value);
 /** Multi-select day-of-week toggle row, shared by the budget and bid rule
  * builders (both take a `days: string[]` field on the same backend shape).
  *
- * Seven chips and an All chip, matching the campaign path's trigger row so the two halves
- * of one wizard set days the same way.
+ * Seven chips and an All chip, styled identically to the campaign path's trigger row
+ * (pills, brand fill when chosen) so the two halves of one wizard look like one product.
  *
  * ⚠️ All sends the seven days EXPLICITLY. The engine happens to read an empty list as daily
  * too, but nothing chosen and every day chosen are different statements by a reader, and a
@@ -39,9 +39,9 @@ export const DayPicker = ({ value = [], onChange }) => {
 					type="button"
 					onClick={() => toggle(d.value)}
 					aria-pressed={value.includes(d.value)}
-					className={`rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+					className={`rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
 						value.includes(d.value)
-							? "border-content bg-muted text-content"
+							? "border-brand bg-brand text-on-brand"
 							: "border-border bg-card text-content-muted hover:text-content"
 					}`}
 				>
@@ -52,7 +52,7 @@ export const DayPicker = ({ value = [], onChange }) => {
 				type="button"
 				aria-pressed={allOn}
 				onClick={() => onChange(allOn ? [] : ALL)}
-				className={`ml-1 rounded-md border px-2.5 py-1 text-xs font-medium transition-colors ${
+				className={`ml-1 rounded-full border px-2.5 py-1 text-xs font-medium transition-colors ${
 					allOn
 						? "border-content bg-content text-card"
 						: "border-dashed border-content-subtle text-content-muted hover:text-content"

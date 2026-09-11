@@ -8,7 +8,6 @@ Convention: functions return schema DTOs (or None for not-found / access-denied,
 route maps to 404); a `DuplicateActiveJob` from the queue propagates for the route to 409.
 """
 import uuid
-from datetime import datetime, timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
@@ -17,11 +16,9 @@ from app.schemas.campaign_manager import (
     BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmJobOut, RunLogOut,
 )
 from app.utils.time import now_ist
-from campaign_manager import repo
-# Pure window-matching from the engines — reused so the UI status is the SAME logic the
-# engines act on (get_adapter is lazy, so this pulls no Playwright — the app-layer rule holds).
-from campaign_manager.bid import _in_window, _rule_dict as _bid_dict
-from campaign_manager.budget import _matches_rule, _rule_to_dict
+# `window` is the same pure module the engines decide with, so the status the UI shows is
+# the logic the engines act on — and it pulls in no Playwright (the app-layer rule holds).
+from campaign_manager import repo, window
 from jobs.queue import enqueue
 
 PLATFORM = "blinkit"
@@ -64,63 +61,18 @@ async def _reapply(session, tenant_id: uuid.UUID, job_type: str) -> None:
 
 
 # ── Status (computed, so the UI shows Running / Scheduled / Ended, not raw state) ──
-
-def _hhmm(value: str | None) -> tuple[int, int] | None:
-    try:
-        h, m = value.split(":")[:2]
-        return int(h), int(m)
-    except (AttributeError, TypeError, ValueError):
-        return None
-
-
-def _once_window_end(date_: str, start_time: str | None, end_time: str | None) -> datetime:
-    """When a one-time rule's window actually closes (overnight-aware)."""
-    base = datetime.strptime(date_, "%Y-%m-%d")
-    eh, sh = _hhmm(end_time), _hhmm(start_time) or (0, 0)
-    if eh is None:
-        return base + timedelta(days=1)          # no end time → runs to midnight
-    end = base.replace(hour=eh[0], minute=eh[1])
-    return end + timedelta(days=1) if eh <= sh else end   # overnight tail
-
-
-def _expired(*, type_: str, date: str | None, end_date: str | None,
-             start_time: str | None = None, end_time: str | None = None) -> bool:
-    """Has this rule finished for good?
-
-    For a `once` rule that means its WINDOW has closed, not merely that its date has
-    passed. Checking only `date < today` left a one-time automation reading "Scheduled"
-    for the rest of the day after it had already run and reverted — which is exactly how
-    a spent rule looked like an upcoming one in the Scheduled pane.
-    """
-    now = now_ist()
-    if type_ == "once":
-        if not date:
-            return False
-        try:
-            return _once_window_end(date, start_time, end_time) <= now
-        except ValueError:                       # unparseable date — don't claim it ended
-            return False
-    return bool(end_date and end_date < now.strftime("%Y-%m-%d"))
-
+#
+# Two axes projected onto one label. The user's choice (`paused` / `stopped`) wins whenever
+# it is not `active`; otherwise the label is the calendar state from `window`.
 
 def _budget_rule_status(r, now) -> str:
-    if _matches_rule(_rule_to_dict(r), now):
-        return "running"
-    if _expired(type_=r.type, date=r.date, end_date=r.end_date,
-                start_time=r.start_time, end_time=r.end_time):
-        return "ended"
-    return "scheduled"
+    return window.calendar_state(window.from_budget(r), now)
 
 
 def _budget_status(schedule, rules, now) -> str:
     if schedule.state != "active":
         return schedule.state                    # stopped
-    if not rules:
-        return "scheduled"                        # default-only, always enforcing
-    st = [_budget_rule_status(r, now) for r in rules]
-    if "running" in st:
-        return "running"
-    return "ended" if all(s == "ended" for s in st) else "scheduled"
+    return window.schedule_calendar_state([window.from_budget(r) for r in rules], now)
 
 
 def _bid_status(r, now) -> str:
@@ -129,12 +81,7 @@ def _bid_status(r, now) -> str:
     # `state` and `_bid_ended()` directly and never this, precisely because of that.
     if r.state != "active":
         return r.state                            # paused (the raw value, whatever it is)
-    if _in_window(_bid_dict(r), now):
-        return "running"
-    if _expired(type_=r.type, date=r.date, end_date=r.stop_date,
-                start_time=r.start_time, end_time=r.stop_time):
-        return "ended"
-    return "scheduled"
+    return window.calendar_state(window.from_bid(r), now)
 
 
 def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
@@ -149,6 +96,8 @@ def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
         name=schedule.name, default_budget=schedule.default_budget, state=schedule.state,
         stop_after_window=schedule.stop_after_window,
         status=_budget_status(schedule, rules, now), platform=schedule.platform, rules=rule_outs,
+        ended_at=getattr(schedule, "ended_at", None),
+        settled_at=getattr(schedule, "settled_at", None),
     )
 
 
@@ -161,7 +110,9 @@ def _bid_out(r, now=None) -> BidRuleOut:
 # ── Budget schedules + rules ────────────────────────────────────────────────
 
 async def list_budget_schedules(tenant_id: uuid.UUID) -> list[BudgetScheduleOut]:
-    pairs = await repo.get_budget_schedules(tenant_id, PLATFORM)
+    # The UI lists every automation — stopped and ended included.
+    pairs = await repo.get_budget_schedules(tenant_id, PLATFORM, state=repo.ANY_STATE,
+                                            calendar=repo.ANY_CALENDAR)
     return [_schedule_out(s, rules) for s, rules in pairs]
 
 
@@ -197,7 +148,8 @@ async def add_budget_rule(session, tenant_id: uuid.UUID, schedule_id: int,
 
 async def _fresh_schedule(tenant_id: uuid.UUID, schedule_id: int) -> BudgetScheduleOut | None:
     now = now_ist()
-    for s, rules in await repo.get_budget_schedules(tenant_id, PLATFORM):
+    for s, rules in await repo.get_budget_schedules(tenant_id, PLATFORM, state=repo.ANY_STATE,
+                                                    calendar=repo.ANY_CALENDAR):
         if s.id == schedule_id:
             return _schedule_out(s, rules, now)
     return None
@@ -225,12 +177,14 @@ async def update_budget_rule(session, tenant_id: uuid.UUID, rule_id: int,
     if not s or s.tenant_id != tenant_id:
         return None
     fields = body.model_dump(exclude_unset=True)
-    # Deliberately WITHOUT start/end times: this guard is about the DATE. Passing the
-    # times would block rescheduling a spent one-time rule to later the SAME day, which is
-    # the most natural correction to make.
-    if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
-                end_date=fields.get("end_date", r.end_date)):
-        raise EditError("This one-time window has already ended — change its date to reschedule it.")
+    # The DATE, deliberately — not whether the window has closed. Rescheduling a spent
+    # one-time rule to later the SAME day is the most natural correction to make, and a
+    # window-closed check would refuse it.
+    if window.date_passed(window.Window(type=fields.get("type", r.type),
+                                        date=fields.get("date", r.date),
+                                        end_date=fields.get("end_date", r.end_date)),
+                          now_ist()):
+        raise EditError("This automation has already ended — move its dates forward to run it again.")
     if fields:
         await repo.update_budget_rule(rule_id, fields)
     await _reconcile(session, tenant_id)
@@ -283,7 +237,9 @@ async def reset_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int)
 
 async def list_bid_rules(tenant_id: uuid.UUID) -> list[BidRuleOut]:
     now = now_ist()
-    pairs = await repo.get_bid_rules(tenant_id, PLATFORM)
+    # The UI lists every automation — paused and ended included.
+    pairs = await repo.get_bid_rules(tenant_id, PLATFORM, state=repo.ANY_STATE,
+                                     calendar=repo.ANY_CALENDAR)
     return [_bid_out(r, now) for r, _rt in pairs]
 
 
@@ -373,10 +329,12 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
         return None
     fields = body.model_dump(exclude_unset=True)
     # Reject editing a spent one-time rule unless the edit moves its date into the future.
-    # Date-only on purpose — see the note in update_budget_rule.
-    if _expired(type_=fields.get("type", r.type), date=fields.get("date", r.date),
-                end_date=fields.get("stop_date", r.stop_date)):
-        raise EditError("This one-time window has already ended — change its date to reschedule it.")
+    # The DATE on purpose — see the note in update_budget_rule.
+    if window.date_passed(window.Window(type=fields.get("type", r.type),
+                                        date=fields.get("date", r.date),
+                                        end_date=fields.get("stop_date", r.stop_date)),
+                          now_ist()):
+        raise EditError("This automation has already ended — move its dates forward to run it again.")
     # The floor applies to whatever the rule will BE after the edit, not to what was
     # sent — changing the keyword alone can drop an unchanged min_bid below its new floor.
     await _check_bid_floor(tenant_id, r.campaign_id,
@@ -393,7 +351,7 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
         await repo.update_bid_rule(rule_id, fields)
     await _reconcile(session, tenant_id)
     r = await repo.get_bid_rule(rule_id)
-    if _in_window(_bid_dict(r), now_ist()):          # editing a live window → apply now
+    if window.in_window(window.from_bid(r), now_ist()):   # editing a live window → apply now
         await _reapply(session, tenant_id, "cm.bid_optimizer")
     return _bid_out(r)
 
@@ -428,8 +386,7 @@ def _bid_ended(r) -> bool:
     """Has this automation's last window already passed? Nothing will fire for it again, so
     pause and resume are meaningless — but Reset is NOT: a rule paused across its window
     end never got its end-of-window de-escalation, and its bid is still sitting high."""
-    return _expired(type_=r.type, date=r.date, end_date=r.stop_date,
-                    start_time=r.start_time, end_time=r.stop_time)
+    return window.is_expired(window.from_bid(r), now_ist())
 
 
 async def pause_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
@@ -480,7 +437,7 @@ async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRul
     await repo.clear_bid_runtime(rule_id)
     r = await repo.set_bid_state(rule_id, "active")
     await _reconcile(session, tenant_id)
-    if not _in_window(_bid_dict(r), now_ist()):
+    if not window.in_window(window.from_bid(r), now_ist()):
         await _enqueue_bid_reset(session, tenant_id, r)
     return _bid_out(r)
 
@@ -497,7 +454,7 @@ async def reset_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> uuid.UU
     r = await repo.get_bid_rule(rule_id)
     if not r or r.tenant_id != tenant_id:
         return None
-    if r.state == "active" and _in_window(_bid_dict(r), now_ist()):
+    if r.state == "active" and window.in_window(window.from_bid(r), now_ist()):
         raise StateError(
             "This automation is running right now — pause it first, or the next check "
             "will bid it straight back up.")

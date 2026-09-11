@@ -1,4 +1,4 @@
-import { Trash2 } from "lucide-react";
+import { AlertTriangle, Trash2 } from "lucide-react";
 import { TimePicker } from "./TimePicker";
 import { Tooltip } from "./Tooltip";
 
@@ -40,7 +40,15 @@ export const emptyTrigger = () => ({
  * goes back to the default. Leaving revert off means the window has no end time, which
  * the engine reads as running to the end of the day.
  */
-export const TriggerRow = ({ value, onChange, onRemove, removable }) => {
+export const TriggerRow = ({
+	value,
+	onChange,
+	onRemove,
+	removable,
+	pauseAtEnd = false,
+	onPauseAtEnd,
+	windowCount = 1,
+}) => {
 	const allOn = ALL_DAYS.every((d) => value.days.includes(d));
 	/**
 	 * A window is one-off because it carries a DATE, not because a toggle says so.
@@ -156,15 +164,36 @@ export const TriggerRow = ({ value, onChange, onRemove, removable }) => {
 					disabled={!value.revert}
 					onChange={(t) => onChange({ ...value, end_time: t })}
 				/>
-				{/* A window does exactly one thing when it ends: hand the budget back to the
-				    default. Pausing the CAMPAIGN at a chosen time is its own action in the
-				    catalogue, with its own window, rather than a second meaning hidden in this
-				    row. One control, one job. */}
-				<span className="text-xs text-content-subtle">
-					{value.revert
-						? "budget returns to the default at this time"
-						: "leave off to run to the end of the day"}
-				</span>
+				{/* What happens at the end of the window, offered where the end time is set:
+				    wanting the campaign to stop rather than revert is a thought that occurs
+				    here, and making it cost a second action card sends the reader hunting.
+
+				    ⚠️ Pausing is a property of the AUTOMATION, not of this window.
+				    `stop_after_window` lives on the schedule and budget.py evaluates it
+				    against every rule at once, so ticking it here pauses the campaign whenever
+				    ANY window ends. With more than one window that is not what the row appears
+				    to say, so the row says it. */}
+				{value.revert ? (
+					<label className="flex cursor-pointer items-center gap-1.5 text-xs text-content-muted">
+						<input
+							type="checkbox"
+							checked={pauseAtEnd}
+							onChange={(e) => onPauseAtEnd?.(e.target.checked)}
+						/>
+						and pause the campaign
+					</label>
+				) : (
+					<span className="text-xs text-content-subtle">
+						leave off to run to the end of the day
+					</span>
+				)}
+				{value.revert && pauseAtEnd && windowCount > 1 && (
+					<span className="flex items-center gap-1 text-xs text-warning">
+						<AlertTriangle size={12} />
+						applies whenever any of this automation&rsquo;s{" "}
+						{windowCount} windows ends
+					</span>
+				)}
 
 				{removable && (
 					<Tooltip label="Remove this window" className="ml-auto">
