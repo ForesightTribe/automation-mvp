@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { Toggle } from "../../../components/ui/Toggle";
 
 /**
  * The campaign's own on/off, on its own row.
@@ -7,9 +8,10 @@ import { useState } from "react";
  * reader came here to choose a campaign, and a mis-aimed click would stop one that is
  * spending. The confirmation is what makes the control safe enough to keep here at all.
  *
- * ⚠️ `stopPropagation`: the row is the select target, so without it starting a campaign
- * would also choose it. Disabled where the state is unknown rather than guessing a
- * direction, because flipping the wrong way stops something live.
+ * The switch itself is the shared `Toggle`, which also handles the `stopPropagation` this
+ * needs: the row is the select target, so without it starting a campaign would also
+ * choose it. Disabled where the state is unknown rather than guessing a direction,
+ * because flipping the wrong way stops something live.
  */
 export const CampaignStateToggle = ({ name, status, onActivate }) => {
 	const [confirming, setConfirming] = useState(false);
@@ -17,9 +19,10 @@ export const CampaignStateToggle = ({ name, status, onActivate }) => {
 	const known = Boolean(status);
 	return (
 		<>
-			<button
-				type="button"
+			<Toggle
+				on={live}
 				disabled={!known}
+				aria-label={live ? "Stop this campaign" : "Start this campaign"}
 				title={
 					!known
 						? "Campaign state unknown"
@@ -27,20 +30,8 @@ export const CampaignStateToggle = ({ name, status, onActivate }) => {
 							? "Stop this campaign now"
 							: "Start this campaign now"
 				}
-				onClick={(e) => {
-					e.stopPropagation();
-					setConfirming(true);
-				}}
-				className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-40 ${
-					live ? "bg-success" : "bg-border"
-				}`}
-			>
-				<span
-					className={`absolute top-0.5 left-0.5 h-4 w-4 rounded-full bg-card shadow-sm transition-transform ${
-						live ? "translate-x-4" : ""
-					}`}
-				/>
-			</button>
+				onChange={() => setConfirming(true)}
+			/>
 			{confirming && (
 				<div
 					onClick={(e) => e.stopPropagation()}

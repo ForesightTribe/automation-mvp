@@ -1,8 +1,12 @@
+import {
+	CampaignStatusBadge,
+	campaignStatusLabel,
+} from "../../../components/ui/CampaignStatusBadge";
+import { ExportButton } from "../../../components/ui/ExportButton";
 import { useEffect, useMemo, useState } from "react";
 import { useAllCampaigns, useDailyBudgetUtilisation } from "../hooks";
 import { downloadCsv, exportName } from "../../../lib/exportTable";
 import {
-	ExportButton,
 	LIFTED_L,
 	NUM,
 	NameCell,
@@ -31,34 +35,17 @@ const LIMIT = 20;
 const formatRoas = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
 
 /**
- * Every status Blinkit uses, with the wording the UI shows for it.
- *
- *
- *
- * STOPPED is red because a campaign that is
- * not running is not spending, and ON_HOLD is amber rather than red because it is recoverable
- * without a decision, Blinkit having paused delivery when the daily budget ran out. COMPLETED
- * and DRAFT are neutral: neither is a problem, they are just not live. The pill always carries
- * the WORD as well, so the colour is emphasis rather than the only signal.
+ * The statuses this page offers as a FILTER, in the order they matter to someone reading
+ * a campaign list. The wording and the colours live in the shared badge, so this is only
+ * the list of what can be filtered to.
  */
 const STATUSES = [
-	["ACTIVE", "Active", "bg-success-soft text-success"],
-	["STOPPED", "Stopped", "bg-danger-soft text-danger"],
-	["ON_HOLD", "On hold", "bg-warning-soft text-warning"],
-	// "Completed" is Blinkit's word for a campaign that reached its end date. "Ended" is
-	// what that is, and it sits beside "Stopped" without the two reading as synonyms.
-	["COMPLETED", "Ended", "bg-muted text-content-muted"],
-	["DRAFT", "Draft", "bg-muted text-content-muted"],
+	["ACTIVE", "Active"],
+	["STOPPED", "Stopped"],
+	["ON_HOLD", "On hold"],
+	["COMPLETED", "Ended"],
+	["DRAFT", "Draft"],
 ];
-
-const statusMeta = (raw) => STATUSES.find(([v]) => v === raw);
-
-const statusLabel = (raw) =>
-	statusMeta(raw)?.[1] ??
-	(raw ? raw.charAt(0) + raw.slice(1).toLowerCase().replace(/_/g, " ") : "—");
-
-const statusTone = (raw) =>
-	statusMeta(raw)?.[2] ?? "bg-muted text-content-muted";
 
 /**
  * "PRODUCT_LISTING" is how Blinkit names a campaign type; "Product Listing" is how a person
@@ -270,7 +257,10 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 					{ header: "Campaign", value: (c) => c.name },
 					{ header: "Campaign ID", value: (c) => c.campaign_id },
 					{ header: "Type", value: (c) => enumLabel(c.type) },
-					{ header: "Status", value: (c) => statusLabel(c.status) },
+					{
+						header: "Status",
+						value: (c) => campaignStatusLabel(c.status),
+					},
 					{
 						header: "Daily budget",
 						value: (c) => c.daily_budget ?? "",
@@ -311,11 +301,7 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 	return (
 		<div>
 			<SectionExport>
-				<ExportButton
-					disabled={!sorted.length}
-					onExport={onExport}
-					hint="Exports campaign insights for the current filters."
-				/>
+				<ExportButton disabled={!sorted.length} onExport={onExport} />
 			</SectionExport>
 			<Card
 				title="Campaign insights"
@@ -565,11 +551,9 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 													{enumLabel(c.type)}
 												</td>
 												<td className={TD}>
-													<span
-														className={`rounded-full px-2 py-0.5 text-[11px] font-semibold ${statusTone(c.status)}`}
-													>
-														{statusLabel(c.status)}
-													</span>
+													<CampaignStatusBadge
+														status={c.status}
+													/>
 												</td>
 												<td className={NUM}>
 													{formatCurrency(

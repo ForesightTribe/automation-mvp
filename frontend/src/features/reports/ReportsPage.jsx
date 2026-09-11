@@ -1,11 +1,10 @@
 import { useState } from "react";
-import { Download } from "lucide-react";
 import { getReportFile } from "./api";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { ViewToggle } from "../../components/ui/ViewToggle";
-import { Button } from "../../components/ui/Button";
+import { ExportButton } from "../../components/ui/ExportButton";
 import { PageHeader } from "../../components/ui/PageHeader";
 import {
 	SalesPivotReport,
@@ -141,15 +140,13 @@ export const ReportsPage = () => {
 					)}
 				</div>
 				<div className="flex flex-col items-end gap-1">
-					<Button
-						variant="brand"
-						size="sm"
+					<ExportButton
+						label="Export to Excel"
+						busyLabel="Building…"
+						busy={exporting}
 						disabled={exporting}
-						onClick={download}
-					>
-						<Download size={14} />{" "}
-						{exporting ? "Building…" : "Export to Excel"}
-					</Button>
+						onExport={download}
+					/>
 					{exportError && (
 						<p className="text-xs text-danger">{exportError}</p>
 					)}

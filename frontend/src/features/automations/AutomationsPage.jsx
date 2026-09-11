@@ -10,7 +10,7 @@ import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
 import { JobLine } from "./components/JobLine";
-import { ConfirmDialog } from "./components/ConfirmDialog";
+import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
 import { formatCurrency } from "../../lib/format";
 import {
 	useBudgetSchedules,

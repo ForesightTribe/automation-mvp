@@ -1,3 +1,4 @@
+import { ExportButton } from "../../../components/ui/ExportButton";
 import { useEffect, useMemo, useState } from "react";
 import { useKeywords } from "../hooks";
 import { getKeywords } from "../api";
@@ -16,7 +17,6 @@ import {
 } from "../../../lib/exportTable";
 import { formatCurrency, formatNumber } from "../../../lib/format";
 import {
-	ExportButton,
 	LIFTED_L,
 	NUM,
 	NameCell,
@@ -224,7 +224,6 @@ export const KeywordInsightsCard = () => {
 					onExport={onExport}
 					busy={busy}
 					disabled={!derived.length}
-					hint="Exports keyword insights for the current filters."
 				/>
 			</SectionExport>
 			<Card

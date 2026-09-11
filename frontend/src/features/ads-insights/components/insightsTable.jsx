@@ -1,12 +1,5 @@
 import { useMemo, useState } from "react";
-import {
-	ArrowDown,
-	ArrowUp,
-	ChevronRight,
-	ChevronsUpDown,
-	Download,
-	FileSpreadsheet,
-} from "lucide-react";
+import { ArrowDown, ArrowUp, ChevronRight, ChevronsUpDown } from "lucide-react";
 import { HoverHint } from "../../../components/ui/HoverHint";
 import { sortRows } from "../../../lib/sortRows";
 
@@ -222,41 +215,4 @@ export const NameCell = ({
  */
 export const SectionExport = ({ children }) => (
 	<div className="mb-1.5 flex justify-end">{children}</div>
-);
-
-/**
- * Downloads what the table is showing. Disabled while there is nothing to download.
- *
- * `hint` names the section, because three of these on one page are otherwise identical.
- */
-export const ExportButton = ({
-	onExport,
-	busy,
-	disabled,
-	label = "Export",
-	hint = "Exports every row for the current filters.",
-}) => (
-	<HoverHint label={hint}>
-		{/* At rest it is a quiet utility beside a table, with the spreadsheet mark carrying the
-		    only colour. On hover it fills with Excel's own green and everything inside turns
-		    white, so the association with the file it produces is unmistakable at the moment
-		    of the click.
-
-		    ⚠️ #217346 is Microsoft's green, not ours, which is why it is a literal rather than
-		    a token. `--color-success` means "this went well" in this system and is reserved
-		    for that; borrowing it here would make a download read as a status. */}
-		<button
-			type="button"
-			onClick={onExport}
-			disabled={busy || disabled}
-			className="group/dl flex items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-content transition-colors hover:border-[#217346] hover:bg-[#217346] hover:text-white disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border disabled:hover:bg-card disabled:hover:text-content"
-		>
-			<FileSpreadsheet
-				size={14}
-				className="text-[#217346] group-hover/dl:text-white group-disabled/dl:text-[#217346]"
-			/>
-			{busy ? "Preparing…" : label}
-			<Download size={13} className="opacity-70" />
-		</button>
-	</HoverHint>
 );

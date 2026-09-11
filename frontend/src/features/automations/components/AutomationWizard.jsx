@@ -6,7 +6,7 @@ import { CampaignPickerList } from "./CampaignPickerList";
 import { KeywordPicker } from "./KeywordPicker";
 import { ActionCards } from "./ActionCards";
 import { KeywordActionCard } from "./KeywordActionCard";
-import { DatePicker } from "./DatePicker";
+import { DatePicker } from "../../../components/ui/DatePicker";
 import { Field, FIELD_INPUT } from "./Field";
 import { scheduleIssues } from "../automation";
 import { WizardContext } from "./WizardContext";
@@ -800,71 +800,84 @@ export const AutomationWizard = ({
 											</Field>
 										)}
 
-										<div className="flex flex-wrap items-start gap-5">
-											<Field
-												label="Start date"
-												hint="The first day this automation is allowed to act. Its windows do nothing before this."
-												note={
-													isEdit
-														? "Cannot be changed once created"
-														: null
-												}
-											>
-												<DatePicker
-													className="w-52"
-													ariaLabel="Start date"
-													disabled={isEdit}
-													value={
-														timing.start_date ?? ""
+										{/* Campaign automations only. A keyword automation sets its dates on
+										    Create Actions, where the rest of its timing lives, and asking for
+										    them again here left the same question in two places with nothing
+										    to say which one the engine reads. */}
+										{kind === "campaign" && (
+											<div className="flex flex-wrap items-start gap-5">
+												<Field
+													label="Start date"
+													hint="The first day this automation is allowed to act. Its windows do nothing before this."
+													note={
+														isEdit
+															? "Cannot be changed once created"
+															: null
 													}
-													onChange={(d) =>
-														setTiming({
-															...timing,
-															start_date: d,
-														})
-													}
-												/>
-											</Field>
-											<Field
-												label="End date"
-												hint="The last day it acts. Leave it off and it keeps running until you stop it."
-											>
-												<DatePicker
-													className="w-52"
-													ariaLabel="End date"
-													disabled={!timing.end_date}
-													min={
-														timing.start_date ||
-														undefined
-													}
-													value={
-														timing.end_date ?? ""
-													}
-													onChange={(d) =>
-														setTiming({
-															...timing,
-															end_date: d,
-														})
-													}
-												/>
-											</Field>
-											<label className="mt-7 flex cursor-pointer items-center gap-2 text-sm text-content">
-												<input
-													type="checkbox"
-													checked={!timing.end_date}
-													onChange={(e) =>
-														setTiming({
-															...timing,
-															end_date: e.target
-																.checked
-																? ""
-																: todayIso(),
-														})
-													}
-												/>
-												No end date
-											</label>
-										</div>
+												>
+													<DatePicker
+														className="w-52"
+														ariaLabel="Start date"
+														disabled={isEdit}
+														value={
+															timing.start_date ??
+															""
+														}
+														onChange={(d) =>
+															setTiming({
+																...timing,
+																start_date: d,
+															})
+														}
+													/>
+												</Field>
+												<Field
+													label="End date"
+													hint="The last day it acts. Leave it off and it keeps running until you stop it."
+												>
+													<DatePicker
+														className="w-52"
+														ariaLabel="End date"
+														disabled={
+															!timing.end_date
+														}
+														min={
+															timing.start_date ||
+															undefined
+														}
+														value={
+															timing.end_date ??
+															""
+														}
+														onChange={(d) =>
+															setTiming({
+																...timing,
+																end_date: d,
+															})
+														}
+													/>
+												</Field>
+												<label className="mt-7 flex cursor-pointer items-center gap-2 text-sm text-content">
+													<input
+														type="checkbox"
+														checked={
+															!timing.end_date
+														}
+														onChange={(e) =>
+															setTiming({
+																...timing,
+																end_date: e
+																	.target
+																	.checked
+																	? ""
+																	: todayIso(),
+															})
+														}
+													/>
+													No end date
+												</label>
+											</div>
+										)}
 									</>
 								)}
 							</div>
