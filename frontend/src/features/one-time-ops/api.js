@@ -69,5 +69,18 @@ export const getCampaignTargets = (clientId, campaignId, { days = 30 } = {}) =>
 		},
 	});
 
+/**
+ * The engine's own verdict on what it last did to a campaign.
+ *
+ * ⚠️ A finished job is not a finished WRITE. `status: success` means the job ran, not
+ * that anything changed: the engine records `apply` or `skip` in its run log, and a
+ * refused write still exits cleanly. `include_unchanged` is required — a skip is
+ * exactly the "nothing changed" row the default view hides.
+ */
+export const getLastVerdict = (clientId, campaignId) =>
+	api.get(`${cm(clientId)}/history`, {
+		params: { campaign_id: campaignId, limit: 1, include_unchanged: true },
+	});
+
 export const getJob = (clientId, jobId) =>
 	api.get(`${cm(clientId)}/jobs/${jobId}`);

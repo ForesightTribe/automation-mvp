@@ -7,6 +7,7 @@ import {
 	setActivationNow,
 	refreshCampaigns,
 	getCampaignTargets,
+	getLastVerdict,
 	getJob,
 } from "./api";
 
@@ -71,6 +72,24 @@ export const useJob = (jobId, { onSettled } = {}) => {
 			const s = query.state.data?.status;
 			return s === "success" || s === "failed" ? false : 1500;
 		},
+	});
+};
+
+/**
+ * What the engine actually did, read once a job has settled.
+ *
+ * Polling it before then would report the PREVIOUS action on that campaign, which is
+ * worse than saying nothing: it would confirm a change that has not happened yet.
+ */
+export const useLastVerdict = (campaignId, enabled) => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: ["ots-verdict", activeClientId, campaignId],
+		queryFn: () => getLastVerdict(activeClientId, campaignId),
+		enabled: Boolean(activeClientId && campaignId && enabled),
+		select: (page) => page.items?.[0] ?? null,
+		staleTime: 0,
+		gcTime: 0,
 	});
 };
 

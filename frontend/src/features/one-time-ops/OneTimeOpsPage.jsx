@@ -14,6 +14,7 @@ import { formatCurrency, formatNumber } from "../../lib/format";
 import { CampaignDrawer } from "./components/CampaignDrawer";
 import {
 	useCampaigns,
+	useLastVerdict,
 	useSetBudget,
 	useSetActivation,
 	useRefreshCampaigns,
@@ -39,8 +40,20 @@ import {
 
 // Statuses Blinkit will never move out of, so start/stop has nothing to act on.
 const TERMINAL = new Set(["completed", "expired", "rejected"]);
+
+/**
+ * Campaigns Blinkit will accept a budget edit on.
+ *
+ * ⚠️ The same rule the scheduler applies (`can_write_budget` in budget.py): a campaign
+ * that is not live refuses the write. The one-off engine path has no such guard, so it
+ * attempts the write, takes the refusal and still exits cleanly — the job reports
+ * success while the run log records `skip`. Refusing here is the difference between
+ * "you cannot do that yet" and a change that silently never happened.
+ */
+const BUDGET_WRITABLE = new Set(["active", "running", "held"]);
 const norm = (s) => (s ?? "").toLowerCase().trim().replace(/\s+/g, "_");
 const isLive = (s) => ["active", "running"].includes(norm(s));
+const canSetBudget = (c) => BUDGET_WRITABLE.has(norm(c.status));
 
 const STATUS_OPTIONS = [
 	["", "All statuses"],
@@ -52,30 +65,55 @@ const STATUS_OPTIONS = [
 	["completed", "Completed"],
 ];
 
-/** What a job is doing, in one line. */
-const JobLine = ({ jobId }) => {
-	const { data: job } = useJob(jobId);
-	if (!jobId) return null;
-	const status = job?.status ?? "pending";
-	const tone =
-		status === "success"
-			? "text-success"
-			: status === "failed"
-				? "text-danger"
-				: "text-content-muted";
-	const label = {
-		pending: "Queued…",
-		running: "Applying…",
-		success: "Done",
-		failed: "Failed",
-	}[status];
-	return (
-		<span className={`inline-flex items-center gap-2 text-xs ${tone}`}>
-			{status !== "success" && status !== "failed" && (
+/**
+ * What a job is doing, and then what it actually DID.
+ *
+ * ⚠️ Two different questions. `status: success` says the job ran; whether the write
+ * landed is the engine's verdict in the run log, and a refused write exits cleanly.
+ * Reporting the first as though it answered the second is how a budget that never
+ * changed reads as "Done".
+ */
+const JobLine = ({ job }) => {
+	const { data: jobRow } = useJob(job?.id);
+	const status = jobRow?.status ?? "pending";
+	const settled = status === "success" || status === "failed";
+	const { data: verdict } = useLastVerdict(job?.campaignId, settled);
+
+	if (!job) return null;
+
+	if (!settled)
+		return (
+			<span className="inline-flex items-center gap-2 text-xs text-content-muted">
 				<span className="h-3 w-3 animate-spin rounded-full border-2 border-border border-t-brand" />
-			)}
-			{label}
-			{status === "failed" && job?.error ? `: ${job.error}` : ""}
+				{status === "running" ? "Applying…" : "Queued…"}
+			</span>
+		);
+
+	if (status === "failed")
+		return (
+			<span className="text-xs text-danger">
+				Failed{jobRow?.error ? `: ${jobRow.error}` : ""}
+			</span>
+		);
+
+	// Settled, so the run log has the answer. Until it arrives, say nothing rather than
+	// claim a result.
+	if (!verdict)
+		return <span className="text-xs text-content-muted">Checking…</span>;
+
+	if (verdict.action === "apply")
+		return (
+			<span className="text-xs text-success">
+				Applied
+				{verdict.new_value != null
+					? ` · now ${formatCurrency(verdict.new_value)}`
+					: ""}
+			</span>
+		);
+
+	return (
+		<span className="text-xs text-warning">
+			The platform did not accept this change, so nothing was altered.
 		</span>
 	);
 };
@@ -91,7 +129,9 @@ export const OneTimeOpsPage = () => {
 	const [confirm, setConfirm] = useState(null); // { op, row }
 	const [amount, setAmount] = useState("");
 	const [confirmError, setConfirmError] = useState(null);
-	const [jobId, setJobId] = useState(null);
+	// The campaign travels with the job id: the verdict is read per campaign, and "which
+	// campaign did I just act on" is not recoverable from the job alone.
+	const [job, setJob] = useState(null);
 	const [detail, setDetail] = useState(null);
 
 	const rows = useMemo(() => {
@@ -131,7 +171,7 @@ export const OneTimeOpsPage = () => {
 							campaignId: row.campaign_id,
 							status: op === "start" ? "running" : "paused",
 						});
-			setJobId(res.job_id);
+			setJob({ id: res.job_id, campaignId: row.campaign_id });
 			setConfirm(null);
 		} catch (err) {
 			setConfirmError(err.message);
@@ -141,7 +181,7 @@ export const OneTimeOpsPage = () => {
 	const onRefresh = async () => {
 		try {
 			const res = await refresh.mutateAsync();
-			setJobId(res.job_id);
+			setJob({ id: res.job_id, campaignId: null });
 		} catch (err) {
 			setConfirmError(err.message);
 		}
@@ -268,6 +308,10 @@ export const OneTimeOpsPage = () => {
 				const terminal = TERMINAL.has(norm(c.status));
 				return (
 					<div className="flex items-center justify-end gap-3">
+						{/* Stays clickable even when the platform will not accept the change.
+						    A disabled control can only hint, and the reason here is worth a
+						    sentence: the dialog says why and offers the way forward, rather
+						    than leaving a dead button and a tooltip. */}
 						<Button
 							size="xs"
 							variant="secondary"
@@ -302,19 +346,39 @@ export const OneTimeOpsPage = () => {
 		if (!confirm) return { title: "", body: null };
 		const { op, row } = confirm;
 		const who = row.name || `Campaign ${row.campaign_id}`;
-		if (op === "budget")
+		if (op === "budget") {
+			const amount_ = Number(amount);
+			const valid =
+				amount > "" && Number.isFinite(amount_) && amount_ > 0;
 			return {
 				title: "Set this budget now?",
 				confirmLabel: "Set budget",
-				body: (
+				// Blocked, not hidden: the reader came here to do something, and being told
+				// what stands in the way — and what to do about it — beats a control that
+				// simply does not respond.
+				blocked: !canSetBudget(row)
+					? `${who} is ${norm(row.status).replace(/_/g, " ")}. Blinkit only accepts a budget change on a campaign that is running, so this would be refused and nothing would change. Start the campaign first, then set its budget.`
+					: !valid
+						? "Enter a daily budget above zero."
+						: null,
+				body: !canSetBudget(row) ? (
+					<>Changing the daily budget for {who}.</>
+				) : valid ? (
 					<>
-						{who} goes to {formatCurrency(Number(amount) || 0)} a
-						day, immediately. This is a one-off push: any budget
+						{who} goes to {formatCurrency(amount_)} a day,
+						immediately. This is a one-off push: any budget
 						automation on this campaign will still move it at its
 						next window.
 					</>
+				) : (
+					<>
+						Sets a new daily budget for {who}, applied immediately.
+						A budget automation on this campaign will still move it
+						at its next window.
+					</>
 				),
 			};
+		}
 		if (op === "start")
 			return {
 				title: "Start this campaign now?",
@@ -346,7 +410,7 @@ export const OneTimeOpsPage = () => {
 				subtitle="Change a budget, or start and stop a campaign, right now. Every action here applies immediately."
 				actions={
 					<div className="flex items-center gap-3">
-						<JobLine jobId={jobId} />
+						<JobLine job={job} />
 						<Button
 							size="sm"
 							variant="secondary"
@@ -430,7 +494,7 @@ export const OneTimeOpsPage = () => {
 				onCancel={() => setConfirm(null)}
 				onConfirm={run}
 			>
-				{confirm?.op === "budget" && (
+				{confirm?.op === "budget" && canSetBudget(confirm.row) && (
 					<label className="mb-4 block">
 						<span className="mb-1 block text-xs text-content-muted">
 							Daily budget (₹)
