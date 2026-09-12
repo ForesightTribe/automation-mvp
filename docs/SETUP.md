@@ -95,6 +95,14 @@ AUTH_INBOX_APP_PASSWORD=
 # scraper VM; set false on Render — Blinkit is India-geo, and logging in from a US IP
 # is exactly what fraud heuristics watch for.
 AUTH_ALLOW_LOGIN=true
+
+# --- Optional: database connection budget (see docs/jobs.md) ---
+# Every process holds its own pool against the SHARED Supabase pooler (cap 45), and your
+# local backend points at the same pooler as production. The default of 4 is right locally.
+# DB_POOL_SIZE=4
+# API only (Render: 60). Terminates a connection stuck idle inside a transaction after N
+# seconds. Leave unset locally and on the scraper VM.
+# DB_IDLE_TX_TIMEOUT_S=0
 ```
 
 ---

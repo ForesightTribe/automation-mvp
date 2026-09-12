@@ -273,11 +273,9 @@ export const AutomationWizard = ({
 	const campaignId = campaign?.campaign_id ?? null;
 	const { data: ctx } = useBidContext(kind === "keyword" ? campaignId : null);
 
-	// Suggestions come from BOTH sources and are merged. bid-context is the reliable one —
-	// it is the same payload the floors come from, so every suggestion it offers resolves to
-	// a published floor. /ads/campaigns/{id}/keywords is kept because it carries keywords a
-	// campaign runs that were never bid-scraped, but it 400s wherever `campaign_data_cache`
-	// is absent, which would otherwise leave the field with no suggestions at all.
+	// The keyword itself is chosen in <KeywordPicker>, from /ads/keywords (every keyword with
+	// performance data). bid-context only supplies what surrounds it: Blinkit's published
+	// floors (blinkit_ad_campaign_keywords) and the campaign's targeted cities.
 	// Blinkit's published floor for the CHOSEN keyword. It varies per keyword (₹200 on one,
 	// ₹400 on another in the same campaign), so it only resolves once a keyword is picked.
 	const floor = useMemo(() => {
@@ -587,7 +585,7 @@ export const AutomationWizard = ({
 			    steadier to use, and short steps centre their content (below) so the fixed box
 			    never reads as empty. 82vh leaves the backdrop visible top and bottom, which is
 			    what says this is a step on top of the page rather than a new page. */}
-			<div className="flex h-[82vh] w-[62vw] min-w-[54rem] max-w-[76rem] flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
+			<div className="flex h-[82vh] w-[62vw] min-w-216 max-w-304 flex-col overflow-hidden rounded-xl border border-border bg-card shadow-2xl">
 				<header className="flex items-center justify-between border-b border-border px-6 py-4">
 					<div className="flex items-center gap-3">
 						<button

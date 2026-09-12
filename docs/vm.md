@@ -218,10 +218,13 @@ Everything below cost real time to discover.
 - **~~`logger.py` writes to a relative path~~ — FIXED.** It now uses an absolute
   `settings.LOG_DIR` (default `<backend>/logs`), created eagerly. Under systemd a
   relative `logs/app.log` would have resolved to `/logs` and failed silently.
-- **Supabase pooler is set to 25 connections** (not 15 — an older note said 15; the
-  comment in `database.py` was stale too). Each process gets its own pool, and
-  `pool_size` is now configurable via **`DB_POOL_SIZE`** — the runner unit sets it to
-  `4`. Budget: API 5 + runner 3 + subprocesses ≈ under 25. See [jobs.md](jobs.md).
+- **Supabase pooler is capped at 45 clients** (raised from 25 in 2026-09; session mode, so
+  idle pooled connections count too). Each process gets its own pool sized by
+  **`DB_POOL_SIZE`** — default `4`; on this box set `DB_POOL_SIZE=4` in `backend/.env`
+  (⚠️ systemd lets `EnvironmentFile` override `Environment=`, so a value in `.env` beats the
+  unit's own line). Set it explicitly on Render (10 for one worker), along with
+  `DB_IDLE_TX_TIMEOUT_S=60` — **Render only, never this VM** (the
+  scrape loader holds a long transaction). See [jobs.md](jobs.md).
 - **A full disk causes bizarre, unrelated-looking failures.** ✅ Now handled:
   `app.log`/`runner.log` self-rotate (loguru), and per-run job logs are pruned by the
   **`maint.log_cleanup`** job — *but only if that schedule exists*. `df -h /` still

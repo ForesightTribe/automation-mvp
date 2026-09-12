@@ -566,10 +566,13 @@ daily_budget) is a pre-existing coworker-owned divergence — don't merge it uni
 
 `LANE_SLOTS` is **per runner process**, and `--workers` is browsers _inside one scrape_.
 Two concurrent jobs at `--workers 5` = 10 Chromiums (~3–7 GB). Raise slots only with
-`peak_rss_mb` evidence from `cli jobs list`, and **set `DB_POOL_SIZE=3` on the VM**
-(`backend/.env`). The default is **10**, which is too big: runner(10) + one subprocess(10)
-+ Render(10) = 30 > the Supabase pooler's **25**-client cap → intermittent "can't get a DB
-connection" `exit_1` failures when jobs overlap (bit us 2026-07-31). Scrapers are unaffected
+`peak_rss_mb` evidence from `cli jobs list`. **`DB_POOL_SIZE` defaults to 4**; set `DB_POOL_SIZE=4`
+in the VM's `backend/.env` too — systemd lets `EnvironmentFile` override the unit's `Environment=`
+line, so whatever `.env` says is what the runner and its jobs actually get. Until 2026-09-11 the default was 10, which let runner(10) + one subprocess(10) +
+Render(10) overrun the pooler cap → intermittent "can't get a DB connection" `exit_1` failures
+when jobs overlap (bit us 2026-07-31). The Supabase pooler cap is now **45**, and in session mode
+idle pooled connections count against it too. **Never set `DB_IDLE_TX_TIMEOUT_S` on the VM** —
+it is an API-only safety net, and the loader holds one long transaction. Scrapers are unaffected
 by the small pool — public scrapes stage to SQLite, and the loader uses a single connection.
 
 ---

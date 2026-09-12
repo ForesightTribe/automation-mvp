@@ -1,5 +1,6 @@
 from collections.abc import AsyncGenerator
 
+from sqlalchemy import event
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.orm import sessionmaker
 from sqlmodel import SQLModel
@@ -12,11 +13,9 @@ engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
     pool_pre_ping=True,
-    # Supabase's pooler caps total clients (currently 25). The concurrent public
-    # scraper uses ~one DB connection per worker (default 5) + the main session.
-    # Configurable because every PROCESS gets its own pool: the runner spawns each
-    # scrape as a subprocess, so API + runner + N subprocesses must sum under the
-    # cap. On the VM set DB_POOL_SIZE=3–5 in .env. See docs/jobs.md.
+    # Per PROCESS, and every open pooled connection holds one of the Supabase pooler's 45
+    # slots (session mode). Configurable because API + runner + each job subprocess +
+    # every local dev backend has its own pool. See DB_POOL_SIZE in config.py.
     pool_size=settings.DB_POOL_SIZE,
     max_overflow=0,
     # Long scrape runs hold a pooled connection across slow browser work; the
@@ -28,6 +27,21 @@ engine = create_async_engine(
     # the write paths retry once on a mid-flight drop (see sku_storage.save_skus).
     pool_recycle=1800,
 )
+
+if settings.DB_IDLE_TX_TIMEOUT_S:
+    # ⚠️ Must be a SET on every new connection. asyncpg's `server_settings` (a startup
+    # parameter) is silently dropped by Supavisor — verified 2026-09-11, the value stayed
+    # 0. A session-level SET survives ROLLBACK and lasts for the connection's life, and the
+    # pooler resets it (DISCARD ALL) when the client disconnects, so it can't leak to other
+    # clients. Past the limit Postgres terminates the connection: the stalled request
+    # fails, and pool_pre_ping discards the dead connection at the next checkout.
+    @event.listens_for(engine.sync_engine, "connect")
+    def _set_idle_tx_timeout(dbapi_connection, _record) -> None:
+        dbapi_connection.run_async(
+            lambda conn: conn.execute(
+                f"SET idle_in_transaction_session_timeout = '{settings.DB_IDLE_TX_TIMEOUT_S}s'"
+            )
+        )
 
 AsyncSessionLocal = sessionmaker(
     engine,

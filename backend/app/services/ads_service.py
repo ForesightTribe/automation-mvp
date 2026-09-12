@@ -350,7 +350,13 @@ async def get_keywords(
 
     `BlinkitAdCampaignDetail` is a range-aggregate snapshot (not daily), so we keep
     only each campaign's most recent `snapshot_date` rather than summing across
-    snapshots."""
+    snapshots.
+
+    ⚠️ The latest-snapshot pick, sort, count and page slice all happen in SQL. This used
+    to load every detail row for the tenant (51k, growing ~700/day) and do them in
+    Python — ~9 s and ~200 MB per page, and the Automations picker fetches pages in
+    parallel, which exhausted the Supabase pooler (2026-09-11). Now only the page leaves
+    the database (~44 ms server-side)."""
     conds = [Detail.tenant_id == tenant_id]
     if campaign_id is not None:
         conds.append(Detail.campaign_id == campaign_id)
@@ -358,28 +364,45 @@ async def get_keywords(
         conds.append(Detail.platform.in_(marketplaces))
     if target_type:
         conds.append(Detail.target_type == target_type)
+
+    # Each campaign's latest snapshot date under the SAME filters as the rows, so e.g.
+    # target_type='keyword' picks each campaign's latest *keyword* snapshot. Every row on
+    # that date is kept (a snapshot holds many keywords) — hence a join, not DISTINCT ON.
+    latest = (
+        select(Detail.campaign_id, func.max(Detail.snapshot_date).label("snapshot_date"))
+        .where(*conds)
+        .group_by(Detail.campaign_id)
+        .subquery()
+    )
+    base = (
+        select(Detail)
+        .join(
+            latest,
+            (Detail.campaign_id == latest.c.campaign_id)
+            & (Detail.snapshot_date == latest.c.snapshot_date),
+        )
+        .where(*conds)
+    )
+    total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
+
+    sort_cols = {
+        "spend": Detail.budget_consumed,
+        "roas": Detail.total_roas,
+        "sales": Detail.direct_sales + Detail.indirect_sales,
+        "impressions": Detail.impressions,
+    }
+    col = sort_cols.get(sort, sort_cols["spend"])
+    # `Detail.id` breaks ties so paging is stable. Without it, rows with equal values come
+    # back in arbitrary order and pages fetched in parallel can repeat or skip a row.
     rows = (
-        await session.execute(select(Detail).where(*conds))
+        await session.execute(
+            base.order_by(col.asc() if order == "asc" else col.desc(), Detail.id)
+            .offset(pagination.offset)
+            .limit(pagination.limit)
+        )
     ).scalars().all()
 
-    # Keep only the latest snapshot per campaign.
-    latest: dict[int, date] = {}
-    for r in rows:
-        if r.campaign_id not in latest or r.snapshot_date > latest[r.campaign_id]:
-            latest[r.campaign_id] = r.snapshot_date
-    rows = [r for r in rows if r.snapshot_date == latest[r.campaign_id]]
-
-    sort_funcs = {
-        "spend": lambda r: r.budget_consumed,
-        "roas": lambda r: r.total_roas,
-        "sales": lambda r: r.direct_sales + r.indirect_sales,
-        "impressions": lambda r: r.impressions,
-    }
-    rows.sort(key=sort_funcs.get(sort, sort_funcs["spend"]), reverse=(order != "asc"))
-
-    total = len(rows)
-    page = rows[pagination.offset : pagination.offset + pagination.limit]
-    items = [KeywordRow.model_validate(r) for r in page]
+    items = [KeywordRow.model_validate(r) for r in rows]
     return Page.build(items, total, pagination)
 
 

@@ -136,6 +136,7 @@ All tables are `(tenant_id, platform)` scoped.
 | `cm_bid_runtime`       | System state, 1:1 with a bid rule (below)                                              |
 | `cm_platform_accounts` | `advertiser_id` + **`live_armed`** (the per-tenant arming switch)                      |
 | `cm_run_log`           | Slim append-only history for the UI                                                    |
+| `cm_city_stores`       | The frozen **measurement store** per city — a global default (`tenant_id` NULL) plus per-client overrides; see [7.6c](#76c-where-a-rule-measures--the-city-registry) |
 
 **One schedule per (tenant, platform, campaign)** is a DB constraint — a campaign has one everyday
 budget, and two automations for it could only contradict each other. Extra windows go on the
@@ -617,6 +618,52 @@ digits, because `201xxx` alone cannot separate them.
 Maintenance is the ~14 exceptions in `config.xlsx`'s `city_map` sheet; the other 228 cities match by
 name. `cli cities seed` builds the list, `cli sync` applies the sheet and tags stores, `cli cities
 status` reports what still resolves to nothing.
+
+#### The store inside the city — frozen, not arbitrary
+
+A city is still not a store. Until 2026-09-11 the store was the city's **lowest `merchant_id`** —
+deterministic, but a store nobody chose — copied onto the rule as lat/lon at save time, so moving it
+meant editing every rule.
+
+`cm_city_stores` (migration `d7c3e9a1f5b2`) freezes one store per (marketplace, city), in two layers:
+
+| Layer           | `tenant_id` | Set from                  | Wins   |
+| --------------- | ----------- | ------------------------- | ------ |
+| Client override | the client  | `cm stores set -t <id>`   | first  |
+| Global default  | NULL        | `cm stores set --global`  | second |
+
+**CLI only, deliberately** (Deepansh, 2026-09-11): no API and no UI until frozen stores are proven in
+practice. Rules created from the dashboard still record their city, so a store set from the CLI
+reaches them too.
+
+A rule saved **by city** carries `cm_bid_rules.city_id` and **follows** that city's frozen store. The
+bid engine resolves it on every run (`bid.measurement_point`, one query per run), so changing a city's
+store moves every automation measuring there on the next tick, with no rule edits. A rule saved by an
+explicit store (`location_id`, `--lat/--lon`) has `city_id` NULL and stays **pinned**.
+
+Where a rule measures, in order — the `rule.store` log line names which one applied (`store_source`):
+
+1. the client's override, if its store is still an active catalog store with coordinates;
+2. the global default, same condition;
+3. the store saved on the rule (`rule`) — **a city with nothing frozen moves nobody**, which is why the
+   migration seeds no stores: nothing measures anywhere new until someone sets one;
+4. the Bengaluru fallback (`default`), only for a rule with no store at all.
+
+A new rule in a city with nothing frozen is still saved at the lowest `merchant_id` (`catalog`).
+
+⚠️ Changing a city's store **clears the engine's memory** for every rule it re-points — the same
+`_RUNTIME_MEMORY` set Resume clears. Last position, holding price, relaxed target and escalation step
+were all observed at the old store, and positions differ between stores. Those rules' `lat` / `lon` /
+`location_name` are re-snapshotted in the same step, so lists show the store actually in use.
+
+Keyed by `merchant_id`, not `marketplace_locations.id`, because `cli sync --prune` deletes and
+re-creates catalog rows. A frozen store that leaves the catalog or closes is skipped (and logged),
+never honoured. `rank` 1 is the store; higher ranks are reserved for measuring at several stores per
+city, which is not built.
+
+⚠️ Zepto still resolves the store from the coordinate once per store per run (`get_page`). Passing the
+frozen `merchant_id` to its search would skip that, but it also drops the secondary hub ids the lookup
+returns, which can change what a search shows — left alone until that is measured.
 
 ### 7.7 Bounds are invariants
 

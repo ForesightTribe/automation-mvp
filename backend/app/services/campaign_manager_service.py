@@ -263,8 +263,8 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextO
         # Each targeted city is resolved to the store a rule would actually measure at, so
         # the form can say "no dark store in our catalog for X" up front instead of letting
         # someone save a rule that silently has no measurement point.
-        store = await repo.resolve_store(PLATFORM, city=name)
-        lat, lon, label = store if store else (None, None, None)
+        store = await repo.resolve_store(PLATFORM, city=name, tenant_id=tenant_id)
+        lat, lon, label = (store.lat, store.lon, store.label) if store else (None, None, None)
         cities.append(TargetedCity(id=c.get("id"), name=name,
                                    location_name=label, lat=lat, lon=lon))
 
@@ -306,13 +306,17 @@ async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> Bid
     d = body.model_dump()
     await _check_bid_floor(tenant_id, body.campaign_id, body.keyword,
                            body.match_type, body.min_bid)
-    # Resolve the measurement location from a city / store id when lat/lon weren't given.
+    # Resolve the measurement store from a city / store id when lat/lon weren't given.
     city, location_id = d.pop("city", None), d.pop("location_id", None)
     if (d.get("lat") is None or d.get("lon") is None) and (city or location_id):
-        store = await repo.resolve_store(PLATFORM, city=city, location_id=location_id)
+        store = await repo.resolve_store(PLATFORM, city=city, location_id=location_id,
+                                         tenant_id=tenant_id)
         if store:
-            d["lat"], d["lon"], label = store
-            d["location_name"] = d.get("location_name") or label
+            d["lat"], d["lon"] = store.lat, store.lon
+            d["location_name"] = d.get("location_name") or store.label
+            # Saved BY CITY → follows that city's frozen store from now on (resolved on every
+            # run). Saved by an explicit store → pinned to it.
+            d["city_id"] = None if location_id else store.city_id
     r = await repo.create_bid_rule(
         tenant_id, PLATFORM, d.pop("campaign_id"),
         d.pop("campaign_name") or f"campaign {body.campaign_id}",
@@ -341,12 +345,15 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
                            fields.get("keyword", r.keyword),
                            fields.get("match_type", r.match_type),
                            fields.get("min_bid", r.min_bid))
-    # `city`/`location_id` re-resolve the measurement lat/lon (same as create).
+    # `city`/`location_id` re-resolve the measurement store (same as create).
     city, location_id = fields.pop("city", None), fields.pop("location_id", None)
     if city or location_id:
-        store = await repo.resolve_store(PLATFORM, city=city, location_id=location_id)
+        store = await repo.resolve_store(PLATFORM, city=city, location_id=location_id,
+                                         tenant_id=tenant_id)
         if store:
-            fields["lat"], fields["lon"], fields["location_name"] = store
+            fields["lat"], fields["lon"] = store.lat, store.lon
+            fields["location_name"] = store.label
+            fields["city_id"] = None if location_id else store.city_id
     if fields:
         await repo.update_bid_rule(rule_id, fields)
     await _reconcile(session, tenant_id)
