@@ -185,7 +185,7 @@ def test_editing_an_ended_rule_without_moving_its_dates_says_how_to_run_it_again
 def test_the_reconcile_after_reopening_clears_the_old_ending():
     rule = _bid_rule()
     _Service(bid_rule=rule).call(svc.update_bid_rule, rule.id, BidRuleUpdate(date="2026-09-07"))
-    assert lifecycle.bid_rule_markers(rule, NOW) == {"ended_at": None, "settled_at": None}
+    assert lifecycle.bid_rule_markers(rule, NOW) == {"ended_at": None}
 
 
 def test_its_next_ending_is_covered_even_before_that_reconcile_runs():
@@ -208,8 +208,9 @@ def test_moving_a_budget_windows_date_forward_reopens_its_schedule():
     assert out.status == "scheduled", out.status
     assert out.rules[0].status == "scheduled"
     assert service.reconciles == 1 and "cm.budget_scheduler" in service.enqueued
-    assert lifecycle.schedule_markers(schedule, [rule], NOW) == {"ended_at": None,
-                                                                 "settled_at": None}
+    # The stamp is left alone — it records the close that WAS torn down, and the new ending
+    # is later than it, so nothing suppresses the next settle (`lifecycle.revert_owed`).
+    assert lifecycle.schedule_markers(schedule, [rule], NOW) == {"ended_at": None}
 
 
 def test_a_budget_window_moved_to_another_past_date_is_refused():

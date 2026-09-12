@@ -6,6 +6,7 @@ Uses a fixed reference time and derives the weekday from it, so the tests are
 independent of the real calendar.
 """
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from campaign_manager.budget import _window_just_ended, plan_for_now, target_for_now
 
@@ -157,10 +158,41 @@ def test_window_just_ended_respects_the_grace():
     assert _window_just_ended(rules, datetime(2026, 8, 2, 2, 30), grace_seconds=300) is False
 
 
-def test_plan_and_target_agree_on_the_budget():
-    """plan_for_now is the whole decision; target_for_now is its budget-only view."""
-    for at in (datetime(2026, 8, 1, 20, 0), datetime(2026, 8, 2, 5, 0)):
-        assert _plan(at)[0] == target_for_now(200, [WINDOW], at)[0]
+def test_plan_and_target_agree_while_a_window_is_open():
+    """plan_for_now is what this RUN should do; target_for_now is what the calendar says.
+    Inside a window they agree; outside one they answer different questions — the calendar
+    still says "the default", and the run says "nothing of mine"."""
+    at = datetime(2026, 8, 1, 20, 0)
+    assert _plan(at)[0] == target_for_now(200, [WINDOW], at)[0] == 1000
+
+
+# ── Between windows the budget is not ours (2026-09-12) ─────────────────────
+#
+# The engine used to answer `default_budget` whenever no rule matched, so every hourly poll
+# re-asserted it — and a budget someone set by hand at 10:00 was gone by 11:00.
+
+def test_between_windows_there_is_nothing_to_enforce():
+    budget, state, reason = _plan(datetime(2026, 8, 2, 5, 0))
+    assert budget is None and state is None
+    assert "not this automation's to set" in reason
+
+
+def test_a_window_close_still_reverts_to_the_default():
+    assert _plan(datetime(2026, 8, 2, 2, 0))[0] == 200
+
+
+def test_an_owed_revert_reverts_long_after_the_close():
+    """The failsafe: the 02:00 fire never landed, so the 05:00 one does its work — and
+    stops the campaign too, which is what the missed fire would have done."""
+    budget, state, reason = plan_for_now(200, [WINDOW], datetime(2026, 8, 2, 5, 0),
+                                         stop_after_window=True, revert_owed=True)
+    assert (budget, state) == (200, "paused")
+    assert "never put back" in reason
+
+
+def test_a_schedule_with_no_rules_still_holds_its_default():
+    """It has no windows to be between — enforcing the default is the whole of what it does."""
+    assert plan_for_now(200, [], datetime(2026, 8, 2, 5, 0))[0] == 200
 
 
 # ── Short windows (the 2026-08-08 production bug) ───────────────────────
@@ -216,55 +248,76 @@ def test_spent_once_rule_reads_as_ended_the_same_day():
     assert window.is_expired(future, after) is False
 
 
-# ── Ended schedules are left alone (2026-09-10) ─────────────────────────────
+# ── The engine acts on a window's edges, never between windows ──────────────
 #
-# `_in_play` decides whether the engine acts on a schedule at all. Two real campaigns from
-# 2026-09-09 are the cases: both had their budgets overwritten by automations that had ended.
+# `_has_work` decides whether the engine acts on a schedule at all. Two real campaigns from
+# 2026-09-09 are the cases: both had their budgets overwritten between windows — one by an
+# automation that had ENDED (fixed 2026-09-10), one by an automation that was still live and
+# simply re-asserting its default every hour (fixed here).
 
 _SODA = {"type": "once", "date": "2026-09-07", "start_time": "16:00", "end_time": "23:00",
          "budget": 750}
 _TECH_TEST = {"days": ["wednesday"], "start_date": "2026-09-09", "end_date": "2026-09-09",
               "start_time": "19:40", "end_time": "19:42", "budget": 105}
+_DAILY = {"start_time": "19:00", "end_time": "21:00", "budget": 900}
 
 
-def test_an_ended_schedule_is_out_of_play():
+def _sched(**kw):
+    """A schedule row as the engine reads it — `settled_at` is the latch that says its last
+    close has already been put back to the default."""
+    return SimpleNamespace(**{"id": 1, "state": "active", "created_at": datetime(2026, 1, 1),
+                              "settled_at": None, "settle_attempts": 0, **kw})
+
+
+def _work(rules, at, *, settled_at=None, **kw):
+    from campaign_manager.budget import _has_work
+    return _has_work(_sched(settled_at=settled_at, **kw), rules, at, 300)
+
+
+def test_an_ended_schedule_is_left_alone():
     """Campaign 637511: restarted by hand at ₹502 on 2026-09-09, set to its ended automation's
-    ₹510 default at 21:01 — two days after the automation's only window."""
-    from campaign_manager.budget import _in_play
-    assert _in_play([_SODA], datetime(2026, 9, 9, 21, 1), 300) is False
+    ₹510 default at 21:01 — two days after the automation's only window. Too old to repair
+    and too late to matter, whether or not the revert ever landed."""
+    assert _work([_SODA], datetime(2026, 9, 9, 21, 1)) is False
+    assert _work([_SODA], datetime(2026, 9, 9, 21, 1),
+                 settled_at=datetime(2026, 9, 7, 23, 0)) is False
 
 
-def test_the_fire_that_closes_the_last_window_is_still_in_play():
+def test_the_fire_that_closes_a_window_is_always_work():
     """That fire reverts the budget and stops the campaign; ending must not cost it."""
-    from campaign_manager.budget import _in_play
-    assert _in_play([_SODA], datetime(2026, 9, 7, 23, 0), 300) is True
-    assert _in_play([_SODA], datetime(2026, 9, 7, 23, 4), 300) is True     # late, inside grace
-    assert _in_play([_SODA], datetime(2026, 9, 7, 23, 10), 300) is False
+    assert _work([_SODA], datetime(2026, 9, 7, 23, 0)) is True
+    assert _work([_SODA], datetime(2026, 9, 7, 23, 4)) is True      # late, inside the grace
 
 
-def test_a_recurring_schedule_ends_when_its_last_window_closes_not_at_midnight():
-    """Campaign 574687: last window 19:40–19:42. Set by hand to ₹201 at 19:43, reverted by the
-    20:00 poll, because a recurring rule counted as live until the end of its end DATE."""
-    from campaign_manager.budget import _in_play
-    assert _in_play([_TECH_TEST], datetime(2026, 9, 9, 19, 42), 300) is True    # its own end
-    assert _in_play([_TECH_TEST], datetime(2026, 9, 9, 20, 0), 300) is False    # that poll
+def test_a_close_whose_revert_never_landed_is_still_work():
+    """The failsafe. Past the grace the close is no longer an edge, but the budget is still
+    raised — so the next fire repairs it, and only until it is latched."""
+    late = datetime(2026, 9, 7, 23, 10)
+    assert _work([_SODA], late) is True
+    assert _work([_SODA], late, settled_at=datetime(2026, 9, 7, 23, 0)) is False
 
 
-def test_a_live_schedule_stays_in_play_between_its_windows():
-    """Enforcing the default between windows is the design (the hourly poll) — only ENDED
-    stops it."""
-    from campaign_manager.budget import _in_play
-    daily = {"start_time": "19:00", "end_time": "21:00", "budget": 900}
+def test_a_live_schedule_is_quiet_between_its_windows():
+    """The change: a schedule whose last close has been reverted has nothing to do until the
+    next one. It used to re-assert its default on every hourly poll."""
+    latched = datetime(2026, 9, 8, 21, 0)                           # last night's close
+    assert _work([_DAILY], datetime(2026, 9, 9, 3, 0), settled_at=latched) is False
+    assert _work([_DAILY], datetime(2026, 9, 9, 20, 0), settled_at=latched) is True  # in window
     upcoming = {"type": "once", "date": "2026-09-20", "start_time": "10:00",
                 "end_time": "12:00", "budget": 900}
-    assert _in_play([daily], datetime(2026, 9, 9, 3, 0), 300) is True
-    assert _in_play([upcoming], datetime(2026, 9, 9, 3, 0), 300) is True
-    assert _in_play([_SODA, daily], datetime(2026, 9, 9, 3, 0), 300) is True   # one window left
+    assert _work([upcoming], datetime(2026, 9, 9, 3, 0)) is False   # never opened yet
 
 
-def test_a_schedule_with_no_rules_is_always_in_play():
-    from campaign_manager.budget import _in_play
-    assert _in_play([], datetime(2026, 9, 9, 3, 0), 300) is True
+def test_a_close_from_before_the_schedule_existed_is_not_its_business():
+    """A schedule created at 14:00 must not revert for a window that closed at 02:00 that
+    morning — it was not there to raise the budget, so it has nothing to put back."""
+    assert _work([_DAILY], datetime(2026, 9, 9, 22, 30),
+                 created_at=datetime(2026, 9, 9, 22, 0)) is False
+
+
+def test_a_schedule_with_no_rules_is_always_work():
+    """Its default is all it has, so enforcing that default is the whole of what it does."""
+    assert _work([], datetime(2026, 9, 9, 3, 0)) is True
 
 
 def _run() -> int:

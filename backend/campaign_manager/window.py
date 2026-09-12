@@ -261,6 +261,46 @@ def last_window_close(w: Window) -> datetime | None:
     return datetime.min
 
 
+# A week covers every weekday filter; the eighth day catches an overnight window that
+# opened on the first eligible day of the previous week and closed after midnight.
+_LOOK_BACK_DAYS = 8
+
+
+def previous_close(w: Window, now: datetime, *, days_back: int = _LOOK_BACK_DAYS) -> datetime | None:
+    """The most recent close of this window at or before `now` — None if it has never closed.
+
+    `last_window_close` answers "when does it close for the LAST time"; this answers "when did
+    it last close", which is the question an end-of-window action has to ask when it may have
+    been missed. A window that opened yesterday at 19:30 and closed at 02:00 today is found by
+    scanning back from the day it OPENED, so overnight spans are counted at their close, not
+    their start.
+    """
+    best: datetime | None = None
+    midnight = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    for back in range(days_back):
+        try:
+            close = _closes_if_open(w, midnight - timedelta(days=back))
+        except ValueError:                       # unparseable date — it has no windows to close
+            return None
+        if close is not None and close <= now and (best is None or close > best):
+            best = close
+    if best is not None:
+        return best
+    # Older than the scan: a `once` rule from last month still has exactly one close, and
+    # a rule whose last window closed before that is what `last_window_close` knows.
+    try:
+        last = last_window_close(w)
+    except ValueError:
+        return None
+    return last if last is not None and last != datetime.min and last <= now else None
+
+
+def schedule_previous_close(windows, now: datetime) -> datetime | None:
+    """The most recent close across a schedule's rules — the close it owes a revert for."""
+    closes = [c for c in (previous_close(w, now) for w in windows) if c is not None]
+    return max(closes) if closes else None
+
+
 def is_expired(w: Window, now: datetime) -> bool:
     """Has this rule finished for good — has its LAST window closed?
 

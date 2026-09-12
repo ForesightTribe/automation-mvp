@@ -75,6 +75,37 @@ def needs_settle(close: datetime | None, state: str, settled_at: datetime | None
     return now - close <= timedelta(hours=config.SETTLE_MAX_AGE_HOURS)
 
 
+def revert_owed(last_close: datetime | None, created_at: datetime | None,
+                settled_at: datetime | None, now: datetime) -> bool:
+    """Has a window closed whose revert-to-default never landed?
+
+    The budget engine acts on the EDGES of a window — it applies a rule while one is open and
+    reverts at the close — so between windows it must do nothing at all. That leaves one gap:
+    a close whose revert was missed (the runner was down, the write was refused) would sit at
+    the raised budget until the next window. This is that gap's answer, and the reason the
+    engine can be edge-triggered safely.
+
+    `settled_at` is the latch, and it means "the most recent close this schedule has been torn
+    down for". A close is owed until a revert lands at or after it; `needs_settle` is this same
+    question asked only of the LAST close, with retry limits, because that one also ends the
+    automation's life.
+
+    Two guards keep a latch from acting on something that was never its business:
+      - a close BEFORE the schedule existed is not owed — a schedule created at 14:00 must not
+        revert for a window that closed at 02:00 that morning;
+      - a close older than `SETTLE_MAX_AGE_HOURS` is not owed either. Past that the campaign's
+        budget is whatever the last day made it, and re-asserting a default nobody asked for is
+        the very behaviour this replaces.
+    """
+    if last_close is None or last_close == datetime.min or last_close > now:
+        return False
+    if created_at is not None and last_close <= created_at:
+        return False
+    if settled_at is not None and settled_at >= last_close:
+        return False
+    return now - last_close <= timedelta(hours=config.SETTLE_MAX_AGE_HOURS)
+
+
 def settle_stamp(close: datetime | None, now: datetime) -> datetime:
     """The `settled_at` to write — never earlier than the close it settles.
 
@@ -95,18 +126,20 @@ def marker_changes(close: datetime | None, created_at: datetime | None,
     - `ended_at` follows the rules both ways: set once the last window has closed, cleared
       when the dates are moved so that it has not.
     - While NOT ended, attempts go back to 0 — a reopened automation starts its next ending
-      with a full set of retries — and a `settled_at` that cannot cover the coming ending
-      (stamped before its close, or there is no close) is cleared. One stamped AT the coming
-      close is kept: the end-of-window bid reset lands a minute before the stop it tears down.
+      with a full set of retries.
+
+    `settled_at` is never cleared here. It used to be, for any automation that had not ended,
+    on the reasoning that a stamp which cannot cover the coming ending is stale. It is not:
+    the stamp records the most recent close that was torn down (`revert_owed`), which is what
+    keeps the budget engine from re-asserting a default between windows, and the sweep runs on
+    every edit — clearing it would re-arm a revert that had already landed. Nothing is lost,
+    because every reader compares `settled_at >= close` rather than treating it as a flag: a
+    stamp from an earlier close is automatically not a latch on a later one.
     """
     ended = close is not None and close <= now
     want_ended = ended_at(close, created_at if created_at is not None else now, now)
     want_settled, want_attempts = settled_at, attempts or 0
     if not ended:
-        covers_next = (settled_at is not None and close is not None
-                       and close != datetime.min and settled_at >= close)
-        if not covers_next:
-            want_settled = None
         want_attempts = 0
     out: dict = {}
     if want_ended != stored_ended_at:
@@ -147,6 +180,19 @@ def schedule_needs_settle(schedule, rules, now: datetime) -> bool:
     return needs_settle(budget_schedule_close(rules), getattr(schedule, "state", "active"),
                         getattr(schedule, "settled_at", None),
                         getattr(schedule, "settle_attempts", 0), now)
+
+
+def schedule_previous_close(rules, now: datetime) -> datetime | None:
+    return window.schedule_previous_close([window.from_budget(r) for r in rules], now)
+
+
+def schedule_revert_owed(schedule, rules, now: datetime) -> bool:
+    """Does this schedule owe a revert to its default — the budget engine's failsafe?"""
+    if getattr(schedule, "state", "active") != "active":
+        return False
+    return revert_owed(schedule_previous_close(rules, now),
+                       getattr(schedule, "created_at", None),
+                       getattr(schedule, "settled_at", None), now)
 
 
 def schedule_markers(schedule, rules, now: datetime) -> dict:

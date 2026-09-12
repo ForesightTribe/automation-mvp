@@ -151,25 +151,45 @@ def _window_just_ended(rules: list[dict], now: datetime,
 
 
 def plan_for_now(default_budget: float, rules: list[dict], now: datetime, *,
-                 stop_after_window: bool = False) -> tuple[float, str | None, str]:
+                 stop_after_window: bool = False,
+                 revert_owed: bool = False) -> tuple[float | None, str | None, str]:
     """What should be true for this campaign right now → (budget, state, reason).
 
-    `state` has three answers, and the third matters as much as the other two:
+    The budget has three answers, and the third is the one that keeps this engine out of the
+    campaign's way:
+      - a **rule's budget** while that rule's window is open;
+      - the **default**, at the moment a window closes — or later, while `revert_owed` says
+        that close's revert never landed (the failsafe, `lifecycle.revert_owed`);
+      - **None — nothing to enforce.** Between windows the campaign's budget is not ours.
+        It used to be the default here too, so every hourly poll re-asserted it and a budget
+        someone had set by hand at 10:00 was gone by 11:00.
+
+    A schedule with NO rules is the exception: enforcing its default is the whole of what it
+    does, so it always answers the default.
+
+    `state` also has three answers, and the third matters as much as the other two:
       - `"running"` — a rule is active. Starting is UNCONDITIONAL (AD7): a campaign with
         a budget window is meant to run during it, so finding it stopped and leaving it
         stopped would silently do nothing all evening.
-      - `"paused"` — a window just ended and this schedule opted in.
+      - `"paused"` — a window has ended and this schedule opted in.
       - `None` — the campaign's status is none of our business at this moment. With the
         toggle off this is the only non-`"running"` answer, so an existing schedule never
         has its status touched at all.
 
-    Pure. `target_for_now` remains the budget-only view of the same decision.
+    Pure. `target_for_now` remains the budget-only view of "what does the calendar say",
+    which is a different question from "what should this run do".
     """
     for rule in rules:
         if _matches_rule(rule, now):
             return rule["budget"], "running", _reason(rule)
-    state = "paused" if (stop_after_window and _window_just_ended(rules, now)) else None
-    reason = "window ended" if state == "paused" else "no active rule — default budget"
+    if not rules:
+        return default_budget, None, "no rules — this schedule holds its default budget"
+    closing = _window_just_ended(rules, now)
+    if not (closing or revert_owed):
+        return None, None, "outside every window — the budget is not this automation's to set"
+    state = "paused" if stop_after_window else None
+    reason = ("window ended" if closing else
+              "a window closed and the budget was never put back — doing it now")
     return default_budget, state, reason
 
 
@@ -185,22 +205,32 @@ def _rule_to_dict(r) -> dict:
 
 # ── Orchestration ───────────────────────────────────────────────────────────
 
-def _in_play(rules, now: datetime, grace_seconds: float) -> bool:
-    """Should the engine still act on this schedule at `now`?
+def _has_work(schedule, rules, now: datetime, grace_seconds: float) -> bool:
+    """Is there anything for this run to do about this schedule at `now`?
 
-    Yes while any window is running or still to come, and at the one fire that closes the
-    LAST window — that fire reverts the budget and, with the toggle on, stops the campaign.
-    Not after it. An ended schedule has no rule left to match, so `plan_for_now` answers
-    `default_budget` on every fire and overwrites whatever the campaign has been set to since:
-    on 2026-09-09 that replaced a budget someone had chosen by hand, two days after the
-    automation ended.
+    The engine acts on a window's EDGES and inside it, never between windows:
 
-    A schedule with no rules never ends — enforcing its default is what it is for.
+      - a window is open → the rule's budget is enforced (drift included);
+      - a window has just closed → revert, and stop the campaign if the toggle is on;
+      - a close is still owed its revert → the failsafe, `lifecycle.revert_owed`;
+      - the automation has ENDED without its final teardown landing → the settle-once
+        safety net, which also records the ending in History;
+      - the schedule has no rules at all → its default is all it has, so it is always enforced.
+
+    Answered BEFORE sign-in, so a tenant whose windows are all closed does not log in to do
+    nothing. Between windows this is false, and that is the point: the hourly poll used to
+    re-assert `default_budget` on every fire, which overwrote a budget set by hand (2026-09-09)
+    and kept a browser session churning around the clock.
     """
-    windows = [window.from_budget(r) for r in rules]
-    if window.schedule_calendar_state(windows, now) != window.ENDED:
+    if not rules:
         return True
-    return any(window.just_closed(w, now, grace_seconds) for w in windows)
+    windows = [window.from_budget(r) for r in rules]
+    if any(window.in_window(w, now) for w in windows):
+        return True
+    if window.was_open_within(windows, now, grace_seconds):
+        return True
+    return (lifecycle.schedule_revert_owed(schedule, rules, now)
+            or lifecycle.schedule_needs_settle(schedule, rules, now))
 
 
 async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
@@ -211,15 +241,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     logs.run_start(run_id, "budget_scheduler", tenant_id, dry_run=dry_run, platform=platform,
                    tenant_name=await repo.get_tenant_name(tenant_id))
 
-    # Active schedules that are still in play (`_in_play`), or have ENDED without their final
-    # teardown landing (`lifecycle.schedule_needs_settle`). Decided on `started`, BEFORE
-    # sign-in, so a tenant whose automations have all ended and settled does not log in to do
-    # nothing. A schedule that ends between `started` and `now` is picked up by the next run.
+    # Only the schedules with something to do right now (`_has_work`), decided on `started`
+    # and BEFORE sign-in. A schedule that reaches an edge between `started` and `now` is
+    # picked up by the next run.
     grace = settings.SCHEDULER_MISFIRE_GRACE_SECONDS
     schedules = [(s, rules) for s, rules in await repo.get_budget_schedules(
                      tenant_id, platform, state="active", calendar=repo.ANY_CALENDAR)
-                 if _in_play(rules, started, grace)
-                 or lifecycle.schedule_needs_settle(s, rules, started)]
+                 if _has_work(s, rules, started, grace)]
     if not schedules:
         logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                          processed=0, applied=0, skipped=0, errors=0)
@@ -229,8 +257,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     processed = applied = skipped = errors = 0
     log_rows: list[dict] = []
     # The final teardowns this run performed — schedule id → the close each one covers — and
-    # the ones that did not land, which count against SETTLE_MAX_ATTEMPTS.
+    # the ones that did not land, which count against SETTLE_MAX_ATTEMPTS. `latched` is the
+    # same stamp for an ordinary window close: the schedule has been put back to its default,
+    # so nothing is owed until the next close (`lifecycle.revert_owed`).
     settled: dict[int, datetime] = {}
+    latched: dict[int, datetime] = {}
     failed: list[int] = []
 
     # A session/browser is only set up when there's work — reads happen even in dry-run.
@@ -279,6 +310,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             final = close is not None and close != datetime.min and close <= now
             landed = False
             stop_after = bool(getattr(schedule, "stop_after_window", False))
+            # The edges this fire sits on, and the close a revert would be tearing down.
+            open_now = any(_matches_rule(r, now) for r in rule_dicts)
+            closing = bool(rule_dicts) and not open_now and _window_just_ended(rule_dicts, now)
+            owed = lifecycle.schedule_revert_owed(schedule, rules, now)
+            last_close = lifecycle.schedule_previous_close(rules, now)
+            reverting = False
             # One block per campaign, exactly as the bid engine narrates one per keyword:
             # header → what the schedule says → what the marketplace says → what we did.
             logs.blank(run_id, dry_run=dry_run)
@@ -288,8 +325,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                          msg=_schedule_summary(schedule.default_budget, rule_dicts,
                                                stop_after_window=stop_after))
             try:
-                if final and not _in_play(rules, now, grace):
-                    # In play only to settle: the run that should have torn it down at its
+                if final and not open_now and not closing:
+                    # A late settle: the run that should have torn this automation down at its
                     # last window's end never landed (the runner was down, or the write
                     # failed). Do exactly what that run would have done — revert, and stop
                     # if the schedule asks for it.
@@ -303,13 +340,21 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 else:
                     target, want_state, reason = plan_for_now(
                         schedule.default_budget, rule_dicts, now,
-                        stop_after_window=stop_after,
+                        stop_after_window=stop_after, revert_owed=owed,
                     )
-                    say = _plan_sentence(
-                        matched=any(_matches_rule(r, now) for r in rule_dicts),
-                        want_state=want_state, target=target, reason=reason)
+                    say = _plan_sentence(matched=open_now, want_state=want_state,
+                                         target=target, reason=reason)
+                reverting = target is not None and not open_now and bool(rule_dicts)
 
-                if target is None or target <= 0:
+                if target is None:
+                    # Between windows with nothing owed: the campaign's budget is not ours to
+                    # set, so this schedule is not read and not written. No History row — a
+                    # row per campaign per hour saying "did nothing" is the noise D6 excludes.
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, msg=reason)
+                    skipped += 1
+                    continue
+
+                if target <= 0:
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
                                  msg=f"skipping — ₹{target:g} is not a budget we will write")
                     skipped += 1
@@ -445,19 +490,27 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 landed = budget_landed and stop_landed
             finally:
                 # Only a LIVE run can land a teardown — a dry run wrote nothing.
-                if final and not dry_run:
-                    if landed:
-                        settled[schedule.id] = close
-                    else:
-                        failed.append(schedule.id)
+                if not dry_run:
+                    if final:
+                        if landed:
+                            settled[schedule.id] = close
+                        else:
+                            failed.append(schedule.id)
+                    elif reverting and landed and last_close is not None:
+                        # The latch: this close has had its revert. Until the NEXT one, the
+                        # schedule has nothing to do, so the poll stops touching the campaign.
+                        latched[schedule.id] = last_close
     finally:
         if browser is not None:
             await browser.close()
         if pw is not None:
             await pw.stop()
 
-    await repo.mark_settled("budget", {sid: lifecycle.settle_stamp(c, now)
-                                       for sid, c in settled.items()})
+    # One stamp per schedule, final teardowns first: `settled_at` records the most recent
+    # close this schedule has been torn down for, whichever kind of close it was.
+    stamps = {sid: lifecycle.settle_stamp(c, now) for sid, c in latched.items()}
+    stamps.update({sid: lifecycle.settle_stamp(c, now) for sid, c in settled.items()})
+    await repo.mark_settled("budget", stamps)
     gave_up = set(await repo.bump_settle_attempts("budget", failed) or ())
     # The lifecycle in History, written with the run's own rows: an automation whose final run
     # landed says it is finished; one that has just run out of retries says it was left as is.

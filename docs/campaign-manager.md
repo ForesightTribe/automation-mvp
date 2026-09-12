@@ -194,7 +194,7 @@ What it produces:
 | Schedule          | Cron                                               | Purpose                                                                                                                     |
 | ----------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Budget boundaries | one per distinct rule start/end time               | Apply the budget that matches now. A rule whose last window has closed contributes none                                     |
-| Safety poll       | hourly                                             | Catch drift and missed fires for **recurring rules with windows left**; also the budget settle pass while an ended schedule's teardown has not landed (§5b) |
+| Safety poll       | hourly                                             | Catch drift **inside a window**, a revert that never landed after one closed (§6a), and the budget settle pass while an ended schedule's teardown has not landed (§5b) |
 | `once` fires      | one-shots, deduped by time                         | Apply at the window start, revert at the end                                                                                |
 | Bid optimizer     | `*/15` within the merged active hours              | The control loop. A one-time overnight window also gets the next day's cron for its tail                                    |
 | Bid reset         | daily at each window's stop, **fired 1 min early** | De-escalate closed keywords to `min_bid`                                                                                    |
@@ -267,8 +267,9 @@ the only copy: `in_window`, `window_start`, `window_close`, `just_closed`, `last
 | Engine     | Acts on                                                                                                                       |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Bid reset  | Rules whose window **just closed** (`window.just_closed`; look-back = misfire grace + look-ahead) — never "not in its window" |
-| Budget     | Schedules still **in play** (`budget._in_play`): a window running or to come, or the fire that closes the last one            |
+| Budget     | Schedules with something to do (`budget._has_work`): a window open, one just closed, a close still owed its revert, or a final teardown to settle |
 | Reconciler | Only rules with windows left produce crons; the hourly poll only for recurring rules with windows left                        |
+| Budget engine (§6a) | It acts inside a window and at a close, never between windows — a live schedule stopped re-asserting its default every hour too |
 
 The budget check runs before sign-in, so a client whose automations have all ended does not log in to do
 nothing.
@@ -329,15 +330,42 @@ differs.
   is the only non-running answer, so an existing schedule never has its status touched at all.
 
 The first matching rule wins, ordered by rule id — oldest wins, which is stable and explainable
-("the one you made first takes precedence"). With no rule matching, `default_budget` applies, so an
-end-time boundary naturally reverts.
+("the one you made first takes precedence").
 
 `_window_just_ended` probes a **range**, not a single instant: a point probe silently missed any
 window shorter than the misfire grace, and a late fire broke it the same way.
 
-**An ended schedule is left alone** (§5b). With no rule to match, `plan_for_now` would answer
-`default_budget` on every fire; the engine acts on a schedule only while a window is running or to come,
-at the fire that closes its last window, or to settle a final teardown that never landed.
+### 6a. Between windows, the budget is not ours (2026-09-12)
+
+`default_budget` used to be the answer to "no rule matches", so every fire outside a window
+re-asserted it — not once at the close, but for as long as the schedule existed. A budget set by
+hand at 10:00 was gone by 11:00, and the hourly poll signed in to Blinkit around the clock to do it.
+
+The engine now acts on a window's **edges** and inside it, and `plan_for_now` has a third answer —
+**None, nothing to enforce**:
+
+| When | What the engine does |
+| --- | --- |
+| A window is open | Applies that rule's budget, drift included |
+| A window just closed (within the misfire grace) | Reverts to `default_budget`, and stops the campaign if `stop_after_window` is on |
+| A close whose revert never landed | The **failsafe** — does what that fire would have done, then latches |
+| Any other moment | Nothing. The campaign is not read, and if no schedule has work the run never signs in |
+| A schedule with **no rules** | Unchanged: holding its default is the whole of what it does |
+
+**The failsafe is a latch, not a timer** (`lifecycle.revert_owed`). `settled_at` means "the most
+recent close this schedule has been torn down for", so a close is owed a revert until one lands —
+and once it lands, the schedule is silent until the next close. Settle-once (§5b) is the same
+question asked of the *last* close, which is why no new column was needed. Two guards keep a repair
+from acting on something that was never its business: a close **before the schedule was created**
+is not owed, and neither is one more than `CM_SETTLE_MAX_AGE_HOURS` (24 h) old — past that, the
+campaign's budget is whatever the days since made it.
+
+**The cost, accepted deliberately:** drift correction outside windows is gone. If Blinkit itself
+changes a budget at 10:00, it stands until the window opens. Nothing can tell that apart from a
+person choosing a number, and clobbering the person is the worse error.
+
+**An ended schedule is left alone** (§5b): its last close is either latched, or owed one final
+teardown that also records the ending in History.
 
 ---
 
@@ -1285,7 +1313,7 @@ bump `updated_at`, which is exactly what Resume depends on.
 | Scenario                                  | What happens                                                                            |
 | ----------------------------------------- | --------------------------------------------------------------------------------------- |
 | A rule matches now                        | Apply its budget; start the campaign unconditionally if stopped                         |
-| No rule matches                           | Apply `default_budget` — only while the schedule is live (§5b)                          |
+| No rule matches, between windows          | **Nothing** — not read, not written (§6a)                                               |
 | Window just ended, `stop_after_window` on | Stop the campaign                                                                       |
 | Window just ended, toggle off             | Revert to default, **never** touch run state                                            |
 | Two overlapping windows                   | The **oldest rule** wins — stable and explainable                                       |
@@ -1294,7 +1322,8 @@ bump `updated_at`, which is exactly what Resume depends on.
 | Schedule's last window closes             | That fire reverts (and stops, if toggled); the schedule is then **left alone**           |
 | Hours or days after it ended              | **Nothing is written**, and the engine does not sign in                                 |
 | Final fire missed while the runner was down | The hourly pass settles it: revert, then stop if toggled (≤3 tries, ≤24 h)             |
-| Fire missed on a live recurring schedule  | The hourly safety poll catches it                                                       |
+| Fire missed on a live recurring schedule  | The hourly safety poll catches it (in-window drift, or a revert that never landed)      |
+| Someone sets a budget by hand between windows | It stands until the next window opens (§6a)                                           |
 
 ### 9.8 Safety and failure
 

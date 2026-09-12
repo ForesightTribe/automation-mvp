@@ -124,16 +124,23 @@ def test_the_sweep_leaves_a_landed_teardown_alone():
     assert lifecycle.bid_rule_markers(rule, AFTER) == {}
 
 
-def test_reopening_clears_the_ending_its_latch_and_its_attempts():
-    """Its date moved forward after it ended, had settled once, and had given up once."""
+def test_reopening_clears_the_ending_and_its_attempts_but_keeps_the_stamp():
+    """Its date moved forward after it ended, had settled once, and had given up once.
+
+    The stamp stays: it records the most recent close that WAS torn down, and every reader
+    compares it against the close it is asking about — an old stamp is automatically not a
+    latch on the new ending. Clearing it used to be the rule, and it would now re-arm a
+    revert the budget engine had already made (`lifecycle.revert_owed`)."""
     rule = _bid(date="2026-09-20", ended_at=CLOSE, settled_at=CLOSE, settle_attempts=3)
-    assert lifecycle.bid_rule_markers(rule, AFTER) == {
-        "ended_at": None, "settled_at": None, "settle_attempts": 0}
+    assert lifecycle.bid_rule_markers(rule, AFTER) == {"ended_at": None, "settle_attempts": 0}
+    assert lifecycle.needs_settle(close=datetime(2026, 9, 20, 23, 0), state="active",
+                                  settled_at=CLOSE, attempts=0,
+                                  now=datetime(2026, 9, 20, 23, 1)) is True
 
 
-def test_the_backfilled_stamp_is_cleared_from_automations_that_have_not_ended():
+def test_the_backfilled_stamp_survives_on_automations_that_have_not_ended():
     rule = _bid(date="2026-09-20", settled_at=MIGRATED)
-    assert lifecycle.bid_rule_markers(rule, AFTER) == {"settled_at": None}
+    assert lifecycle.bid_rule_markers(rule, AFTER) == {}
 
 
 def test_a_latch_stamped_a_minute_before_its_close_survives_the_sweep():
