@@ -1,10 +1,10 @@
 """Deadman / heartbeat monitoring — the `monitor.heartbeat` job.
 
 The alert that matters isn't CPU — it's "the 3am scrape silently didn't run." This
-checks, for every enabled schedule, that a job of its (job_type, tenant) has
-SUCCEEDED within its expected window (derived from the cron period), and that the
-disk isn't filling up. Any problem is logged at ERROR — which a Cloud Logging alert
-turns into an email. Run it on its own schedule (e.g. hourly). See docs/jobs.md.
+checks, for every enabled schedule, that a job of its (job_type, tenant) has SUCCEEDED
+since the schedule was last DUE (`missed_fire`), and that the disk isn't filling up. Any
+problem is logged at ERROR — which a Cloud Logging alert turns into an email. Run it on
+its own schedule (e.g. hourly). See docs/jobs.md.
 """
 
 from datetime import datetime, timedelta
@@ -18,7 +18,7 @@ from app.models.job import Job, JobStatus, JobSchedule
 from app.models.tenant import Tenant
 from app.utils.logger import logger
 from app.utils.time import now_ist
-from jobs.scheduler import next_fire_after
+from jobs.scheduler import previous_fire_before
 from jobs.types import schedule_label
 
 try:
@@ -36,16 +36,42 @@ except ImportError:
 _SELF_MONITORING_TYPES = {"monitor.heartbeat"}
 
 
-def _cron_period(cron: str, now: datetime) -> timedelta:
-    """The gap between two consecutive fires — the schedule's expected cadence."""
-    n1 = next_fire_after(cron, now)
-    n2 = next_fire_after(cron, n1 + timedelta(minutes=1))
-    return n2 - n1
+def missed_fire(cron: str, *, last_success: datetime | None, created_at: datetime,
+                now: datetime, grace_seconds: float) -> datetime | None:
+    """The most recent fire this schedule should have completed but hasn't → None if healthy.
+
+    Asks "has it succeeded since the last time it was DUE?" rather than "has it succeeded
+    within one cadence?". The old cadence test derived the gap from the next two fires,
+    which for an hour-restricted cron is the in-window step: `*/15 15-17 * * *` was held to
+    a success every 16 minutes around the clock, so from 18:00 until 15:00 the next day it
+    was always "overdue". That fired every hour, every night, from 2026-09-07 (the Dobra bid
+    optimiser) — a false alarm that also buried the real ones.
+
+    `grace_seconds` is the scheduler's own misfire window: a fire that recent has not had
+    time to finish, so it is not counted as missed yet. A schedule cannot miss a fire that
+    was due before it existed.
+    """
+    due = previous_fire_before(cron, now - timedelta(seconds=grace_seconds))
+    if due is None or due <= created_at:
+        return None
+    if last_success is not None and last_success >= due:
+        return None
+    return due
+
+
+def _ago(delta: timedelta) -> str:
+    """'40 min' / '16h' — an alert reads better without six decimal places of precision."""
+    mins = delta.total_seconds() / 60
+    return f"{mins:.0f} min" if mins < 90 else f"{mins / 60:.0f}h"
 
 
 async def check_deadman(now: datetime | None = None) -> list[str]:
-    """One issue string per enabled schedule that hasn't succeeded within its window
-    (the cron period + 10% slack — ~26h for a daily, ~8d for a weekly)."""
+    """One issue string per enabled schedule with no success since it was last due.
+
+    A recurring row is judged against its own cron (`missed_fire`), so a schedule that only
+    fires in a window is silent between windows. A one-shot is overdue once its single fire
+    time plus the misfire grace has passed while it is still enabled.
+    """
     now = now or now_ist()
     issues: list[str] = []
     async with AsyncSessionLocal() as db:
@@ -56,20 +82,18 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
         # reconciler's names carry only a tenant UUID.
         tenants = dict((await db.execute(select(Tenant.id, Tenant.name))).all())
 
+        grace = settings.SCHEDULER_MISFIRE_GRACE_SECONDS
         for s in scheds:
             if s.job_type in _SELF_MONITORING_TYPES:
                 continue
 
-            # One-shots have no cron period. They are not overdue until their single
-            # fire time passes; a fired one-shot disables itself, so any one-shot still
-            # enabled past its next_run_at genuinely failed to fire. (A recurring row
-            # gets its expected cadence from the cron.)
-            if not (s.repeat and s.cron):
-                if s.next_run_at is None or now <= s.next_run_at:
-                    continue
-                window = timedelta(seconds=settings.SCHEDULER_MISFIRE_GRACE_SECONDS)
-            else:
-                window = _cron_period(s.cron, now) * 1.1
+            # One-shots have no cron to look back over. They are not overdue until their
+            # single fire time passes; a fired one-shot disables itself, so any one-shot
+            # still enabled past its next_run_at genuinely failed to fire.
+            recurring = bool(s.repeat and s.cron)
+            if not recurring and (s.next_run_at is None
+                                  or now - s.next_run_at <= timedelta(seconds=grace)):
+                continue
 
             q = select(func.max(Job.completed_at)).where(
                 Job.job_type == s.job_type, Job.status == JobStatus.success
@@ -78,33 +102,28 @@ async def check_deadman(now: datetime | None = None) -> list[str]:
                         else Job.tenant_id == s.tenant_id)
             last = (await db.execute(q)).scalar()
 
-            # A schedule cannot be overdue before it existed. Measure from its last
-            # success, or from creation if it has never succeeded — otherwise a
-            # brand-new weekly schedule is flagged instantly, days before its first
-            # run is even due. (Observed on the VM, 2026-07-16.) For a one-shot,
-            # measure from its fire time — that is when it should have completed.
-            if s.repeat and s.cron:
-                age = now - (last or s.created_at)
+            if recurring:
+                due = missed_fire(s.cron, last_success=last, created_at=s.created_at,
+                                  now=now, grace_seconds=grace)
+                if due is None:
+                    continue
             else:
-                age = now - s.next_run_at
-            if age <= window:
-                continue
+                due = s.next_run_at
 
-            hrs = age.total_seconds() / 3600
-            win_hrs = window.total_seconds() / 3600
             # Read the SCHEDULE's label, not its raw name: a reconciler-owned row is
             # named `auto:cm:budget:<uuid>:blinkit:0200`, and an alert is the worst
             # possible place to make someone decode one.
             who = schedule_label(s.name, tenants.get(s.tenant_id))
+            late = _ago(now - due)
             if last is None:
                 issues.append(
-                    f"'{who}' ({s.job_type}): never succeeded since it was created "
-                    f"{hrs:.0f}h ago (expected every {win_hrs:.0f}h)"
+                    f"'{who}' ({s.job_type}): has never succeeded — the run due "
+                    f"{due:%Y-%m-%d %H:%M} ({late} ago) did not complete"
                 )
             else:
                 issues.append(
-                    f"'{who}' ({s.job_type}): last success {last:%Y-%m-%d %H:%M} "
-                    f"({hrs:.0f}h ago) exceeds window {win_hrs:.0f}h"
+                    f"'{who}' ({s.job_type}): the run due {due:%Y-%m-%d %H:%M} "
+                    f"({late} ago) did not complete — last success {last:%Y-%m-%d %H:%M}"
                 )
     return issues
 
