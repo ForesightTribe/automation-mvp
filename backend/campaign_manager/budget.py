@@ -32,19 +32,88 @@ def _matches_rule(rule: dict, now: datetime) -> bool:
     return window.in_window(window.from_budget(rule), now)
 
 
+_WEEK = ("monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday")
+
+
+def _day_words(days) -> str:
+    """['sunday', 'friday', 'saturday'] → 'Fri, Sat, Sun' — in week order, because the
+    stored order is whatever the form was clicked in and reads as noise."""
+    chosen = {str(d).lower() for d in (days or [])}
+    picked = [d for d in _WEEK if d in chosen]
+    if not picked or len(picked) == 7:
+        return "every day"
+    return ", ".join(d[:3].capitalize() for d in picked)
+
+
+def _day_word(date_str) -> str:
+    """'2026-09-11' → '11 Sep'. Left alone if it isn't a date we can parse."""
+    try:
+        d = datetime.strptime(str(date_str), "%Y-%m-%d")
+    except (TypeError, ValueError):
+        return str(date_str)
+    return f"{d.day} {d:%b}"
+
+
 def _reason(rule: dict) -> str:
-    """Human-readable why-this-rule string (for logs + history)."""
-    if rule.get("start_time") or rule.get("end_time"):
-        time_desc = f"{rule.get('start_time', '00:00')}–{rule.get('end_time', '23:59')}"
+    """Human-readable why-this-rule string (for logs + history).
+
+    Read by clients in the History table, so it is written as English rather than as the
+    stored shape: it used to render an open-ended rule as
+    `sunday, friday, saturday (2026-09-11–None) / 19:30–02:00`, where `None` is a missing
+    end date and the slash is a field separator nobody outside the code knows about.
+    """
+    start, end = rule.get("start_time"), rule.get("end_time")
+    if start or end:
+        when = f"{start or '00:00'}–{end or '23:59'}"
     else:
-        time_desc = ", ".join(rule.get("time_slots", [])) or "all day"
+        when = ", ".join(rule.get("time_slots") or []) or "all day"
+
     if rule.get("type") == "once":
-        return f"one-time {rule.get('date', '')} / {time_desc}"
-    days_str = ", ".join(rule.get("days", [])) or "every day"
-    date_range = ""
-    if rule.get("start_date") or rule.get("end_date"):
-        date_range = f" ({rule.get('start_date', '')}–{rule.get('end_date', '')})"
-    return f"{days_str}{date_range} / {time_desc}"
+        date = rule.get("date")
+        return f"one-time {_day_word(date)} {when}" if date else f"one-time {when}"
+
+    first, last = rule.get("start_date"), rule.get("end_date")
+    if first and last:
+        span = f", {_day_word(first)}–{_day_word(last)}"
+    elif first:
+        span = f", from {_day_word(first)}"
+    elif last:
+        span = f", until {_day_word(last)}"
+    else:
+        span = ""
+    return f"{_day_words(rule.get('days'))} {when}{span}"
+
+
+def _schedule_summary(default_budget: float, rules: list[dict], *,
+                      stop_after_window: bool) -> str:
+    """The schedule's own configuration, for the line under its block header — the budget
+    engine's answer to the bid engine's "target position · current bid · limits"."""
+    parts = [f"default ₹{default_budget:g}"]
+    if not rules:
+        parts.append("no rules — this schedule only holds that default")
+    else:
+        parts += [f"₹{r['budget']:g} on {_reason(r)}" for r in rules[:2]]
+        if len(rules) > 2:
+            parts.append(f"+{len(rules) - 2} more rule" + ("s" if len(rules) > 3 else ""))
+    if stop_after_window:
+        parts.append("stops the campaign when a window ends")
+    return " · ".join(parts)
+
+
+def _plan_sentence(*, matched: bool, want_state: str | None, target: float,
+                   reason: str) -> str:
+    """What this run means to do, and why — the budget engine's `decided` line.
+
+    Built from the same three facts `plan_for_now` decided on, rather than from its
+    `reason` string alone, so a log line never has to be parsed back out of History text.
+    """
+    money = f"₹{target:g}"
+    if matched:
+        return f"the rule for {reason} applies now, so the budget should be {money}"
+    if want_state == "paused":
+        return (f"the window has just ended, so the budget goes back to its {money} default "
+                f"and the campaign stops")
+    return f"no rule applies right now, so the budget should be its {money} default"
 
 
 def target_for_now(default_budget: float, rules: list[dict], now: datetime) -> tuple[float, str]:
@@ -209,6 +278,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             close = lifecycle.budget_schedule_close(rules)
             final = close is not None and close != datetime.min and close <= now
             landed = False
+            stop_after = bool(getattr(schedule, "stop_after_window", False))
+            # One block per campaign, exactly as the bid engine narrates one per keyword:
+            # header → what the schedule says → what the marketplace says → what we did.
+            logs.blank(run_id, dry_run=dry_run)
+            logs.rule_header(run_id, dry_run=dry_run, index=processed, total=len(schedules),
+                             campaign_name=cname, campaign_id=cid)
+            logs.context(run_id, dry_run=dry_run, campaign_id=cid,
+                         msg=_schedule_summary(schedule.default_budget, rule_dicts,
+                                               stop_after_window=stop_after))
             try:
                 if final and not _in_play(rules, now, grace):
                     # In play only to settle: the run that should have torn it down at its
@@ -216,39 +294,48 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     # failed). Do exactly what that run would have done — revert, and stop
                     # if the schedule asks for it.
                     target = schedule.default_budget
-                    want_state = ("paused" if getattr(schedule, "stop_after_window", False)
-                                  else None)
+                    want_state = "paused" if stop_after else None
                     reason = ("the automation ended and its final run never landed — "
                               "settling it now")
+                    say = (f"this automation has ended and its last run never landed, so its "
+                           f"budget goes back to its ₹{target:g} default now"
+                           + (" and the campaign stops" if want_state else ""))
                 else:
                     target, want_state, reason = plan_for_now(
                         schedule.default_budget, rule_dicts, now,
-                        stop_after_window=getattr(schedule, "stop_after_window", False),
+                        stop_after_window=stop_after,
                     )
+                    say = _plan_sentence(
+                        matched=any(_matches_rule(r, now) for r in rule_dicts),
+                        want_state=want_state, target=target, reason=reason)
 
                 if target is None or target <= 0:
-                    logs.decision(run_id, dry_run=dry_run, campaign_id=cid,
-                                  verdict="skip", reason=f"non-positive target · {reason}")
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
+                                 msg=f"skipping — ₹{target:g} is not a budget we will write")
                     skipped += 1
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
                                          "skip", None, target, reason, dry_run, True))
                     continue
 
-                logs.decision(run_id, dry_run=dry_run, campaign_id=cid,
-                              verdict=f"target ₹{target:g}" + (f" · {want_state}" if want_state else ""),
-                              reason=reason)
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, msg=say)
                 try:
                     # One call gives status AND budget — Blinkit's campaign LIST is unusable
                     # for status (it 400s when any campaign type is disabled for the
                     # advertiser, and get_campaigns swallows that into an empty list).
                     current_state, current, detail = await adapter.read_campaign(client, cid)
                 except Exception as e:
-                    logs.decision(run_id, dry_run=dry_run, campaign_id=cid,
-                                  verdict="error", reason=f"read failed: {e}")
+                    logs.observed(run_id, dry_run=dry_run, campaign_id=cid, level="error",
+                                  msg=f"could not read the campaign from {platform.title()} "
+                                      f"— {' '.join(str(e).split())[:120]}")
                     errors += 1
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
                                          "error", None, target, str(e), dry_run, False))
                     continue
+
+                logs.observed(run_id, dry_run=dry_run, campaign_id=cid,
+                              msg=f"the campaign is "
+                                  f"{writes.STATE_WORDS.get(current_state, current_state or 'in an unknown state')}"
+                                  f" · its budget is {writes.money(current)}")
 
                 # ── The activation branch (docs/campaign-manager.md §6) ──
                 # A stopped campaign that should be running is restarted, and the restart
@@ -277,13 +364,22 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 if not can_write_budget and want_state != "paused":
                     # Stopped (and not due to start), on hold, completed, draft… nothing useful
                     # to do, and nothing at risk in doing nothing.
-                    logs.decision(run_id, dry_run=dry_run, campaign_id=cid, verdict="skip",
-                                  reason=f"campaign is {current_state} — no budget write")
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
+                                 msg=f"{platform.title()} will not take a budget change on a "
+                                     f"campaign that is "
+                                     f"{writes.STATE_WORDS.get(current_state, current_state)}, "
+                                     f"so nothing is written")
                     skipped += 1
                     landed = True              # nothing at risk, so nothing left to tear down
                     continue
 
                 budget_landed = True
+                if can_write_budget and writes.is_noop(target, current):
+                    # Said here, in the engine's own voice, because it is the most common
+                    # outcome of all: the hourly poll finding everything already correct.
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid,
+                                 msg=f"the budget is already {writes.money(current)}, so "
+                                     f"there is nothing to change")
                 if can_write_budget:
                     # recent_writes=0 in dry-run (nothing real is counted); real count is wired
                     # for live mode (V5), where the rate-limit guardrail actually gates writes.
@@ -297,9 +393,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     budget_landed = ok or current == target
                 else:
                     ok, action = False, "skip"
-                    logs.decision(run_id, dry_run=dry_run, campaign_id=cid, verdict="skip",
-                                  reason=f"campaign is {current_state} — no budget write, "
-                                         "stopping anyway")
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
+                                 msg=f"the budget cannot be changed on a campaign that is "
+                                     f"{writes.STATE_WORDS.get(current_state, current_state)}"
+                                     f" — stopping it anyway")
 
                 # Revert the budget FIRST, then stop (AD6): if the stop fails the campaign
                 # runs on at its DEFAULT budget rather than the elevated one, which bounds

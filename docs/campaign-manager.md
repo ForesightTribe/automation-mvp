@@ -1374,6 +1374,34 @@ two mistakes that actually happened — arrow jargon in a reason, and `str(e)` p
 The `compute_bid` reasons were already right and are untouched: _"raising to ₹25 (+₹3) because
 position 24 is worse than target 3"_ is the register the whole column aims at.
 
+### Both engines narrate the same way
+
+The bid engine reads as a block per keyword — header, configuration, what the marketplace showed,
+what we decided, what landed. The budget engine printed flat lines instead
+(`campaign 583049 applied ₹1202 → ₹802`), repeating the campaign id and writing an arrow where a
+verb belongs. It now uses the same block (`logs.context` / `observed` / `decided`, and a
+`write_result` that speaks in sentences):
+
+```
+[1/4] Reco 04 - Blueberry & Mango  (campaign 583049)
+      default ₹802 · ₹1202 on Fri, Sat, Sun 19:30–02:00, from 11 Sep
+      no rule applies right now, so the budget should be its ₹802 default
+      the campaign is running · its budget is ₹1202
+      applied — the budget is now ₹802 (was ₹1202)
+```
+
+Three things changed with it:
+
+- **A no-op is narrated by the engine**, in its own words (_"the budget is already ₹1202, so there
+  is nothing to change"_), and the guardrail line behind it dropped from WARNING to DEBUG. It is the
+  hourly poll's normal answer — at WARNING it drowned every run that did something.
+- **A failed write says what the value still is**, and why: _"not applied — the budget is still
+  ₹1202 (campaign is not editable)"_. The marketplace's own reason used to be dropped.
+- **A rule reads as English.** `_reason` rendered an open-ended rule as
+  `sunday, friday, saturday (2026-09-11–None) / 19:30–02:00`; it now says
+  `Fri, Sat, Sun 19:30–02:00, from 11 Sep` — week order, real dates, no `None`. The same string is
+  what History shows a client.
+
 ### A blocked run explains itself too
 
 A run that dies at `setup()` returns before writing anything, so History showed bids not moving for

@@ -102,7 +102,7 @@ def _why(resp: dict | None) -> str:
     return f"no reason given (keys: {', '.join(sorted(resp)) or 'none'})"
 
 
-def _money(v) -> str:
+def money(v) -> str:
     """Render a budget the way it will actually be SENT.
 
     `--budget` is a float, so a target of 700 logs as "700.0" unless formatted —
@@ -254,8 +254,10 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
                       what="budget", old=current, new=target)
 
     if is_noop(target, current):
-        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
-                             passed=False, reason="no-op (already at target)")
+        # DEBUG, not WARNING: "the budget is already what it should be" is the hourly
+        # poll's normal answer, and the engine has already said so in its own words.
+        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
+                             reason=f"the budget is already {money(current)}", level="debug")
         return False
     # A marketplace may impose its own floor/ceiling, which is stricter than our
     # config bounds and not ours to argue with — Zepto publishes a ₹500 daily-budget
@@ -279,12 +281,12 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
     logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=True)
 
     if dry_run:
-        # Pass the SAME detail the live branch does. Without it a dry run printed
+        # Report the SAME values the live branch does. Without them a dry run printed
         # "would apply  — not sent" with no numbers, which is backwards: the dry run
         # is precisely when a human needs to see what would change, and `write.intent`
         # (which carries old→new) is DEBUG.
         logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True,
-                          detail=f"{_money(current)} → {_money(target)}")
+                          subject="the budget", old=money(current), new=money(target))
         return True
 
     # LIVE — the single real budget mutation.
@@ -294,14 +296,13 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
         logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
                              passed=False, reason=str(e))
         logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
-                          detail=f"refused — {e}")
+                          subject="the budget", old=money(current), new=money(target),
+                          reason=str(e))
         return False
     ok = bool(resp.get("status") or resp.get("success"))
-    detail = f"{_money(current)} → {_money(target)}"
-    if not ok:
-        detail = f"{detail} — {_why(resp)}"
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=detail)
+                      subject="the budget", old=money(current), new=money(target),
+                      reason=None if ok else _why(resp))
     return ok
 
 
@@ -314,8 +315,9 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
                       what="bid", old=current_cpm, new=clamped)
 
     if is_noop(clamped, current_cpm):
-        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
-                             passed=False, reason="no-op (already at target bid)", keyword=keyword)
+        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
+                             reason=f"the bid is already ₹{clamped}", keyword=keyword,
+                             level="debug")
         return False
     # The marketplace's OWN bid bounds, if it publishes any — the same declare/enforce
     # split `apply_budget` uses for MIN_BUDGET. Sits after the clamp because the clamp
@@ -392,16 +394,23 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
     return False
 
 
-def _status_detail(target: str, budget: float | None) -> str:
-    """What a status write is doing, for the log line.
+# A campaign's run state, in the words a person uses for it. `held` and `ended` are
+# Blinkit's own conditions, so they are named rather than translated away.
+STATE_WORDS = {"running": "running", "paused": "stopped", "held": "on hold (out of budget)",
+                "ended": "finished", "draft": "a draft"}
+
+
+def _status_words(target: str, budget: float | None) -> str:
+    """What a status write leaves behind, for the log line.
 
     `budget` is None on a marketplace whose resume carries none, so it is only
     mentioned when there is one — and never formatted with `:g`, which raises on
     None and would turn a successful write into a crash while reporting itself.
     """
+    word = STATE_WORDS.get(target, target)
     if target == "running" and budget is not None:
-        return f"status={target} budget={_money(budget)}"
-    return f"status={target}"
+        return f"{word} at {money(budget)}"
+    return word
 
 
 async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
@@ -428,8 +437,9 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                       what="status", old=current, new=target)
 
     if current == target:
-        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
-                             passed=False, reason=f"no-op (already {target})")
+        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
+                             reason=f"the campaign is already {STATE_WORDS.get(target, target)}",
+                             level="debug")
         return False
     reason = status_transition_denied(current, target, allow_draft=allow_draft)
     if reason:
@@ -458,11 +468,13 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         logs.status_overwrites(run_id, dry_run=dry_run, campaign_id=campaign_id,
                                fields=overwrites)
 
+    was = STATE_WORDS.get(current, current)
     if dry_run:
-        # Same detail the live branch reports. A dry run that says only "would
+        # Same values the live branch reports. A dry run that says only "would
         # apply" tells a reviewer nothing about WHAT it would apply.
         logs.write_result(run_id, dry_run=True, campaign_id=campaign_id, applied=True,
-                          detail=_status_detail(target, budget))
+                          subject="the campaign", old=was,
+                          new=_status_words(target, budget))
         return True
 
     # LIVE — the single real status mutation.
@@ -472,9 +484,12 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
                              passed=False, reason=str(e))
         logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=False,
-                          detail=f"refused — {e}")
+                          subject="the campaign", old=was,
+                          new=_status_words(target, budget), reason=str(e))
         return False
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
-                      detail=_status_detail(target, budget))
+                      subject="the campaign", old=was,
+                      new=_status_words(target, budget),
+                      reason=None if ok else _why(resp))
     return ok

@@ -149,22 +149,36 @@ _STORE_SOURCE = {
 }
 
 
-def observed(run_id: str, *, dry_run: bool, campaign_id, keyword: str, msg: str,
-             level: str = "info", **fields: Any) -> None:
-    """What the search saw — product counts and where our ad landed."""
+def context(run_id: str, *, dry_run: bool, campaign_id, msg: str,
+            keyword: str | None = None) -> None:
+    """The automation's own configuration, under its block header.
+
+    The budget engine's counterpart to `rule_context` — that one takes the bid engine's
+    fixed fields (target position, limits, measurement store); a schedule's configuration
+    is a different shape, so it arrives already worded.
+    """
+    _emit("info", "rule.config", dry_run, msg, indent=True,
+          run_id=run_id, campaign_id=campaign_id, keyword=keyword)
+
+
+def observed(run_id: str, *, dry_run: bool, campaign_id, msg: str,
+             keyword: str | None = None, level: str = "info", **fields: Any) -> None:
+    """What the marketplace showed us — the bid engine's search result, the budget
+    engine's campaign status and current budget. `keyword` is optional: a budget
+    decision is per campaign, not per keyword."""
     _emit(level, "rule.observed", dry_run, msg, indent=True,
           run_id=run_id, campaign_id=campaign_id, keyword=keyword, **fields)
 
 
-def decided(run_id: str, *, dry_run: bool, campaign_id, keyword: str, msg: str,
-            level: str = "info", **fields: Any) -> None:
+def decided(run_id: str, *, dry_run: bool, campaign_id, msg: str,
+            keyword: str | None = None, level: str = "info", **fields: Any) -> None:
     """What we are going to do about it, and why — in one sentence."""
     _emit(level, "rule.decision", dry_run, msg, indent=True,
           run_id=run_id, campaign_id=campaign_id, keyword=keyword, **fields)
 
 
-def applied(run_id: str, *, dry_run: bool, campaign_id, keyword: str, ok: bool,
-            msg: str) -> None:
+def applied(run_id: str, *, dry_run: bool, campaign_id, ok: bool, msg: str,
+            keyword: str | None = None) -> None:
     """The outcome of the write. `[DRY-RUN]` lives here and nowhere else — this is the
     only line where confusing 'would have' with 'did' could actually cost money."""
     _emit("info" if ok else "error", "rule.applied", dry_run,
@@ -185,27 +199,46 @@ def write_intent(run_id: str, *, dry_run: bool, campaign_id, what: str, old, new
 
 
 def write_guardrail(run_id: str, *, dry_run: bool, campaign_id, passed: bool,
-                    reason: str | None = None, keyword: str | None = None) -> None:
-    # A PASS is the boring case and says nothing a reader needs — DEBUG. A REJECT is the
-    # whole reason the guardrail exists, so it stays a WARNING.
-    verdict = "PASS" if passed else f"REJECT ({reason})"
-    _emit("debug" if passed else "warning", "write.guardrail", dry_run,
-          f"campaign={campaign_id} {verdict}",
-          run_id=run_id, campaign_id=campaign_id, passed=passed, reason=reason,
+                    reason: str | None = None, keyword: str | None = None,
+                    level: str | None = None) -> None:
+    """A guardrail's verdict on a write.
+
+    A PASS is the boring case and says nothing a reader needs — DEBUG. A REJECT is the whole
+    reason the guardrail exists, so it is a WARNING, worded as a refusal in the block rather
+    than as `campaign=583049 REJECT (…)`. `level` overrides that for a rejection that is
+    routine rather than notable — a no-op write is the hourly poll's normal answer, and at
+    WARNING it drowned the run.
+    """
+    if passed:
+        _emit(level or "debug", "write.guardrail", dry_run, "guardrail passed", indent=True,
+              run_id=run_id, campaign_id=campaign_id, passed=True, reason=None,
+              keyword=keyword)
+        return
+    _emit(level or "warning", "write.guardrail", dry_run, f"refused — {reason}", indent=True,
+          run_id=run_id, campaign_id=campaign_id, passed=False, reason=reason,
           keyword=keyword)
 
 
-def write_result(run_id: str, *, dry_run: bool, campaign_id, applied: bool,
-                 detail: str = "", keyword: str | None = None) -> None:
-    """The write outcome for the budget/activation engines. The bid engine reports its own
-    via `applied`, which sits inside the rule block."""
+def write_result(run_id: str, *, dry_run: bool, campaign_id, applied: bool, subject: str,
+                 new: str, old: str | None = None, reason: str | None = None,
+                 keyword: str | None = None) -> None:
+    """The write outcome for the budget/activation engines, in a sentence.
+
+    The bid engine reports its own via `applied`; this is the same line for a value that
+    belongs to a campaign rather than a keyword, so both engines read alike. It used to
+    print `campaign 583049 applied ₹1202 → ₹802` — the campaign id repeated from the block
+    header above it, and an arrow where a verb belongs. A FAILED write now says what the
+    value still IS, which is the fact a reader is actually looking for, and why.
+    """
+    was = f" (was {old})" if old and old != new else ""
     if dry_run:
-        msg, level = f"[DRY-RUN] campaign {campaign_id} would apply {detail} — not sent", "info"
+        msg, level = f"[DRY-RUN] would change {subject} to {new}{was} — not sent", "info"
     elif applied:
-        msg, level = f"campaign {campaign_id} applied {detail}".strip(), "info"
+        msg, level = f"applied — {subject} is now {new}{was}", "info"
     else:
-        msg, level = f"campaign {campaign_id} FAILED {detail}".strip(), "error"
-    _emit(level, "write.result", dry_run, msg,
+        still = f" — {subject} is still {old}" if old else ""
+        msg, level = (f"not applied{still}" + (f" ({reason})" if reason else ""), "error")
+    _emit(level, "write.result", dry_run, msg, indent=True,
           run_id=run_id, campaign_id=campaign_id, applied=applied, keyword=keyword)
 
 
@@ -218,7 +251,7 @@ def status_overwrites(run_id: str, *, dry_run: bool, campaign_id, fields: dict) 
     """
     summary = ", ".join(f"{k}={v}" for k, v in sorted(fields.items()))
     _emit("warning", "status.overwrites", dry_run,
-          f"campaign={campaign_id} restart re-submits: {summary}",
+          f"restarting re-submits the whole campaign: {summary}", indent=True,
           run_id=run_id, campaign_id=campaign_id, **{f"ow_{k}": v for k, v in fields.items()})
 
 

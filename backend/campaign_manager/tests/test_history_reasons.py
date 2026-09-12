@@ -98,6 +98,45 @@ def test_no_reason_in_the_engine_uses_arrow_jargon():
         assert jargon not in src, f"{jargon} is engineer-speak in a client-facing column"
 
 
+# ── a budget rule describes itself in English ───────────────────────────────
+#
+# `budget._reason` is not just a log line: it IS the reason column a client reads for every
+# budget change. It used to render the stored shape — `sunday, friday, saturday
+# (2026-09-11–None) / 19:30–02:00` — where `None` is a missing end date and `/` separates
+# fields nobody outside the code knows about.
+
+def _budget_reason(**over):
+    from campaign_manager.budget import _reason
+    rule = {"type": "recurring", "days": [], "time_slots": [], "start_time": "19:30",
+            "end_time": "02:00", "start_date": None, "end_date": None, "date": None}
+    rule.update(over)
+    return _reason(rule)
+
+
+def test_an_open_ended_rule_never_says_none():
+    out = _budget_reason(days=["sunday", "friday", "saturday"], start_date="2026-09-11")
+    assert out == "Fri, Sat, Sun 19:30–02:00, from 11 Sep", out
+    assert "None" not in out and "/" not in out
+
+
+def test_day_names_come_out_in_week_order():
+    assert _budget_reason(days=["sunday", "monday"]).startswith("Mon, Sun ")
+    assert _budget_reason(days=[]).startswith("every day ")
+    assert _budget_reason(days=["monday", "tuesday", "wednesday", "thursday", "friday",
+                               "saturday", "sunday"]).startswith("every day ")
+
+
+def test_date_spans_read_as_dates():
+    assert _budget_reason(end_date="2026-10-01").endswith(", until 1 Oct")
+    assert _budget_reason(start_date="2026-09-11",
+                          end_date="2026-10-01").endswith(", 11 Sep–1 Oct")
+    assert _budget_reason(type="once", date="2026-09-11") == "one-time 11 Sep 19:30–02:00"
+
+
+def test_an_unparseable_date_is_shown_rather_than_crashing():
+    assert "not-a-date" in _budget_reason(start_date="not-a-date")
+
+
 def test_str_e_is_never_passed_straight_into_a_reason():
     """The guard against the original bug: `str(e)` as a reason argument."""
     from pathlib import Path
