@@ -3,6 +3,7 @@ import { AppLayout } from "../layout/AppLayout";
 import { RequireAuth } from "../routes/RequireAuth";
 import { RequireAdmin } from "../routes/RequireAdmin";
 import { RedirectIfAuth } from "../routes/RedirectIfAuth";
+import { LoginPage } from "../routes/LoginPage";
 import { LandingPage } from "../routes/LandingPage";
 import { NotFoundPage } from "../routes/NotFoundPage";
 
@@ -33,7 +34,10 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 export const router = createBrowserRouter([
 	{
 		element: <RedirectIfAuth />,
-		children: [{ path: "/", element: <LandingPage /> }],
+		children: [
+			{ path: "/", element: <LandingPage /> },
+			{ path: "/login", element: <LoginPage /> },
+		],
 	},
 	{
 		element: <RequireAuth />,

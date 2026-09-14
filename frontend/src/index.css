@@ -49,12 +49,20 @@
 	--color-content-subtle: #939190; /* Text Tertiary — hints, disabled, placeholders */
 
 	/* ---- Typography ---- */
-	/* Inter is the primary/body face; Bricolage Grotesque is the brand face used
-	   for the logo, headings and KPI numbers. Both are loaded in index.html. */
+	/* ONE face, Inter, for body and display alike. A product whose job is to be
+	   believed about numbers reads better in a plain face than a decorative one.
+	   `--font-display` is a separate token even though it names the same face: 53
+	   call sites use it, and it still means "headings and KPI numbers", which is the
+	   hook for giving them their own face later. What separates a heading from body
+	   text is size, weight and tracking, not a second typeface. */
 	--font-sans: "Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
 	--font-display:
-		"Bricolage Grotesque", "Inter", ui-sans-serif, system-ui, sans-serif;
+		"Inter", ui-sans-serif, system-ui, -apple-system, sans-serif;
 	--font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", monospace;
+	/* Inter is drawn for text sizes, so at heading sizes the letter spacing reads
+	   loose. Every display usage pulls it in by default; a call site that wants more
+	   air can still override with a tracking- utility. */
+	--tracking-display: -0.02em;
 }
 
 /* App-wide base defaults. */
