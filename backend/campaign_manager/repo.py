@@ -1063,6 +1063,121 @@ async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
     return len(rows)
 
 
+# ── Catalogue write-back (campaign_manager/writes.py) ───────────────────────
+#
+# The second reason the campaign manager writes outside its own cm_* tables, and it is the
+# same reason as `upsert_campaign_catalog` above: a landed write changed the marketplace,
+# and the catalogue is where the product reads the marketplace's state from. Before this,
+# only the nightly scrape ever refreshed those columns — so a budget set at 10:00, a
+# campaign paused at noon and a bid the optimizer climbed all afternoon were invisible in
+# our own dashboard until 03:00 the next morning, while `cm_run_log` showed all three.
+#
+# What makes it safe is what it does NOT do:
+#
+#   * **UPDATE only, never INSERT.** A campaign created this morning has no catalogue row
+#     yet, so its patch matches nothing and is dropped. Inserting one would fabricate a
+#     campaign whose every other column is NULL and whose `scraped_at` is fresh — and
+#     `scraped_at` is exactly what the pickers' freshness filter trusts.
+#   * **Never advances `scraped_at`.** That column means "when the scrape last saw this",
+#     and a write-back has not scraped anything. The nightly scrape stays the source of
+#     truth and overwrites all of this with Blinkit's own answer, so a write-back that is
+#     somehow wrong decays within a day instead of persisting.
+#   * **Never raises.** By the time this is called the marketplace has ALREADY been mutated
+#     and `cm_run_log` has already recorded it. A bookkeeping failure must not turn a
+#     successful write into a failed run — the same reasoning as `_record_run_blocked`.
+
+def _catalog_model(table: str):
+    """Logical table name → model. Adapters return the name (they never import
+    `app.models`); this is the one place that resolves it, so a second marketplace adds a
+    line here rather than a branch in the choke point."""
+    from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
+    return {
+        "blinkit.campaigns": BlinkitAdCampaign,
+        "blinkit.keywords": BlinkitAdCampaignKeyword,
+    }.get(table)
+
+
+def merge_patches(patches: list[dict]) -> list[dict]:
+    """Collapse a run's patches to one per row, later values winning. Pure — unit-tested.
+
+    A single campaign can collect several in one run: the budget engine reverts a budget
+    and then stops the campaign, and a Blinkit restart produces a status and a budget at
+    once. Left alone those are three UPDATEs on one row; merged they are one. It also
+    fixes the ordering hazard — two patches touching the same column would otherwise race
+    on statement order, and here the last write plainly wins.
+    """
+    merged: dict[tuple, dict] = {}
+    for p in patches:
+        # ⚠️ An EMPTY key is dropped, not treated as "match anything". `record_applied`
+        # scopes every statement by tenant and platform and then ANDs the key on top, so a
+        # keyless patch would widen into "UPDATE every campaign this client owns" — a
+        # bookkeeping bug turning into a data-loss incident. A patch must name its row.
+        if not p or not p.get("set") or not p.get("table") or not p.get("key"):
+            continue
+        key = (p["table"], tuple(sorted(p["key"].items(), key=lambda kv: kv[0])))
+        if key in merged:
+            merged[key]["set"].update(p["set"])
+        else:
+            merged[key] = {"table": p["table"], "key": dict(p["key"]),
+                           "set": dict(p["set"])}
+    return list(merged.values())
+
+
+async def record_applied(tenant_id: uuid.UUID, platform: str,
+                         patches: list[dict]) -> int:
+    """Mirror landed marketplace writes into the catalogue. Returns rows actually patched.
+
+    `patches` is what the adapters' `catalog_patch` produced over a whole run, flushed once
+    beside `write_run_log` rather than per write — a bid run can apply a write per keyword
+    per tick, and opening a session for each would put real pressure on a pool that has
+    been exhausted before. One session, one statement per distinct row, no-op on empty.
+    """
+    from sqlalchemy import func, update
+
+    patched = 0
+    try:
+        # Inside the try, with everything else: the whole point of this function is that
+        # bookkeeping cannot break the write it describes, and a malformed patch is exactly
+        # the kind of upstream bug that would otherwise escape from the merge.
+        patches = merge_patches(patches or [])
+        if not patches:
+            return 0
+        async with AsyncSessionLocal() as db:
+            for p in patches:
+                model = _catalog_model(p["table"])
+                if model is None:
+                    logger.warning(f"[cm] no catalogue model for {p['table']!r} — "
+                                   f"{p['set']} not written back")
+                    continue
+                conds = [model.tenant_id == tenant_id, model.platform == platform]
+                for col, val in p["key"].items():
+                    # Keywords are matched case-insensitively, the way `get_keyword_floor`
+                    # already does it: the scrape stores whatever Blinkit returned and a
+                    # rule stores whatever someone typed, and a case difference must not
+                    # silently patch nothing.
+                    if col == "keyword":
+                        conds.append(func.lower(model.keyword) ==
+                                     (val or "").strip().lower())
+                    else:
+                        conds.append(getattr(model, col) == val)
+                result = await db.execute(update(model).where(*conds).values(**p["set"]))
+                if result.rowcount:
+                    patched += result.rowcount
+                else:
+                    # Not an error: a campaign or keyword created since the last sync has
+                    # no row to patch. Worth saying once, because it also means the UI will
+                    # keep showing nothing for it until a scrape or a catalogue refresh.
+                    logger.debug(f"[cm] nothing to write back for {p['key']} in "
+                                 f"{p['table']} — not in the catalogue yet")
+            await db.commit()
+    except Exception as e:
+        logger.warning(f"[cm] catalogue write-back failed ({e}) — the marketplace change "
+                       f"itself landed and is recorded in cm_run_log; the catalogue stays "
+                       f"stale until the next scrape")
+        return 0
+    return patched
+
+
 # ── Settle-once lifecycle writes (campaign_manager/lifecycle.py) ─────────────
 #
 # `kind` is "bid" (keyed by cm_bid_rules.id) or "budget" (keyed by cm_budget_schedules.id).

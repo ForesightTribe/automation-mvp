@@ -372,6 +372,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     processed = applied = skipped = errors = 0
     runtime_rows: list[dict] = []
     log_rows: list[dict] = []
+    # Catalogue write-back, flushed once with the rows above (campaign_manager/writes.py).
+    patches: list[dict] = []
     bids_cache: dict[int, dict] = {}       # campaign_id → {keyword: cpm}  (one detail fetch/campaign)
     products_cache: dict[int, list] = {}   # campaign_id → [products]
     status_cache: dict[int, str | None] = {}   # campaign_id → canonical status (same fetch)
@@ -499,7 +501,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=min_bid, current_cpm=live_cpm, min_bid=min_bid,
                     max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                    recent_writes=0,
+                    recent_writes=0, applied=patches,
                 )
                 applied += int(ok)
                 skipped += int(not ok and write_error is None)
@@ -556,7 +558,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                         adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=min_bid,
                         max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                        recent_writes=0,
+                        recent_writes=0, applied=patches,
                     )
                     applied += int(ok)
                     skipped += int(not ok and write_error is None)
@@ -826,7 +828,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=min_bid,
                 max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                recent_writes=recent,
+                recent_writes=recent, applied=patches,
             )
             applied += int(ok)
             skipped += int(not ok and write_error is None)
@@ -886,6 +888,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
     await repo.write_bid_runtime(runtime_rows)
     await repo.write_run_log(log_rows)
+    await repo.record_applied(tenant_id, platform, patches)
     logs.blank(run_id, dry_run=dry_run)
     logs.run_summary(
         run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
@@ -1110,6 +1113,8 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
     processed = applied = skipped = errors = 0
     runtime_rows: list[dict] = []
     log_rows: list[dict] = []
+    # Catalogue write-back, flushed once with the rows above (campaign_manager/writes.py).
+    patches: list[dict] = []
     landed_ids: list[str] = []                 # floors that landed or were already in place
     failed_ids: list[str] = []
     bids_cache: dict[int, dict] = {}
@@ -1185,6 +1190,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     max_bid=resolve_ceiling(
                         r.max_bid, config.bid_tuning(platform, "BID_MAX_ABSOLUTE")),
                     match_type=r.match_type, dry_run=dry_run, recent_writes=0,
+                    applied=patches,
                 )
                 err = None
             except Exception as e:
@@ -1235,6 +1241,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     success=action == lifecycle.SETTLED))
     await repo.write_bid_runtime(runtime_rows)
     await repo.write_run_log(log_rows)
+    await repo.record_applied(tenant_id, platform, patches)
     logs.blank(run_id, dry_run=dry_run)
     logs.run_summary(run_id, "bid_reset", dry_run=dry_run, unit="keywords",
                      processed=processed, applied=applied, skipped=skipped, errors=errors)

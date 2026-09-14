@@ -57,6 +57,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
             return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
     applied = skipped = errors = 0
+    patches: list[dict] = []
     try:
         current, current_budget, detail = await adapter.read_campaign(client, campaign_id)
         # Field naming differs per marketplace ("name" vs "campaign_name"), so ask
@@ -88,7 +89,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         ok = await writes.apply_status(
             adapter, client, run_id=run_id, campaign_id=campaign_id,
             target=status, current=current, dry_run=dry_run, allow_draft=True,
-            budget=target_budget, overwrites=overwrites,
+            budget=target_budget, overwrites=overwrites, applied=patches,
             recent_writes=0 if dry_run else await repo.recent_write_count(
                 tenant_id, campaign_id,
                 window_minutes=config.RATE_WINDOW_MINUTES, kind="activation"),
@@ -110,6 +111,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
             budget_ok = await writes.apply_budget(
                 adapter, client, run_id=run_id, campaign_id=campaign_id,
                 target=target_budget, current=current_budget, dry_run=dry_run,
+                applied=patches,
                 recent_writes=0 if dry_run else await repo.recent_write_count(
                     tenant_id, campaign_id,
                     window_minutes=config.RATE_WINDOW_MINUTES, kind="budget"),
@@ -129,6 +131,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
         await _close(pw, browser)
 
     await repo.write_run_log(rows)
+    await repo.record_applied(tenant_id, platform, patches)
     logs.run_summary(run_id, "set_activation", dry_run=dry_run, unit="campaigns",
                      processed=1, applied=applied, skipped=skipped, errors=errors)
     return {"processed": 1, "applied": applied, "skipped": skipped, "errors": errors}

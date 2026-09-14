@@ -390,6 +390,85 @@ async def read_restart_context(client, campaign_id: int) -> dict:
     return detail
 
 
+# ── Catalogue write-back (docs/campaign-manager.md §4) ───────────────────────
+#
+# A landed write changes Blinkit but NOT the tables the dashboard reads — those are
+# filled by the nightly marketing scrape, so a budget set at 10:00 read back as
+# yesterday's number until 03:00 the next morning. `writes.py` closes that by asking the
+# adapter WHERE a write lands in the catalogue; this is that answer for Blinkit.
+#
+# It lives here, beside `_STATUS_FROM_BLINKIT` and `_api_match`, because both mappings it
+# needs are Blinkit's own vocabulary and this module is where that vocabulary stops. The
+# alternative — `writes.py` reaching for `adapter._api_match` — is a mistake already made
+# once: it raised AttributeError on every Zepto bid run, because Zepto has no such
+# function. An MP-agnostic caller must never know a marketplace's words.
+#
+# ⚠️ A marketplace with no `catalog_patch` gets NO write-back at all, silently and by
+# design. That is how Zepto stays untouched today: not an `if platform == "blinkit"` in
+# the choke point, but an absent attribute. When Zepto's turn comes it defines its own
+# `catalog_patch`, adds its table names to `repo._catalog_model`, and nothing in
+# `writes.py` or the engines changes.
+
+# The inverse of `_STATUS_FROM_BLINKIT`, and deliberately NOT derived from it: that map is
+# many-to-one (`ACTIVE` and the transient `SCHEDULED` both mean `running`), so inverting it
+# programmatically would be ambiguous. Only the two states we ever WRITE appear here, which
+# makes this exact — `writes.apply_status` refuses every other target.
+_STATUS_TO_BLINKIT = {"running": "ACTIVE", "paused": "STOPPED"}
+
+# Logical table names, resolved to models by `repo._catalog_model`. Strings rather than
+# model classes because no adapter imports `app.models` — the marketplace layer talks to
+# the marketplace, and the DB layer owns the schema.
+CATALOG_CAMPAIGNS = "blinkit.campaigns"
+CATALOG_KEYWORDS = "blinkit.keywords"
+
+
+def catalog_patch(what: str, *, campaign_id: int, value, keyword: str | None = None,
+                  match_type: str | None = None, budget: float | None = None) -> list[dict]:
+    """Where a landed write lands in OUR catalogue — `[{table, key, set}, …]`.
+
+    Pure: no I/O, no session, no marketplace call. It only translates a write we already
+    made into the row and column that mirror it, so it is cheap enough to call inside the
+    choke point and safe enough to unit-test without a DB.
+
+    `what` is `"budget"` / `"status"` / `"bid"` — the three things `writes.py` can apply.
+    Returns a LIST because one write can mirror into two columns: a Blinkit RESTART sets
+    the budget as well as the status (its payload has no "leave the budget alone" option),
+    so recording only the status would leave `daily_budget` stale after the one write that
+    definitely changed it.
+
+    An unknown `what` returns `[]` rather than raising. A new kind of write that nobody
+    taught this function about should cost a stale column, not a failed run — the
+    marketplace has already been mutated by the time this is called.
+    """
+    if what == "budget":
+        return [{"table": CATALOG_CAMPAIGNS, "key": {"campaign_id": campaign_id},
+                 "set": {"daily_budget": int(round(float(value)))}}]
+
+    if what == "status":
+        blinkit_status = _STATUS_TO_BLINKIT.get(value)
+        if blinkit_status is None:
+            return []
+        patch = {"table": CATALOG_CAMPAIGNS, "key": {"campaign_id": campaign_id},
+                 "set": {"status": blinkit_status}}
+        # The restart's budget. Only on the way UP, and only when one was actually sent —
+        # a stop is a bodiless DELETE that changes no budget at all.
+        if value == "running" and budget is not None:
+            patch["set"]["daily_budget"] = int(round(float(budget)))
+        return [patch]
+
+    if what == "bid":
+        # `_api_match`, not the rule's own word: the scrape keys these rows by Blinkit's
+        # vocabulary (`EXACT` / `SMART`), so a BROAD rule's bid belongs on the SMART row —
+        # the same translation `apply_bid` applies on the way out. Keying by the rule's
+        # word would silently patch nothing for every BROAD rule.
+        return [{"table": CATALOG_KEYWORDS,
+                 "key": {"campaign_id": campaign_id, "keyword": keyword,
+                         "match_type": _api_match(match_type)},
+                 "set": {"current_cpm": int(value)}}]
+
+    return []
+
+
 def campaign_name(detail: dict) -> str | None:
     """The campaign's name out of a raw detail. Blinkit calls it `name`."""
     return (detail or {}).get("name")

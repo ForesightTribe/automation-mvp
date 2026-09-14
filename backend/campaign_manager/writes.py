@@ -217,6 +217,37 @@ def status_transition_denied(current: str | None, target: str, *,
     return f"unrecognised campaign status {current!r}"
 
 
+# ── Catalogue write-back (docs/campaign-manager.md §4) ──────────────────────
+
+def _record(applied, adapter, what: str, **kw) -> None:
+    """Note that a write landed, so the caller can mirror it into our catalogue.
+
+    COLLECTS, it does not write. Every `apply_*` takes an optional `applied` list and
+    appends to it; the engine flushes the whole list once, beside `write_run_log`. Two
+    reasons it works that way rather than writing here:
+
+      * **Cost.** A bid run applies a write per keyword per tick. A DB session per write
+        would be a connection acquisition per keyword — on a pool that has been exhausted
+        in production before. Batched, a whole run costs one session, which is what the
+        engines already spend on `write_bid_runtime` and `write_run_log`.
+      * **Blast radius.** The choke point's job is to decide and to narrate; a DB failure
+        in here would sit in the middle of the one function that must never turn a landed
+        marketplace write into an exception.
+
+    A marketplace with no `catalog_patch` is a silent no-op — see the note on Blinkit's
+    `catalog_patch` for why that is the mechanism rather than a platform check.
+    """
+    if applied is None:
+        return
+    patch = getattr(adapter, "catalog_patch", None)
+    if patch is None:
+        return
+    try:
+        applied.extend(patch(what, **kw) or [])
+    except Exception:                      # bookkeeping never breaks the write it describes
+        pass
+
+
 # ── Live-write arming (B3 account guardrail) ────────────────────────────────
 
 async def arm_live(adapter, client, run_id: str,
@@ -247,9 +278,12 @@ async def arm_live(adapter, client, run_id: str,
 # ── The choke-point (only entry to a Blinkit budget/bid mutation) ───────────
 
 async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, current,
-                       dry_run: bool, recent_writes: int = 0) -> bool:
+                       dry_run: bool, recent_writes: int = 0,
+                       applied: list | None = None) -> bool:
     """Guardrailed budget write. Returns True if applied (or would-apply in dry-run),
-    False if skipped/rejected. `adapter`/`client` are unused in dry-run."""
+    False if skipped/rejected. `adapter`/`client` are unused in dry-run.
+
+    `applied` is the run's catalogue write-back accumulator — see `_record`."""
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       what="budget", old=current, new=target)
 
@@ -303,12 +337,15 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       subject="the budget", old=money(current), new=money(target),
                       reason=None if ok else _why(resp))
+    if ok:
+        _record(applied, adapter, "budget", campaign_id=campaign_id, value=target)
     return ok
 
 
 async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_cpm,
                     current_cpm, min_bid, max_bid, match_type="EXACT",
-                    dry_run: bool, recent_writes: int = 0) -> bool:
+                    dry_run: bool, recent_writes: int = 0,
+                    applied: list | None = None) -> bool:
     """Guardrailed keyword-bid write. Clamps to [min_bid, max_bid] first."""
     clamped = clamp_bid(new_cpm, min_bid, max_bid)
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id, keyword=keyword,
@@ -345,6 +382,7 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     # LIVE — the single real Blinkit bid mutation.
     try:
         resp = await adapter.apply_bid(client, campaign_id, keyword, clamped, match_type)
+        ok = bool(resp.get("status") or resp.get("success"))
     except WriteRefused as e:
         logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id,
                              passed=False, reason=str(e), keyword=keyword)
@@ -352,9 +390,15 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     except WriteUnverified as e:
         # The write went out and we did not get a usable answer. Ask the marketplace what
         # the bid IS now, rather than assuming the worst — see WriteUnverified.
-        return await verify_bid(adapter, client, run_id=run_id, campaign_id=campaign_id,
-                                keyword=keyword, intended=clamped, why=str(e))
-    return bool(resp.get("status") or resp.get("success"))
+        ok = await verify_bid(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                              keyword=keyword, intended=clamped, why=str(e))
+    # One record point, so the verified-after-the-fact path is mirrored too: `verify_bid`
+    # returning True means the marketplace itself reports `clamped` as the live bid, which
+    # is a landed write however badly it was acknowledged.
+    if ok:
+        _record(applied, adapter, "bid", campaign_id=campaign_id, value=clamped,
+                keyword=keyword, match_type=match_type)
+    return ok
 
 
 async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
@@ -415,7 +459,8 @@ def _status_words(target: str, budget: float | None) -> str:
 
 async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                        dry_run: bool, recent_writes: int = 0, allow_draft: bool = False,
-                       budget: float | None = None, overwrites: dict | None = None) -> bool:
+                       budget: float | None = None, overwrites: dict | None = None,
+                       applied: list | None = None) -> bool:
     """Guardrailed campaign start/stop. Returns True if applied (or would-apply in dry-run).
 
     The two directions are NOT symmetric, and HOW asymmetric depends on the
@@ -492,4 +537,10 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                       subject="the campaign", old=was,
                       new=_status_words(target, budget),
                       reason=None if ok else _why(resp))
+    if ok:
+        # `budget` goes along for the ride: on a marketplace whose resume RE-SUBMITS the
+        # campaign, a restart sets the budget as surely as it sets the status, and the
+        # adapter decides whether that is true of it.
+        _record(applied, adapter, "status", campaign_id=campaign_id, value=target,
+                budget=budget)
     return ok

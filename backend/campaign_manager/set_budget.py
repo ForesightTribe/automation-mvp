@@ -44,11 +44,13 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
             return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
 
     applied = skipped = errors = 0
+    patches: list[dict] = []
     try:
         current = await adapter.read_budget(client, campaign_id)
         ok = await writes.apply_budget(
             adapter, client, run_id=run_id, campaign_id=campaign_id,
             target=budget, current=current, dry_run=dry_run, recent_writes=0,
+            applied=patches,
         )
         applied, skipped = int(ok), int(not ok)
         row = _row(tenant_id, platform, run_id, campaign_id,
@@ -66,6 +68,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
             await pw.stop()
 
     await repo.write_run_log([row])
+    await repo.record_applied(tenant_id, platform, patches)
     logs.run_summary(run_id, "set_budget", dry_run=dry_run, unit="campaigns",
                      processed=1, applied=applied, skipped=skipped, errors=errors)
     return {"processed": 1, "applied": applied, "skipped": skipped, "errors": errors}

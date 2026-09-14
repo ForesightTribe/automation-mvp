@@ -256,6 +256,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     adapter = get_adapter(platform)
     processed = applied = skipped = errors = 0
     log_rows: list[dict] = []
+    # Catalogue write-back, flushed once with `log_rows` below (campaign_manager/writes.py).
+    patches: list[dict] = []
     # The final teardowns this run performed — schedule id → the close each one covers — and
     # the ones that did not land, which count against SETTLE_MAX_ATTEMPTS. `latched` is the
     # same stamp for an ordinary window close: the schedule has been put back to its default,
@@ -388,7 +390,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # it. That is the whole reason activation lives in this engine.
                 if want_state == "running" and current_state == "paused":
                     ok = await _restart(adapter, client, run_id, cid, target, detail,
-                                        dry_run, tenant_id, platform)
+                                        dry_run, tenant_id, platform, patches)
                     applied += int(ok)
                     skipped += int(not ok)
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
@@ -431,6 +433,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     ok = await writes.apply_budget(
                         adapter, client, run_id=run_id, campaign_id=cid,
                         target=target, current=current, dry_run=dry_run, recent_writes=0,
+                        applied=patches,
                     )
                     action = "apply" if ok else ("no-op" if current == target else "skip")
                     applied += int(ok)
@@ -463,7 +466,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     # conditional on the revert succeeding.
                     stopped_ok = await writes.apply_status(
                         adapter, client, run_id=run_id, campaign_id=cid, target="paused",
-                        current=current_state, dry_run=dry_run,
+                        current=current_state, dry_run=dry_run, applied=patches,
                         recent_writes=0 if dry_run else await repo.recent_write_count(
                             tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
                             kind="activation"),
@@ -527,6 +530,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             campaign_name=schedule.campaign_name, reason=reason, timestamp=now_ist(),
             success=action == lifecycle.SETTLED))
     await repo.write_run_log(log_rows)
+    await repo.record_applied(tenant_id, platform, patches)
     logs.run_summary(run_id, "budget_scheduler", dry_run=dry_run, unit="campaigns",
                      processed=processed, applied=applied, skipped=skipped, errors=errors,
                      seconds=(now_ist() - started).total_seconds())
@@ -534,7 +538,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
 
 async def _restart(adapter, client, run_id, campaign_id, budget, detail, dry_run,
-                   tenant_id, platform) -> bool:
+                   tenant_id, platform, patches: list | None = None) -> bool:
     """Bring a stopped campaign back, at `budget`.
 
     Split out because a restart is the heavy direction: Blinkit re-submits the whole
@@ -546,7 +550,7 @@ async def _restart(adapter, client, run_id, campaign_id, budget, detail, dry_run
 
     return await writes.apply_status(
         adapter, client, run_id=run_id, campaign_id=campaign_id, target="running",
-        current="paused", dry_run=dry_run, budget=budget,
+        current="paused", dry_run=dry_run, budget=budget, applied=patches,
         overwrites=restart_mod.overwrites(detail, budget=budget),
         recent_writes=0 if dry_run else await repo.recent_write_count(
             tenant_id, campaign_id, window_minutes=config.RATE_WINDOW_MINUTES,
