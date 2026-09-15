@@ -36,6 +36,14 @@ from scraper.utils.browser import PLAYWRIGHT_ARGS
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
 _JITTER_FRAC = 0.15     # ± spread on the block-recovery wait, so workers stop retrying in lockstep
+# Seconds between worker start-ups. Opening a session means loading the
+# marketplace's homepage and capturing the first search request's headers; five
+# workers doing that in the same second on the VM left three of them past the
+# capture window ("no session headers captured", all at 11:00:59 on 2026-09-14)
+# and a worker that fails to open its session exits and is not replaced, so the
+# whole 10-hour run went on two workers. Worker N waits (N-1) x this before its
+# first page load. 0 restores the old all-at-once start.
+_WORKER_STAGGER_S = 5
 
 
 def _clamp_workers(requested: int, total: int, provider) -> int:
@@ -188,6 +196,8 @@ async def _worker(
     this list — see the backlog pass there. A keyword that fails there too is genuinely
     left out of this run, not queued forever.
     """
+    if _WORKER_STAGGER_S and wid > 1:
+        await asyncio.sleep(_WORKER_STAGGER_S * (wid - 1))
     session = await provider.open_session(browser, seed[0], seed[1])
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
