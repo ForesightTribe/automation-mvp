@@ -44,13 +44,15 @@ _JITTER_FRAC = 0.15     # ± spread on the block-recovery wait, so workers stop 
 # whole 10-hour run went on two workers. Worker N waits (N-1) x this before its
 # first page load. 0 restores the old all-at-once start.
 _WORKER_STAGGER_S = 5
-# The stagger took the VM from 2 to 4 live workers; the fifth still lost its
-# session to one slow homepage load (Blinkit answers the VM in 3-12 s where
-# a laptop sees ~1 s). A worker that fails to open gets a second attempt
-# after this many seconds before it gives up — a slow load is random, and
-# the retry almost always lands. 1 attempt restores the old give-up-at-once.
-_OPEN_SESSION_ATTEMPTS = 2
-_OPEN_SESSION_RETRY_S = 10
+# The stagger took the VM from 2 to 4 live workers. What loses the rest is
+# not a slow page but Cloudflare rate-limiting the VM's IP ("HTTP 429 ·
+# non-JSON body" surfaced mid-run on 2026-09-15) — a challenge page instead
+# of the site, so no search request fires and no headers are captured. Its
+# window is short, so a worker that fails to open waits and tries again,
+# with a longer wait each time, before giving up. On the VM the second
+# attempt rescued two of three failed workers; the third wait is for the
+# one it did not. A single entry restores the old give-up-at-once.
+_OPEN_SESSION_RETRY_S = (10, 30)      # waits before attempt 2, attempt 3
 
 
 def _clamp_workers(requested: int, total: int, provider) -> int:
@@ -206,13 +208,13 @@ async def _worker(
     if _WORKER_STAGGER_S and wid > 1:
         await asyncio.sleep(_WORKER_STAGGER_S * (wid - 1))
     session = None
-    for attempt in range(1, _OPEN_SESSION_ATTEMPTS + 1):
+    for attempt, wait in enumerate((*_OPEN_SESSION_RETRY_S, None), start=1):
         session = await provider.open_session(browser, seed[0], seed[1])
-        if session or attempt == _OPEN_SESSION_ATTEMPTS:
+        if session or wait is None:
             break
         logger.warning(f"worker {wid}: could not open session (attempt {attempt}) — "
-                       f"retrying in {_OPEN_SESSION_RETRY_S}s")
-        await asyncio.sleep(_OPEN_SESSION_RETRY_S)
+                       f"retrying in {wait}s")
+        await asyncio.sleep(wait)
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
