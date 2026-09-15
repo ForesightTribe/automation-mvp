@@ -3,8 +3,6 @@ import { useMemo, useRef, useState } from "react";
 import { invalidateCampaignData } from "../../lib/campaignData";
 import { sortRows } from "../../lib/sortRows";
 
-/** "navi mumbai" reads as "Navi Mumbai". The catalogue stores cities lower-cased. */
-const title = (s) => s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import {
@@ -17,7 +15,6 @@ import {
 	deleteBudgetSchedule,
 	getAdvertiser,
 	getBidContext,
-	getStoreCatalogue,
 	getBidRules,
 	getBudgetSchedules,
 	getKeywordMetricsPage,
@@ -521,32 +518,17 @@ export const useWriteMode = () => {
 };
 
 /**
- * The cities the platform has stores in, derived from the store catalogue.
+ * ⚠️ There is no `useCities` here any more, deliberately (2026-09-15).
  *
- * The catalogue is per-store, so several hundred rows collapse to a couple of hundred
- * cities. Global reference data that changes when the catalogue is re-scraped, so it is
- * cached for the session rather than refetched per wizard.
+ * The wizard used to read the store catalogue for its own city list while `bid-context`
+ * supplied the campaign's targeted cities, and the picker chose between them by list
+ * length — which is also what "still loading" looks like. A sorted catalogue rendered
+ * first and was replaced a second later by an unsorted, differently-spelled list.
+ *
+ * `bid-context` now answers the whole question — the campaign's cities when it targets
+ * some, every measurable city when it does not — so the form has ONE source. Reintroducing
+ * a second one brings the swap back.
  */
-export const useCities = () =>
-	useQuery({
-		queryKey: ["store-catalogue-cities"],
-		queryFn: getStoreCatalogue,
-		staleTime: Infinity,
-		select: (rows) => {
-			const byCity = new Map();
-			for (const r of rows ?? []) {
-				if (!r.city || byCity.has(r.city)) continue;
-				byCity.set(r.city, {
-					slug: r.city,
-					name: title(r.city),
-					state: r.state,
-				});
-			}
-			return [...byCity.values()].sort((a, b) =>
-				a.name.localeCompare(b.name),
-			);
-		},
-	});
 
 /**
  * Click-to-sort over rows already in hand, for the wizard's picker tables.

@@ -21,7 +21,6 @@ import {
 	useUpdateBidRule,
 	useAllKeywordMetrics,
 	useBidContext,
-	useCities,
 	useCampaigns,
 	useDeleteBudgetRule,
 	useWriteMode,
@@ -76,7 +75,6 @@ export const AutomationWizard = ({
 	// keyword metrics its picker reads.
 	const { isLoading: loadingCampaigns } = useCampaigns();
 	const { isLoading: loadingKeywords } = useAllKeywordMetrics();
-	const { data: allCities } = useCities();
 	const [kind, setKind] = useState(isEdit ? editRow.kind : initialKind);
 	// Declared after `kind`, which it reads: a const is in its temporal dead zone until its
 	// own line, so ordering here is correctness rather than tidiness.
@@ -273,7 +271,9 @@ export const AutomationWizard = ({
 	// Both come from the daily scrape and are read-only. An unscraped campaign returns
 	// empty fields rather than 404ing, so every branch below degrades to free text.
 	const campaignId = campaign?.campaign_id ?? null;
-	const { data: ctx } = useBidContext(kind === "keyword" ? campaignId : null);
+	const { data: ctx, isPending: ctxPending } = useBidContext(
+		kind === "keyword" ? campaignId : null,
+	);
 
 	// The keyword itself is chosen in <KeywordPicker>, from /ads/keywords (every keyword with
 	// performance data). bid-context only supplies what surrounds it: Blinkit's published
@@ -341,10 +341,23 @@ export const AutomationWizard = ({
 		}
 	}, [floor, campaignFloor, minBid]);
 
-	// A campaign targeting cities can only be measured where it actually runs; pan-India
-	// leaves the choice open, so the field falls back to free text.
-	const cityOptions = ctx?.region_type === "CITY" ? (ctx.cities ?? []) : [];
-	const singleCity = cityOptions.length === 1 ? cityOptions[0] : null;
+	// Where this rule may measure — the WHOLE answer, already sorted, already canonical, and
+	// already narrowed to the campaign's own cities when it targets some. The form does not
+	// second-guess it: there is no second city source to fall back to (see `_measurement_cities`).
+	const cityOptions = ctx?.cities ?? [];
+	// Auto-fill only when the campaign genuinely has one city. A one-city CATALOGUE would
+	// mean something very different, so this reads `region_type`, never the list's length.
+	const singleCity =
+		ctx?.region_type === "CITY" && cityOptions.length === 1
+			? cityOptions[0]
+			: null;
+
+	// A city chosen for one campaign need not exist in the next one's list, and a value that
+	// matches no option reads as an empty field while still being what gets saved. Declared
+	// ABOVE the auto-fill so a campaign switch clears before that refills, not after.
+	useEffect(() => {
+		setCity("");
+	}, [campaignId]);
 
 	useEffect(() => {
 		if (singleCity && !city && !locationId) setCity(singleCity.name);
@@ -950,7 +963,10 @@ export const AutomationWizard = ({
 										city={city}
 										onCity={setCity}
 										cityOptions={cityOptions}
-										allCities={allCities ?? []}
+										citiesLoading={Boolean(
+											campaignId && ctxPending,
+										)}
+										regionType={ctx?.region_type ?? null}
 										singleCity={singleCity}
 										hasLocation={hasLocation}
 										existingLocationName={

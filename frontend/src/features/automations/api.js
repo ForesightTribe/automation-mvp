@@ -242,13 +242,9 @@ export const getRecentActions = (clientId) =>
 	api.get(`${base(clientId)}/actions`);
 
 /**
- * The dark-store catalogue, which is where the evaluation-city suggestions come from.
- *
- * ⚠️ Read from the STORE catalogue, not from a city list. The catalogue is the only source
- * that reflects where stores actually are; a standalone city table drifts from it.
- * The engine resolves an evaluation city by lower-casing it against this same table
- * (`repo.py::resolve_store`), so a city offered here is one it can genuinely measure at.
- *
- * Not client-scoped: these are the platform's stores, not this account's.
+ * ⚠️ `getStoreCatalogue` (`GET /reference/blinkit-zones`) is gone from this feature
+ * (2026-09-15). The evaluation-city picker read it directly and raced `bid-context` for the
+ * same field; `bid-context` now returns the measurable cities itself, resolved against that
+ * very catalogue server-side. The route still exists for other readers — this form is just
+ * no longer one of them.
  */
-export const getStoreCatalogue = () => api.get("/reference/blinkit-zones");

@@ -490,6 +490,143 @@ async def resolve_city_id(platform: str, city: str | None) -> int | None:
         return await _resolve_city_id(db, platform, city)
 
 
+async def resolve_city_ids(platform: str, names) -> dict[str, int | None]:
+    """`{lowercased name: city_id | None}` for MANY marketplace city names, in one session.
+
+    The bulk form of `resolve_city_id`: identical rules in identical order, but three
+    queries for the whole list instead of three per name. A picker resolving a campaign's
+    targeting calls this once — looping the single form opens a session per name, which is
+    how a read path quietly turns into pool pressure.
+    """
+    from sqlalchemy import func
+    from app.models.search import City, CityAlias, MarketplaceLocation
+
+    keys = {(n or "").strip().lower() for n in names}
+    keys.discard("")
+    if not keys:
+        return {}
+    out: dict[str, int | None] = dict.fromkeys(keys)
+
+    async with AsyncSessionLocal() as db:
+        # 1. the platform's own alias for the name.
+        for alias, cid in (await db.execute(
+            select(CityAlias.alias, CityAlias.city_id).where(
+                CityAlias.source == f"{platform}:ads",
+                CityAlias.alias.in_(keys),
+                CityAlias.is_active == True,  # noqa: E712
+            )
+        )).all():
+            out[alias] = cid
+
+        # 2. a canonical city name or slug.
+        rest = [k for k, v in out.items() if v is None]
+        if rest:
+            for name, slug, cid in (await db.execute(
+                select(City.name, City.slug, City.id).where(
+                    (func.lower(City.name).in_(rest)) | (City.slug.in_(rest))
+                )
+            )).all():
+                for k in ((name or "").lower(), slug):
+                    if out.get(k, "miss") is None:
+                        out[k] = cid
+
+        # 3. our catalog's own city text — only when every store under it agrees on one
+        #    city, exactly as the single form does. A grouped name spanning two cities
+        #    (`up-ncr` is Noida AND Ghaziabad) stays unresolved rather than picking one.
+        rest = [k for k, v in out.items() if v is None]
+        if rest:
+            by_text: dict[str, set] = {}
+            for text_, cid in (await db.execute(
+                select(MarketplaceLocation.city, MarketplaceLocation.city_id).where(
+                    MarketplaceLocation.mp_slug == platform,
+                    MarketplaceLocation.is_active == True,  # noqa: E712
+                    func.lower(MarketplaceLocation.city).in_(rest),
+                    MarketplaceLocation.city_id.is_not(None),
+                ).distinct()
+            )).all():
+                by_text.setdefault((text_ or "").lower(), set()).add(cid)
+            for k, ids in by_text.items():
+                if len(ids) == 1:
+                    out[k] = next(iter(ids))
+    return out
+
+
+async def measurable_cities(platform: str, *, tenant_id: uuid.UUID | None = None,
+                            city_ids=None) -> dict:
+    """`{city_id: (name, state, MeasurementStore)}` — every city we can measure position in.
+
+    The list form of `resolve_store`, and the answer to "where may a bid rule point?". A
+    city is in here only if our catalog has an active store with coordinates in it, which
+    is the same test `resolve_store` applies one city at a time — so anything this offers,
+    a save can resolve.
+
+    `city_ids=None` means the whole catalog (what a PAN_INDIA campaign may choose from);
+    a list narrows it to those cities (what a CITY-targeted campaign may choose from), and
+    a targeted city absent from the result is one we cannot measure at.
+
+    ⚠️ TWO queries + one, never a loop. `resolve_store` opens its own session per call, so
+    calling it once per city is fine for a campaign's handful and a fan-out of a couple of
+    hundred sessions for the pan-India list — the shape behind the 2026-09 pool exhaustion.
+
+    Store choice follows the frozen `cm_city_stores` layers (tenant override, then global),
+    falling back to the city's lowest merchant_id — the same order, and the same `source`
+    labels, as `resolve_store`.
+    """
+    from sqlalchemy import func
+    from app.models.search import City, MarketplaceLocation
+
+    ids = None if city_ids is None else [c for c in city_ids if c is not None]
+    if ids is not None and not ids:
+        return {}
+
+    base = (select(MarketplaceLocation).where(
+        MarketplaceLocation.mp_slug == platform,
+        MarketplaceLocation.is_active == True,  # noqa: E712
+        MarketplaceLocation.lat.is_not(None),
+        MarketplaceLocation.lon.is_not(None),
+    ))
+
+    async with AsyncSessionLocal() as db:
+        # One representative store per canonical city — lowest merchant_id, matching the
+        # unfrozen fallback in `resolve_store` so both paths land on the same store.
+        q = (base.add_columns(City.name, City.state)
+             .join(City, City.id == MarketplaceLocation.city_id)
+             .order_by(MarketplaceLocation.city_id, MarketplaceLocation.merchant_id)
+             .distinct(MarketplaceLocation.city_id))
+        if ids is not None:
+            q = q.where(MarketplaceLocation.city_id.in_(ids))
+        out = {loc.city_id: (name, state, _store_of(loc, "catalog"))
+               for loc, name, state in (await db.execute(q)).all()}
+
+        # Catalog cities with no canonical row yet. Offering them keeps this list's coverage
+        # identical to the store catalog's — a city we can measure in must not disappear from
+        # the picker because its `cities` row has not been seeded. Keyed by catalog text,
+        # which is what `resolve_store` falls back to matching on.
+        if ids is None:
+            orphans = (base.where(MarketplaceLocation.city_id.is_(None),
+                                  func.length(func.trim(MarketplaceLocation.city)) > 0)
+                       .order_by(func.lower(MarketplaceLocation.city),
+                                 MarketplaceLocation.merchant_id)
+                       .distinct(func.lower(MarketplaceLocation.city)))
+            for loc in (await db.execute(orphans)).scalars().all():
+                out[f"text:{loc.city.strip().lower()}"] = (
+                    loc.city.strip().title(), loc.state, _store_of(loc, "catalog"))
+
+        frozen = await _city_store_rows(
+            db, platform, [k for k in out if isinstance(k, int)],
+            [tenant_id] if tenant_id else [])
+
+    by_city: dict[int, list] = {}
+    for cs, loc in frozen:
+        by_city.setdefault(cs.city_id, []).append((cs, loc))
+    for city_id, rows in by_city.items():
+        picked = pick_city_store(rows, tenant_id)
+        if picked and city_id in out:
+            name, state, _ = out[city_id]
+            out[city_id] = (name, state, _store_of(picked[1], picked[2]))
+    return out
+
+
 async def resolve_store(platform: str, *, city: str | None = None,
                         location_id: str | None = None,
                         tenant_id: uuid.UUID | None = None) -> MeasurementStore | None:

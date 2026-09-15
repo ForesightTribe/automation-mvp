@@ -209,8 +209,15 @@ class KeywordBidRange(BaseModel):
 
 
 class TargetedCity(BaseModel):
-    id: int
+    # A stable render key, NOT a foreign key: the canonical `cities.id` where we could
+    # resolve one, else the marketplace's own region id, else None for a catalog city with
+    # no canonical row. Nothing keys data off it — rules are saved by `name`.
+    id: int | None = None
+    # Canonical spelling where we have one, so the picker reads consistently no matter which
+    # vocabulary the name arrived in (Blinkit's ads surface says `Gurugram`, our catalog says
+    # `hr-ncr`). This is the string a rule is saved with; `resolve_store` resolves it back.
     name: str
+    state: str | None = None
     # The dark store a rule measuring in this city would use, or None when our catalog has
     # no store there — the form then asks the user to pick one rather than blocking.
     location_name: str | None = None
@@ -222,8 +229,13 @@ class BidContextOut(BaseModel):
     campaign_id: int
     campaign_type: str | None = None
     scraped_at: datetime | None = None
-    # PAN_INDIA → the city picker stays free; CITY → offer `cities`, auto-filling when one.
+    # Why `cities` is what it is, for the copy under the picker — NOT for choosing a widget.
+    # CITY → the campaign's own cities. PAN_INDIA → it runs everywhere. None → we have not
+    # scraped its targeting, so "everywhere" is an assumption rather than a fact.
     region_type: str | None = None
+    # Where a bid rule for this campaign may measure, ALWAYS populated: the campaign's own
+    # cities when it targets some, every measurable city otherwise. One list, one shape, so
+    # the form never picks between sources — see `_measurement_cities`.
     cities: list[TargetedCity] = []
     keywords: list[KeywordBidRange] = []
     # Budget facts, for display. We deliberately do NOT enforce a minimum budget locally —

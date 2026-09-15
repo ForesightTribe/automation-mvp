@@ -245,30 +245,86 @@ async def list_bid_rules(tenant_id: uuid.UUID) -> list[BidRuleOut]:
     return [_bid_out(r, now) for r, _rt in pairs]
 
 
+def _sorted(cities: list[TargetedCity]) -> list[TargetedCity]:
+    """Alphabetical, with the cities we cannot measure in last.
+
+    Blinkit returns `region_ids` in the order someone ticked boxes in its dashboard, and
+    that order reached the picker untouched. Sorting here rather than in the form keeps one
+    answer for every caller, and sinking the unmeasurable ones stops disabled options
+    interleaving with pickable ones.
+    """
+    return sorted(cities, key=lambda c: (c.lat is None, c.name.lower()))
+
+
+async def _measurement_cities(tenant_id: uuid.UUID, campaign) -> list[TargetedCity]:
+    """Where a bid rule for this campaign may measure position — ONE list, always populated.
+
+    Two branches, one shape, because the form should render a picker rather than choose
+    between sources:
+
+    - **CITY targeting** → the campaign's own cities, so a rule cannot be pointed somewhere
+      the campaign never runs. A targeted city our catalog has no store in is kept, not
+      dropped, carrying `lat=None`: the form disables it and says why, which is the honest
+      answer. Dropping it would quietly shrink the campaign's targeting on screen.
+    - **Anything else** → every measurable city. PAN_INDIA runs everywhere, so every city we
+      have a store in is legitimate. An unscraped campaign (`campaign is None`, or no
+      targeting captured) gets the same list for a different reason — we have no evidence it
+      is narrow — and `region_type` stays None so the form can word that differently.
+
+    Names come back canonical (`cities.name`) wherever they resolve, which is what stops the
+    picker mixing Blinkit's spelling with our catalog's.
+    """
+    targeted = (campaign.cities or []) if campaign and campaign.region_type == "CITY" else None
+
+    if targeted is None:
+        catalog = await repo.measurable_cities(PLATFORM, tenant_id=tenant_id)
+        return _sorted([
+            TargetedCity(id=key if isinstance(key, int) else None, name=name, state=state,
+                         location_name=store.label, lat=store.lat, lon=store.lon)
+            for key, (name, state, store) in catalog.items()
+        ])
+
+    named = [(c.get("id"), c["name"]) for c in targeted
+             if isinstance(c, dict) and c.get("name")]
+    resolved = await repo.resolve_city_ids(PLATFORM, [n for _rid, n in named])
+    catalog = await repo.measurable_cities(
+        PLATFORM, tenant_id=tenant_id, city_ids=set(resolved.values()))
+
+    cities: list[TargetedCity] = []
+    for region_id, name in named:
+        city_id = resolved.get(name.strip().lower())
+        entry = catalog.get(city_id)
+        if entry is None:
+            # No canonical city, so ask the single-city resolver — it also matches our
+            # catalog's own `city` TEXT, which reaches a store in a city that has no
+            # `cities` row yet. Normally this loop runs zero times (the canonical registry
+            # covers the catalog); it exists so seeding lag cannot make a city we can
+            # genuinely measure in look unmeasurable.
+            store = await repo.resolve_store(PLATFORM, city=name, tenant_id=tenant_id)
+            cities.append(TargetedCity(
+                id=city_id or region_id, name=name.title(),
+                location_name=store.label if store else None,
+                lat=store.lat if store else None,
+                lon=store.lon if store else None))
+            continue
+        canonical, state, store = entry
+        cities.append(TargetedCity(id=city_id, name=canonical, state=state,
+                                   location_name=store.label, lat=store.lat, lon=store.lon))
+    return _sorted(cities)
+
+
 async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextOut:
     """Everything the bid-rule form needs about one campaign (V7.4) — DB only, no Blinkit.
 
-    An unscraped campaign returns an empty shell with `scraped_at=None` rather than a 404:
-    the form then behaves exactly as it did before V7 (free city input, no bid prefill),
-    which is the right answer for a campaign created since the last scrape. Blocking would
-    make a brand-new campaign unautomatable for a day.
+    An unscraped campaign returns `scraped_at=None` and no bid prefill rather than a 404 —
+    the right answer for a campaign created since the last scrape, where blocking would make
+    it unautomatable for a day. It still gets a full city list: not knowing a campaign's
+    targeting is a reason to offer every measurable city, not to offer none.
     """
     campaign, keywords = await repo.get_bid_context(tenant_id, campaign_id, PLATFORM)
+    cities = await _measurement_cities(tenant_id, campaign)
     if campaign is None:
-        return BidContextOut(campaign_id=campaign_id)
-
-    cities: list[TargetedCity] = []
-    for c in campaign.cities or []:
-        name = c.get("name") if isinstance(c, dict) else None
-        if not name:
-            continue
-        # Each targeted city is resolved to the store a rule would actually measure at, so
-        # the form can say "no dark store in our catalog for X" up front instead of letting
-        # someone save a rule that silently has no measurement point.
-        store = await repo.resolve_store(PLATFORM, city=name, tenant_id=tenant_id)
-        lat, lon, label = (store.lat, store.lon, store.label) if store else (None, None, None)
-        cities.append(TargetedCity(id=c.get("id"), name=name,
-                                   location_name=label, lat=lat, lon=lon))
+        return BidContextOut(campaign_id=campaign_id, cities=cities)
 
     return BidContextOut(
         campaign_id=campaign_id,

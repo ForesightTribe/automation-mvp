@@ -43,7 +43,8 @@ export const KeywordActionCard = ({
 	city,
 	onCity,
 	cityOptions,
-	allCities = [],
+	citiesLoading,
+	regionType,
 	singleCity,
 	hasLocation,
 	existingLocationName,
@@ -77,17 +78,30 @@ export const KeywordActionCard = ({
 						: "This campaign hasn't been scraped yet; minimums sync nightly."
 					: null;
 
-	const cityNote = cityOptions.length
-		? singleCity
+	/**
+	 * Why this list is this list. The options themselves no longer say — every branch now
+	 * serves one clean list of measurable cities — so the difference between "these are the
+	 * only cities this campaign runs in" and "this campaign runs everywhere" lives here.
+	 *
+	 * ⚠️ `null` region_type is NOT pan-India. The campaign has not been scraped, so a full
+	 * list is our assumption rather than Blinkit's answer, and saying so is the difference
+	 * between a fact and a guess.
+	 */
+	const cityNote = citiesLoading
+		? null
+		: singleCity
 			? `This campaign only targets ${singleCity.name}.${
 					singleCity.location_name
 						? ` Store: ${singleCity.location_name}.`
 						: ""
 				}`
-			: "This campaign targets these cities. Pick where to measure."
-		: isEdit && existingLocationName
-			? `Currently: ${existingLocationName}. Enter a city to change it; leave blank to keep.`
-			: null;
+			: regionType === "CITY"
+				? "This campaign targets these cities. Pick where to measure."
+				: regionType === "PAN_INDIA"
+					? "This campaign runs pan-India — measure at any city we have a dark store in."
+					: isEdit && existingLocationName
+						? `Currently: ${existingLocationName}. Pick a city to change it.`
+						: "We haven't scraped this campaign's targeting yet, so every city we have a dark store in is offered.";
 
 	return (
 		<div className="rounded-lg border border-border bg-card">
@@ -178,41 +192,42 @@ export const KeywordActionCard = ({
 
 				{/* Required. Without a city the engine falls back to a default Bengaluru store
 				    silently, so this field is the only thing standing between a rule and a
-				    number measured somewhere nobody chose. */}
+				    number measured somewhere nobody chose.
+
+				    ⚠️ ONE control over ONE list, and it waits. The picker used to choose its
+				    own widget from `cityOptions.length`, which is 0 both for a pan-India
+				    campaign and for a campaign whose context is still in flight — so a
+				    sorted catalogue rendered first and was replaced by the campaign's own
+				    cities a second later. Loading is not an answer; render nothing until
+				    there is one.
+
+				    ⚠️ `strict`: the list is exhaustive. Anything typeable that we can
+				    actually measure at is in it, so free text can only be a typo — and a
+				    typo saves a rule whose city resolves to no store at all, silently. */}
 				<div className="w-64">
 					<label className={LABEL}>Evaluation city</label>
-					{cityOptions.length ? (
-						<select
-							value={city}
-							onChange={(e) => onCity(e.target.value)}
-							aria-invalid={!hasLocation}
-							className={`w-full ${INPUT}`}
+					{citiesLoading ? (
+						<div
+							className={`w-full ${INPUT} text-content-subtle`}
+							aria-busy="true"
 						>
-							<option value="">Select a city…</option>
-							{cityOptions.map((c) => (
-								<option
-									key={c.id}
-									value={c.name}
-									disabled={!c.lat}
-								>
-									{c.name}
-									{c.lat
-										? ""
-										: " (no dark store in our catalog)"}
-								</option>
-							))}
-						</select>
+							Loading cities…
+						</div>
 					) : (
 						<Combobox
 							id="evaluation-city"
 							value={city}
 							onChange={onCity}
 							invalid={!hasLocation}
-							placeholder="Start typing a city"
-							options={allCities.map((c) => ({
-								value: c.slug,
+							strict
+							placeholder="Search cities"
+							options={cityOptions.map((c) => ({
+								value: c.id ?? c.name,
 								label: c.name,
-								hint: c.state,
+								hint: c.lat
+									? c.state
+									: "no dark store in our catalog",
+								disabled: !c.lat,
 							}))}
 						/>
 					)}

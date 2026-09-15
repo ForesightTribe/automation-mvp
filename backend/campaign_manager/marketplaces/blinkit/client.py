@@ -426,8 +426,36 @@ class BlinkitClient:
         # 2026-09-07 — see WriteUnverified). The choke point reads the bid back to decide;
         # this raise only reports what came back, with the HTTP status that used to be
         # thrown away by `_fetch`.
-        raise WriteUnverified(
-            f"Blinkit did not acknowledge the bid update ({self._why(resp)})")
+        raise WriteUnverified(self._refused_because(resp, detail))
+
+    # Blinkit's plain-English statuses, for a message a person reads rather than parses.
+    _STATUS_WORDS = {"STOPPED": "stopped", "COMPLETED": "finished", "DRAFT": "still a draft",
+                     "ON_HOLD": "on hold"}
+
+    def _refused_because(self, resp: dict, detail: dict) -> str:
+        """A rejection in words you can act on, when we can prove what caused it.
+
+        Exactly ONE cause is explained, because exactly one is proven by the same read that
+        built the payload: Blinkit publishes `allowed_transitions` per campaign, and a
+        campaign that does not list `UPDATE` cannot take a bid or budget write at all. A
+        stopped campaign reports `['RESTART']` and answers every UPDATE with
+        `['Not a valid campaign update']` — true, unhelpful, and indistinguishable from a
+        malformed payload unless you already know the campaign is stopped.
+
+        Everything else keeps Blinkit's own text. A guessed explanation is worse than a raw
+        one: `apply_budget`'s deleted `pids: ""` retry replaced a real rejection with an
+        invented one and cost us the diagnosis for four weeks (see `adapter.apply_budget`).
+        Blinkit's message is appended here either way, so the evidence never leaves.
+        """
+        why = self._why(resp)
+        allowed = [str(t).strip().upper() for t in (detail.get("allowed_transitions") or [])]
+        if not allowed or "UPDATE" in allowed:
+            return f"Blinkit did not acknowledge the bid update ({why})"
+        status = (detail.get("status") or "").strip().upper()
+        word = self._STATUS_WORDS.get(status, status.lower() or "in this state")
+        return (f"Blinkit will not accept a bid change while this campaign is {word}: it "
+                f"lists {', '.join(allowed) or 'nothing'} as the only action it allows "
+                f"({why})")
 
     def _why(self, resp: dict) -> str:
         """What the last response actually was — status first, then whatever explanation

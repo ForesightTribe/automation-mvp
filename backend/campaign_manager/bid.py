@@ -1203,23 +1203,33 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             applied += int(ok)
             errors += int(not ok)
             (landed_ids if ok else failed_ids).append(r.id)
+            stuck = _stranded(mp, status, current) if not ok else ""
             logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                          msg=(f"would set bid to ₹{min_bid} — not sent" if (ok and dry_run)
                               else f"applied — bid is now ₹{min_bid}" if ok
-                              else f"not applied — {mp} rejected the reset"
+                              else f"not applied — {stuck or f'{mp} rejected the reset'}"
                                    + (f" ({err})" if err else "")))
             # `r.id` is None once the rule is gone (Delete + reset), and a runtime row
             # cannot exist without one.
             if ok and not dry_run and r.id:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(min_bid)})
             done = f"{say}, so the bid goes back to its ₹{min_bid} floor"
-            # A refusal that did not raise: `err` is None, so without this the row would
-            # describe the reset we intended rather than the one that did not happen.
-            if not ok and err is None and outcome.get("reason"):
-                done = f"{done} - not applied: {outcome['reason']}"
+            # A FAILED reset used to file `done` — "the bid goes back to its ₹200 floor" —
+            # which is a description of what did not happen. The row was marked
+            # unsuccessful, but the sentence beside it said the opposite, and that sentence
+            # is what a client reads. When we know why it did not land, say that instead:
+            # the exception when the write raised, the guardrail's or marketplace's refusal
+            # (`outcome`) when it did not.
+            if ok:
+                reason = done
+            elif stuck:
+                reason = stuck
+            else:
+                reason = _plain(err or outcome.get("reason") or "",
+                                f"{mp} would not accept the reset to ₹{min_bid}, so "
+                                f"the bid did not change")
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
-                                 "reset", current, min_bid,
-                                 _plain(err, done) if err else done, dry_run, ok,
+                                 "reset", current, min_bid, reason, dry_run, ok,
                                  rule_id=r.id, target=r.target_position))
     finally:
         if browser is not None:
@@ -1313,6 +1323,34 @@ async def _safe_apply_bid(adapter, client, **kw) -> tuple[bool, Exception | None
         raise
     except Exception as e:
         return False, e
+
+
+# Canonical states a marketplace will not take a bid write in, and the word to say it with.
+# `running` and `held` are absent deliberately: ON_HOLD is a running campaign whose budget
+# ran out, and both marketplaces accept an UPDATE on one.
+_UNWRITABLE = {"paused": "paused", "ended": "finished", "draft": "still a draft"}
+
+
+def _stranded(mp: str, status: str | None, current) -> str:
+    """Why a bid write could not land, when the campaign's own state already explains it.
+
+    Returns `""` when it does not — an unreadable status (`None`) explains nothing, and a
+    guessed reason in a client's History is worse than a marketplace's raw one.
+
+    The second half is the part that actually costs money. A bid the reset could not lower
+    stays stored at its in-window peak, and both marketplaces bring a campaign back with the
+    bid it was carrying — so "paused, nothing to worry about" is wrong: the next restart
+    resumes at ₹1009, silently, possibly weeks later and with no automation left to trim it
+    (2026-09-15, campaign 638421). Saying so here is the only warning anyone gets.
+    """
+    word = _UNWRITABLE.get((status or "").lower())
+    if not word:
+        return ""
+    shown = f"₹{int(current)}" if current is not None else "its last value"
+    stays = (f"the campaign is {word} on {mp}, which does not accept bid changes — the bid "
+             f"stays at {shown}")
+    return (f"{stays}, and restarting the campaign would bring it back at {shown}"
+            if word == "paused" else stays)
 
 
 def _plain(err, what: str) -> str:
