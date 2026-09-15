@@ -47,7 +47,11 @@ it does not eliminate it. The structural fix (build the payload by echoing the r
 of hand-listing fields) is a separate, larger change; this is the guardrail that holds
 until then, and stays useful afterwards.
 """
+from datetime import datetime, timedelta, timezone
+
 from campaign_manager.writes import WriteRefused
+
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 # Request shapes. Each corresponds to one builder.
 BID = "bid"            # client.update_keyword_bids   — one keyword's cpm changes
@@ -220,15 +224,34 @@ def _date_back(value):
 
 
 def _date_expected(detail: dict, key: str):
-    """The campaign's own date as `(y, m, d)`. Blinkit returns ISO with assorted suffixes."""
+    """The campaign's own date as `(y, m, d)`, read on an Indian calendar.
+
+    Blinkit returns ISO with assorted suffixes, in UTC. A campaign that starts at midnight
+    IST is stored as `…T18:30:00+00:00` the previous day, so the offset has to be CONVERTED,
+    not discarded — this used to strip it and compare the UTC date, which is the same
+    mistake `build.fmt_date` made on the way out (§8.2b).
+
+    ⚠️ The conversion is written out here rather than borrowed from `build.fmt_date`, and
+    that duplication is deliberate. This is the rule's inverse: its whole job is to be an
+    independent statement of what the campaign's date IS. A check that calls the formatter
+    it is checking agrees with itself by construction and would pass a formatter that is
+    wrong in both directions — the blind spot §8.2c exists for. Both halves still have to
+    move together, and `tests/test_campaign_dates.py` fails if only one of them does.
+    """
     raw = detail.get(key)
     if not raw or not isinstance(raw, str):
         return None
-    from datetime import datetime
     try:
-        d = datetime.fromisoformat(raw.replace("+00:00", "").replace("Z", ""))
+        d = datetime.fromisoformat(raw.replace("Z", "+00:00"))
     except ValueError:
         return None
+    if d.tzinfo is not None:
+        try:
+            d = d.astimezone(_IST)
+        except (OverflowError, OSError, ValueError):
+            # The no-end-date sentinel's neighbourhood — see `build._ist`. Compare the
+            # date as stored rather than refusing the write over an unrepresentable one.
+            pass
     return (d.year, d.month, d.day)
 
 

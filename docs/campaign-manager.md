@@ -827,16 +827,32 @@ block is `campaign_targeting.city_ids: "2,787"` and nothing else — byte-identi
 `region_type` is read-only, derived server-side from `city_ids`, and **adding it to our
 payloads would put an unverified field into the write path for no benefit.** Do not.
 
-**The same capture found a real defect.** `campaign_start`: the dashboard sends `"7/15/2026"`
-where we send `"7/14/2026"`. `start_ts` is `2026-07-14T18:30:00+00:00`, and 18:30 UTC **is**
-midnight IST on the 15th — but `build.fmt_date` strips the timezone rather than converting it
+**The same capture found a real defect** — the one that took every write down six weeks
+later. `campaign_start`: the dashboard sends `"7/15/2026"` where we sent `"7/14/2026"`.
+`start_ts` is `2026-07-14T18:30:00+00:00`, and 18:30 UTC **is** midnight IST on the 15th —
+but `build.fmt_date` stripped the timezone rather than converting it
 (`.replace("+00:00", "")`). Every Indian campaign starts at midnight IST: **260 of 260 have a
-`start_ts` at ≥18:30 UTC**, so every UPDATE payload we build carries a start date one day
-early. Blinkit has evidently ignored it on update (the campaign still shows 15 Jul after our
-live writes), but it is a wrong value in a whole-campaign PUT — the same class as `city_ids`
-— and the invariant cannot catch it, because it compares our output against our own
-derivation of the same field. Self-consistency, which §8.2c exists to distrust. `RESTART`
-uses `fmt_date(today)` and needs checking with it.
+`start_ts` at ≥18:30 UTC**, so every UPDATE payload carried a start date one day early. The
+invariant could not catch it, because both halves were wrong in the same direction — our
+output compared against our own derivation of the same field. Self-consistency, which §8.2c
+exists to distrust.
+
+🔥 **It stopped being harmless on 2026-09-15.** This paragraph used to end "Blinkit has
+evidently ignored it on update". Overnight it stopped ignoring it and began answering
+`HTTP 400 ['Start Date of Campaign is not allowed to be changed']`, which kills the **whole
+PUT** — so no bid and no budget write landed on any campaign. The break is unusually clean:
+last accepted write 23:46, first rejection 00:01, identical payload either side, no deploy
+on our side since 12 Sep. Blinkit tightened the validator; nothing of ours moved.
+
+**Fixed the same day.** `fmt_date` converts to IST (`build._ist`) instead of discarding the
+offset, and `payload._date_expected` reads the campaign's own date the same way — **both
+halves, or neither**: correcting only the builder makes `verify()` refuse every UPDATE
+itself, trading Blinkit's rejection for ours. The reader deliberately does NOT call the
+formatter; an inverse that borrows the code it checks is the §8.2c blind spot again.
+`tests/test_campaign_dates.py` pins all of it, including the `12/31/9999` sentinel
+(`18:29:59+00:00` → `23:59:59` IST, one second below `datetime.max`). The 18 bid/budget
+golden payloads in `fixtures_blinkit_payloads.json` moved with it; `RESTART` never needed
+fixing, because its start date comes from `today`.
 
 Remaining differences are shape, not correctness — our writes work. The dashboard also sends
 `image_url`, `preview_image_url`, `store_name`, `collection_id`, `creative_type`,

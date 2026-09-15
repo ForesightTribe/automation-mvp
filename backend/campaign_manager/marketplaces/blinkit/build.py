@@ -60,20 +60,53 @@ _ALL = frozenset({BID, BUDGET, RESTART})
 
 # ── deriving values from the campaign ───────────────────────────────────────
 
-def fmt_date(ts) -> str:
-    """Blinkit wants `M/D/YYYY`, unpadded. Year 9999 is its no-end-date sentinel.
+def _ist(d: datetime) -> datetime:
+    """A timestamp as it reads on an Indian calendar.
 
-    The single formatter. `payload._date_back` is its inverse, and lives beside the rule
-    that uses it — two copies of a formatter is how the original bug happened.
+    Naive values are taken to be IST already — `today` comes from `datetime.now(_IST)` and
+    the restart's dates are ours, not Blinkit's.
+
+    The `except` is not defensive padding: Blinkit's no-end-date sentinel is
+    `9999-12-31 18:29:59+00:00`, which converts to `23:59:59` IST on the same day with one
+    second of headroom below `datetime.max`. A sentinel one second later would overflow,
+    and a payload builder is the wrong place to raise — keep the date as stored.
+    """
+    if d.tzinfo is None:
+        return d
+    try:
+        return d.astimezone(_IST)
+    except (OverflowError, OSError, ValueError):
+        return d
+
+
+def fmt_date(ts) -> str:
+    """Blinkit wants `M/D/YYYY`, unpadded, **in IST**. Year 9999 is its no-end-date sentinel.
+
+    ⚠️ The timezone conversion is the point of this function, not a detail of it. Blinkit
+    stores campaign dates in UTC and every Indian campaign starts at midnight IST, so
+    `start_ts` reads `…T18:30:00+00:00` on the day BEFORE the campaign actually starts.
+    This used to strip the offset (`.replace("+00:00", "")`) and take the date off the
+    naive remainder, which put a start date one day early into every UPDATE payload —
+    260 of 260 campaigns. Blinkit ignored it for months and then, overnight on 2026-09-15,
+    began rejecting the whole request with `['Start Date of Campaign is not allowed to be
+    changed']`: no bid write, no budget write, on any campaign (docs §8.2b).
+
+    The single formatter. `payload._date_back` is its inverse and `payload._date_expected`
+    reads the campaign's own date the same way — deliberately written out there rather than
+    calling this, because a check that borrows the code it checks proves nothing (§8.2c).
     """
     if not ts:
         return ""
     if isinstance(ts, datetime):
-        return f"{ts.month}/{ts.day}/{ts.year}"
-    try:
-        d = datetime.fromisoformat(str(ts).replace("+00:00", "").replace("Z", ""))
-    except ValueError:
-        return str(ts)
+        d = ts
+    else:
+        try:
+            # "Z" → "+00:00" rather than being deleted: the offset has to SURVIVE the parse
+            # for there to be anything to convert.
+            d = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
+        except ValueError:
+            return str(ts)
+    d = _ist(d)
     return f"{d.month}/{d.day}/{d.year}"
 
 
