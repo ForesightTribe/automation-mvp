@@ -421,6 +421,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     continue
 
                 budget_landed = True
+                budget_reason = reason
                 if can_write_budget and writes.is_noop(target, current):
                     # Said here, in the engine's own voice, because it is the most common
                     # outcome of all: the hourly poll finding everything already correct.
@@ -430,11 +431,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 if can_write_budget:
                     # recent_writes=0 in dry-run (nothing real is counted); real count is wired
                     # for live mode (V5), where the rate-limit guardrail actually gates writes.
+                    outcome: dict = {}
                     ok = await writes.apply_budget(
                         adapter, client, run_id=run_id, campaign_id=cid,
                         target=target, current=current, dry_run=dry_run, recent_writes=0,
-                        applied=patches,
+                        applied=patches, outcome=outcome,
                     )
+                    if not ok and outcome.get("reason"):
+                        budget_reason = f"{reason} - not applied: {outcome['reason']}"
+
                     action = "apply" if ok else ("no-op" if current == target else "skip")
                     applied += int(ok)
                     skipped += int(not ok)
@@ -489,7 +494,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # (D6 — verbose narration goes to logs, History holds actual actions only).
                 if action != "no-op":
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                         action, current, target, reason, dry_run, True))
+                                         action, current, target, budget_reason, dry_run,
+                                         True))
                 landed = budget_landed and stop_landed
             finally:
                 # Only a LIVE run can land a teardown — a dry run wrote nothing.

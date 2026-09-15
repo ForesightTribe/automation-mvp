@@ -32,11 +32,9 @@ import {
 	getRunOutcome,
 	refreshCampaigns,
 	resetBudgetSchedule,
-	runEngine,
 	setActivationNow,
 	setAdvertiser,
 	setBidState,
-	setBudgetNow,
 	updateBidRule,
 	updateBudgetRule,
 	updateBudgetSchedule,
@@ -464,13 +462,6 @@ export const useSetBidState = () => {
 	});
 };
 
-export const useSetBudgetNow = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: (body) => setBudgetNow(activeClientId, body),
-	});
-};
-
 export const useSetActivationNow = () => {
 	const { activeClientId } = useClient();
 	return useMutation({
@@ -491,13 +482,6 @@ export const useUpdateAdvertiser = () => {
 		mutationFn: (advertiserId) =>
 			setAdvertiser(activeClientId, advertiserId),
 		onSuccess: invalidate,
-	});
-};
-
-export const useRunEngine = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: (which) => runEngine(activeClientId, which),
 	});
 };
 

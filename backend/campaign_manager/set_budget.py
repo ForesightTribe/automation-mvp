@@ -46,16 +46,20 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
 
     applied = skipped = errors = 0
     patches: list[dict] = []
+    # Why a write did not land, so the History row can say it. Without this the row read
+    # "set-budget" whether the budget changed or Blinkit refused it outright.
+    outcome: dict = {}
     try:
         current = await adapter.read_budget(client, campaign_id)
         ok = await writes.apply_budget(
             adapter, client, run_id=run_id, campaign_id=campaign_id,
             target=budget, current=current, dry_run=dry_run, recent_writes=0,
-            applied=patches,
+            applied=patches, outcome=outcome,
         )
         applied, skipped = int(ok), int(not ok)
         row = _row(tenant_id, platform, run_id, campaign_id,
-                   "apply" if ok else "skip", current, budget, dry_run)
+                   "apply" if ok else "skip", current, budget, dry_run,
+                   reason=_reason(ok, outcome))
     except Exception as e:
         logs.decision(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       verdict="error", reason=str(e))
@@ -73,6 +77,18 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
     logs.run_summary(run_id, "set_budget", dry_run=dry_run, unit="campaigns",
                      processed=1, applied=applied, skipped=skipped, errors=errors)
     return {"processed": 1, "applied": applied, "skipped": skipped, "errors": errors}
+
+
+def _reason(ok: bool, outcome: dict) -> str:
+    """What to record in History. A write that landed needs no explanation; one that did
+    not is the whole reason anyone opens this screen, so it carries the marketplace's own
+    words when there are any."""
+    if ok:
+        return "set-budget"
+    # The CAUSE alone, with no "not applied" prefix: every surface that shows this already
+    # says the write did not land — History has an Action column reading `skip`, and the
+    # dashboard renders "Nothing changed - {reason}". Prefixing it here says it twice.
+    return outcome.get("reason") or "no reason given"
 
 
 def _row(tenant_id, platform, run_id, cid, action, old, new, dry_run, *,

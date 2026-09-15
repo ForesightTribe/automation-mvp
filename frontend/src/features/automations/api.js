@@ -197,14 +197,8 @@ export const resetBidRule = (clientId, ruleId) =>
 	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
 
 // ── On-demand actions (enqueue → poll) ───────────────────────────────────────
-export const setBudgetNow = (clientId, body) =>
-	api.post(`${base(clientId)}/set-budget`, body);
-
 export const setActivationNow = (clientId, campaignId, body) =>
 	api.post(`${base(clientId)}/campaigns/${campaignId}/activation`, body);
-
-export const runEngine = (clientId, which) =>
-	api.post(`${base(clientId)}/run/${which}`);
 
 export const refreshCampaigns = (clientId) =>
 	api.post(`${base(clientId)}/campaigns/refresh`);

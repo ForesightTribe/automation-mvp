@@ -825,11 +825,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                              level="warning", msg=_PAUSED_MIDRUN)
                 skipped += 1
                 continue
+            outcome: dict = {}
             ok, write_error = await _safe_apply_bid(
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=min_bid,
                 max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                recent_writes=recent, applied=patches,
+                recent_writes=recent, applied=patches, outcome=outcome,
             )
             applied += int(ok)
             skipped += int(not ok and write_error is None)
@@ -868,6 +869,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 reason = _plain(write_error, f"{reason} — but it could not be sent to {mp}")
             else:
                 action, success = (action if ok else "skip"), True
+                if not ok and outcome.get("reason"):
+                    reason = f"{reason} - not applied: {outcome['reason']}"
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                  action, current_cpm, new_cpm, reason, dry_run, success,
                                  rule_id=rule.id, position=position, target=target))
@@ -1184,6 +1187,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                          msg=f"{say} — resetting to the ₹{min_bid} floor so it does not "
                              f"keep spending high (campaign is "
                              f"{status or 'in an unknown state'})")
+            outcome: dict = {}
             try:
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
@@ -1191,7 +1195,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     max_bid=resolve_ceiling(
                         r.max_bid, config.bid_tuning(platform, "BID_MAX_ABSOLUTE")),
                     match_type=r.match_type, dry_run=dry_run, recent_writes=0,
-                    applied=patches,
+                    applied=patches, outcome=outcome,
                 )
                 err = None
             except Exception as e:
@@ -1209,6 +1213,10 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             if ok and not dry_run and r.id:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(min_bid)})
             done = f"{say}, so the bid goes back to its ₹{min_bid} floor"
+            # A refusal that did not raise: `err` is None, so without this the row would
+            # describe the reset we intended rather than the one that did not happen.
+            if not ok and err is None and outcome.get("reason"):
+                done = f"{done} - not applied: {outcome['reason']}"
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
                                  "reset", current, min_bid,
                                  _plain(err, done) if err else done, dry_run, ok,

@@ -58,6 +58,9 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
 
     applied = skipped = errors = 0
     patches: list[dict] = []
+    # See set_budget._reason: a refused start/stop used to record only "set-activation:
+    # running->paused", which says what was asked and never why it did not happen.
+    outcome: dict = {}
     try:
         current, current_budget, detail = await adapter.read_campaign(client, campaign_id)
         # Field naming differs per marketplace ("name" vs "campaign_name"), so ask
@@ -90,13 +93,15 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
             adapter, client, run_id=run_id, campaign_id=campaign_id,
             target=status, current=current, dry_run=dry_run, allow_draft=True,
             budget=target_budget, overwrites=overwrites, applied=patches,
+            outcome=outcome,
             recent_writes=0 if dry_run else await repo.recent_write_count(
                 tenant_id, campaign_id,
                 window_minutes=config.RATE_WINDOW_MINUTES, kind="activation"),
         )
         applied, skipped = int(ok), int(not ok)
         rows = [_row(tenant_id, platform, run_id, campaign_id, name,
-                     "apply" if ok else "skip", current, status, dry_run)]
+                     "apply" if ok else "skip", current, status, dry_run,
+                     reason=_reason(ok, outcome, "set-activation"))]
 
         # "Start at ₹X" on a campaign that is ALREADY running must still honour the budget.
         # Normally the restart carries it — but there is no restart to make, so the status
@@ -111,7 +116,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
             budget_ok = await writes.apply_budget(
                 adapter, client, run_id=run_id, campaign_id=campaign_id,
                 target=target_budget, current=current_budget, dry_run=dry_run,
-                applied=patches,
+                applied=patches, outcome=outcome,
                 recent_writes=0 if dry_run else await repo.recent_write_count(
                     tenant_id, campaign_id,
                     window_minutes=config.RATE_WINDOW_MINUTES, kind="budget"),
@@ -142,6 +147,15 @@ async def _close(pw, browser) -> None:
         await browser.close()
     if pw is not None:
         await pw.stop()
+
+
+def _reason(ok: bool, outcome: dict, verb: str) -> str:
+    """See set_budget._reason. `verb` names the action so a successful row still reads as
+    what it was; a refusal replaces it with the cause, since the row already carries the
+    transition it was attempting."""
+    if ok:
+        return verb
+    return outcome.get("reason") or "no reason given"
 
 
 def _row(tenant_id, platform, run_id, cid, cname, action, old, new, dry_run, *,
