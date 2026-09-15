@@ -696,6 +696,49 @@ async def city_stores_for(platform: str, tenant_id: uuid.UUID, city_ids) -> dict
     return out
 
 
+async def city_names_for(platform: str, rules) -> dict:
+    """`{rule.id: city name | None}` for a batch of bid rules, in ONE session.
+
+    "Measured at Block C" does not say where Block C is, and store labels are sub-city names
+    that repeat across the country. The city is already implied by the rule — this just
+    fetches the word for it:
+
+    - saved BY CITY → `city_id` names it straight from the canonical registry;
+    - pinned to a STORE → no `city_id` (that is what pinning means), so the city comes from
+      the catalog row its coordinates name — the same row `location_name` came from.
+
+    Two queries for any number of rules. A list endpoint calls this once.
+    """
+    from sqlalchemy import tuple_
+    from app.models.search import City, MarketplaceLocation
+
+    ids = {r.city_id for r in rules if r.city_id is not None}
+    coords = {(r.lat, r.lon) for r in rules
+              if r.city_id is None and r.lat is not None and r.lon is not None}
+    if not ids and not coords:
+        return {}
+
+    by_id, by_coord = {}, {}
+    async with AsyncSessionLocal() as db:
+        if ids:
+            by_id = dict((await db.execute(
+                select(City.id, City.name).where(City.id.in_(ids))
+            )).all())
+        if coords:
+            for lat, lon, text_, canonical in (await db.execute(
+                select(MarketplaceLocation.lat, MarketplaceLocation.lon,
+                       MarketplaceLocation.city, City.name)
+                .join(City, City.id == MarketplaceLocation.city_id, isouter=True)
+                .where(MarketplaceLocation.mp_slug == platform,
+                       tuple_(MarketplaceLocation.lat, MarketplaceLocation.lon).in_(coords))
+            )).all():
+                by_coord[(lat, lon)] = canonical or (text_ or "").strip().title() or None
+
+    return {r.id: (by_id.get(r.city_id) if r.city_id is not None
+                   else by_coord.get((r.lat, r.lon)))
+            for r in rules}
+
+
 async def get_city(city_id: int):
     from app.models.search import City
     async with AsyncSessionLocal() as db:

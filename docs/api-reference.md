@@ -190,7 +190,7 @@ Rule times must be zero-padded 24-hour `HH:MM` and dates a real `YYYY-MM-DD`; an
 | PATCH | `/budget-rules/{id}` | Edit a window (budget + timing). **400** if the automation has ended, unless the edit moves its dates forward — which reopens it. |
 | DELETE | `/budget-rules/{id}` | Delete a window (schedule + default remain). |
 | POST | `/budget-schedules/{id}/reset` | **D19 Reset** — stop + enqueue a set-budget→default job. Returns `{job_id}` to poll. |
-| GET | `/bid-rules` | List keyword bid automations, each with `status`. |
+| GET | `/bid-rules` | List keyword bid automations, each with `status` and `city_name` — the city `location_name` sits in, resolved for display (2026-09-15): from `city_id` for a rule saved by city, from the pinned store's catalogue row otherwise. Store labels are sub-city names that repeat nationally ("Block C"), so the UI shows "Block C, Kolkata". |
 | POST | `/bid-rules` | Create a bid automation (campaign, keyword, target position, min/max, timing, and where it measures: `city` → the rule **follows** that city's frozen measurement store, which is set from the CLI only — `cm stores`; `location_id` → **pinned** to one store). |
 | PATCH | `/bid-rules/{id}` | Edit target/bids/timing/keyword/location. **400** on an ended automation unless the edit moves its dates forward (which reopens it); campaign not editable (identity). |
 | DELETE | `/bid-rules/{id}` | Delete a bid automation (+ its runtime). **`?reset=true`** also puts the keyword back to the automation's `min_bid` first — otherwise the bid stays wherever the optimizer left it with no rule left to lower it. The reset is enqueued *before* the delete, so a refused enqueue leaves both alone. |

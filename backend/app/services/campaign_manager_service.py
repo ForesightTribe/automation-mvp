@@ -103,10 +103,18 @@ def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
     )
 
 
-def _bid_out(r, now=None) -> BidRuleOut:
+def _bid_out(r, now=None, city_name=None) -> BidRuleOut:
     o = BidRuleOut.model_validate(r)
     o.status = _bid_status(r, now or now_ist())
+    o.city_name = city_name
     return o
+
+
+async def _bid_out_async(r, now=None) -> BidRuleOut:
+    """`_bid_out` for the single-rule paths, which have no batch to resolve cities with.
+    Lists must NOT use this — see `list_bid_rules`, which resolves the whole page at once."""
+    names = await repo.city_names_for(PLATFORM, [r])
+    return _bid_out(r, now, names.get(r.id))
 
 
 # ── Budget schedules + rules ────────────────────────────────────────────────
@@ -242,7 +250,10 @@ async def list_bid_rules(tenant_id: uuid.UUID) -> list[BidRuleOut]:
     # The UI lists every automation — paused and ended included.
     pairs = await repo.get_bid_rules(tenant_id, PLATFORM, state=repo.ANY_STATE,
                                      calendar=repo.ANY_CALENDAR)
-    return [_bid_out(r, now) for r, _rt in pairs]
+    rules = [r for r, _rt in pairs]
+    # One resolve for the whole page — a per-row lookup would be a session per rule.
+    names = await repo.city_names_for(PLATFORM, rules)
+    return [_bid_out(r, now, names.get(r.id)) for r in rules]
 
 
 def _sorted(cities: list[TargetedCity]) -> list[TargetedCity]:
@@ -381,7 +392,7 @@ async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> Bid
         d.pop("keyword"), d.pop("target_position"), d.pop("min_bid"), d.pop("max_bid"), **d,
     )
     await _reconcile(session, tenant_id)
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
@@ -418,7 +429,7 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
     r = await repo.get_bid_rule(rule_id)
     if window.in_window(window.from_bid(r), now_ist()):   # editing a live window → apply now
         await _reapply(session, tenant_id, "cm.bid_optimizer")
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def delete_bid_rule(session, tenant_id: uuid.UUID, rule_id: str, *,
@@ -473,7 +484,7 @@ async def pause_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRule
         raise StateError("This automation has already ended, so there is nothing to pause.")
     r = await repo.set_bid_state(rule_id, "paused")
     await _reconcile(session, tenant_id)
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
@@ -504,7 +515,7 @@ async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRul
     await _reconcile(session, tenant_id)
     if not window.in_window(window.from_bid(r), now_ist()):
         await _enqueue_bid_reset(session, tenant_id, r)
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def reset_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> uuid.UUID | None:

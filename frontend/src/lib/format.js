@@ -84,3 +84,23 @@ export const formatDateTime = (value) => {
 				hour12: true,
 			});
 };
+
+/**
+ * A measurement store, said in full: `("Block C", "Kolkata")` -> "Block C, Kolkata".
+ *
+ * Store labels are sub-city names — "Block C", "Sector 110", "Financial District" — and they
+ * repeat across the country, so a label on its own does not say where position was measured.
+ * Either half may be missing: an unresolved city shows the label alone, and a store whose
+ * label we never scraped shows the city alone rather than a dangling comma.
+ */
+export const formatMeasuredAt = (locationName, cityName) => {
+	const store = (locationName ?? "").trim();
+	const city = (cityName ?? "").trim();
+	if (!store || !city) return store || city || null;
+	// ⚠️ Skip the city when the label already carries it. 49 catalogue stores have no
+	// `location_name` of their own and fall back to "<city>/<merchant_id>" (see
+	// docs/darkstores.md), which would otherwise read "ahmednagar/41317, Ahmednagar".
+	return store.toLowerCase().includes(city.toLowerCase())
+		? store
+		: `${store}, ${city}`;
+};

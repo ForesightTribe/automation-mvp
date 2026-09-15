@@ -158,6 +158,11 @@ class BidRuleOut(BaseModel):
     lat: float | None = None
     lon: float | None = None
     location_name: str | None = None
+    # The city `location_name` is IN. Store labels are sub-city names ("Block C") that repeat
+    # across the country, so the label alone does not say where position is measured. Derived
+    # for display — from `city_id` when the rule was saved by city, from the pinned store's
+    # catalog row otherwise. None when neither resolves; the UI then shows the label alone.
+    city_name: str | None = None
     state: str
     status: str = "scheduled"           # running | scheduled | ended | paused (computed)
     platform: str

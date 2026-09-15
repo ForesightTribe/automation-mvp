@@ -12,6 +12,7 @@ import { Field, FIELD_INPUT } from "./Field";
 import { scheduleIssues } from "../automation";
 import { WizardContext } from "./WizardContext";
 import { WizardSummary } from "./WizardSummary";
+import { formatMeasuredAt } from "../../../lib/format";
 import {
 	useCreateBudgetSchedule,
 	useUpdateBudgetSchedule,
@@ -381,6 +382,13 @@ export const AutomationWizard = ({
 		Number(minBid) < effectiveFloor;
 	const hasLocation = Boolean(
 		city || locationId || (isEdit && editRow?.location_name),
+	);
+	// What this rule measures at TODAY, said in full ("Block C, Kolkata"). Shown when editing,
+	// where leaving the city blank keeps it — so the reader has to be able to tell what they
+	// are keeping, and a bare store label does not say where it is.
+	const existingLocation = formatMeasuredAt(
+		editRow?.location_name,
+		editRow?.city_name,
 	);
 
 	// A bidding automation needs both halves before the picker has done its job; a campaign
@@ -970,7 +978,7 @@ export const AutomationWizard = ({
 										singleCity={singleCity}
 										hasLocation={hasLocation}
 										existingLocationName={
-											editRow?.location_name
+											existingLocation
 										}
 										isEdit={isEdit}
 										timing={timing}
@@ -996,7 +1004,7 @@ export const AutomationWizard = ({
 								minBid={minBid}
 								maxBid={maxBid}
 								city={city}
-								locationName={editRow?.location_name}
+								locationName={existingLocation}
 								effectiveFloor={effectiveFloor}
 								isEdit={isEdit}
 								currentBudget={currentBudget}

@@ -10,7 +10,7 @@ import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
-import { formatCurrency } from "../../lib/format";
+import { formatCurrency, formatMeasuredAt } from "../../lib/format";
 import {
 	useBudgetSchedules,
 	useBidRules,
@@ -251,15 +251,20 @@ export const AutomationsPage = () => {
 	 * there. The run log carries no location field, so it is joined here rather than
 	 * left off. Trimmed, because the value arrives with trailing whitespace from the
 	 * scrape ("Financial District\r\n").
+	 *
+	 * WITH the city, because the store label alone does not locate anything: "Block C"
+	 * and "Sector 110" name a neighbourhood in a city the reader has to already know.
 	 */
-	const locationOf = (campaignId, keyword) =>
-		bidRules
-			?.find(
-				(b) =>
-					b.campaign_id === campaignId &&
-					(!keyword || b.keyword === keyword),
-			)
-			?.location_name?.trim() || null;
+	const locationOf = (campaignId, keyword) => {
+		const rule = bidRules?.find(
+			(b) =>
+				b.campaign_id === campaignId &&
+				(!keyword || b.keyword === keyword),
+		);
+		return rule
+			? formatMeasuredAt(rule.location_name, rule.city_name)
+			: null;
+	};
 
 	const isLoading = loadingSchedules || loadingBidRules;
 	const error = schedulesError || bidRulesError;
