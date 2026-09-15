@@ -7,6 +7,7 @@ import {
 	FlaskConical,
 	Target,
 	Gauge,
+	ClipboardCheck,
 	FileText,
 	Settings,
 } from "lucide-react";
@@ -33,11 +34,14 @@ export const NAV_ITEMS = [
 		children: [
 			{ label: "Insights", path: "/ads/insights" },
 			{ label: "Ad Automation", path: "/ads/automation" },
+			{ label: "One-time Ops", path: "/ads/one-time-ops" },
 		],
 	},
 	{ label: "Campaign Manager", path: "/campaign-manager", icon: Target },
 	{ label: "Competition", path: "/competition", icon: Gauge },
-	{ label: "Scorecard", path: "/scorecard", icon: FileText },
+	// A clipboard, not a document: Scorecard rates performance while Reports produces
+	// files, and both wearing FileText made two different destinations look like one.
+	{ label: "Scorecard", path: "/scorecard", icon: ClipboardCheck },
 	{ label: "Reports", path: "/reports", icon: FileText },
 	// adminOnly: hidden from members in the Sidebar; the /settings route is also
 	// guarded by RequireAdmin and the backend's require_admin dependency.

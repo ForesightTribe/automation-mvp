@@ -322,10 +322,45 @@ def test_a_teardown_that_does_not_land_counts_an_attempt():
     assert _run.fake.settled == {} and _run.fake.failed == [1], (_run.fake.settled, _run.fake.failed)
 
 
-def test_a_window_end_that_is_not_the_last_is_never_latched():
-    """The recurring 19:30–02:00 schedule has no end date: 02:00 is an ordinary window end."""
+# ── Between windows, the engine does nothing at all (2026-09-12) ────────────
+#
+# The recurring 19:30–02:00 schedule has no end date, so 02:00 is an ordinary window end.
+# Every close is latched — not because the automation is over, but so the hours after it
+# stay quiet. `settled_at` is "the most recent close this schedule has been torn down for".
+
+_BETWEEN = datetime(2026, 8, 8, 10, 0)               # long after 02:00, long before 19:30
+
+
+def test_an_ordinary_window_close_latches_too():
     _run(status="running", toggle=True, now=NOW_AT_END, current_budget=1500.0)
-    assert _run.fake.settled == {} and _run.fake.failed == []
+    assert _run.fake.settled == {1: NOW_AT_END} and _run.fake.failed == []
+
+
+def test_between_windows_the_campaign_is_never_touched():
+    """Not read, not written — the hourly poll used to re-assert the default here, which is
+    how a budget set by hand at 10:00 was gone by 11:00."""
+    calls = _run(status="running", toggle=True, now=_BETWEEN, current_budget=2000.0,
+                 schedule={"settled_at": datetime(2026, 8, 8, 2, 0)})
+    assert calls == [], calls
+    assert _run.fake.signed_in is False, "a run with no work must not sign in"
+
+
+def test_a_close_whose_revert_never_landed_is_repaired_then_latched():
+    """The failsafe: the runner was down at 02:00, so the 10:00 poll does what that fire
+    would have — revert, then stop — and latches so 11:00 does nothing. The stamp is `now`,
+    which is at or after the close it covers."""
+    calls = _run(status="running", toggle=True, now=_BETWEEN, current_budget=1500.0)
+    assert calls == [("budget", 500.0), ("status", "paused", None)], calls
+    assert _run.fake.settled == {1: _BETWEEN}
+
+
+def test_a_repair_is_not_owed_for_a_close_older_than_a_day():
+    """Past that, the campaign's budget is whatever the days since made it — re-asserting a
+    default nobody asked for is the behaviour this replaced. (A one-time rule, because a
+    daily one always has a close within the last 24 hours.)"""
+    calls = _run(status="running", toggle=True, now=datetime(2026, 8, 10, 10, 0),
+                 current_budget=1500.0, rules=[_ONE_TIME])
+    assert calls == [], calls
 
 
 def _run_all() -> int:

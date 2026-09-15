@@ -1,5 +1,5 @@
-import { useMemo, useState } from "react";
-import { Download, X, ScrollText } from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+import { X, ScrollText } from "lucide-react";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
@@ -7,6 +7,8 @@ import { EmptyState } from "../../../components/feedback/EmptyState";
 import { ChannelBadge } from "./ChannelBadge";
 import { useHistory } from "../hooks";
 import { Select } from "../../../components/ui/Select";
+import { ExportButton } from "../../../components/ui/ExportButton";
+import { downloadCsv } from "../../../lib/exportTable";
 import { HoverHint } from "../../../components/ui/HoverHint";
 
 const KIND_LABEL = {
@@ -82,61 +84,51 @@ const stamp = (ts) => {
 			});
 };
 
-const toCsv = (rows, platformOf, locationOf) => {
-	const header = [
-		"Time",
-		"Channel",
-		"Campaign",
-		"Keyword",
-		"Measured at",
-		"Type",
-		"What happened",
-		"Change",
-		"Position seen",
-		"Status",
-		"Reason",
-	];
-	const lines = rows.map((r) => {
-		const campaign = r.campaign_name || "";
-		const change =
+/**
+ * The log as export columns, for the shared CSV writer.
+ *
+ * Columns rather than pre-joined lines: `lib/exportTable` handles the quoting and writes
+ * the BOM Excel needs to read the file as UTF-8, without which every ₹ in it arrives as
+ * mojibake — which is exactly what the local writer this replaced did.
+ *
+ * Reason keeps a column of its own here even though the table hangs it on a hover: a
+ * spreadsheet has no hover, and it is the field that explains every other one.
+ */
+const exportColumns = (platformOf, locationOf) => [
+	{ header: "Time", value: (r) => stamp(r.timestamp) },
+	{ header: "Channel", value: (r) => platformOf(r.campaign_id) ?? "" },
+	{ header: "Campaign", value: (r) => r.campaign_name || "" },
+	{ header: "Keyword", value: (r) => r.keyword ?? "" },
+	{
+		header: "Measured at",
+		value: (r) => locationOf?.(r.campaign_id, r.keyword) ?? "",
+	},
+	{ header: "Type", value: (r) => KIND_LABEL[r.kind] ?? r.kind },
+	{ header: "What happened", value: (r) => outcomeOf(r) },
+	{
+		header: "Position seen",
+		value: (r) => {
+			const rank = rankOf(r);
+			return rank
+				? `${rank.at ?? ""}${rank.target ? ` (target ${rank.target})` : ""}`
+				: "";
+		},
+	},
+	{
+		header: "Change",
+		value: (r) =>
 			r.old_value != null || r.new_value != null
 				? `${r.old_value ?? ""} -> ${r.new_value ?? ""}`
-				: "";
-		const status = r.dry_run
-			? "test mode"
-			: r.success
-				? "applied"
-				: "failed";
-		const rank = rankOf(r);
-		return [
-			stamp(r.timestamp),
-			platformOf(r.campaign_id) ?? "",
-			campaign,
-			r.keyword ?? "",
-			locationOf?.(r.campaign_id, r.keyword) ?? "",
-			KIND_LABEL[r.kind] ?? r.kind,
-			outcomeOf(r),
-			change,
-			rank
-				? `${rank.at ?? ""}${rank.target ? ` (target ${rank.target})` : ""}`
 				: "",
-			status,
-			r.reason ?? "",
-		]
-			.map((v) => `"${String(v).replace(/"/g, '""')}"`)
-			.join(",");
-	});
-	return [header.join(","), ...lines].join("\n");
-};
+	},
+	{
+		header: "Status",
+		value: (r) =>
+			r.dry_run ? "test mode" : r.success ? "applied" : "failed",
+	},
+	{ header: "Reason", value: (r) => r.reason ?? "" },
+];
 
-/**
- * The execution log — cm_run_log surfaced as a full-screen overlay: every time the engine
- * looked at an automation, what it decided, and whether the write landed. `dry_run` rows are shown plainly ("test mode")
- * rather than hidden, per docs/campaign-manager.md's philosophy that a held
- * rule should demonstrate the engine works, not look like nothing happened.
- * `platformOf(campaign_id)` looks Channel up from the already-fetched
- * schedules/bid-rules — RunLogOut itself carries no platform field.
- */
 export const ChangeLogsModal = ({
 	open,
 	onClose,
@@ -147,36 +139,61 @@ export const ChangeLogsModal = ({
 	const [page, setPage] = useState(1);
 	const [statusFilter, setStatusFilter] = useState("");
 	const [typeFilter, setTypeFilter] = useState("");
-	const { data, isLoading, error, refetch } = useHistory(page);
+
+	/**
+	 * One automation's history is narrowed BY THE SERVER, and paged like any other list.
+	 * Filtering a single page of the unfiltered history client-side shows only whichever
+	 * of that automation's runs happen to fall in the newest twenty across every
+	 * automation, which is a fraction of them and never the older ones.
+	 *
+	 * `include_unchanged` comes with it: the held ticks are noise in the full list and
+	 * the answer in a single automation's, where "why has this not moved" is the question
+	 * being asked.
+	 */
+	const focus = focusRow
+		? {
+				campaignId: focusRow.campaign_id,
+				ruleId: focusRow.kind === "keyword" ? focusRow.id : undefined,
+				includeUnchanged: true,
+			}
+		: {};
+	const { data, isLoading, error, refetch } = useHistory(
+		page,
+		undefined,
+		focus,
+	);
+
+	// Back to the first page whenever the question changes, so page 3 of one automation
+	// is never read as page 3 of the next.
+	useEffect(() => {
+		setPage(1);
+	}, [focusRow?.campaign_id, focusRow?.id]);
 
 	const rows = useMemo(() => {
 		let r = data?.items ?? [];
-		if (focusRow) {
-			r = r.filter(
-				(x) =>
-					x.campaign_id === focusRow.campaign_id &&
-					(focusRow.kind !== "keyword" ||
-						x.keyword === focusRow.keyword),
-			);
-		}
 		if (typeFilter) r = r.filter((x) => x.kind === typeFilter);
 		if (statusFilter === "success") r = r.filter((x) => x.success);
 		if (statusFilter === "failed") r = r.filter((x) => !x.success);
 		return r;
-	}, [data, focusRow, statusFilter, typeFilter]);
+	}, [data, statusFilter, typeFilter]);
 
 	if (!open) return null;
 
+	// Named after what was asked for: one automation's file should not be called the same
+	// thing as the file holding every automation's history.
 	const exportCsv = () => {
-		const blob = new Blob([toCsv(rows, platformOf, locationOf)], {
-			type: "text/csv;charset=utf-8;",
-		});
-		const url = URL.createObjectURL(blob);
-		const a = document.createElement("a");
-		a.href = url;
-		a.download = "automation-execution-logs.csv";
-		a.click();
-		URL.revokeObjectURL(url);
+		const who = focusRow
+			? (focusRow.kind === "campaign"
+					? focusRow.name || focusRow.campaign_name
+					: focusRow.keyword
+				)
+					?.toLowerCase()
+					.replace(/[^a-z0-9]+/g, "-")
+					.replace(/^-|-$/g, "")
+			: null;
+		downloadCsv(`automation-execution-logs${who ? `-${who}` : ""}.csv`, [
+			{ columns: exportColumns(platformOf, locationOf), rows },
+		]);
 	};
 
 	return (
@@ -209,13 +226,10 @@ export const ChangeLogsModal = ({
 							onChange={setStatusFilter}
 							options={STATUS_OPTIONS}
 						/>
-						<button
-							type="button"
-							onClick={exportCsv}
-							className="inline-flex items-center gap-1.5 rounded-md border border-border px-2.5 py-1 text-xs font-medium text-content hover:bg-muted"
-						>
-							<Download size={13} /> Export
-						</button>
+						<ExportButton
+							onExport={exportCsv}
+							disabled={!rows.length}
+						/>
 						<button
 							type="button"
 							aria-label="Close"
@@ -249,9 +263,6 @@ export const ChangeLogsModal = ({
 										Automation
 									</th>
 									<th className="px-3 py-2 text-right font-medium text-content-subtle">
-										Change
-									</th>
-									<th className="px-3 py-2 text-right font-medium text-content-subtle">
 										<HoverHint
 											label="Bid rows only: the position the engine SAW when it checked, over the target it was holding to. Not the rank after the write, since where a bid lands is only known at the next check. Budget changes and start/stop rows have no position, so they read n/a. Hover any row for the engine's own reason."
 											className="w-full justify-end"
@@ -261,6 +272,9 @@ export const ChangeLogsModal = ({
 												Position seen
 											</span>
 										</HoverHint>
+									</th>
+									<th className="px-3 py-2 text-right font-medium text-content-subtle">
+										Change
 									</th>
 									<th className="px-3 py-2 text-left font-medium text-content-subtle">
 										Status
@@ -309,12 +323,6 @@ export const ChangeLogsModal = ({
 													.filter(Boolean)
 													.join(" · ")}
 											</div>
-										</td>
-										<td className="px-3 py-2 text-right tabular-nums text-content">
-											{r.old_value != null ||
-											r.new_value != null
-												? `${r.old_value ?? "—"} → ${r.new_value ?? "—"}`
-												: "—"}
 										</td>
 										{/* ⚠️ The reason hangs HERE, on every row, including the ones with no
 										    position: a budget row's "window ended" has nowhere else to live now that
@@ -371,6 +379,12 @@ export const ChangeLogsModal = ({
 												})()}
 											</HoverHint>
 										</td>
+										<td className="px-3 py-2 text-right tabular-nums text-content">
+											{r.old_value != null ||
+											r.new_value != null
+												? `${r.old_value ?? "—"} → ${r.new_value ?? "—"}`
+												: "—"}
+										</td>
 										<td className="px-3 py-2 whitespace-nowrap">
 											<span
 												className={
@@ -393,7 +407,7 @@ export const ChangeLogsModal = ({
 					)}
 				</div>
 
-				{!focusRow && data && (
+				{data && (
 					<div className="border-t border-border px-5 py-3">
 						<Pagination
 							page={data.page}

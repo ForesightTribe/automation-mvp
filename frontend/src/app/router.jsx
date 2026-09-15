@@ -15,6 +15,7 @@ import { AdsPage } from "../features/ads/AdsPage";
 import { InsightsPage } from "../features/ads-insights/InsightsPage";
 import { CampaignManagerPage } from "../features/campaign-manager/CampaignManagerPage";
 import { AutomationsPage } from "../features/automations/AutomationsPage";
+import { OneTimeOpsPage } from "../features/one-time-ops/OneTimeOpsPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
@@ -53,8 +54,15 @@ export const router = createBrowserRouter([
 					// Ad Automation and /automations are ONE page under two paths: the Ads
 					// child is where the nav points, and /automations keeps older links working.
 					{ path: "/ads/automation", element: <AutomationsPage /> },
+					{
+						path: "/ads/one-time-ops",
+						element: <OneTimeOpsPage />,
+					},
 					{ path: "/automations", element: <AutomationsPage /> },
-					{ path: "/campaign-manager", element: <CampaignManagerPage /> },
+					{
+						path: "/campaign-manager",
+						element: <CampaignManagerPage />,
+					},
 					// v1 was deleted on 2026-09-03 and the surviving manager took its plain
 					// URL back, so `-v2` no longer means anything. Both old paths redirect
 					// rather than 404 — each was live until now, so bookmarks exist for both.

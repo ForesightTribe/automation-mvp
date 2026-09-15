@@ -17,8 +17,31 @@ export const getBudgetSchedules = (clientId) =>
 
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
-export const getHistory = (clientId, { page = 1, limit = 20, kind } = {}) =>
-	api.get(`${base(clientId)}/history`, { params: { page, limit, kind } });
+// `campaign_id` / `rule_id` narrow to ONE automation, server-side. `include_unchanged`
+// adds the ticks where the engine deliberately did nothing, which is the drill-down
+// case: "why has my bid not moved for six hours" is answered by the held ticks, and
+// they are suppressed by default so the unfiltered list is not buried in them.
+export const getHistory = (
+	clientId,
+	{
+		page = 1,
+		limit = 20,
+		kind,
+		campaignId,
+		ruleId,
+		includeUnchanged = false,
+	} = {},
+) =>
+	api.get(`${base(clientId)}/history`, {
+		params: {
+			page,
+			limit,
+			kind,
+			campaign_id: campaignId,
+			rule_id: ruleId,
+			include_unchanged: includeUnchanged,
+		},
+	});
 
 export const getJob = (clientId, jobId) =>
 	api.get(`${base(clientId)}/jobs/${jobId}`);
@@ -51,14 +74,11 @@ export const getCampaigns = (clientId) =>
 		},
 	});
 
-export const getCampaignKeywords = (clientId, campaignId) =>
-	api.get(`/clients/${clientId}/ads/campaigns/${campaignId}/keywords`);
-
 // Per-keyword PERFORMANCE from the campaign-detail snapshots — impressions, spend, both
 // ROAS figures, CPM, new users, and `most_viewed_position`, the rank the keyword actually
-// holds today. Reads a different table from the (currently broken) endpoint above, so it
-// is the source that reliably has both names and numbers. limit=250 because a campaign
-// carries tens to low hundreds of keywords and the picker shows them all.
+// holds today. Bid floors are NOT here — they come from bid-context (getBidContext).
+// limit=250 because a campaign carries tens to low hundreds of keywords and the picker
+// shows them all.
 // Every keyword row the tenant has, across all campaigns — the two-pivot picker needs
 // them all to group either way. Paged because the API caps a page at 500 and a tenant
 // carries ~1.3k rows; three requests, then cached for the session.
@@ -89,14 +109,14 @@ export const getCampaignNames = (clientId) =>
 		},
 	});
 
-// ⚠️ This endpoint is SLOW — ~7-11s per page, because the service loads every detail row
-// for the tenant and picks the latest snapshot in Python. A tenant has ~1.3k keyword rows
-// over 3 pages, so fetching them one after another costs ~27s of blank screen.
+// A tenant has ~1.3k keyword rows over 3 pages. Page 1 (sorted by spend, i.e. the keywords
+// anyone would actually automate) renders as soon as it lands; the remaining pages are
+// fetched in parallel and merged in afterwards.
 //
-// So it is split: page 1 alone (sorted by spend, i.e. the keywords anyone would actually
-// automate), rendered as soon as it lands, and the remaining pages fetched IN PARALLEL and
-// merged in afterwards. Same total data, roughly a third of the wait before something is
-// on screen, and the tail arrives while the user is reading the top.
+// ⚠️ Each page is a cheap SQL page (~50 ms server-side) since 2026-09-11. Before that the
+// service loaded every detail row for the tenant on EVERY page (~7-11 s, ~200 MB), and these
+// parallel fetches exhausted the Supabase connection pool. If this endpoint ever turns slow
+// again, fetch the tail sequentially instead.
 export const getKeywordMetricsPage = (clientId, page) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {

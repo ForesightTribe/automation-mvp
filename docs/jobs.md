@@ -480,9 +480,10 @@ slots with evidence instead of guessing.
 
 But the alert that matters is not CPU. It is **"the 3am scrape silently didn't run."**
 
-- **Deadman / heartbeat** — a scheduled `monitor.heartbeat` job asserts each expected job type
-  has succeeded within its window (26h for a daily, 8d for a weekly). If not → ERROR log →
-  Cloud Logging alert → email. This catches the failure mode no resource graph ever will.
+- **Deadman / heartbeat** — a scheduled `monitor.heartbeat` job asserts each enabled schedule
+  has succeeded **since it was last due** (`jobs/monitor.py::missed_fire`, which walks the
+  schedule's own cron backwards). If not → ERROR log → Cloud Logging alert → email. This
+  catches the failure mode no resource graph ever will.
 - **Disk > 80%** and **VM down** alert policies in GCP.
 - **The alert policies themselves live in [deploy/alerts/](../deploy/alerts/)** as
   reviewable JSON plus the `gcloud` commands. Two of them, and the second is not
@@ -544,10 +545,13 @@ dispatch works: the OOM killer targets the fat scrape, never the daemon.
 
 Read `peak_rss_mb` from `cli jobs list` before changing `LANE_SLOTS`.
 
-**Connections are *not* a wall.** The Supabase pooler is set to **25**. Budget: API 5 + runner 3
-+ two subprocesses ×6 = **20**, leaving 5 for `psql`/migrations/Studio. Two concurrent lanes fit
-today. Note [database.py](../backend/app/core/database.py)'s comment still says the cap is 15 —
-**stale, it is 25.** Connection limits scale with Supabase *compute size*, not plan tier, so
+**Connections are *not* a wall.** The Supabase pooler cap is **45** (raised from 25; session mode,
+so idle pooled connections count too). Each process has its own pool, `DB_POOL_SIZE` (default 4).
+Worst case with every lane busy: runner ~4 + six lane subprocesses × ≤2 + API ~8 ≈ **24**, leaving
+room for developer backends (4 each) and `psql`/migrations/Studio. Measured 2026-09-11: jobs hold
+0–2 connections each (a public scrape holds 0 while it scrapes). That day's pool exhaustion was one
+slow API endpoint holding connections, not job concurrency. Connection limits scale with Supabase
+*compute size*, not plan tier, so
 upgrading to Pro would not buy concurrency (it buys backups and no project pausing — real, but
 different, reasons).
 
@@ -672,7 +676,7 @@ Everything below was proven on real hardware, not just locally:
 - **Cloud Logging** — the Ops Agent ships `runner.log` (JSON → queryable fields, severity
   mapped) and per-lane scraper output; visible in Logs Explorer with no SSH.
 
-**Three bugs only real use could find**, all in the heartbeat (the one component that
+**Four bugs only real use could find**, all in the heartbeat (the one component that
 *reasons about* the system rather than doing work):
 1. **Self-monitoring loop** — it audited its own schedule, so one stale run made it fail
    forever (a failed heartbeat records no success → guarantees the next is stale).
@@ -682,9 +686,16 @@ Everything below was proven on real hardware, not just locally:
    freshly-created weekly schedule was flagged days before its first run was due. Fixed
    by measuring age from `last_success or created_at`.
 3. The `Queued …` hint printed `cli …`, which isn't a real command (`python -m cli` is).
+4. **Hour-restricted crons alerted all night** (2026-09-12). The window used to be the gap
+   between the *next two* fires × 1.1 — for `*/15 15-17 * * *` (a campaign-manager bid
+   optimiser, which only runs inside its automation's window) that is 15 minutes, demanded
+   around the clock. Every hour from 18:00 until 15:00 the next day raised an ERROR, which
+   also buried the genuine ones. Fixed by asking "has it succeeded since the last fire it
+   was DUE?" — `missed_fire`, on `jobs/scheduler.py::previous_fire_before`.
 
-The deadman window is derived from each schedule's own cron period (× 1.1), so a
-daily alerts at ~26h and a weekly at ~8d without any per-schedule config. Heartbeat
+The deadman compares each schedule's last success against its own last due fire, plus the
+misfire grace so a run still in flight is not counted missed, so no per-schedule config is
+needed and a schedule that only fires in a window stays silent between windows. Heartbeat
 runs in the **interactive** lane so it fires promptly, never queued behind a scrape.
 Cloud Logging integration (`runner.log` JSON → filterable fields; per-run logs as
 plain text) is real but only testable on the VM — see `deploy/ops-agent-logging.yaml`.

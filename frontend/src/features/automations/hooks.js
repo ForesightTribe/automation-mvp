@@ -19,7 +19,6 @@ import {
 	getStoreCatalogue,
 	getBidRules,
 	getBudgetSchedules,
-	getCampaignKeywords,
 	getKeywordMetricsPage,
 	getKeywordMetricsRest,
 	getCampaignNames,
@@ -69,11 +68,27 @@ export const useBidRules = () => {
 	});
 };
 
-export const useHistory = (page = 1, kind) => {
+export const useHistory = (page = 1, kind, opts = {}) => {
 	const { activeClientId } = useClient();
+	const { campaignId, ruleId, includeUnchanged = false } = opts;
 	return useQuery({
-		queryKey: [HISTORY, activeClientId, page, kind ?? "all"],
-		queryFn: () => getHistory(activeClientId, { page, kind }),
+		queryKey: [
+			HISTORY,
+			activeClientId,
+			page,
+			kind ?? "all",
+			campaignId ?? "all",
+			ruleId ?? "all",
+			includeUnchanged,
+		],
+		queryFn: () =>
+			getHistory(activeClientId, {
+				page,
+				kind,
+				campaignId,
+				ruleId,
+				includeUnchanged,
+			}),
 		enabled: Boolean(activeClientId),
 	});
 };
@@ -86,16 +101,6 @@ export const useCampaigns = () => {
 		enabled: Boolean(activeClientId),
 		staleTime: 5 * 60 * 1000,
 		select: (page) => page?.items ?? [],
-	});
-};
-
-export const useCampaignKeywords = (campaignId) => {
-	const { activeClientId } = useClient();
-	return useQuery({
-		queryKey: [CAMPAIGNS, activeClientId, "keywords", campaignId],
-		queryFn: () => getCampaignKeywords(activeClientId, campaignId),
-		enabled: Boolean(activeClientId && campaignId),
-		staleTime: 5 * 60 * 1000,
 	});
 };
 

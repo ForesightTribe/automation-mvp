@@ -136,6 +136,7 @@ All tables are `(tenant_id, platform)` scoped.
 | `cm_bid_runtime`       | System state, 1:1 with a bid rule (below)                                              |
 | `cm_platform_accounts` | `advertiser_id` + **`live_armed`** (the per-tenant arming switch)                      |
 | `cm_run_log`           | Slim append-only history for the UI                                                    |
+| `cm_city_stores`       | The frozen **measurement store** per city — a global default (`tenant_id` NULL) plus per-client overrides; see [7.6c](#76c-where-a-rule-measures--the-city-registry) |
 
 **One schedule per (tenant, platform, campaign)** is a DB constraint — a campaign has one everyday
 budget, and two automations for it could only contradict each other. Extra windows go on the
@@ -193,7 +194,7 @@ What it produces:
 | Schedule          | Cron                                               | Purpose                                                                                                                     |
 | ----------------- | -------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
 | Budget boundaries | one per distinct rule start/end time               | Apply the budget that matches now. A rule whose last window has closed contributes none                                     |
-| Safety poll       | hourly                                             | Catch drift and missed fires for **recurring rules with windows left**; also the budget settle pass while an ended schedule's teardown has not landed (§5b) |
+| Safety poll       | hourly                                             | Catch drift **inside a window**, a revert that never landed after one closed (§6a), and the budget settle pass while an ended schedule's teardown has not landed (§5b) |
 | `once` fires      | one-shots, deduped by time                         | Apply at the window start, revert at the end                                                                                |
 | Bid optimizer     | `*/15` within the merged active hours              | The control loop. A one-time overnight window also gets the next day's cron for its tail                                    |
 | Bid reset         | daily at each window's stop, **fired 1 min early** | De-escalate closed keywords to `min_bid`                                                                                    |
@@ -266,8 +267,9 @@ the only copy: `in_window`, `window_start`, `window_close`, `just_closed`, `last
 | Engine     | Acts on                                                                                                                       |
 | ---------- | ----------------------------------------------------------------------------------------------------------------------------- |
 | Bid reset  | Rules whose window **just closed** (`window.just_closed`; look-back = misfire grace + look-ahead) — never "not in its window" |
-| Budget     | Schedules still **in play** (`budget._in_play`): a window running or to come, or the fire that closes the last one            |
+| Budget     | Schedules with something to do (`budget._has_work`): a window open, one just closed, a close still owed its revert, or a final teardown to settle |
 | Reconciler | Only rules with windows left produce crons; the hourly poll only for recurring rules with windows left                        |
+| Budget engine (§6a) | It acts inside a window and at a close, never between windows — a live schedule stopped re-asserting its default every hour too |
 
 The budget check runs before sign-in, so a client whose automations have all ended does not log in to do
 nothing.
@@ -328,15 +330,42 @@ differs.
   is the only non-running answer, so an existing schedule never has its status touched at all.
 
 The first matching rule wins, ordered by rule id — oldest wins, which is stable and explainable
-("the one you made first takes precedence"). With no rule matching, `default_budget` applies, so an
-end-time boundary naturally reverts.
+("the one you made first takes precedence").
 
 `_window_just_ended` probes a **range**, not a single instant: a point probe silently missed any
 window shorter than the misfire grace, and a late fire broke it the same way.
 
-**An ended schedule is left alone** (§5b). With no rule to match, `plan_for_now` would answer
-`default_budget` on every fire; the engine acts on a schedule only while a window is running or to come,
-at the fire that closes its last window, or to settle a final teardown that never landed.
+### 6a. Between windows, the budget is not ours (2026-09-12)
+
+`default_budget` used to be the answer to "no rule matches", so every fire outside a window
+re-asserted it — not once at the close, but for as long as the schedule existed. A budget set by
+hand at 10:00 was gone by 11:00, and the hourly poll signed in to Blinkit around the clock to do it.
+
+The engine now acts on a window's **edges** and inside it, and `plan_for_now` has a third answer —
+**None, nothing to enforce**:
+
+| When | What the engine does |
+| --- | --- |
+| A window is open | Applies that rule's budget, drift included |
+| A window just closed (within the misfire grace) | Reverts to `default_budget`, and stops the campaign if `stop_after_window` is on |
+| A close whose revert never landed | The **failsafe** — does what that fire would have done, then latches |
+| Any other moment | Nothing. The campaign is not read, and if no schedule has work the run never signs in |
+| A schedule with **no rules** | Unchanged: holding its default is the whole of what it does |
+
+**The failsafe is a latch, not a timer** (`lifecycle.revert_owed`). `settled_at` means "the most
+recent close this schedule has been torn down for", so a close is owed a revert until one lands —
+and once it lands, the schedule is silent until the next close. Settle-once (§5b) is the same
+question asked of the *last* close, which is why no new column was needed. Two guards keep a repair
+from acting on something that was never its business: a close **before the schedule was created**
+is not owed, and neither is one more than `CM_SETTLE_MAX_AGE_HOURS` (24 h) old — past that, the
+campaign's budget is whatever the days since made it.
+
+**The cost, accepted deliberately:** drift correction outside windows is gone. If Blinkit itself
+changes a budget at 10:00, it stands until the window opens. Nothing can tell that apart from a
+person choosing a number, and clobbering the person is the worse error.
+
+**An ended schedule is left alone** (§5b): its last close is either latched, or owed one final
+teardown that also records the ending in History.
 
 ---
 
@@ -617,6 +646,52 @@ digits, because `201xxx` alone cannot separate them.
 Maintenance is the ~14 exceptions in `config.xlsx`'s `city_map` sheet; the other 228 cities match by
 name. `cli cities seed` builds the list, `cli sync` applies the sheet and tags stores, `cli cities
 status` reports what still resolves to nothing.
+
+#### The store inside the city — frozen, not arbitrary
+
+A city is still not a store. Until 2026-09-11 the store was the city's **lowest `merchant_id`** —
+deterministic, but a store nobody chose — copied onto the rule as lat/lon at save time, so moving it
+meant editing every rule.
+
+`cm_city_stores` (migration `d7c3e9a1f5b2`) freezes one store per (marketplace, city), in two layers:
+
+| Layer           | `tenant_id` | Set from                  | Wins   |
+| --------------- | ----------- | ------------------------- | ------ |
+| Client override | the client  | `cm stores set -t <id>`   | first  |
+| Global default  | NULL        | `cm stores set --global`  | second |
+
+**CLI only, deliberately** (Deepansh, 2026-09-11): no API and no UI until frozen stores are proven in
+practice. Rules created from the dashboard still record their city, so a store set from the CLI
+reaches them too.
+
+A rule saved **by city** carries `cm_bid_rules.city_id` and **follows** that city's frozen store. The
+bid engine resolves it on every run (`bid.measurement_point`, one query per run), so changing a city's
+store moves every automation measuring there on the next tick, with no rule edits. A rule saved by an
+explicit store (`location_id`, `--lat/--lon`) has `city_id` NULL and stays **pinned**.
+
+Where a rule measures, in order — the `rule.store` log line names which one applied (`store_source`):
+
+1. the client's override, if its store is still an active catalog store with coordinates;
+2. the global default, same condition;
+3. the store saved on the rule (`rule`) — **a city with nothing frozen moves nobody**, which is why the
+   migration seeds no stores: nothing measures anywhere new until someone sets one;
+4. the Bengaluru fallback (`default`), only for a rule with no store at all.
+
+A new rule in a city with nothing frozen is still saved at the lowest `merchant_id` (`catalog`).
+
+⚠️ Changing a city's store **clears the engine's memory** for every rule it re-points — the same
+`_RUNTIME_MEMORY` set Resume clears. Last position, holding price, relaxed target and escalation step
+were all observed at the old store, and positions differ between stores. Those rules' `lat` / `lon` /
+`location_name` are re-snapshotted in the same step, so lists show the store actually in use.
+
+Keyed by `merchant_id`, not `marketplace_locations.id`, because `cli sync --prune` deletes and
+re-creates catalog rows. A frozen store that leaves the catalog or closes is skipped (and logged),
+never honoured. `rank` 1 is the store; higher ranks are reserved for measuring at several stores per
+city, which is not built.
+
+⚠️ Zepto still resolves the store from the coordinate once per store per run (`get_page`). Passing the
+frozen `merchant_id` to its search would skip that, but it also drops the secondary hub ids the lookup
+returns, which can change what a search shows — left alone until that is measured.
 
 ### 7.7 Bounds are invariants
 
@@ -1238,7 +1313,7 @@ bump `updated_at`, which is exactly what Resume depends on.
 | Scenario                                  | What happens                                                                            |
 | ----------------------------------------- | --------------------------------------------------------------------------------------- |
 | A rule matches now                        | Apply its budget; start the campaign unconditionally if stopped                         |
-| No rule matches                           | Apply `default_budget` — only while the schedule is live (§5b)                          |
+| No rule matches, between windows          | **Nothing** — not read, not written (§6a)                                               |
 | Window just ended, `stop_after_window` on | Stop the campaign                                                                       |
 | Window just ended, toggle off             | Revert to default, **never** touch run state                                            |
 | Two overlapping windows                   | The **oldest rule** wins — stable and explainable                                       |
@@ -1247,7 +1322,8 @@ bump `updated_at`, which is exactly what Resume depends on.
 | Schedule's last window closes             | That fire reverts (and stops, if toggled); the schedule is then **left alone**           |
 | Hours or days after it ended              | **Nothing is written**, and the engine does not sign in                                 |
 | Final fire missed while the runner was down | The hourly pass settles it: revert, then stop if toggled (≤3 tries, ≤24 h)             |
-| Fire missed on a live recurring schedule  | The hourly safety poll catches it                                                       |
+| Fire missed on a live recurring schedule  | The hourly safety poll catches it (in-window drift, or a revert that never landed)      |
+| Someone sets a budget by hand between windows | It stands until the next window opens (§6a)                                           |
 
 ### 9.8 Safety and failure
 
@@ -1326,6 +1402,34 @@ two mistakes that actually happened — arrow jargon in a reason, and `str(e)` p
 
 The `compute_bid` reasons were already right and are untouched: _"raising to ₹25 (+₹3) because
 position 24 is worse than target 3"_ is the register the whole column aims at.
+
+### Both engines narrate the same way
+
+The bid engine reads as a block per keyword — header, configuration, what the marketplace showed,
+what we decided, what landed. The budget engine printed flat lines instead
+(`campaign 583049 applied ₹1202 → ₹802`), repeating the campaign id and writing an arrow where a
+verb belongs. It now uses the same block (`logs.context` / `observed` / `decided`, and a
+`write_result` that speaks in sentences):
+
+```
+[1/4] Reco 04 - Blueberry & Mango  (campaign 583049)
+      default ₹802 · ₹1202 on Fri, Sat, Sun 19:30–02:00, from 11 Sep
+      no rule applies right now, so the budget should be its ₹802 default
+      the campaign is running · its budget is ₹1202
+      applied — the budget is now ₹802 (was ₹1202)
+```
+
+Three things changed with it:
+
+- **A no-op is narrated by the engine**, in its own words (_"the budget is already ₹1202, so there
+  is nothing to change"_), and the guardrail line behind it dropped from WARNING to DEBUG. It is the
+  hourly poll's normal answer — at WARNING it drowned every run that did something.
+- **A failed write says what the value still is**, and why: _"not applied — the budget is still
+  ₹1202 (campaign is not editable)"_. The marketplace's own reason used to be dropped.
+- **A rule reads as English.** `_reason` rendered an open-ended rule as
+  `sunday, friday, saturday (2026-09-11–None) / 19:30–02:00`; it now says
+  `Fri, Sat, Sun 19:30–02:00, from 11 Sep` — week order, real dates, no `None`. The same string is
+  what History shows a client.
 
 ### A blocked run explains itself too
 

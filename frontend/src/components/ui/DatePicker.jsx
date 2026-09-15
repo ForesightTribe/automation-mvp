@@ -9,6 +9,10 @@ import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
  * the theme's type, colour or radius, and it looks like a different product every time it
  * opens. The field below is a button that renders the date, and the calendar is ours.
  *
+ * ⚠️ `allowClear={false}` for a field that must always hold a date. Clearing writes "" and
+ * every consumer then has to survive it: the global range does not, because an empty end
+ * makes the window unmeasurable and each page computes its days from it.
+ *
  * ⚠️ The panel is `position: fixed` and PORTALLED to the body, anchored to the field's rect.
  * It opens inside a dialog whose body scrolls, which would clip an absolutely positioned
  * panel, and inside stacking contexts a plain z-index cannot climb out of. It flips above
@@ -54,6 +58,7 @@ export const DatePicker = ({
 	min,
 	max,
 	disabled = false,
+	allowClear = true,
 	placeholder = "Pick a date",
 	ariaLabel = "Date",
 	className = "",
@@ -239,9 +244,12 @@ export const DatePicker = ({
 							})}
 						</div>
 
-						{/* Clearing matters: an end date is optional, and without this the only
-						    way back to "no end" is the checkbox beside the field. */}
-						<div className="mt-2 flex justify-between border-t border-border pt-2">
+						{/* Clearing matters where an end date is optional: without it the only
+						    way back to "no end" is the checkbox beside the field. Where a date
+						    is mandatory it is left out, so there is no way to empty it. */}
+						<div
+							className={`mt-2 flex border-t border-border pt-2 ${allowClear ? "justify-between" : "justify-start"}`}
+						>
 							<button
 								type="button"
 								onClick={() => {
@@ -252,16 +260,18 @@ export const DatePicker = ({
 							>
 								Today
 							</button>
-							<button
-								type="button"
-								onClick={() => {
-									onChange("");
-									close();
-								}}
-								className="cursor-pointer text-xs text-content-muted transition-colors hover:text-content"
-							>
-								Clear
-							</button>
+							{allowClear && (
+								<button
+									type="button"
+									onClick={() => {
+										onChange("");
+										close();
+									}}
+									className="cursor-pointer text-xs text-content-muted transition-colors hover:text-content"
+								>
+									Clear
+								</button>
+							)}
 						</div>
 					</div>,
 					document.body,

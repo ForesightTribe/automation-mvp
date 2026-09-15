@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { useCampaigns } from "../hooks";
-import { CampaignStatusBadge } from "./CampaignStatusBadge";
+import { CampaignStatusBadge } from "../../../components/ui/CampaignStatusBadge";
 import { Card } from "../../../components/ui/Card";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";

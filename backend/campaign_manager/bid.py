@@ -258,6 +258,26 @@ def _rule_dict(r) -> dict:
             "start_time": r.start_time, "stop_time": r.stop_time}
 
 
+def measurement_point(rule, city_stores: dict) -> tuple[float, float, str | None, str]:
+    """Where this rule reads its position: `(lat, lon, label, source)`.
+
+    A rule saved by city (`city_id` set) follows that city's FROZEN store — the client's
+    override, else the global default (`repo.city_stores_for`) — looked up on every run, so
+    changing a city's store moves every automation measuring there on the next tick, with no
+    edits. A city with nothing frozen, and a rule pinned to one store (`city_id` NULL), keep
+    the store saved on the rule. Only a rule with neither falls back to the Bengaluru default.
+
+    `getattr`: pre-migration rows and test doubles carry no `city_id` at all.
+    """
+    city_id = getattr(rule, "city_id", None)
+    store = city_stores.get(city_id) if city_id is not None else None
+    if store is not None:
+        return float(store.lat), float(store.lon), store.label, store.source
+    if rule.lat is not None and rule.lon is not None:
+        return float(rule.lat), float(rule.lon), rule.location_name, "rule"
+    return _DEFAULT_LAT, _DEFAULT_LON, None, "default"
+
+
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
@@ -304,6 +324,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
                          processed=0, applied=0, skipped=0, errors=0)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
+
+    # Where each rule measures: its city's frozen store (the client's override, else the global
+    # default), resolved NOW rather than read off the rule — see `measurement_point`. One query
+    # for the whole run, made before any browser exists so a DB blip cannot leak one.
+    city_stores = await repo.city_stores_for(
+        platform, tenant_id, {getattr(r, "city_id", None) for r, _ in active})
 
     adapter = get_adapter(platform)
     mp = platform.title()          # what a human reads in the log lines below
@@ -363,9 +389,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     # every search then overrides lat/lon in the headers anyway.
     logs.note(run_id, f"{len(active)} keyword automations active in this window",
               dry_run=dry_run)
-    _first = active[0][0]
-    pos_session = await adapter.open_position_session(
-        pw, float(_first.lat or _DEFAULT_LAT), float(_first.lon or _DEFAULT_LON))
+    _lat0, _lon0, _, _ = measurement_point(active[0][0], city_stores)
+    pos_session = await adapter.open_position_session(pw, _lat0, _lon0)
 
     try:
         for rule, runtime in active:
@@ -415,14 +440,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                               msg=(f"Blinkit's minimum for this keyword is ₹{min_bid}, above "
                                    f"the rule's ₹{min_bid} — bidding at ₹{min_bid}"))
 
-            lat, lon = float(rule.lat or _DEFAULT_LAT), float(rule.lon or _DEFAULT_LON)
+            lat, lon, where, where_from = measurement_point(rule, city_stores)
             live_cpm = bids_cache[cid].get(kw)
             logs.rule_context(
                 run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                 target=rule.target_position,
                 current_cpm=live_cpm if live_cpm is not None else min_bid,
                 min_bid=min_bid, max_bid=rule.max_bid,
-                location_name=rule.location_name, lat=lat, lon=lon)
+                location_name=where, lat=lat, lon=lon, store_source=where_from)
 
             # A stopped campaign isn't serving, so there is no position to chase — and
             # Blinkit rejects bid writes on one anyway. Skipping here saves the expensive

@@ -1,11 +1,11 @@
-import { Button } from "../../../components/ui/Button";
+import { Button } from "./Button";
 
 /**
- * The one confirmation step in front of every lifecycle action on this page.
+ * The confirmation step in front of an action that reaches a live ad account.
  *
- * Pause, resume, reset, delete all change what the engine does to a live ad account,
- * and several of them queue a real write. None of them is an undo away, so each states
- * what it is about to do to which automation before it happens.
+ * Automation lifecycle changes, a one-off budget push, starting or stopping a campaign:
+ * none of them is an undo away, so each states what it is about to do, to what, before
+ * it happens.
  *
  * `blocked` is for a state the engine itself refuses (resetting a running rule, which
  * comes back a 409): the dialog still opens and explains, but the confirm is inert

@@ -47,6 +47,7 @@ from app.models.campaign_manager_v2 import (
     CmBidRule,
     CmBidRuntime,
     CmRunLog,
+    CmCityStore,
 )
 
 __all__ = [
@@ -65,5 +66,5 @@ __all__ = [
     "BlinkitAdCampaignKeyword",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
     "ExplorerRun",
-    "CmBudgetSchedule", "CmBudgetRule", "CmBidRule", "CmBidRuntime", "CmRunLog",
+    "CmBudgetSchedule", "CmBudgetRule", "CmBidRule", "CmBidRuntime", "CmRunLog", "CmCityStore",
 ]

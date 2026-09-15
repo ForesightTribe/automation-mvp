@@ -56,6 +56,33 @@ def initial_next_run(cron_expr: str) -> datetime:
     return next_fire_after(cron_expr, now_ist())
 
 
+# How far back `previous_fire_before` looks, widening until it finds a fire. Doubling
+# rather than one big span keeps a dense cron cheap (an hour of `*/15` is 4 steps) while
+# still reaching a yearly one — a spent `once` bid cron is pinned to a day + month.
+_LOOKBACKS = (timedelta(hours=1), timedelta(hours=6), timedelta(days=1),
+              timedelta(days=8), timedelta(days=40), timedelta(days=400))
+
+
+def previous_fire_before(cron_expr: str, before: datetime) -> datetime | None:
+    """The last fire time strictly before `before`, or None if there is none within a year.
+
+    APScheduler's CronTrigger only walks forwards, so this walks forwards from a widening
+    start point and keeps the last fire that lands before `before`. Needed by the deadman
+    check, which must know when a schedule was last DUE — an hour-restricted cron like
+    `*/15 15-17 * * *` has a 15-minute step and a 21-hour gap, and only the gap tells you
+    whether an evening with no runs is a problem.
+    """
+    for back in _LOOKBACKS:
+        prev: datetime | None = None
+        cur = next_fire_after(cron_expr, before - back)
+        while cur < before:
+            prev = cur
+            cur = next_fire_after(cron_expr, cur + timedelta(minutes=1))
+        if prev is not None:
+            return prev
+    return None
+
+
 async def _fire(sched: JobSchedule, now: datetime) -> str | None:
     """Enqueue one run of a due schedule. Returns the job's lane on success, or None if
     skipped (previous run still active) or errored — `tick` aggregates these into one
