@@ -8,12 +8,14 @@ Convention: functions return schema DTOs (or None for not-found / access-denied,
 route maps to 404); a `DuplicateActiveJob` from the queue propagates for the route to 409.
 """
 import uuid
+from datetime import timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
     BidContextOut, KeywordBidRange, TargetedCity,
     BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn, BudgetRuleOut, BudgetRuleUpdate,
-    BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmJobOut, RunLogOut,
+    BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmActionOut, CmJobOut,
+    RunLogOut,
 )
 from app.utils.time import now_ist
 # `window` is the same pure module the engines decide with, so the status the UI shows is
@@ -541,23 +543,94 @@ async def run_engine(session, tenant_id: uuid.UUID, job_type: str) -> uuid.UUID:
     return job.id
 
 
+# ── Recent actions (the dashboard's activity list) ──────────────────────────
+
+# How many to show, and how far back to look. Small on purpose: this answers "what did I
+# just ask for", not "what has happened lately" — the run log answers that, and is where
+# anything older belongs.
+_ACTIONS_LIMIT = 10
+_ACTIONS_WINDOW_HOURS = 6
+
+
+async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LIMIT):
+    """This client's recent PERSON-TRIGGERED campaign jobs, newest first.
+
+    Two conditions, and both are needed:
+
+      * the job TYPE is one a person performs (`spec.user_action`) — which excludes the
+        hourly engines and `cm.reconcile`, the latter being fired by the API on every rule
+        edit and so the noisiest thing that would otherwise qualify;
+      * THIS RUN had no schedule behind it (`schedule_id IS NULL`). The scheduler stamps
+        every job it fires with its schedule id and the API never sets one, so this is an
+        exact record of "a person asked for this" rather than an inference.
+
+    Neither alone is enough. The type says what KIND of thing it is; `schedule_id` says who
+    started THIS one. A cron fire of a type people also click is not an action anyone is
+    waiting on, and a reconcile nobody thinks of as an action should not appear just because
+    it came from the API.
+
+    Includes finished jobs, not only running ones — a job that wrote no history rows (a
+    catalogue refresh always does, and an engine tick that changed nothing does too) would
+    otherwise vanish on completion with nothing left to show it ever ran.
+    """
+    from sqlalchemy import select
+    from jobs.types import JOB_TYPES
+
+    actionable = [t for t, spec in JOB_TYPES.items() if spec.user_action]
+    if not actionable:
+        return []
+    since = now_ist() - timedelta(hours=_ACTIONS_WINDOW_HOURS)
+    rows = (await session.execute(
+        select(Job).where(
+            Job.tenant_id == tenant_id,
+            Job.job_type.in_(actionable),
+            Job.schedule_id.is_(None),
+            Job.created_at >= since,
+        ).order_by(Job.created_at.desc()).limit(limit)
+    )).scalars().all()
+
+    out = []
+    for job in rows:
+        spec = JOB_TYPES.get(job.job_type)
+        item = CmActionOut.model_validate(job)
+        item.label = (spec.label if spec else None) or job.job_type
+        item.run_id = (job.params or {}).get("run_id")
+        # The campaign this acted on, for a line that names its subject rather than
+        # saying "a budget change" and leaving the reader to guess which.
+        campaign = (job.params or {}).get("campaign")
+        item.campaign_id = int(campaign) if str(campaign or "").isdigit() else None
+        item.keyword = (job.params or {}).get("keyword") or None
+        out.append(item)
+    return out
+
+
 # ── Status + history ────────────────────────────────────────────────────────
 
 async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID) -> CmJobOut | None:
     job = await session.get(Job, job_id)
     if not job or job.tenant_id != tenant_id or not job.job_type.startswith("cm."):
         return None
-    return CmJobOut.model_validate(job)
+    out = CmJobOut.model_validate(job)
+    # Lifted out of `params` so callers never have to know where it is stored. It is a
+    # param because that is how it reaches the CLI (`--run-id`), but to a reader of a job
+    # it is identity, not input — and it is the key to what the run actually DID, since
+    # `status` only reports that the process exited.
+    out.run_id = (job.params or {}).get("run_id")
+    return out
 
 
 async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset: int,
                   campaign_id: int | None = None, rule_id: str | None = None,
-                  include_unchanged: bool = False):
+                  run_id: str | None = None, include_unchanged: bool = False):
     """History for the UI. Changes only by default; `include_unchanged` returns every tick,
-    which is what a per-automation view wants (see repo.list_run_log)."""
+    which is what a per-automation view wants (see repo.list_run_log).
+
+    `run_id` is the one-run view — what a single job did, and the only exact answer to
+    "did my change happen" (see the note on `repo.list_run_log`)."""
     rows, total = await repo.list_run_log(
         tenant_id, PLATFORM, kind=kind, limit=limit, offset=offset,
-        campaign_id=campaign_id, rule_id=rule_id, include_unchanged=include_unchanged)
+        campaign_id=campaign_id, rule_id=rule_id, run_id=run_id,
+        include_unchanged=include_unchanged)
     return [RunLogOut.model_validate(r) for r in rows], total
 
 

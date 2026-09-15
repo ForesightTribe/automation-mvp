@@ -281,9 +281,10 @@ def measurement_point(rule, city_stores: dict) -> tuple[float, float, str | None
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
-              reset: bool = False, platform: str = "blinkit") -> dict:
+              reset: bool = False, platform: str = "blinkit",
+              run_id: str | None = None) -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
-    run_id = logs.new_run_id()
+    run_id = run_id or logs.new_run_id()
     started = now_ist()
     logs.run_start(run_id, "bid_reset" if reset else "bid_optimizer", tenant_id,
                    dry_run=dry_run, platform=platform,
@@ -1000,7 +1001,7 @@ def _target_of(rule) -> _Target:
 
 async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: int,
                   match_type: str = "EXACT", platform: str = "blinkit",
-                  dry_run: bool | None = None) -> dict:
+                  dry_run: bool | None = None, run_id: str | None = None) -> dict:
     """Write ONE keyword's bid, now. The mechanism behind Reset (and Delete + reset).
 
     Deliberately takes plain values rather than a rule id: Delete + reset removes the rule
@@ -1013,7 +1014,7 @@ async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: 
     minutes later.
     """
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
-    run_id = logs.new_run_id()
+    run_id = run_id or logs.new_run_id()
     logs.run_start(run_id, "set_bid", tenant_id, dry_run=dry_run, platform=platform,
                    tenant_name=await repo.get_tenant_name(tenant_id))
 

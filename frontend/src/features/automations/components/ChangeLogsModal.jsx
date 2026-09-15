@@ -6,10 +6,12 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { ChannelBadge } from "./ChannelBadge";
 import { useHistory } from "../hooks";
+import { ActivityList } from "./ActivityList";
 import { Select } from "../../../components/ui/Select";
 import { ExportButton } from "../../../components/ui/ExportButton";
 import { downloadCsv } from "../../../lib/exportTable";
 import { HoverHint } from "../../../components/ui/HoverHint";
+import { formatDateTime } from "../../../lib/format";
 
 const KIND_LABEL = {
 	budget: "Budget change",
@@ -69,21 +71,6 @@ const OUTCOME = {
 
 const outcomeOf = (r) => OUTCOME[`${r.kind}:${r.action}`] ?? r.action;
 
-/** "7 Sept 2026, 4:00 pm" — a log without a time answers half the question. */
-const stamp = (ts) => {
-	const d = new Date(ts);
-	return Number.isNaN(d.getTime())
-		? String(ts)
-		: d.toLocaleString("en-IN", {
-				day: "numeric",
-				month: "short",
-				year: "numeric",
-				hour: "numeric",
-				minute: "2-digit",
-				hour12: true,
-			});
-};
-
 /**
  * The log as export columns, for the shared CSV writer.
  *
@@ -95,7 +82,7 @@ const stamp = (ts) => {
  * spreadsheet has no hover, and it is the field that explains every other one.
  */
 const exportColumns = (platformOf, locationOf) => [
-	{ header: "Time", value: (r) => stamp(r.timestamp) },
+	{ header: "Time", value: (r) => formatDateTime(r.timestamp) },
 	{ header: "Channel", value: (r) => platformOf(r.campaign_id) ?? "" },
 	{ header: "Campaign", value: (r) => r.campaign_name || "" },
 	{ header: "Keyword", value: (r) => r.keyword ?? "" },
@@ -135,6 +122,7 @@ export const ChangeLogsModal = ({
 	focusRow,
 	platformOf,
 	locationOf,
+	campaignNameOf,
 }) => {
 	const [page, setPage] = useState(1);
 	const [statusFilter, setStatusFilter] = useState("");
@@ -242,6 +230,12 @@ export const ChangeLogsModal = ({
 				</header>
 
 				<div className="flex-1 overflow-auto px-5 py-4">
+					{/* What you asked for, above what the engines did. Hidden while a single
+					    automation is in focus: that view is about one rule's own history, and
+					    the account's recent actions are not part of that question. */}
+					{!focusRow && (
+						<ActivityList campaignNameOf={campaignNameOf} />
+					)}
 					{isLoading && <Loading label="Loading history…" />}
 					{error && (
 						<ErrorState message={error.message} onRetry={refetch} />
@@ -288,7 +282,7 @@ export const ChangeLogsModal = ({
 										className="border-b border-border/60 last:border-0 hover:bg-muted/50"
 									>
 										<td className="px-3 py-2 whitespace-nowrap text-content">
-											{stamp(r.timestamp)}
+											{formatDateTime(r.timestamp)}
 										</td>
 										<td className="px-3 py-2">
 											<ChannelBadge

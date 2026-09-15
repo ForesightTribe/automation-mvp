@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
+import { invalidateCampaignData } from "../../lib/campaignData";
 import {
 	getCampaigns,
 	setBudgetNow,
@@ -62,7 +63,11 @@ export const useJob = (jobId, { onSettled } = {}) => {
 		queryFn: async () => {
 			const job = await getJob(activeClientId, jobId);
 			if (job.status === "success" || job.status === "failed") {
-				qc.invalidateQueries({ queryKey: [CAMPAIGNS, activeClientId] });
+				// Every screen's campaign data, not just this page's. A budget written
+				// here also changes what Ads Insights divides by — and that page's
+				// utilisation is a RATIO, so a stale denominator reads as a confident
+				// wrong percentage rather than as stale. See lib/campaignData.js.
+				invalidateCampaignData(qc, activeClientId);
 				onSettled?.(job);
 			}
 			return job;

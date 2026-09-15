@@ -910,12 +910,19 @@ NO_CHANGE_ACTIONS = ("hold", "no-op")
 async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
                        kind: str | None = None, limit: int = 50, offset: int = 0,
                        campaign_id: int | None = None, rule_id: str | None = None,
-                       include_unchanged: bool = False):
+                       run_id: str | None = None, include_unchanged: bool = False):
     """Recent cm_run_log rows for a tenant (newest first) + total count.
 
     Defaults to CHANGES ONLY. Pass `include_unchanged=True` for the full per-tick record —
     that is the per-automation drill-down, where "we held, and here is why" is the answer
     being looked for. `campaign_id` / `rule_id` narrow it to one campaign or automation.
+
+    `run_id` narrows it to ONE RUN — every row a single job wrote, and nothing else. That is
+    the filter that answers "did the thing I just asked for actually happen", because a
+    finished job only reports that the process exited: the CM commands never set a non-zero
+    exit code, so a refused write settles exactly like an accepted one. Matching on the
+    campaign instead would race the parallel `cm_bid` / `cm_ops` lanes and could not
+    describe a run spanning many campaigns at all.
     """
     from sqlalchemy import func
     from app.models.campaign_manager_v2 import CmRunLog
@@ -929,6 +936,8 @@ async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
             base = base.where(CmRunLog.campaign_id == campaign_id)
         if rule_id is not None:
             base = base.where(CmRunLog.rule_id == rule_id)
+        if run_id is not None:
+            base = base.where(CmRunLog.run_id == run_id)
         if not include_unchanged:
             base = base.where(CmRunLog.action.notin_(NO_CHANGE_ACTIONS))
         total = (await db.execute(

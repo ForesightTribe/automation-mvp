@@ -271,8 +271,47 @@ class CmJobOut(BaseModel):
     id: uuid.UUID
     job_type: str
     status: str
+    # The id this run files its `cm_run_log` rows under — the link between "the job
+    # finished" and "here is what it did". Set by the service from `params`; None for job
+    # types that record nothing (a catalogue refresh) and for rows enqueued before this
+    # existed, so every consumer must handle its absence.
+    #
+    # ⚠️ `status: success` means the process exited, NOT that the write landed. The CM
+    # commands return their counts and never set a non-zero exit code, so a refused write
+    # settles exactly like an accepted one. Ask `/history?run_id=` for the real outcome.
+    run_id: str | None = None
     error: str | None = None
     exit_code: int | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class CmActionOut(BaseModel):
+    """One thing a person asked for, for the dashboard's activity list.
+
+    A job row, not a history row — which is the point: it exists from the moment the action
+    is queued, long before the run has written anything. The run log cannot answer "is my
+    change happening" because its rows are written when the run ENDS.
+
+    `run_id` links the two: once the job settles, the rows filed under that id are what it
+    actually did. `status` alone never answers that — the CM commands never set a non-zero
+    exit code, so a refused write settles exactly like an accepted one.
+    """
+    model_config = _orm
+    id: uuid.UUID
+    job_type: str
+    # Human wording for the type ("Campaign budget change"), from the job registry, so the
+    # UI never has to render a dotted type name at a reader.
+    label: str | None = None
+    status: str
+    run_id: str | None = None
+    campaign_id: int | None = None
+    # Set only by the actions that target ONE keyword (a bid reset). It is what makes a row
+    # in the table match exactly: without it, resetting one keyword would mark every bid
+    # rule on that campaign as busy.
+    keyword: str | None = None
+    error: str | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None

@@ -3,6 +3,7 @@ import { X } from "lucide-react";
 import { Button } from "../../../components/ui/Button";
 import { ChannelBadge } from "./ChannelBadge";
 import { CampaignPickerList } from "./CampaignPickerList";
+import { JobLine } from "./JobLine";
 import { KeywordPicker } from "./KeywordPicker";
 import { ActionCards } from "./ActionCards";
 import { KeywordActionCard } from "./KeywordActionCard";
@@ -64,6 +65,7 @@ export const AutomationWizard = ({
 	editRow,
 	initialKind = "campaign",
 	onActivateCampaign,
+	activationJobId,
 }) => {
 	const isEdit = Boolean(editRow);
 	const [step, setStep] = useState(1);
@@ -724,16 +726,38 @@ export const AutomationWizard = ({
 												}}
 											/>
 										) : (
-											<CampaignPickerList
-												selectedId={
-													campaign?.campaign_id
-												}
-												onActivate={onActivateCampaign}
-												onSelect={(c) => {
-													setCampaign(c);
-													setPickerOpen(false);
-												}}
-											/>
+											<>
+												{/* ⚠️ Reported HERE, not on the page. This
+												    wizard is a full-screen overlay, so a
+												    status line behind it is invisible — and
+												    the campaign toggle that produces this
+												    result lives inside the picker below.
+												    The one message that most needs reading
+												    ("this campaign is ON_HOLD, raise its
+												    budget") was being written where nobody
+												    could see it. */}
+												{activationJobId && (
+													<div className="mb-2">
+														<JobLine
+															jobId={
+																activationJobId
+															}
+														/>
+													</div>
+												)}
+												<CampaignPickerList
+													selectedId={
+														campaign?.campaign_id
+													}
+													onActivate={
+														onActivateCampaign
+													}
+													onSelect={(c) => {
+														setCampaign(c);
+														setPickerOpen(false);
+													}}
+												/>
+											</>
 										)}
 									</div>
 								</div>

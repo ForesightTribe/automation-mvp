@@ -42,6 +42,14 @@ _LIVE = typer.Option(
 #
 # `--platform` stays accepted as an alias so older scripts and muscle memory keep
 # working; `--marketplace` matches the public scrape commands and is the name to use.
+# Correlation id, so a run's rows in `cm_run_log` can be found from the job that started
+# it. Normally supplied by the queue (jobs/queue.py mints one at enqueue for every
+# correlated cm.* type); omitted — as it is whenever a human types the command — the run
+# mints its own, exactly as it always has. Nothing about typing these commands changes.
+_RUN_ID = typer.Option(
+    None, "--run-id",
+    help="Correlation id to file this run's history rows under. Defaults to a fresh one.",
+)
 _MARKETPLACE = typer.Option(
     ..., "--marketplace", "-m", "--platform",
     help="Which marketplace to drive: blinkit | zepto. Required — no default, "
@@ -51,10 +59,11 @@ _MARKETPLACE = typer.Option(
 
 @app.command("budget-scheduler")
 def budget_scheduler(tenant: str = _TENANT, live: bool = _LIVE,
-                     marketplace: str = _MARKETPLACE):
+                     marketplace: str = _MARKETPLACE, run_id: str = _RUN_ID):
     """Apply budget rules for the current IST slot (dry-run unless --live)."""
     from campaign_manager import budget
-    asyncio.run(budget.run(uuid.UUID(tenant), dry_run=_dry(live), platform=marketplace))
+    asyncio.run(budget.run(uuid.UUID(tenant), dry_run=_dry(live), platform=marketplace,
+                           run_id=run_id))
 
 
 @app.command("bid-optimizer")
@@ -62,6 +71,7 @@ def bid_optimizer(
     tenant: str = _TENANT,
     live: bool = _LIVE,
     marketplace: str = _MARKETPLACE,
+    run_id: str = _RUN_ID,
     reset: bool = typer.Option(
         False, "--reset",
         help="End-of-window mode: de-escalate closed-window keywords to their min_bid "
@@ -73,16 +83,16 @@ def bid_optimizer(
     de-escalation instead of optimization."""
     from campaign_manager import bid
     asyncio.run(bid.run(uuid.UUID(tenant), dry_run=_dry(live), reset=reset,
-                        platform=marketplace))
+                        platform=marketplace, run_id=run_id))
 
 
 @app.command("reconcile")
 def reconcile(tenant: str = _TENANT, live: bool = _LIVE,
-              marketplace: str = _MARKETPLACE):
+              marketplace: str = _MARKETPLACE, run_id: str = _RUN_ID):
     """Compile a tenant's rules into job_schedules (dry-run unless --live)."""
     from campaign_manager import reconciler
     asyncio.run(reconciler.reconcile(uuid.UUID(tenant), dry_run=_dry(live),
-                                     platform=marketplace))
+                                     platform=marketplace, run_id=run_id))
 
 
 @app.command("set-advertiser")
@@ -206,11 +216,12 @@ def set_budget(
     budget: float = typer.Option(..., "--budget", help="Daily budget (₹)"),
     marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
+    run_id: str = _RUN_ID,
 ):
     """One-off: set a campaign's daily budget now (dry-run unless --live)."""
     from campaign_manager import set_budget as sb
     asyncio.run(sb.run(uuid.UUID(tenant), campaign, budget, dry_run=_dry(live),
-                       platform=marketplace))
+                       platform=marketplace, run_id=run_id))
 
 
 @app.command("set-bid")
@@ -223,6 +234,7 @@ def set_bid(
     match_type: str = typer.Option("EXACT", "--match-type", help="EXACT | BROAD"),
     marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
+    run_id: str = _RUN_ID,
 ):
     """One-off: set a single keyword's bid now (dry-run unless --live).
 
@@ -234,7 +246,7 @@ def set_bid(
     from campaign_manager import bid
     asyncio.run(bid.set_bid(uuid.UUID(tenant), campaign_id=campaign, keyword=keyword,
                             cpm=cpm, match_type=match_type, platform=marketplace,
-                            dry_run=_dry(live)))
+                            dry_run=_dry(live), run_id=run_id))
 
 
 @app.command("set-activation")
@@ -249,6 +261,7 @@ def set_activation(
         "budget, so one is always sent; omit to reuse the campaign's current budget.",
     ),
     live: bool = _LIVE,
+    run_id: str = _RUN_ID,
 ):
     """One-off: start or stop a campaign now (dry-run unless --live).
 
@@ -259,7 +272,8 @@ def set_activation(
     """
     from campaign_manager import set_activation as sa
     asyncio.run(sa.run(uuid.UUID(tenant), campaign, status,
-                       budget=budget, dry_run=_dry(live), platform=marketplace))
+                       budget=budget, dry_run=_dry(live), platform=marketplace,
+                       run_id=run_id))
 
 
 @app.command("stop")

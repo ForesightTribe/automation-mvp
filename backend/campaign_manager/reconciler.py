@@ -442,9 +442,9 @@ async def _apply(db, tenant_id: uuid.UUID, platform: str, desired: list[Desired]
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def reconcile(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
-                    platform: str = "blinkit") -> dict:
+                    platform: str = "blinkit", run_id: str | None = None) -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
-    run_id = logs.new_run_id()
+    run_id = run_id or logs.new_run_id()
     logs.run_start(run_id, "reconcile", tenant_id, dry_run=dry_run, platform=platform,
                    tenant_name=await repo.get_tenant_name(tenant_id))
 
