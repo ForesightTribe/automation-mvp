@@ -16,6 +16,16 @@ old builders' quirks are frozen in deliberately: matching them exactly is what p
 refactor changed nothing. If Blinkit's contract genuinely changes, update the fixtures in a
 separate commit that says so, and never to make a failing test pass.
 
+**Changed once, on 2026-09-15**: `campaign_start` on all 18 bid/budget payloads, `9/1/2026`
+→ `9/2/2026`. These campaigns have `start_ts: 2026-09-01 18:30:00+00:00` — midnight IST on
+the 2nd — and the old builders read the date off the UTC stamp without converting it, so
+every UPDATE carried a start date one day early. Blinkit ignored that until it didn't:
+overnight on 2026-09-15 it began rejecting the whole request with `['Start Date of Campaign
+is not allowed to be changed']` and every bid and budget write stopped landing. So this is
+the case the paragraph above describes — one of the frozen quirks was a defect the
+marketplace had been tolerating. The `restart` payloads are untouched: their start date
+comes from `today`, which was never wrong. See `test_campaign_dates.py`.
+
     python -m campaign_manager.tests.test_build_equivalence
 """
 import json
