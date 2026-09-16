@@ -117,6 +117,10 @@ export const getCampaignNames = (clientId) =>
 // service loaded every detail row for the tenant on EVERY page (~7-11 s, ~200 MB), and these
 // parallel fetches exhausted the Supabase connection pool. If this endpoint ever turns slow
 // again, fetch the tail sequentially instead.
+//
+// `recent_only` drops the pre-migration account's campaigns on the SERVER. The picker also
+// filters them client-side, but only once `/ads/campaigns` has loaded — keywords usually
+// land first, so for that moment every campaign showed twice under the same name.
 export const getKeywordMetricsPage = (clientId, page) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {
@@ -125,6 +129,7 @@ export const getKeywordMetricsPage = (clientId, page) =>
 			order: "desc",
 			limit: 500,
 			page,
+			recent_only: true,
 		},
 	});
 

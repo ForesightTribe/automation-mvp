@@ -141,7 +141,7 @@ export const CampaignDrawer = ({ campaignId, open, onClose }) => {
 							<tbody>
 								{keywords.map((k) => (
 									<tr
-										key={k.target}
+										key={`${k.target}|${k.match_type ?? ""}`}
 										className="border-b border-border/60 last:border-0"
 									>
 										<td className="py-1.5 pr-2 text-content">
