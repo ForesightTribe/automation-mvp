@@ -81,6 +81,13 @@ console = Console()
 # back-to-back requests is the kind of pattern this site's WAF reacts to.
 _ZEPTO_DAY_GAP_S = 1.5
 
+# How long the ads section waits before replaying the fetches it lost. Longer
+# than _ads_request's own 3/8/20s ladder on purpose: by the time a fetch has
+# exhausted that, the fault is not the two-second blip the ladder is for, so the
+# replay wants a gap of its own rather than a fourth quick try. Only what fails
+# the replay too makes the run exit non-zero (and mail the alert).
+_ZEPTO_RECHECK_WAIT_S = 20
+
 
 @app.command("blinkit")
 def scrape_blinkit(
@@ -1851,144 +1858,209 @@ async def _scrape_zepto_ads(
                     auth_fails = 0
 
             session_died = False
-            try:
-                with console.status("[cyan]Fetching campaigns...[/cyan]") as status:
-                    n = 0
-                    for day in days:
-                        n += 1
-                        status.update(f"[cyan]Campaigns {day} ({n}/{total_calls})...[/cyan]")
-                        try:
-                            camps = await zepto_fetch_ad_campaigns(
-                                headers, brand_id, day, day, categories[0]
+            # Re-check queue. A fetch that fails ONCE is not a failed run: an
+            # ads-bff 500 clears in seconds, but the old code lost that table for
+            # the day, exited 1, and then mailed the runner_errors alert every
+            # hour until someone re-ran by hand — 2026-09-14 and -15 both went
+            # that way off single lost fetches. Each entry is the label used in
+            # reporting plus a closure that repeats exactly that fetch and its
+            # parse; the re-check pass below replays each one once. Only what
+            # fails THERE too becomes `failed` and fails the run.
+            lost: list[tuple[str, object]] = []
+            recovered: list[str] = []
+            status = None        # set by the console.status blocks below
+
+            def _tick(msg: str) -> None:
+                """Advance the progress line. During the re-check pass n runs past
+                total_calls, so the counter is dropped there rather than lying."""
+                nonlocal n
+                n += 1
+                if status is not None:
+                    of = f" ({n}/{total_calls})" if n <= total_calls else " (re-check)"
+                    status.update(f"[cyan]{msg}{of}...[/cyan]")
+
+            async def _attempt(label: str, fn) -> None:
+                """Run one fetch+parse step; queue it for the re-check if it fails.
+                `_note` still sees the exception, so three 401s in a row stop the
+                run rather than queueing 150 doomed replays."""
+                try:
+                    await fn()
+                except Exception as e:
+                    logger.warning(f"Zepto {label} failed: {e}")
+                    lost.append((label, fn))
+                    _note(e)
+
+            def _day_campaigns(day: str) -> dict:
+                """campaign_id -> row for one day. Read out of `rows` rather than
+                captured in a closure, so an analytics fetch replayed by the
+                re-check patches the rows the first pass already collected."""
+                return {r["campaign_id"]: r for r in rows if r["date"].isoformat() == day}
+
+            async def _fetch_campaign_list(day: str) -> None:
+                _tick(f"Campaigns {day}")
+                camps = await zepto_fetch_ad_campaigns(
+                    headers, brand_id, day, day, categories[0]
+                )
+                day_rows = parse_zepto_ad_campaigns(
+                    camps, tenant_id, job_id, day, categories[0]
+                )
+
+                # ads-bff intermittently returns the campaign list with
+                # every metric as "-", then real figures for the same
+                # window seconds later. Retry once; if it is still bare,
+                # skip the day rather than upserting zeros over data that
+                # a previous run got right.
+                if day_rows and not _has_any(day_rows):
+                    await asyncio.sleep(6)
+                    camps = await zepto_fetch_ad_campaigns(
+                        headers, brand_id, day, day, categories[0]
+                    )
+                    day_rows = parse_zepto_ad_campaigns(
+                        camps, tenant_id, job_id, day, categories[0]
+                    )
+                    if not _has_any(day_rows):
+                        if day not in not_ready:
+                            not_ready.append(day)
+                        return
+                # Extended BEFORE the tabs, not after, so _day_campaigns can find
+                # the day's rows; the tabs patch these same row objects either way.
+                rows.extend(day_rows)
+
+            async def _fetch_day_tabs(day: str) -> None:
+                """The six tabular views per category for one day. Each view is its
+                own _attempt: one lost view must not cost the other five."""
+                for cat in categories:
+
+                    async def _analytics(cat=cat, day=day) -> None:
+                        _tick(f"Analytics {cat} {day}")
+                        tab = await zepto_fetch_ads_tabular(
+                            headers, brand_id, day, day, zep.ADS_VIEW_CAMPAIGN, cat
+                        )
+                        by_id = _day_campaigns(day)
+                        for cid, patch in parse_zepto_ad_tabular_campaigns(tab).items():
+                            row = by_id.get(cid)
+                            if row is None:
+                                # A campaign the Analytics view knows about
+                                # but the campaign list did not return. Not
+                                # observed, but it would silently lose that
+                                # campaign's revenue if it ever happened.
+                                logger.warning(
+                                    f"Zepto campaign {cid} is in the {cat} analytics table "
+                                    f"but not in the campaign list for {day} — metrics dropped"
+                                )
+                                continue
+                            row.update(patch)
+                            # The tabular tabs partition properly, unlike the
+                            # campaign list, so this is the campaign's real
+                            # category rather than the tab that was asked for.
+                            row["campaign_category"] = cat
+
+                    await _attempt(f"{cat}/{day} analytics", _analytics)
+                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+
+                    async def _keywords(cat=cat, day=day) -> None:
+                        _tick(f"Keywords {cat} {day}")
+                        kws = await zepto_fetch_ads_tabular(
+                            headers, brand_id, day, day, zep.ADS_VIEW_KEYWORD, cat
+                        )
+                        kw_rows.extend(
+                            parse_zepto_ad_keywords(
+                                kws, tenant_id, job_id, day, cat, brand_id
                             )
-                            day_rows = parse_zepto_ad_campaigns(
-                                camps, tenant_id, job_id, day, categories[0]
+                        )
+
+                    await _attempt(f"{cat}/{day} keywords", _keywords)
+                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+
+                    # Product performance, then the three breakdown views
+                    # (category / city / page) which share one shape and one
+                    # parser. All partition by campaign_category the way the
+                    # keyword view does.
+                    async def _products(cat=cat, day=day) -> None:
+                        _tick(f"Products {cat} {day}")
+                        tab_rows = await zepto_fetch_ads_tabular(
+                            headers, brand_id, day, day, zep.ADS_VIEW_PRODUCT, cat
+                        )
+                        prod_rows.extend(
+                            parse_zepto_ad_products(
+                                tab_rows, tenant_id, job_id, day, cat, brand_id
+                            )
+                        )
+
+                    await _attempt(f"{cat}/{day} products", _products)
+                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+
+                    for view, dim in (
+                        (zep.ADS_VIEW_CATEGORY, "category"),
+                        (zep.ADS_VIEW_CITY, "city"),
+                        (zep.ADS_VIEW_PAGE, "page"),
+                    ):
+
+                        async def _breakdown(cat=cat, day=day, view=view, dim=dim) -> None:
+                            _tick(f"{dim.title()} {cat} {day}")
+                            tab_rows = await zepto_fetch_ads_tabular(
+                                headers, brand_id, day, day, view, cat
+                            )
+                            bd_rows.extend(
+                                parse_zepto_ad_breakdown(
+                                    tab_rows, tenant_id, job_id, day, cat, brand_id, dim
+                                )
                             )
 
-                            # ads-bff intermittently returns the campaign list with
-                            # every metric as "-", then real figures for the same
-                            # window seconds later. Retry once; if it is still bare,
-                            # skip the day rather than upserting zeros over data that
-                            # a previous run got right.
-                            if day_rows and not _has_any(day_rows):
-                                await asyncio.sleep(6)
-                                camps = await zepto_fetch_ad_campaigns(
-                                    headers, brand_id, day, day, categories[0]
-                                )
-                                day_rows = parse_zepto_ad_campaigns(
-                                    camps, tenant_id, job_id, day, categories[0]
-                                )
-                                if not _has_any(day_rows):
-                                    not_ready.append(day)
-                                    continue
-                        except Exception as e:
-                            logger.warning(f"Zepto ads failed for {day}: {e}")
-                            failed.append(day)
-                            _note(e)
-                            continue
+                        await _attempt(f"{cat}/{day} {dim}", _breakdown)
                         await asyncio.sleep(_ZEPTO_DAY_GAP_S)
 
-                        by_id = {r["campaign_id"]: r for r in day_rows}
-                        for cat in categories:
-                            n += 1
-                            status.update(f"[cyan]Analytics {cat} {day} ({n}/{total_calls})...[/cyan]")
-                            try:
-                                tab = await zepto_fetch_ads_tabular(
-                                    headers, brand_id, day, day, zep.ADS_VIEW_CAMPAIGN, cat
-                                )
-                            except Exception as e:
-                                logger.warning(f"Zepto campaign_table failed for {cat} {day}: {e}")
-                                failed.append(f"{cat}/{day} analytics")
-                                _note(e)
-                            else:
-                                for cid, patch in parse_zepto_ad_tabular_campaigns(tab).items():
-                                    row = by_id.get(cid)
-                                    if row is None:
-                                        # A campaign the Analytics view knows about
-                                        # but the campaign list did not return. Not
-                                        # observed, but it would silently lose that
-                                        # campaign's revenue if it ever happened.
-                                        logger.warning(
-                                            f"Zepto campaign {cid} is in the {cat} analytics table "
-                                            f"but not in the campaign list for {day} — metrics dropped"
-                                        )
-                                        continue
-                                    row.update(patch)
-                                    # The tabular tabs partition properly, unlike the
-                                    # campaign list, so this is the campaign's real
-                                    # category rather than the tab that was asked for.
-                                    row["campaign_category"] = cat
-                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+            async def _fetch_day(day: str) -> None:
+                """One day: the campaign list, then the tabs. Raises if the LIST is
+                lost — the tabs are meaningless without it, so _attempt queues the
+                whole day as a single re-check item."""
+                await _fetch_campaign_list(day)
+                if day in not_ready:
+                    return
+                await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+                await _fetch_day_tabs(day)
 
-                            n += 1
-                            status.update(f"[cyan]Keywords {cat} {day} ({n}/{total_calls})...[/cyan]")
-                            try:
-                                kws = await zepto_fetch_ads_tabular(
-                                    headers, brand_id, day, day, zep.ADS_VIEW_KEYWORD, cat
-                                )
-                            except Exception as e:
-                                logger.warning(f"Zepto keyword_table failed for {cat} {day}: {e}")
-                                failed.append(f"{cat}/{day} keywords")
-                                _note(e)
-                            else:
-                                kw_rows.extend(
-                                    parse_zepto_ad_keywords(
-                                        kws, tenant_id, job_id, day, cat, brand_id
-                                    )
-                                )
-                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-                            # Product performance, then the three breakdown views
-                            # (category / city / page) which share one shape and one
-                            # parser. All partition by campaign_category the way the
-                            # keyword view does.
-                            n += 1
-                            status.update(f"[cyan]Products {cat} {day} ({n}/{total_calls})...[/cyan]")
-                            try:
-                                tab_rows = await zepto_fetch_ads_tabular(
-                                    headers, brand_id, day, day, zep.ADS_VIEW_PRODUCT, cat
-                                )
-                            except Exception as e:
-                                logger.warning(f"Zepto product_table failed for {cat} {day}: {e}")
-                                failed.append(f"{cat}/{day} products")
-                                _note(e)
-                            else:
-                                prod_rows.extend(
-                                    parse_zepto_ad_products(
-                                        tab_rows, tenant_id, job_id, day, cat, brand_id
-                                    )
-                                )
-                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-                            for view, dim in (
-                                (zep.ADS_VIEW_CATEGORY, "category"),
-                                (zep.ADS_VIEW_CITY, "city"),
-                                (zep.ADS_VIEW_PAGE, "page"),
-                            ):
-                                n += 1
-                                status.update(
-                                    f"[cyan]{dim.title()} {cat} {day} ({n}/{total_calls})...[/cyan]"
-                                )
-                                try:
-                                    tab_rows = await zepto_fetch_ads_tabular(
-                                        headers, brand_id, day, day, view, cat
-                                    )
-                                except Exception as e:
-                                    logger.warning(f"Zepto {view} failed for {cat} {day}: {e}")
-                                    failed.append(f"{cat}/{day} {dim}")
-                                    _note(e)
-                                else:
-                                    bd_rows.extend(
-                                        parse_zepto_ad_breakdown(
-                                            tab_rows, tenant_id, job_id, day, cat, brand_id, dim
-                                        )
-                                    )
-                                await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-                        rows.extend(day_rows)
+            try:
+                with console.status("[cyan]Fetching campaigns...[/cyan]") as st:
+                    status = st
+                    n = 0
+                    for day in days:
+                        await _attempt(day, lambda day=day: _fetch_day(day))
             except _SessionGone as e:
                 session_died = True
                 console.print(f"[yellow]{escape(str(e))}[/yellow]")
+
+            # ── re-check pass ─────────────────────────────────────────────────
+            # The point of the rewrite above: every lost fetch gets one more
+            # attempt, further out than _ads_request's own 3/8/20s ladder, before
+            # the run is allowed to call itself a failure. Skipped when the session
+            # is gone, because every replay would fail the same way.
+            if lost and not session_died:
+                queued, lost = lost, []
+                console.print(
+                    f"[yellow]{len(queued)} fetch(es) lost — re-checking in "
+                    f"{_ZEPTO_RECHECK_WAIT_S}s before the run reports a failure.[/yellow]"
+                )
+                await asyncio.sleep(_ZEPTO_RECHECK_WAIT_S)
+                try:
+                    with console.status("[cyan]Re-checking lost fetches...[/cyan]") as st:
+                        status = st
+                        for label, fn in queued:
+                            try:
+                                await fn()
+                            except _SessionGone:
+                                raise
+                            except Exception as e:
+                                logger.warning(f"Zepto {label} failed on re-check: {e}")
+                                lost.append((label, fn))
+                                _note(e)
+                            else:
+                                recovered.append(label)
+                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+                except _SessionGone as e:
+                    session_died = True
+                    console.print(f"[yellow]{escape(str(e))}[/yellow]")
+            failed = [label for label, _ in lost]
 
             written: dict[str, int] = {}
             if save:
@@ -2016,8 +2088,14 @@ async def _scrape_zepto_ads(
             console.print(f"  Keywords: [bold]{len(kw_unique)}[/bold] row(s), spend ₹{sum(k['spend'] for k in kw_unique):,.0f}")
             console.print(f"  Products: [bold]{len(prod_unique)}[/bold] row(s), spend ₹{sum(k['spend'] for k in prod_unique):,.0f}")
             console.print(f"  Breakdown (category/city/page): [bold]{len(bd_unique)}[/bold] row(s)")
+            if recovered:
+                console.print(
+                    f"  [green]{len(recovered)} fetch(es) failed once and succeeded on "
+                    f"re-check:[/green] {', '.join(recovered[:5])}"
+                    f"{' …' if len(recovered) > 5 else ''}"
+                )
             if failed:
-                console.print(f"  [yellow]{len(failed)} fetch(es) failed: {', '.join(failed[:5])}{' …' if len(failed) > 5 else ''}[/yellow]")
+                console.print(f"  [yellow]{len(failed)} fetch(es) failed twice: {', '.join(failed[:5])}{' …' if len(failed) > 5 else ''}[/yellow]")
             if not_ready:
                 console.print(
                     f"  [yellow]{len(not_ready)} day(s) had no metrics yet and were skipped "
@@ -2037,6 +2115,11 @@ async def _scrape_zepto_ads(
             # stay. Only `failed` counts; `not_ready` is Zepto legitimately not
             # having computed a day yet, which is not our failure and is
             # correctly skipped rather than written as zero.
+            #
+            # `failed` now means "lost TWICE" — once on the first pass and again
+            # on the re-check _ZEPTO_RECHECK_WAIT_S later. A single blip is
+            # `recovered` and exits 0, because a run that got every row has
+            # nothing to alert about, however bumpy the getting was.
             #
             # A logger.error alone would not reach the alert: it fires on
             # `log_id("foresight_runner") AND severity>=ERROR`, and that stream
