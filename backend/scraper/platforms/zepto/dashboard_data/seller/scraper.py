@@ -530,6 +530,37 @@ _ADS_HEADER_KEYS = frozenset(
 )
 
 
+# ads-bff answers a small share of calls with a bare 500 and then answers the
+# identical call cleanly a minute later. Measured across the 2026-09-11 backfill:
+# 4 of 76 fetches on one pass, 2 of 76 on the next, 0 on the third — never the
+# same table twice. Before this, one such 500 lost that table for the day, the
+# ads section reported "incomplete", and the job exited 1 — three of the first
+# four scheduled VM runs. Waits are short because the fault clears in seconds,
+# not the minutes the PO endpoints need (_PO_RETRY_WAITS_S).
+_ADS_RETRY_WAITS_S = (3, 8, 20)
+
+
+async def _ads_request(client, method: str, path: str, label: str, **kw) -> httpx.Response:
+    """client.request + raise_for_status, retrying 5xx. The client already
+    handles 202/429 (re-mint) and 401 (re-login); this covers the one class it
+    passes through untouched."""
+    last: Exception | None = None
+    for attempt, wait in enumerate((*_ADS_RETRY_WAITS_S, None)):
+        resp = await client.request(method, path, retry_writes=False, **kw)
+        if resp.status_code < 500:
+            resp.raise_for_status()
+            return resp
+        last = httpx.HTTPStatusError(
+            f"{resp.status_code} from {path}", request=resp.request, response=resp
+        )
+        if wait is None:
+            break
+        logger.warning(f"Zepto ads {label}: HTTP {resp.status_code} "
+                       f"(attempt {attempt + 1}), retrying in {wait}s")
+        await asyncio.sleep(wait)
+    raise last
+
+
 async def fetch_ad_campaigns(
     client, brand_id: str, date_from: str, date_to: str, category: str
 ) -> list[dict]:
@@ -557,10 +588,9 @@ async def fetch_ad_campaigns(
         # Through the client: a 202/429 re-mints the WAF token and retries,
         # a 401 re-logs in and retries. This loop used to raise on 202 and
         # ask a human to re-run.
-        resp = await client.request(
-            "GET", ep.ADS_CAMPAIGNS_API, params=params, retry_writes=False
+        resp = await _ads_request(
+            client, "GET", ep.ADS_CAMPAIGNS_API, f"campaigns p{page}", params=params
         )
-        resp.raise_for_status()
         data = resp.json()["data"] or {}
         rows = data.get("campaigns") or []
         if total is None:
@@ -643,10 +673,9 @@ async def fetch_ad_daily_metrics(
             "breakdown": True,
             "brand_id": brand_id,
         }
-        resp = await client.request(
-            "POST", ep.ADS_METRICS_API, json=body, retry_writes=False
+        resp = await _ads_request(
+            client, "POST", ep.ADS_METRICS_API, f"metrics/{metric}", json=body
         )
-        resp.raise_for_status()
         m = ((resp.json().get("data") or {}).get("metrics") or {}).get(metric) or {}
         series[metric] = m.get("interval_breakdown") or []
         await asyncio.sleep(1.5)
@@ -696,12 +725,12 @@ async def fetch_ads_tabular(
             "campaign_category": category,
             "brand_id": brand_id,
         }
-        resp = await client.request(
-            "POST", ep.ADS_TABULAR_API, json=body, retry_writes=False
-        )
         # A 202 that survives the client has already been retried with a
         # re-minted token, so it is a real failure rather than a stale one.
-        resp.raise_for_status()
+        # 5xx is retried in _ads_request.
+        resp = await _ads_request(
+            client, "POST", ep.ADS_TABULAR_API, f"{view} p{page}", json=body
+        )
         data = resp.json().get("data") or {}
         rows = data.get("rows") or []
         out.extend(rows)
