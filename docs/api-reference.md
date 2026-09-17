@@ -85,9 +85,12 @@ Authentication. The only place a password is used.
 **User creation is CLI-only — there is no signup/user endpoint.** `cli account
 create` makes an account + its first `admin`; `cli account add-user --account
 <id> --email <e> [--name <n>] [--admin]` adds more users (`member` by default) to
-an existing account. Both prompt for the password (bcrypt-hashed). Data is
-account-scoped, so every user of an account sees all its clients; `role` only
-gates the admin UI + `require_admin` routes. See
+an existing account. Both prompt for the password (bcrypt-hashed).
+
+**Access:** data is account-scoped — every user of an account sees all its clients.
+`role` gates the admin UI and `require_admin` routes; the onboarding routes are the only
+ones using it today (`PUT /platforms/{p}/credentials`, `POST /platforms/{p}/login`,
+`DELETE /platforms/{p}` — 403 for members). See
 [setup.md](SETUP.md) and [cli.md](CLI.md).
 
 ### `clients` — `/api/clients`
@@ -295,13 +298,16 @@ Drives the public-data scrape set and the client's view of `competition`.
 | DELETE | `/watchlist/{entry_id}` | Remove (204). |
 
 ### `platforms` — `/api/clients/{id}/platforms`
-Platform connection state. **Connecting** is interactive (OTP/browser) and done
-via the CLI — the API only exposes status + disconnect.
+Marketplace connections: status, and the writes behind the Settings onboarding flow.
+The three writes are **admin-only** (403 for members). See
+[onboarding.md](onboarding.md).
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/platforms` | Connected platforms + connected-at. |
-| DELETE | `/platforms/{platform}` | Disconnect (delete session). 204, or 404 if none. |
+| GET | `/platforms` | One row per platform in the registry: `wired`, `needs_password`, `has_credentials`, `login_email`, `connected`, `connected_at`. |
+| PUT | `/platforms/{platform}/credentials` | Save who to log in as (write-only; no endpoint reads a password back). 204. |
+| POST | `/platforms/{platform}/login` | Enqueue `auth.login`, returns `{job_id}`. 409 if a login is already running; 400 if the platform has no authenticator. |
+| DELETE | `/platforms/{platform}` | Disconnect: deletes the session **and** the saved credentials. 204, or 404 if there was nothing. |
 
 ### `jobs` — `/api/clients/{id}/jobs` *(private)*
 Scrape-job history — data freshness / failures.

@@ -84,6 +84,16 @@ export const router = createBrowserRouter([
 								path: "/settings",
 								element: <SettingsPage />,
 							},
+							// Onboarding and connections both live on Settings now (onboarding
+							// is a modal there); the old paths redirect for any saved links.
+							{
+								path: "/connections",
+								element: <Navigate to="/settings" replace />,
+							},
+							{
+								path: "/onboarding",
+								element: <Navigate to="/settings" replace />,
+							},
 						],
 					},
 				],

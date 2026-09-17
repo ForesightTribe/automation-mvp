@@ -21,6 +21,7 @@
 | [docs/exports.md](docs/exports.md) | **Exports — public report SHIPPED 2026-08-10** (Phases 1–3). `python -m cli export public -t <uuid>` builds a 13-sheet client workbook from stored data; **`export raw` dumps the underlying rows to CSV as a SEPARATE command** (~300k rows/79 MB per week — deliberately never bundled into the report, so the future download button stays small); `export sample` renders a fixture with no DB; `export sections` lists what's buildable. `backend/exports/` (top-level package, sibling of `jobs/`) = theme + workbook (**the one Excel writer — Explorer renders through it too**) + glossary (wording **guard**, raises at render on "reach"/"distribution"/"SoV", for every consumer) + registry + sections. Numbers come from the read services, never new SQL (one documented exception: Product Families projects `_latest_per_store` for family×store grain). Doc covers the design system, clarity rules, gotchas, phases. Artifacts land in `backend/out/` (gitignored). **Marketing/Ads + Sales/Ops reports are PLANNED** in the doc (two reports, Indian ₹ grouping, 28-day window, KPI deltas; Sales report will delete `export_to_excel.py`). Legacy `build_public_analysis.py`/`build_sku_analysis.py` deleted |
 | [docs/per-unit-price.md](docs/per-unit-price.md) | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count` |
 | [docs/platform-auth.md](docs/platform-auth.md) | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI |
+| [docs/onboarding.md](docs/onboarding.md) | **Onboarding — self-serve marketplace connections (built, not merged)** — the admin-only Settings modal that captures a brand's marketplace login and starts the login job (forwarding is arranged by hand; the UI shows no address). The API surface (first use of `require_admin` on any route), why disconnect deletes the credentials too, and the known gaps: tenant separation resting on the login email, the login job that cannot be polled, no rate limit, forwarding scope |
 | [docs/campaign-manager.md](docs/campaign-manager.md) | **Campaign Manager — the ONE CM doc** (the v1 audit, the v2 build plan and the activation design were folded in and deleted 2026-08-29). What it is, the reconciler, the budget + bid engines (window floors, **the marketplace's own per-keyword bid floor**, drift-down, unreachable-target fallback, bounds invariants), **the canonical city registry** that turns a campaign's city targeting into a real store to measure at, the gated write choke-point, the Blinkit API surface + contract (a bid write is a whole-campaign PUT; `DELETE` = stop, not delete; ⚠️ `min_cpm_config` is a BUDGET input, never a bid floor), **what happens when an automation ends** (§5b — the calendar axis, edge-triggered resets, settle-once, reopening), **a full edge-case reference**, config + kill switches, how to roll it out, and the known gaps |
 | [docs/jobs.md](docs/jobs.md) | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md) | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting |
@@ -247,11 +248,19 @@ per-request (`/api/clients/{client_id}/...`) and access-checked against the acco
 
 **Users** are provisioned via the CLI only — no public signup. `account create`
 makes the account + its first `admin` user; `account add-user` adds more users to
-an existing account (`member` by default, `--admin` for admin). Data is
-**account-scoped** — every user of an account sees all its clients; `role`
-(`admin`/`member`) gates only the Settings/admin UI and `require_admin` routes,
-not data. See [docs/api-reference.md](docs/api-reference.md) and the user-creation
-flow in [docs/SETUP.md](docs/SETUP.md).
+an existing account (`member` by default, `--admin` for admin).
+
+Data is **account-scoped** — every user of an account sees all its clients. `role`
+(`admin`/`member`) gates the Settings/admin UI and the `require_admin` routes.
+
+**The onboarding routes are the first (and so far only) routes that actually use
+`require_admin`**: saving a marketplace login, starting a login and disconnecting are
+admin-only (see [docs/onboarding.md](docs/onboarding.md)). Every
+other write route — campaign manager (bid rules, budget schedules, set-budget,
+activation, manual runs) and the watchlist — is still open to any member. Per-member
+CLIENT scoping (a brand seeing only its own data) is **not built**: it needs a
+`user_clients` table, deliberately deferred so nothing here needs a migration. See
+[docs/api-reference.md](docs/api-reference.md) and [docs/SETUP.md](docs/SETUP.md).
 
 ## Seeding
 

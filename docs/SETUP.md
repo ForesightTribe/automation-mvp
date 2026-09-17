@@ -162,19 +162,20 @@ python -m cli account create --name "Foresight" --admin-email you@example.com
 
 ### Add more users to an account
 
-Teammates are added to an existing account so they can see all of its clients'
-data. Default role is `member`; pass `--admin` for an admin.
+Teammates are added to an existing account so they can see all of its clients' data.
+Default role is `member`; pass `--admin` for an admin.
 
 ```bash
 python -m cli account list                       # find the account UUID
 python -m cli account add-user --account <account-id> --email teammate@example.com --name "Teammate"
-#    Prompts for a password. Add --admin to grant Settings/admin access.
+#    Prompts for a password. Add --admin for admin access.
 ```
 
-**Roles & data scope:** data is **account-scoped** — every user under an account
-sees all of its clients. `member` vs `admin` only gates the Settings/admin UI,
-not the data. Identity + role are baked into the JWT at login, so a newly added
-user just logs in fresh, and a role change takes effect on that user's next login.
+**Roles & data scope:** data is **account-scoped** — every user under an account sees all
+of its clients. `admin` vs `member` gates the Settings/admin UI and the `require_admin`
+routes, which today means the onboarding (platform connection) routes only. Identity +
+role are baked into the JWT at login, so a newly added user just logs in fresh, and a role
+change takes effect on that user's next login.
 
 ### Public scraper — no login needed
 
