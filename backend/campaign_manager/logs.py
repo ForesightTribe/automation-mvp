@@ -6,9 +6,13 @@ Two audiences, one call:
   and why — no event names, no `campaign=…` repeated on every line, no run id in the tag.
   Runs are sequential (one slot in the `cm_bid` lane), so context set by a block header
   holds for the lines beneath it and a run reads top to bottom.
-- **Cloud Logging** reads the structured fields. `cm_event`, `run_id`, `campaign_id`,
-  `keyword`, `dry_run` are all still bound on every line — they simply stopped being
-  printed. Filtering by run or event is unaffected.
+- **Structured fields** (`cm_event`, `run_id`, `campaign_id`, `keyword`, `dry_run`, and the
+  per-store `verdict` / `rank` / `position`) are bound on every line but NOT printed.
+  ⚠️ They do not reach Cloud Logging either: a job's output is written to its per-run file
+  in the plain-text console format and shipped as text (`foresight_cm_bid` /
+  `foresight_cm_ops`, deploy/ops-agent-logging.yaml). Only the runner's own `runner.log` is
+  JSON. So in the Logs Explorer you search the MESSAGE text; the queryable per-store record
+  is the `cm_bid_store_reads` table.
 
 Levels → severity: INFO normal · WARNING skip/hold/guardrail-trip/no-op · ERROR
 fail/rejected-write. So `severity>=WARNING` surfaces everything alert-worthy.
@@ -124,7 +128,7 @@ def rule_header(run_id: str, *, dry_run: bool, index: int, total: int,
 def rule_context(run_id: str, *, dry_run: bool, campaign_id, keyword: str, target: int,
                  current_cpm: int, min_bid: int, max_bid: int | None,
                  location_name: str | None, lat: float, lon: float,
-                 store_source: str | None = None) -> None:
+                 store_source: str | None = None, store_count: int = 1) -> None:
     limits = f"₹{min_bid}–₹{max_bid}" if max_bid else f"₹{min_bid}–none"
     _emit("info", "rule.config", dry_run,
           f'keyword "{keyword}" · target position {target} · current bid ₹{current_cpm} '
@@ -133,20 +137,51 @@ def rule_context(run_id: str, *, dry_run: bool, campaign_id, keyword: str, targe
           target_position=target, current_cpm=current_cpm)
     where = location_name or "default store"
     why = _STORE_SOURCE.get(store_source)
+    more = store_count - 1
     _emit("info", "rule.store", dry_run,
-          f"measuring at {where} ({lat}, {lon})" + (f" · {why}" if why else ""),
+          f"measuring at {where} ({lat}, {lon})" + (f" · {why}" if why else "")
+          + (f" · plus {more} validation store{'s' if more > 1 else ''}" if more > 0 else ""),
           indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
-          lat=lat, lon=lon, store_source=store_source)
+          lat=lat, lon=lon, store_source=store_source, store_count=store_count)
 
 
-# Why a rule measured where it did — `bid.measurement_point`'s `source`, in words. A store
+# Why a rule measured where it did — `bid.measurement_stores`' `source`, in words. A store
 # that moved because someone changed a city's setting should be explainable from the log.
 _STORE_SOURCE = {
-    "tenant": "this client's store for the city",
-    "global": "the default store for the city",
+    "tenant": "this client's store set for the city",
+    "global": "the default store set for the city",
     "rule": "the store saved on the automation",
     "default": "no store set, so the Bengaluru fallback",
 }
+
+
+def store_reading(run_id: str, *, dry_run: bool, campaign_id, keyword: str, reading,
+                  many: bool) -> None:
+    """What one measurement store showed this tick (campaign_manager/coverage.py `Reading`).
+    `many` = the rule measures at several stores, so each line says which one it is."""
+    s = reading.store
+    name = getattr(s, "label", "") or getattr(s, "merchant_id", "") or "store"
+    if many:
+        name = f"store {getattr(s, 'rank', 1)} · {name}"
+    verdict = reading.verdict
+    if verdict == "sponsored":
+        msg = f"{name}: our ad at position {reading.position:g} of {reading.results}"
+    elif verdict == "absent":
+        msg = f"{name}: no sponsored slot for us — {reading.detail}"
+        if reading.eligibility == "unknown":
+            msg += " (stock not confirmed, so it still counts)"
+    elif verdict == "skipped":
+        msg = f"{name}: skipped — {reading.detail}"
+    elif verdict == "untrusted":
+        msg = f"{name}: not counted — {reading.detail}"
+    elif verdict == "gave_up":
+        msg = f"{name}: not chased — {reading.detail}"
+    else:
+        msg = f"{name}: could not read — {reading.detail}"
+    _emit("info" if verdict in ("sponsored", "absent") else "warning", "rule.store_reading",
+          dry_run, msg, indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
+          merchant_id=getattr(s, "merchant_id", ""), rank=getattr(s, "rank", 1),
+          verdict=verdict, eligibility=reading.eligibility, position=reading.position)
 
 
 def context(run_id: str, *, dry_run: bool, campaign_id, msg: str,

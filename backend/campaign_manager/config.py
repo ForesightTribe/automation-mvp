@@ -89,6 +89,40 @@ BID_MAX_ABSOLUTE: int = int(os.getenv("CM_BID_MAX_ABSOLUTE", "10000"))
 SETTLE_MAX_ATTEMPTS: int = int(os.getenv("CM_SETTLE_MAX_ATTEMPTS", "3"))
 SETTLE_MAX_AGE_HOURS: float = float(os.getenv("CM_SETTLE_MAX_AGE_HOURS", "24"))
 
+# ── Multi-store measurement + stock (coverage.py, stock.py) ─────────────────
+#
+# A keyword automation measures at up to BID_MAX_STORES frozen stores per city
+# (`cm_city_stores` ranks 1..N) and bids for target at every one where the campaign is in
+# stock. More stores = more consumer searches per tick; a marketplace with a tight search
+# allowance is capped lower. Zepto's anonymous search allows ~4-5 requests a minute, so it
+# stays on one store.
+BID_MAX_STORES: int = int(os.getenv("CM_BID_MAX_STORES", "3"))
+_MAX_STORES_OVERRIDES: dict[str, int] = {
+    "zepto": int(os.getenv("CM_ZEPTO_BID_MAX_STORES", "1")),
+}
+
+
+def max_stores(platform: str) -> int:
+    """How many ranked stores a city may measure at on this marketplace."""
+    return max(1, min(BID_MAX_STORES, _MAX_STORES_OVERRIDES.get(platform, BID_MAX_STORES)))
+
+
+# Stock is one brand search per store, reused across runs until it is this old. Inventory
+# does not flip every 15 minutes, and one read serves every keyword at the store.
+STOCK_MAX_AGE_MINUTES: int = int(os.getenv("CM_STOCK_MAX_AGE_MINUTES", "60"))
+# Cap on that brand search when the client's watchlist row sets no `brand_cap`. Blinkit pads
+# a brand search with other brands' products; walking the whole tail invites HTTP 429.
+STOCK_DEFAULT_BRAND_CAP: int = int(os.getenv("CM_STOCK_DEFAULT_BRAND_CAP", "48"))
+# `cm_bid_store_reads` grows with time (a row per store per tick), so it is trimmed.
+STORE_READS_RETENTION_DAYS: int = int(os.getenv("CM_STORE_READS_RETENTION_DAYS", "30"))
+# A store still not showing our ad after this many checks with the bid ALREADY at its ceiling
+# is left out for the rest of the window: the ceiling can't buy a slot there, and chasing it
+# would hold every other store at max_bid too. 0 disables giving up.
+BID_GIVE_UP_TICKS: int = int(os.getenv("CM_BID_GIVE_UP_TICKS", "2"))
+# Warn once a store has given no usable reading this many checks in a row — the decision is
+# quietly running on fewer stores. Warning, not error: it is not an outage.
+STORE_PROBLEM_WARN_TICKS: int = int(os.getenv("CM_STORE_PROBLEM_WARN_TICKS", "2"))
+
 # ── Per-marketplace tuning ──────────────────────────────────────────────────
 #
 # Everything above is the DEFAULT, and Blinkit uses it unchanged. A marketplace whose

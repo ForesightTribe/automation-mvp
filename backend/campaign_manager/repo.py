@@ -13,7 +13,7 @@ from sqlmodel import select
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
 from app.utils.time import now_ist
-from campaign_manager import window
+from campaign_manager import config, coverage, window
 
 
 class DuplicateSchedule(Exception):
@@ -357,11 +357,14 @@ async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
 # Keyed by `merchant_id`, not `marketplace_locations.id`: `cli sync --prune` deletes and
 # re-creates catalog rows, and the merchant id is the store's natural key across that.
 
-PRIMARY_RANK = 1    # the store a city measures at; higher ranks are reserved for multi-store
-                    # measurement, which is not built
+PRIMARY_RANK = 1    # rank 1 is a city's ANCHOR store; ranks 2..config.max_stores() validate it
 
 
-class StoreNotInCity(ValueError):
+class StoreSetError(ValueError):
+    """A change to a city's measurement-store set that cannot be made."""
+
+
+class StoreNotInCity(StoreSetError):
     """A store that cannot be a city's measurement store: unknown, inactive, without
     coordinates, or in a different city."""
 
@@ -370,15 +373,18 @@ class StoreNotInCity(ValueError):
 class MeasurementStore:
     """A real dark store to read positions at, and why it was chosen.
 
-    `source`: `tenant` (the client's override) · `global` (the default for the city) ·
+    `source`: `tenant` (the client's set) · `global` (the default set for the city) ·
     `catalog` (nothing frozen — the lowest merchant_id in the city, deterministic but
-    arbitrary) · `store` (an explicitly named merchant_id)."""
+    arbitrary) · `store` (an explicitly named merchant_id) · `rule` (the store saved on the
+    automation) · `default` (no store at all — the Bengaluru fallback).
+    `rank` 1 is the anchor; higher ranks validate it."""
     lat: float
     lon: float
     label: str
     merchant_id: str
     city_id: int | None
     source: str
+    rank: int = PRIMARY_RANK
 
 
 def store_label(loc) -> str:
@@ -387,35 +393,57 @@ def store_label(loc) -> str:
     return (loc.location_name or "").strip() or f"{loc.city}/{loc.merchant_id}"
 
 
-def _store_of(loc, source: str) -> MeasurementStore:
+def _store_of(loc, source: str, rank: int = PRIMARY_RANK) -> MeasurementStore:
     return MeasurementStore(lat=loc.lat, lon=loc.lon, label=store_label(loc),
-                            merchant_id=loc.merchant_id, city_id=loc.city_id, source=source)
+                            merchant_id=loc.merchant_id, city_id=loc.city_id, source=source,
+                            rank=rank)
 
 
 def _usable(loc) -> bool:
     return loc is not None and loc.is_active and loc.lat is not None and loc.lon is not None
 
 
-def pick_city_store(rows, tenant_id: uuid.UUID | None):
-    """Pure. The frozen store in force for ONE city, from its `cm_city_stores` rows joined to
-    the catalog — `[(city_store, catalog_row | None)]`, possibly spanning several clients.
+def pick_city_stores(rows, tenant_id: uuid.UUID | None, max_stores: int | None = None):
+    """Pure. The frozen SET of stores for ONE city, in rank order, and whose set it is.
 
-    The client's own row wins, then the global row; other clients' rows are ignored. A row
-    whose store has left the catalog or gone inactive is skipped rather than honoured, so a
-    store closing falls through to the next layer instead of measuring nowhere.
+    `rows` = `[(city_store, catalog_row | None)]` for the city, possibly spanning several
+    clients. **A client's set replaces the global set whole** — never mixed rank by rank,
+    which could put one store in twice, or pair a client's anchor with validators chosen for
+    everyone else. The client's set is used when it has at least one usable store; otherwise
+    the global set. Other clients' rows are ignored.
 
-    Returns `(city_store, catalog_row, "tenant" | "global")`, or None when nothing usable is
-    frozen for the city.
+    A row whose store has left the catalog or gone inactive is dropped from its set rather
+    than honoured, so a closing store never leaves a city measuring nowhere — the set's
+    lowest remaining rank becomes the anchor. Ranks beyond `max_stores` are ignored, and a
+    store listed twice keeps its lower rank.
+
+    Returns `([(city_store, catalog_row), …], "tenant" | "global")`, or `([], None)`.
     """
-    primary = [(cs, loc) for cs, loc in rows if cs.rank == PRIMARY_RANK and _usable(loc)]
+    limit = max_stores or config.BID_MAX_STORES
+
+    def _set(owner):
+        seen, out = set(), []
+        for cs, loc in sorted(rows, key=lambda row: row[0].rank):
+            if (cs.tenant_id != owner or not 1 <= cs.rank <= limit or not _usable(loc)
+                    or cs.merchant_id in seen):
+                continue
+            seen.add(cs.merchant_id)
+            out.append((cs, loc))
+        return out
+
     if tenant_id is not None:
-        for cs, loc in primary:
-            if cs.tenant_id == tenant_id:
-                return cs, loc, "tenant"
-    for cs, loc in primary:
-        if cs.tenant_id is None:
-            return cs, loc, "global"
-    return None
+        mine = _set(tenant_id)
+        if mine:
+            return mine, "tenant"
+    everyone = _set(None)
+    return (everyone, "global") if everyone else ([], None)
+
+
+def pick_city_store(rows, tenant_id: uuid.UUID | None):
+    """Pure. The ANCHOR of a city's frozen set: `(city_store, catalog_row, source)`, or None
+    when nothing usable is frozen. See `pick_city_stores`."""
+    stores, source = pick_city_stores(rows, tenant_id)
+    return (stores[0][0], stores[0][1], source) if stores else None
 
 
 async def _city_store_rows(db, platform: str, city_ids, tenant_ids=None) -> list:
@@ -675,24 +703,37 @@ async def resolve_store(platform: str, *, city: str | None = None,
         return _store_of(row, "catalog") if row else None
 
 
-async def city_stores_for(platform: str, tenant_id: uuid.UUID, city_ids) -> dict:
-    """`{city_id: MeasurementStore}` — each city's frozen store for ONE client, in one query
-    (the bid engine calls this once per run). A city with nothing usable frozen is absent, and
-    the engine keeps each rule's saved store. A frozen store that is no longer an active
-    catalog store is logged: it silently changes where automations measure."""
+async def city_stores_for(platform: str, tenant_id: uuid.UUID | None, city_ids, *,
+                          run_id: str | None = None, dry_run: bool = False) -> dict:
+    """`{city_id: [MeasurementStore, …]}` — each city's frozen store SET in rank order, for
+    ONE client (its own set, else the global one; `tenant_id=None` = the global set only), in
+    one query. The bid engine calls this once per run. A city with nothing usable frozen is
+    absent, and the engine keeps each rule's saved store.
+
+    A frozen store that is no longer an active catalog store is warned about: it silently
+    changes where automations measure. Pass `run_id` so the warning lands in that run's log
+    alongside the decisions it affects."""
+    from campaign_manager import logs
+
+    limit = config.max_stores(platform)
     async with AsyncSessionLocal() as db:
-        rows = await _city_store_rows(db, platform, set(city_ids), [tenant_id])
+        rows = await _city_store_rows(db, platform, set(city_ids),
+                                      [tenant_id] if tenant_id else [])
     by_city: dict[int, list] = {}
     for cs, loc in rows:
         by_city.setdefault(cs.city_id, []).append((cs, loc))
-        if cs.rank == PRIMARY_RANK and not _usable(loc):
-            logger.warning(f"cm: frozen {platform} store {cs.merchant_id} for city {cs.city_id} "
-                           f"is not an active catalog store with coordinates — skipped")
+        if not _usable(loc):
+            msg = (f"frozen store {cs.merchant_id} (rank {cs.rank}) for city {cs.city_id} is no "
+                   f"longer an active catalog store — skipped, the rest of the set measures")
+            if run_id:
+                logs.note(run_id, msg, dry_run=dry_run, level="warning")
+            else:
+                logger.warning(f"cm: {platform} {msg}")
     out = {}
     for city_id, city_rows in by_city.items():
-        picked = pick_city_store(city_rows, tenant_id)
-        if picked:
-            out[city_id] = _store_of(picked[1], picked[2])
+        stores, source = pick_city_stores(city_rows, tenant_id, limit)
+        if stores:
+            out[city_id] = [_store_of(loc, source, cs.rank) for cs, loc in stores]
     return out
 
 
@@ -785,15 +826,24 @@ async def list_city_stores(platform: str, *, tenant_ids=None, city_id: int | Non
 
 
 async def set_city_store(platform: str, city_id: int, merchant_id: str, *,
-                         tenant_id: uuid.UUID | None) -> tuple[MeasurementStore, int]:
-    """Freeze `merchant_id` as the store `city_id`'s bid automations measure at — for one
-    client, or with `tenant_id=None` as the GLOBAL default for every client without an
-    override. Refuses a store that is unknown, inactive, has no coordinates, or sits in a
-    different city: an automation for Bengaluru must never quietly measure in Mysuru.
+                         tenant_id: uuid.UUID | None,
+                         rank: int = PRIMARY_RANK) -> tuple[MeasurementStore, int]:
+    """Freeze `merchant_id` at `rank` in `city_id`'s store set — for one client, or with
+    `tenant_id=None` in the GLOBAL set every client without its own set uses. Rank 1 is the
+    anchor; ranks 2..`config.max_stores` validate it.
 
-    Returns (the store, how many automations were re-pointed at it)."""
+    Refuses a rank outside that range, a store already in this set at another rank, and a
+    store that is unknown, inactive, has no coordinates, or sits in a different city: an
+    automation for Bengaluru must never quietly measure in Mysuru.
+
+    Returns (the store, how many automations were reset onto the changed set). Setting the
+    store a rank already holds changes nothing and resets nothing."""
     from app.models.campaign_manager_v2 import CmCityStore
     from app.models.search import City, MarketplaceLocation
+
+    limit = config.max_stores(platform)
+    if not 1 <= rank <= limit:
+        raise StoreSetError(f"rank must be between 1 and {limit} on {platform}, got {rank}")
 
     async with AsyncSessionLocal() as db:
         loc = (await db.execute(select(MarketplaceLocation).where(
@@ -803,7 +853,7 @@ async def set_city_store(platform: str, city_id: int, merchant_id: str, *,
         if not _usable(loc):
             raise StoreNotInCity(f"{merchant_id!r} is not an active {platform} store with "
                                  f"coordinates in the catalog")
-        store = _store_of(loc, "global" if tenant_id is None else "tenant")
+        store = _store_of(loc, "global" if tenant_id is None else "tenant", rank)
         if loc.city_id != city_id:
             wanted = await db.get(City, city_id)
             actual = await db.get(City, loc.city_id) if loc.city_id is not None else None
@@ -813,75 +863,87 @@ async def set_city_store(platform: str, city_id: int, merchant_id: str, *,
                 f"{wanted.name if wanted else f'city {city_id}'}")
         scope = (CmCityStore.tenant_id.is_(None) if tenant_id is None
                  else CmCityStore.tenant_id == tenant_id)
-        row = (await db.execute(select(CmCityStore).where(
-            CmCityStore.platform == platform, CmCityStore.city_id == city_id,
-            CmCityStore.rank == PRIMARY_RANK, scope,
-        ))).scalars().first()
+        current = (await db.execute(select(CmCityStore).where(
+            CmCityStore.platform == platform, CmCityStore.city_id == city_id, scope,
+        ))).scalars().all()
+        clash = next((r for r in current if r.merchant_id == merchant_id and r.rank != rank), None)
+        if clash:
+            raise StoreSetError(f"store {merchant_id} ({store.label}) is already rank "
+                                f"{clash.rank} in this set — clear that rank first")
+        row = next((r for r in current if r.rank == rank), None)
+        if row and row.merchant_id == merchant_id:
+            return store, 0
         if row:
             row.merchant_id, row.updated_at = merchant_id, now_ist()
         else:
             db.add(CmCityStore(tenant_id=tenant_id, platform=platform, city_id=city_id,
-                               merchant_id=merchant_id, rank=PRIMARY_RANK))
+                               merchant_id=merchant_id, rank=rank))
         await db.commit()
         moved = await _repoint_rules(db, platform, city_id, tenant_id)
     return store, moved
 
 
-async def clear_city_store(platform: str, city_id: int, *,
-                           tenant_id: uuid.UUID | None) -> tuple[bool, int]:
-    """Remove a frozen store — a client's override (its automations move to the global
-    default, if one exists) or, with `tenant_id=None`, the global default (automations with
-    no override then keep the store they were last saved at: nothing moves).
+async def clear_city_store(platform: str, city_id: int, *, tenant_id: uuid.UUID | None,
+                           rank: int | None = None) -> tuple[int, int]:
+    """Remove stores from a city's set — one rank, or with `rank=None` the whole set.
 
-    Returns (removed?, how many automations were re-pointed)."""
+    Clearing a client's whole set moves its automations to the global set, if one exists.
+    Clearing the global set leaves automations with no set of their own at the store they
+    were last saved at: nothing is re-pointed, but they stop being validated elsewhere.
+
+    Returns (stores removed, how many automations were reset onto the changed set)."""
     from app.models.campaign_manager_v2 import CmCityStore
 
     async with AsyncSessionLocal() as db:
         scope = (CmCityStore.tenant_id.is_(None) if tenant_id is None
                  else CmCityStore.tenant_id == tenant_id)
-        row = (await db.execute(select(CmCityStore).where(
-            CmCityStore.platform == platform, CmCityStore.city_id == city_id,
-            CmCityStore.rank == PRIMARY_RANK, scope,
-        ))).scalars().first()
-        if not row:
-            return False, 0
-        await db.delete(row)
+        q = select(CmCityStore).where(CmCityStore.platform == platform,
+                                      CmCityStore.city_id == city_id, scope)
+        if rank is not None:
+            q = q.where(CmCityStore.rank == rank)
+        rows = (await db.execute(q)).scalars().all()
+        if not rows:
+            return 0, 0
+        for row in rows:
+            await db.delete(row)
         await db.commit()
-        return True, await _repoint_rules(db, platform, city_id, tenant_id)
+        return len(rows), await _repoint_rules(db, platform, city_id, tenant_id)
 
 
-async def _repoint_rules(db, platform: str, city_id: int, tenant_id: uuid.UUID | None) -> int:
-    """Bring saved automations in line with their city's frozen store after it changes.
+async def _repoint_rules(db, platform: str, city_id: int,
+                         changed_scope: uuid.UUID | None) -> int:
+    """Bring saved automations in line with their city's store set after it changes.
 
-    The engine resolves the store on every run anyway (`bid.measurement_point`), so this is
-    not what moves the MEASUREMENT. It keeps the rule row honest for everything that reads it
-    (the automations list, the CLI), and clears what the engine learned at the old store:
-    positions differ between stores, so the last position, the holding price and a relaxed
-    target would each feed the first decision at the new store a fact about another one — the
-    same reason Resume clears them (`_RUNTIME_MEMORY`, `updated_at` deliberately kept).
+    The engine resolves the set on every run anyway (`bid.measurement_stores`), so this is
+    not what moves the MEASUREMENT. It keeps the rule row's snapshot on the set's anchor for
+    everything that reads it (the automations list, the CLI), and clears what the engine
+    learned under the OLD set: a different anchor reads different positions, and different
+    validators change which store is worst — so the last position, holding price, relaxed
+    target and raise step would each feed the next decision a fact about another set. Same
+    reason Resume clears them (`_RUNTIME_MEMORY`, with `updated_at` deliberately kept).
 
-    Only rules that FOLLOW the city (`city_id` set) move; pinned ones never do. `tenant_id`
-    narrows to one client (their override changed); None covers every client (the global
-    default changed — a client with its own override is unaffected, `pick_city_store` sees to
-    that). A rule whose city is left with nothing frozen keeps its saved store."""
+    Only rules that FOLLOW the city (`city_id` set) are touched; pinned ones never are.
+    `changed_scope` is whose set changed: one client's (only its rules), or None for the
+    global set (every client whose OWN set is not in force). A rule left with no set keeps
+    its saved store, but its memory is still cleared: it has stopped being validated."""
     from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
 
     q = select(CmBidRule).where(CmBidRule.platform == platform, CmBidRule.city_id == city_id)
-    if tenant_id is not None:
-        q = q.where(CmBidRule.tenant_id == tenant_id)
+    if changed_scope is not None:
+        q = q.where(CmBidRule.tenant_id == changed_scope)
     rules = (await db.execute(q)).scalars().all()
     if not rules:
         return 0
     rows = await _city_store_rows(db, platform, [city_id])
+    limit = config.max_stores(platform)
     moved = 0
     for r in rules:
-        picked = pick_city_store(rows, r.tenant_id)
-        if not picked:
-            continue
-        store = _store_of(picked[1], picked[2])
-        if (r.lat, r.lon) == (store.lat, store.lon):
-            continue
-        r.lat, r.lon, r.location_name = store.lat, store.lon, store.label
+        stores, source = pick_city_stores(rows, r.tenant_id, limit)
+        if changed_scope is None and source == "tenant":
+            continue                          # this client's own set is untouched
+        if stores:
+            anchor = _store_of(stores[0][1], source, stores[0][0].rank)
+            r.lat, r.lon, r.location_name = anchor.lat, anchor.lon, anchor.label
         rt = await db.get(CmBidRuntime, r.id)
         if rt:
             for field in _RUNTIME_MEMORY:
@@ -889,6 +951,158 @@ async def _repoint_rules(db, platform: str, city_id: int, tenant_id: uuid.UUID |
         moved += 1
     await db.commit()
     return moved
+
+
+# ── Stock per measurement store + per-store bid readings ─────────────────────
+
+async def store_ids_at(platform: str, coords) -> dict:
+    """`{(lat, lon): merchant_id}` — the catalog store behind saved coordinates, for rules
+    that measure at their own saved store (pinned, or a city with nothing frozen). Stock is
+    keyed by store and the rule row only carries coordinates. One query."""
+    from sqlalchemy import tuple_
+    from app.models.search import MarketplaceLocation
+
+    wanted = {(float(a), float(b)) for a, b in coords if a is not None and b is not None}
+    if not wanted:
+        return {}
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(MarketplaceLocation.lat, MarketplaceLocation.lon, MarketplaceLocation.merchant_id)
+            .where(MarketplaceLocation.mp_slug == platform,
+                   tuple_(MarketplaceLocation.lat, MarketplaceLocation.lon).in_(wanted))
+            .order_by(MarketplaceLocation.merchant_id)
+        )).all()
+    out: dict = {}
+    for lat, lon, merchant_id in rows:
+        out.setdefault((lat, lon), merchant_id)
+    return out
+
+
+async def get_own_brands(tenant_id: uuid.UUID) -> list[tuple[str, int, set[str]]]:
+    """`[(search query, cap, brand names)]` for each own brand a client tracks — what a stock
+    check searches for. The query is the targeted scrape's (first alias, else the de-slugged
+    brand slug); the cap is the watchlist's `brand_cap`, else `CM_STOCK_DEFAULT_BRAND_CAP`;
+    the names are what a product's `brand` field may say."""
+    from app.models.tenant import TenantWatchlist
+
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(select(TenantWatchlist).where(
+            TenantWatchlist.tenant_id == tenant_id,
+            TenantWatchlist.relationship == "own",
+        ))).scalars().all()
+    out = []
+    for w in rows:
+        slug_name = w.brand_slug.replace("-", " ")
+        aliases = [a for a in (w.aliases or []) if a and a.strip()]
+        out.append((aliases[0] if aliases else slug_name,
+                    int(w.brand_cap or config.STOCK_DEFAULT_BRAND_CAP),
+                    {slug_name, *aliases}))
+    return out
+
+
+async def get_store_stock(tenant_id: uuid.UUID, platform: str,
+                          merchant_ids) -> dict[str, coverage.StoreStock]:
+    """`{merchant_id: StoreStock}` from the cache, whatever its age — freshness is the
+    caller's call (campaign_manager/stock.py)."""
+    from app.models.campaign_manager_v2 import CmStoreStock
+
+    ids = [m for m in merchant_ids if m]
+    if not ids:
+        return {}
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(select(CmStoreStock).where(
+            CmStoreStock.tenant_id == tenant_id,
+            CmStoreStock.platform == platform,
+            CmStoreStock.merchant_id.in_(ids),
+        ))).scalars().all()
+    return {r.merchant_id: coverage.StoreStock(
+                complete=bool(r.complete),
+                in_stock={str(p["pid"]): bool(p.get("in_stock"))
+                          for p in (r.products or []) if p.get("pid")},
+                checked_at=r.checked_at)
+            for r in rows}
+
+
+async def upsert_store_stock(tenant_id: uuid.UUID, platform: str, rows: list[dict]) -> None:
+    """Replace the cached stock for these stores. Never raises: a cache that could not be
+    written only means the next run reads the store again."""
+    if not rows:
+        return
+    from sqlalchemy.dialects.postgresql import insert
+    from app.models.campaign_manager_v2 import CmStoreStock
+
+    stmt = insert(CmStoreStock).values(
+        [{"tenant_id": tenant_id, "platform": platform, **r} for r in rows])
+    stmt = stmt.on_conflict_do_update(
+        constraint="uq_cm_store_stock",
+        set_={"served_by": stmt.excluded.served_by, "complete": stmt.excluded.complete,
+              "products": stmt.excluded.products, "checked_at": stmt.excluded.checked_at})
+    try:
+        async with AsyncSessionLocal() as db:
+            await db.execute(stmt)
+            await db.commit()
+    except Exception as e:
+        logger.error(f"cm: could not cache store stock — {e}")
+
+
+async def list_store_stock(tenant_id: uuid.UUID, platform: str) -> list:
+    """Every cached stock row for a client, newest first — for `cm stores stock`."""
+    from app.models.campaign_manager_v2 import CmStoreStock
+
+    async with AsyncSessionLocal() as db:
+        return list((await db.execute(select(CmStoreStock).where(
+            CmStoreStock.tenant_id == tenant_id,
+            CmStoreStock.platform == platform,
+        ).order_by(CmStoreStock.checked_at.desc()))).scalars().all())
+
+
+async def recent_store_reads(tenant_id: uuid.UUID, platform: str, rule_ids, *,
+                             since: datetime, dry_run: bool) -> dict:
+    """`{(rule_id, merchant_id): [CmBidStoreRead, …]}` newest first, since `since` — what each
+    rule's stores showed on recent ticks. Feeds giving up on a store that stays out of reach at
+    the ceiling, and warning about one that keeps giving unusable readings.
+
+    Only rows of the SAME mode (`dry_run`): a manual dry run must not make a live run give up,
+    or the other way round."""
+    from app.models.campaign_manager_v2 import CmBidStoreRead
+
+    ids = [r for r in rule_ids if r]
+    if not ids:
+        return {}
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(select(CmBidStoreRead).where(
+            CmBidStoreRead.tenant_id == tenant_id,
+            CmBidStoreRead.platform == platform,
+            CmBidStoreRead.rule_id.in_(ids),
+            CmBidStoreRead.observed_at >= since,
+            CmBidStoreRead.dry_run == dry_run,
+        ).order_by(CmBidStoreRead.observed_at.desc()))).scalars().all()
+    out: dict = {}
+    for r in rows:
+        out.setdefault((r.rule_id, r.merchant_id), []).append(r)
+    return out
+
+
+async def write_store_reads(rows: list[dict]) -> None:
+    """Append a run's per-store readings and trim what has aged past
+    `CM_STORE_READS_RETENTION_DAYS` for the clients written. Never raises: the bids these
+    rows explain have already gone out, and a missing audit row must not fail the run."""
+    if not rows:
+        return
+    from sqlalchemy import delete
+    from app.models.campaign_manager_v2 import CmBidStoreRead
+
+    cutoff = now_ist() - timedelta(days=config.STORE_READS_RETENTION_DAYS)
+    try:
+        async with AsyncSessionLocal() as db:
+            db.add_all([CmBidStoreRead(**r) for r in rows])
+            for tenant in {r["tenant_id"] for r in rows}:
+                await db.execute(delete(CmBidStoreRead).where(
+                    CmBidStoreRead.tenant_id == tenant,
+                    CmBidStoreRead.observed_at < cutoff))
+            await db.commit()
+    except Exception as e:
+        logger.error(f"cm: could not record per-store bid readings — {e}")
 
 
 async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str = "blinkit"):

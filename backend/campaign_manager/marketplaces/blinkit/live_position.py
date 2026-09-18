@@ -44,6 +44,16 @@ _TAG = "cm.pos"
 _MAX_PRODUCTS = 48
 
 
+class PageResults(list):
+    """Search results that know whether paging was cut short.
+
+    A list, so every caller that just iterates results keeps working. `truncated` is set when
+    page 1 answered but a later page failed: what we have is still true, but "our ad is not
+    among these" no longer proves it isn't on the page (campaign_manager/coverage.py treats
+    that reading as untrusted)."""
+    truncated: bool = False
+
+
 def _log(keyword: str | None = None):
     """Logger bound to this scraper (and the keyword, so one keyword's story can be
     followed through a run that interleaves a dozen of them)."""
@@ -177,7 +187,7 @@ async def search(session: dict, keyword: str, lat: float = _DEFAULT_LAT,
         raise RuntimeError("no Blinkit search headers captured for this session")
     headers = {**headers, "lat": str(lat), "lon": str(lon)}
 
-    products: list[dict] = []
+    products = PageResults()
     url: str | None = ep.first_search_url(keyword)
     body: dict | None = ep.SEARCH_BODY
 
@@ -185,10 +195,12 @@ async def search(session: dict, keyword: str, lat: float = _DEFAULT_LAT,
         resp = await in_page_fetch(session["page"], url, headers, body)
         if resp.get("status") != 200 or resp.get("body") is None:
             if products:
-                # Page 1 worked; a later page failing just truncates the list. The ad we
-                # care about ranks near the top, so this is still a usable answer.
+                # Page 1 worked; a later page failing truncates the list. An ad we DID see is
+                # still a usable answer — but one we didn't see might be on the lost page, so
+                # the results say so and the engine won't read "absent" into them.
                 log.warning(f"paging stopped at {len(products)} products "
                             f"(HTTP {resp.get('status')})")
+                products.truncated = True
                 break
             detail = resp.get("error") or f"HTTP {resp.get('status')}"
             raise RuntimeError(f"search request failed: {detail}")

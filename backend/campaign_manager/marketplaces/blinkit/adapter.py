@@ -234,6 +234,14 @@ async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -
     return await live_position.search(session, keyword, lat, lon)
 
 
+async def read_store_catalog(session: dict, query: str, lat: float, lon: float, *,
+                             cap: int, names) -> dict:
+    """Our products at the store serving (lat, lon), with availability — one capped brand
+    search on the run's open session. A READ. Shape and the `complete` rule: catalog.py."""
+    from campaign_manager.marketplaces.blinkit import catalog
+    return await catalog.read(session, query, lat, lon, cap=cap, names=names)
+
+
 def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
                     products: list[dict] | None = None, brand_name: str | None = None,
                     **_ignored) -> tuple[float | None, str]:

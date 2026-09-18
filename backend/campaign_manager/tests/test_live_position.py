@@ -111,6 +111,7 @@ def test_search_follows_pages_and_continues_numbering():
     out = _run(lp.search(session, "cola"))
     assert [p["position"] for p in out][-1] == 13
     assert calls[1]["body"] is None          # only the offset-0 request carries a body
+    assert out.truncated is False            # every page answered
 
 
 def test_search_stops_at_similarity_padding():
@@ -138,7 +139,8 @@ def test_search_raises_when_the_first_page_fails():
 
 
 def test_search_keeps_page_one_when_a_later_page_fails():
-    """A truncated list is still a usable answer — the ad we care about ranks near the top."""
+    """A truncated list is still a usable answer for an ad we DID see — and says it was cut
+    short, so an ad we didn't see isn't read as 'not on the page'."""
     session, _ = _session([
         {"status": 200, "body": _body([_snippet("Alpha Cola", 1)],
                                       next_url="https://b.com/x?search_method=basic")},
@@ -146,6 +148,7 @@ def test_search_keeps_page_one_when_a_later_page_fails():
     ])
     out = _run(lp.search(session, "cola"))
     assert len(out) == 1
+    assert out.truncated is True
 
 
 def test_search_raises_without_captured_headers():
