@@ -9,6 +9,7 @@ not once per search.
 `scraper.py` returns raw extracted fields; `parser.py` types/classifies them.
 """
 import asyncio
+import random
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -122,12 +123,17 @@ _FETCH_JS = """async ({url, h, b, timeoutMs}) => {
         if (b !== null) opts.body = JSON.stringify(b);
         const r = await fetch(url, opts);
         const text = await r.text();
+        // Retry-After (seconds, or an HTTP-date) is the server telling us exactly
+        // how long to wait. Pass it through — guessing a backoff when the answer
+        // was in the response is how you get blocked twice.
+        const ra = r.headers.get("retry-after");
         try {
-            return {status: r.status, body: JSON.parse(text)};
+            return {status: r.status, body: JSON.parse(text), retryAfter: ra};
         } catch (_) {
             // Non-JSON body: almost always a Cloudflare/HTML challenge. Keep the
             // real HTTP status so the retry loop + logs see it for what it is.
-            return {status: r.status, body: null, error: "non-JSON body (Cloudflare?)"};
+            return {status: r.status, body: null, retryAfter: ra,
+                    error: "non-JSON body (Cloudflare?)"};
         }
     } catch (e) {
         return {status: 0, body: null, error: e.toString()};
@@ -140,6 +146,48 @@ _FETCH_JS = """async ({url, h, b, timeoutMs}) => {
 # Transient 403/429/5xx/network blips happen mid-sweep and self-resolve, so
 # retry with backoff. A 200 (even empty) is a real result and returns immediately.
 _RETRY_DELAYS = (0.5, 1.5, 3.0)
+
+# A 429/403 is NOT a blip — it is the marketplace asking us to slow down, and the
+# whole sequence above spends under 5s, which is far too short to outlast a rate
+# limit. Measured 2026-09-17 from a residential IP: 5 workers produced three 429s
+# that each burned all four attempts in ~5.5s and were recorded as hard store
+# failures (no rows for that store). These delays are per-attempt and jittered so
+# a pool of workers throttled at the same instant does not retry in lockstep and
+# re-trip the limit together.
+_THROTTLE_STATUSES = (429, 403)
+_THROTTLE_DELAYS = (5.0, 15.0, 45.0)
+# Never sleep longer than this on a server-supplied Retry-After: a Cloudflare
+# header occasionally says minutes, and a worker parked that long stalls the
+# sweep more than the lost store costs.
+_RETRY_AFTER_CAP_S = 60.0
+
+
+def _retry_after_s(resp: dict) -> float | None:
+    """Seconds from a Retry-After header, capped. Only the delta-seconds form is
+    honoured — the HTTP-date form needs clock-skew handling for a header we have
+    never actually seen Blinkit send."""
+    raw = (resp or {}).get("retryAfter")
+    if not raw:
+        return None
+    try:
+        secs = float(str(raw).strip())
+    except (TypeError, ValueError):
+        return None
+    if secs <= 0:
+        return None
+    return min(secs, _RETRY_AFTER_CAP_S)
+
+
+def _next_delay(resp: dict, attempt: int) -> float:
+    """How long to wait before retry `attempt` (0-based), given the last response."""
+    if resp.get("status") in _THROTTLE_STATUSES:
+        server = _retry_after_s(resp)
+        base = server if server is not None else _THROTTLE_DELAYS[
+            min(attempt, len(_THROTTLE_DELAYS) - 1)
+        ]
+    else:
+        base = _RETRY_DELAYS[min(attempt, len(_RETRY_DELAYS) - 1)]
+    return base * random.uniform(0.8, 1.3)
 
 # Per-attempt fetch ceiling. The JS AbortController enforces it in-browser; the
 # asyncio.wait_for is a belt-and-suspenders guard for a wedged page process (the
@@ -157,8 +205,16 @@ async def in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dic
     Blinkit changes twice and discovering the second copy months later."""
     resp: dict = {"status": 0}
     payload = {"url": url, "h": headers, "b": body, "timeoutMs": int(_FETCH_TIMEOUT_S * 1000)}
-    for delay in (0.0,) + _RETRY_DELAYS:
-        if delay:
+    # The delay is chosen from the PREVIOUS response, not fixed up front, so a
+    # throttle escalates to the long backoff while an ordinary blip stays quick.
+    for attempt in range(len(_RETRY_DELAYS) + 1):
+        if attempt:
+            delay = _next_delay(resp, attempt - 1)
+            if resp.get("status") in _THROTTLE_STATUSES:
+                logger.warning(
+                    f"blinkit: HTTP {resp.get('status')} — backing off {delay:.1f}s "
+                    f"(attempt {attempt}/{len(_RETRY_DELAYS)})"
+                )
             await asyncio.sleep(delay)
         try:
             resp = await asyncio.wait_for(
