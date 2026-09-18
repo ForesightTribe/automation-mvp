@@ -188,6 +188,42 @@ def window_start(w: Window, now: datetime) -> datetime:
     return eff.replace(hour=sh, minute=sm, second=0, microsecond=0)
 
 
+def run_start(w: Window, now: datetime) -> datetime:
+    """When the current RUN of windows opened — `window_start`, unless yesterday's window ran
+    straight into today's, in which case yesterday's start. Only meaningful while `in_window`
+    is true.
+
+    Only an all-day rule does that: its window closes at midnight and the next one opens the
+    same minute, so to the auction it is one continuous window. Reading midnight as a new
+    window floored its bid every night (₹842 → ₹200 at 00:01 on "tapioca chips", then two
+    hours climbing back). A weekday gap, the first day of a date range, a `once` rule and every
+    timed window have a closed minute before they open, so they are unchanged.
+
+    ONE step back, deliberately: an engine that has not touched the rule since before
+    yesterday's window opened (paused, or the campaign dark all day) still re-opens at the
+    floor, which is the ratchet protection the window-open floor exists for.
+    """
+    start = window_start(w, now)
+    before = start - timedelta(minutes=1)
+    return window_start(w, before) if in_window(w, before) else start
+
+
+def is_all_day(w: Window) -> bool:
+    """No times at all (or a bare 00:00 start): open from midnight to midnight. Budget time
+    slots are a different shape and never count."""
+    return (not w.end_time and not w.time_slots
+            and parse_hhmm(w.start_time) in (None, (0, 0)))
+
+
+def all_day_closes(w: Window) -> bool:
+    """Does an all-day RECURRING rule ever close? Only when a run of days ends — a weekday
+    filter narrower than the whole week, or an end date. Every day with no end date never
+    closes, so it is never reset."""
+    if not is_all_day(w):
+        return False
+    return bool(w.end_date) or 0 < len({d.lower() for d in w.days}) < 7
+
+
 def window_open(date: str, start_time: str | None) -> datetime:
     """When a window on `date` opens (no start time → midnight). Raises ValueError on a bad date."""
     sh, sm = parse_hhmm(start_time) or (0, 0)

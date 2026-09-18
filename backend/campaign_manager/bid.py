@@ -9,7 +9,9 @@ Each window is bracketed by the floor: the first fire of a window writes `min_bi
 re-checks until Blinkit reads it back), and the end-of-window `--reset` run writes it
 again. The pair is deliberate — the reset is best-effort (the campaign may be dark, or
 Blinkit may refuse), and without the window-open floor a reset that failed last night is
-never recovered, so the bid ratchets up across days until it pins at `max_bid`.
+never recovered, so the bid ratchets up across days until it pins at `max_bid`. An all-day
+rule's run of consecutive days counts as ONE window: no floor at midnight, and a reset only
+where the run ends (`window.run_start`, `reconciler._bid_reset_fires`).
 
 The decision (`compute_bid` / `next_raise_step` / `_in_window`) is **pure** — ported from
 `ad_campaigns.bid_optimizer` (validated v1 logic) and unit-tested in
@@ -59,6 +61,15 @@ def _window_start(rule: dict, now: datetime) -> datetime:
     """When the rule's CURRENT window opened — `window.window_start`. Only meaningful while
     the rule is in window (callers filter on `_in_window` first)."""
     return window.window_start(window.from_bid(rule), now)
+
+
+def _window_opened(rule: dict, updated_at: datetime | None, now: datetime) -> bool:
+    """Has this window already been opened — i.e. is the floor already behind us?
+
+    Measured from `window.run_start`, not `_window_start`: an all-day rule's midnight joins
+    yesterday's window to today's, so a tick at 00:01 that last persisted at 23:46 is carrying
+    on, not opening. Everything else keeps anchoring to its own window's start."""
+    return bool(updated_at and updated_at >= window.run_start(window.from_bid(rule), now))
 
 
 def is_recovery(position: float, target: int, current_cpm: int,
@@ -525,8 +536,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # parallel lane, and a RESTART re-submits the bids it read (restart.py) — so it
             # can land on top of our write. Re-checking each tick makes that self-correcting
             # (worst case: one lost tick) instead of silently losing the floor for a day.
-            opened = bool(runtime and runtime.updated_at
-                          and runtime.updated_at >= _window_start(_rule_dict(rule), now))
+            #
+            # An all-day rule's midnight is NOT a window start (`_window_opened`): its bid
+            # carries straight across, and it is floored only by the reset when its run of
+            # days actually ends.
+            opened = _window_opened(_rule_dict(rule),
+                                    runtime.updated_at if runtime else None, now)
             if not opened and (live_cpm is None or int(live_cpm) != int(min_bid)):
                 # Decision BEFORE the write, as everywhere else — a log that reports the
                 # outcome before the reason that caused it is exactly what makes a run

@@ -392,6 +392,11 @@ best-effort (the campaign may be dark, or the write refused), and without the wi
 reset that failed last night is never recovered — `current_cpm` reads yesterday's `last_cpm` and
 steps _up_ from it, so the bid ratchets across days until it pins at `max_bid`.
 
+**All-day rules are the exception** (2026-09-18). Their window closes at midnight and the next
+opens the same minute, so a run of consecutive days is **one** window: no floor at midnight, and
+a reset only where the run ends. Before this, an every-day rule was floored nightly — "tapioca
+chips" went ₹842 → ₹200 at 00:01 and spent two hours climbing back. See §9.1 / §9.6.
+
 ### 7.2 Climbing — the escalating raise
 
 Position worse than target → raise. The step is **not** scaled by distance from target; it
@@ -548,6 +553,8 @@ that holds _it_.
   dangerous direction** — a stale relaxed target would have the optimizer keep drifting _down_ right
   after being handed more room to climb.
 - **Cleared at window open**, so every day re-climbs and retries the real target from scratch.
+  ⚠️ Except an all-day rule, whose window opens only at the start of its run of days: its
+  relaxed target holds until a `max_bid` edit, a resume, or the next run.
 
 There is deliberately **no acceptability floor**: even a relaxed target of position 15 is held
 rather than abandoned, because it is strictly better than the alternative — same position, a
@@ -1282,6 +1289,7 @@ Everything below is the actual behaviour of the current code.
 | Campaign not running yet at open              | Skips, does **not** mark the window open, retries next tick                                                             |
 | Yesterday's drift / pause / relaxed target    | All cleared — every day retries the real target from scratch                                                            |
 | Overnight window (18:00–02:00), tick at 01:00 | Still the _same_ window. Midnight doesn't re-floor a bid mid-flight                                                     |
+| **All-day** rule, tick at 00:01               | Still the _same_ window if yesterday was in the run (`window.run_start`): no floor, and the bid, holding price, raise step and relaxed target all carry over. Floors only on the first day of a run (e.g. Friday for Fri/Sat/Sun, the start date) or if nothing touched the rule since before yesterday's window opened. Before 2026-09-18 it re-floored every night |
 | Dry run                                       | Simulates the write, then marks open anyway — otherwise a dry tenant re-opens forever and never exercises the optimizer |
 
 ### 9.2 Climbing
@@ -1345,6 +1353,7 @@ Everything below is the actual behaviour of the current code.
 | Reset fire missed (runner down >7 min)          | Recurring rule: window-open recovers it. **Last window**: the hourly settle pass floors it (≤3 tries, ≤24 h) |
 | Rule has **ended**, or not started yet          | **Never selected** — only a window that just closed is reset                                     |
 | Rule **paused** before the window closed        | No reset fires — Resume repairs it, or Reset does. See [9.6b](#96b-pause--resume--reset--delete) |
+| **All-day** rule                                | Resets at 23:59 only where its run of days ends — Sunday night for Fri/Sat/Sun, its end date, a `once` date. Every day with no end date never closes → no reset. The 23:59 cron runs nightly; the edge selection makes the other nights no-ops (no browser opened) |
 
 ### 9.6b Pause / Resume / Reset / Delete
 

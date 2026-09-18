@@ -224,15 +224,31 @@ def _bid_split(bid_rules, now: datetime) -> tuple[list, dict[str, list]]:
     return recurring, once_by_date
 
 
+def _stop_hhmm(rule) -> tuple[int, int] | None:
+    """When a recurring bid rule's window closes, as (hour, minute) — its stop time, or
+    midnight for an all-day rule whose run of days can end. None = it never closes."""
+    hm = window.parse_hhmm(rule.stop_time)
+    if hm is not None:
+        return hm
+    return (0, 0) if window.all_day_closes(window.from_bid(rule)) else None
+
+
 def _bid_reset_fires(recurring: list, once_by_date: dict[str, list], tenant: str,
                      platform: str, now: datetime) -> list[Desired]:
     """A reset fire at each window's STOP time — a `cm.bid_optimizer --reset` run that
     de-escalates the just-closed keywords back to min_bid (so a bid doesn't freeze high
     overnight). Recurring windows → a daily cron at the stop time; `once` windows → a
-    one-shot at the stop datetime (overnight → next day). Rules with no stop_time never
-    close, so they get no reset. Deduped by time (the engine handles all rules per run)."""
+    one-shot at the stop datetime (overnight → next day). Deduped by time (the engine handles
+    all rules per run).
+
+    An ALL-DAY rule closes at midnight, but only where its run of days ends — Sunday night for
+    Fri/Sat/Sun, its end date, the night of a `once` date. It gets the same 23:59 fire, daily
+    like any recurring reset: the engine floors a keyword only when its window really closes
+    (`bid._reset_selection`), so Friday's and Saturday's fires touch nothing. An all-day rule
+    that runs every day with no end date never closes and gets none. Any other rule with no
+    stop_time gets no reset, as before."""
     out: list[Desired] = []
-    rec_stops = {_lead(hm) for r in recurring if (hm := window.parse_hhmm(r.stop_time))}
+    rec_stops = {_lead(hm) for r in recurring if (hm := _stop_hhmm(r))}
     for h, m in sorted(rec_stops):
         cron = f"{m} {h} * * *"
         out.append(Desired(f"{_PREFIX}bid:{tenant}:{platform}:reset:{h:02d}{m:02d}",
@@ -243,8 +259,10 @@ def _bid_reset_fires(recurring: list, once_by_date: dict[str, list], tenant: str
         if _parse_date(date) is None:
             continue
         for r in rules:
-            if window.parse_hhmm(r.stop_time) is None:
+            if (window.parse_hhmm(r.stop_time) is None
+                    and not window.is_all_day(window.from_bid(r))):
                 continue
+            # All-day: no stop time → `window_close` gives the following midnight.
             off_at = (window.window_close(date, r.start_time, r.stop_time)
                       - timedelta(minutes=_RESET_LEAD_MINUTES))
             if off_at > now:
