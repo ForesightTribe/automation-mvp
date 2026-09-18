@@ -248,7 +248,7 @@ def _record(applied, adapter, what: str, **kw) -> None:
         pass
 
 
-def _refused(outcome, reason: str | None) -> None:
+def _refused(outcome, reason: str | None, *, noop: bool = False) -> None:
     """Record WHY a write did not land, for the caller's history row.
 
     The reason always existed — every branch below computes one and hands it to
@@ -267,9 +267,19 @@ def _refused(outcome, reason: str | None) -> None:
     nine places that read the bool directly, and a tuple would have to be unpacked at every
     one of them. Same shape as the `applied` accumulator beside it, and callers that do not
     care simply pass nothing.
+
+    `noop` marks the one non-landing that is NOT a refusal: the value is already what was
+    asked for. A caller records that as "nothing to change" rather than as a failed write —
+    reading "the bid is already ₹200" in red under Failed is how a correct tick looked broken.
     """
     if outcome is not None and reason:
         outcome["reason"] = reason
+        outcome["noop"] = noop
+
+
+def not_needed(outcome: dict | None) -> bool:
+    """Did the write not land only because nothing needed changing? See `_refused`."""
+    return bool(outcome and outcome.get("noop"))
 
 
 # ── Live-write arming (B3 account guardrail) ────────────────────────────────
@@ -318,7 +328,7 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
         # poll's normal answer, and the engine has already said so in its own words.
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
                              reason=f"the budget is already {money(current)}", level="debug")
-        _refused(outcome, f"the budget is already {money(current)}")
+        _refused(outcome, f"the budget is already {money(current)}", noop=True)
         return False
     # A marketplace may impose its own floor/ceiling, which is stricter than our
     # config bounds and not ours to argue with — Zepto publishes a ₹500 daily-budget
@@ -391,7 +401,7 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
                              reason=f"the bid is already ₹{clamped}", keyword=keyword,
                              level="debug")
-        _refused(outcome, f"the bid is already ₹{clamped}")
+        _refused(outcome, f"the bid is already ₹{clamped}", noop=True)
         return False
     # The marketplace's OWN bid bounds, if it publishes any — the same declare/enforce
     # split `apply_budget` uses for MIN_BUDGET. Sits after the clamp because the clamp
@@ -536,7 +546,7 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         already = f"the campaign is already {STATE_WORDS.get(target, target)}"
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
                              reason=already, level="debug")
-        _refused(outcome, already)
+        _refused(outcome, already, noop=True)
         return False
     reason = status_transition_denied(current, target, allow_draft=allow_draft)
     if reason:

@@ -337,6 +337,9 @@ class CmActionOut(BaseModel):
 class RunLogOut(BaseModel):
     model_config = _orm
     id: int
+    # The run that wrote this row — every row one engine tick or one job produced shares it,
+    # so the UI can show a run's decisions together (and match a row to Cloud Logging).
+    run_id: str | None = None
     kind: str
     campaign_id: int | None = None
     campaign_name: str | None = None

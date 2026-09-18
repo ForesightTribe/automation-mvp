@@ -688,7 +688,8 @@ async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID) -> CmJobOut 
 
 async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset: int,
                   campaign_id: int | None = None, rule_id: str | None = None,
-                  run_id: str | None = None, include_unchanged: bool = False):
+                  run_id: str | None = None, include_unchanged: bool = False,
+                  keyword: str | None = None, success: bool | None = None):
     """History for the UI. Changes only by default; `include_unchanged` returns every tick,
     which is what a per-automation view wants (see repo.list_run_log).
 
@@ -697,7 +698,7 @@ async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset:
     rows, total = await repo.list_run_log(
         tenant_id, PLATFORM, kind=kind, limit=limit, offset=offset,
         campaign_id=campaign_id, rule_id=rule_id, run_id=run_id,
-        include_unchanged=include_unchanged)
+        include_unchanged=include_unchanged, keyword=keyword, success=success)
     return [RunLogOut.model_validate(r) for r in rows], total
 
 

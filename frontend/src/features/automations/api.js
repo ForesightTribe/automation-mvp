@@ -17,10 +17,13 @@ export const getBudgetSchedules = (clientId) =>
 
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
-// `campaign_id` / `rule_id` narrow to ONE automation, server-side. `include_unchanged`
-// adds the ticks where the engine deliberately did nothing, which is the drill-down
-// case: "why has my bid not moved for six hours" is answered by the held ticks, and
-// they are suppressed by default so the unfiltered list is not buried in them.
+// Every filter here is applied BY THE SERVER, so paging and the total stay honest.
+// `campaign_id` + `keyword` is one keyword automation; `kind` may list several
+// ("budget,activation" is one campaign automation's own record). `success=false` is every
+// row that did not do what it meant to. `include_unchanged` adds the ticks where the engine
+// deliberately did nothing — the drill-down case: "why has my bid not moved for six hours"
+// is answered by the held ticks, and they are suppressed by default so the unfiltered list
+// is not buried in them.
 export const getHistory = (
 	clientId,
 	{
@@ -29,6 +32,8 @@ export const getHistory = (
 		kind,
 		campaignId,
 		ruleId,
+		keyword,
+		success,
 		includeUnchanged = false,
 	} = {},
 ) =>
@@ -39,6 +44,8 @@ export const getHistory = (
 			kind,
 			campaign_id: campaignId,
 			rule_id: ruleId,
+			keyword,
+			success,
 			include_unchanged: includeUnchanged,
 		},
 	});

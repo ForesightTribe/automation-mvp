@@ -554,11 +554,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                  level="warning", msg=_PAUSED_MIDRUN)
                     skipped += 1
                     continue
+                outcome: dict = {}
                 ok, write_error = await _safe_apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=min_bid, current_cpm=live_cpm, min_bid=min_bid,
                     max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                    recent_writes=0, applied=patches,
+                    recent_writes=0, applied=patches, outcome=outcome,
                 )
                 applied += int(ok)
                 skipped += int(not ok and write_error is None)
@@ -572,14 +573,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   f"not applied — {mp} rejected the change to ₹{min_bid}"))
                 open_reason = (f"the window opened, so the bid starts at its "
                                f"₹{min_bid} floor")
+                action, success, reason = _write_verdict(ok, write_error, outcome, mp=mp,
+                                                         landed="open", why=open_reason)
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     "open" if ok else ("error" if write_error is not None
-                                                        else "skip"),
-                                     live_cpm, min_bid,
-                                     open_reason if write_error is None else
-                                     _plain(write_error,
-                                            f"{open_reason} — but it could not be sent to {mp}"),
-                                     dry_run, ok,
+                                     action, live_cpm, min_bid, reason, dry_run, success,
                                      rule_id=rule.id, target=rule.target_position))
                 # No runtime row on purpose: `updated_at` must stay behind the window start
                 # so the next tick re-checks that the floor actually stuck. Dry-run never
@@ -611,11 +608,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                      level="warning", msg=_PAUSED_MIDRUN)
                         skipped += 1
                         continue
+                    outcome = {}
                     ok, write_error = await _safe_apply_bid(
                         adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=min_bid,
                         max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                        recent_writes=0, applied=patches,
+                        recent_writes=0, applied=patches, outcome=outcome,
                     )
                     applied += int(ok)
                     skipped += int(not ok and write_error is None)
@@ -626,16 +624,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                                           f"₹{bounded} could not be sent to {mp}")
                                       if write_error is not None else
                                       f"not applied — {mp} rejected the change to ₹{bounded}"))
-                    bounds_reason = (f"the live bid of ₹{live_cpm} was {why} ₹{limit} limit, "
-                                     f"so it was brought back to ₹{bounded}")
+                    # Present tense: this sentence also heads a row whose write did NOT land,
+                    # and "was brought back" would then describe something that never happened.
+                    bounds_reason = (f"the live bid of ₹{live_cpm} is {why} ₹{limit} limit, "
+                                     f"so it goes back to ₹{bounded}")
+                    action, success, reason = _write_verdict(ok, write_error, outcome, mp=mp,
+                                                             landed="bounds", why=bounds_reason)
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                         "bounds" if ok else ("error" if write_error is not None
-                                                              else "skip"),
-                                         live_cpm, bounded,
-                                         bounds_reason if write_error is None else
-                                         _plain(write_error, f"{bounds_reason} — but it could "
-                                                             f"not be sent to {mp}"),
-                                         dry_run, ok,
+                                         action, live_cpm, bounded, reason, dry_run, success,
                                          rule_id=rule.id, target=rule.target_position))
                     if ok and not dry_run:
                         runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
@@ -944,32 +940,20 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                              msg=_plain(write_error,
                                         f"not applied — the change to ₹{final} could not "
                                         f"be sent to {mp}"))
-            elif recent >= config.MAX_WRITES_PER_WINDOW:
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — rate limit reached ({recent} changes this hour)")
-            elif final == int(current_cpm):
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — the bid is already ₹{final}")
             else:
+                # The choke point already knows why — rate limit, the marketplace's own
+                # bounds, its refusal message, "already ₹X" — so say that rather than guess.
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — {mp} rejected the change to ₹{final}")
+                             msg=f"not applied — {outcome.get('reason') or f'{mp} rejected the change to ₹{final}'}")
 
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
                 rt["last_cpm"] = final
                 rt["last_bid_updated_at"] = now.isoformat()
             runtime_rows.append(rt)
             drifted = drift_pct > 0 and position <= target
-            action = "recover" if recovering else ("drift" if drifted else "apply")
-            if write_error is not None:
-                # A write that could not be SENT is an error row, not a `skip` — a skip is
-                # a decision we made, and this was not one. Marked unsuccessful so it shows
-                # in the default History rather than hiding among the no-change rows.
-                action, success = "error", False
-                reason = _plain(write_error, f"{reason} — but it could not be sent to {mp}")
-            else:
-                action, success = (action if ok else "skip"), True
-                if not ok and outcome.get("reason"):
-                    reason = f"{reason} - not applied: {outcome['reason']}"
+            action, success, reason = _write_verdict(
+                ok, write_error, outcome, mp=mp, why=reason,
+                landed="recover" if recovering else ("drift" if drifted else "apply"))
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                  action, current_cpm, new_cpm, reason, dry_run, success,
                                  # The placeholder for "not on the page" is not a position.
@@ -1582,9 +1566,55 @@ def _plain(err, what: str) -> str:
     still in Cloud Logging, where support can find it; this is the sentence.
     """
     detail = " ".join(str(err).split())          # collapse newlines — one row, one line
+    for marker, said in _PLAIN_CAUSES:
+        if marker in detail:
+            detail = said
+            break
     if len(detail) > 120:
         detail = detail[:117] + "…"
     return f"{what} ({detail})" if detail else what
+
+
+# Failures that recur and read as noise in their raw form, said the way a client needs them.
+# Matched on a fragment of the raw text; the raw text itself stays in Cloud Logging.
+# Only causes we have actually diagnosed belong here — a guessed explanation is worse than
+# the marketplace's own words (see `_stranded`).
+_PLAIN_CAUSES = (
+    # live_position.py: the search session never captured the signed headers Blinkit's
+    # search API needs, so no store could be searched. 26 rows 2026-09-16…18.
+    ("no Blinkit search headers captured",
+     "Blinkit's search could not be opened for this check; it is retried next check"),
+    # A search page that never finished loading (35 rows 2026-08-22, before the REST path).
+    ("Page.goto: Timeout",
+     "Blinkit's search page did not load in time; it is retried next check"),
+)
+
+
+def _write_verdict(ok: bool, write_error, outcome: dict, *, mp: str, landed: str,
+                   why: str) -> tuple[str, bool, str]:
+    """How ONE bid write is recorded: (action, success, reason).
+
+    Four outcomes, and History has to tell them apart, because they mean different things
+    to someone reading it:
+
+      * **landed** → `landed` (apply / drift / recover / open / bounds), the decision as-is;
+      * **could not be sent** (an exception) → `error`, with the cause;
+      * **not needed** ("the bid is already ₹200") → `no-op`, a success: nothing was wrong;
+      * **refused** (rate limit, the marketplace's own bounds, its rejection) → `skip`,
+        UNSUCCESSFUL, with the refusal's own words.
+
+    The last used to be filed as a successful `skip` whose reason was the decision — "raising
+    to ₹605 because position 13 is worse than target 1" — so the table showed a raise, marked
+    it green, and never said it had not happened or why.
+    """
+    if write_error is not None:
+        return "error", False, _plain(write_error, f"{why} — but it could not be sent to {mp}")
+    if ok:
+        return landed, True, why
+    said = (outcome or {}).get("reason")
+    if writes.not_needed(outcome):
+        return "no-op", True, f"{why} — {said}, so nothing was changed"
+    return "skip", False, f"{why} — not applied: {said or f'{mp} did not accept the change'}"
 
 
 def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, dry_run,

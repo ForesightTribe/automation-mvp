@@ -116,6 +116,45 @@ def _plan_sentence(*, matched: bool, want_state: str | None, target: float,
     return f"no rule applies right now, so the budget should be its {money} default"
 
 
+def _history_reason(*, matched: bool, has_rules: bool, closing: bool,
+                    target: float | None, reason: str) -> str:
+    """Why this run acted, as the History row says it — what the client reads.
+
+    `plan_for_now`'s own `reason` is a label, not an explanation: a rule summary ("Fri, Sat,
+    Sun 19:30–02:00") or "window ended". Filed as-is, a row read as the schedule's
+    configuration and never said what the engine made of it. This is the same decision in
+    one sentence; a write that did not land gets its cause appended by `_verdict`.
+    """
+    if target is None:
+        return reason
+    money = f"₹{target:g}"
+    if matched:
+        return f"the {reason} window is open, so the budget goes to {money}"
+    if not has_rules:
+        return f"this automation keeps the campaign at its {money} default"
+    if closing:
+        return f"the window ended, so the budget goes back to its {money} default"
+    return (f"a window closed and the budget was never put back, so it goes back to its "
+            f"{money} default now")
+
+
+def _verdict(ok: bool, outcome: dict, why: str, landed: str = "apply") -> tuple[str, bool, str]:
+    """How one write is recorded: (action, success, reason) — the budget engine's twin of
+    `bid._write_verdict`, without the exception branch (the choke point does not raise here).
+
+    A write that was not NEEDED ("the budget is already ₹800") is a successful `no-op`; one
+    that was REFUSED — the marketplace's rejection, a bound, the rate limit — is an
+    unsuccessful `skip` carrying the refusal's own words. Both used to be a successful skip
+    whose reason was the rule, which read as though the change had gone through.
+    """
+    if ok:
+        return landed, True, why
+    said = (outcome or {}).get("reason")
+    if writes.not_needed(outcome):
+        return "no-op", True, f"{why} — {said}, so nothing was changed"
+    return "skip", False, f"{why} — not applied: {said or 'the marketplace did not accept it'}"
+
+
 def target_for_now(default_budget: float, rules: list[dict], now: datetime) -> tuple[float, str]:
     """The budget that should apply right now: the first matching rule's budget, else
     the default. Returns (target, reason)."""
@@ -339,6 +378,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     say = (f"this automation has ended and its last run never landed, so its "
                            f"budget goes back to its ₹{target:g} default now"
                            + (" and the campaign stops" if want_state else ""))
+                    why = (f"this automation has ended and its last run never landed, so the "
+                           f"budget goes back to its ₹{target:g} default now")
                 else:
                     target, want_state, reason = plan_for_now(
                         schedule.default_budget, rule_dicts, now,
@@ -346,6 +387,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     )
                     say = _plan_sentence(matched=open_now, want_state=want_state,
                                          target=target, reason=reason)
+                    why = _history_reason(matched=open_now, has_rules=bool(rule_dicts),
+                                          closing=closing, target=target, reason=reason)
                 reverting = target is not None and not open_now and bool(rule_dicts)
 
                 if target is None:
@@ -361,7 +404,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                  msg=f"skipping — ₹{target:g} is not a budget we will write")
                     skipped += 1
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                         "skip", None, target, reason, dry_run, True))
+                                         "skip", None, target,
+                                         f"₹{target:g} is not a budget this automation will "
+                                         f"set, so nothing was changed", dry_run, True))
                     continue
 
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, msg=say)
@@ -375,8 +420,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   msg=f"could not read the campaign from {platform.title()} "
                                       f"— {' '.join(str(e).split())[:120]}")
                     errors += 1
+                    detail = " ".join(str(e).split())[:120]
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                         "error", None, target, str(e), dry_run, False))
+                                         "error", None, target,
+                                         f"{why} — but the campaign could not be read from "
+                                         f"{platform.title()}, so nothing was changed ({detail})",
+                                         dry_run, False))
                     continue
 
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid,
@@ -389,13 +438,17 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # CARRIES the budget — so it replaces the budget write rather than preceding
                 # it. That is the whole reason activation lives in this engine.
                 if want_state == "running" and current_state == "paused":
+                    outcome: dict = {}
                     ok = await _restart(adapter, client, run_id, cid, target, detail,
-                                        dry_run, tenant_id, platform, patches)
+                                        dry_run, tenant_id, platform, patches, outcome)
                     applied += int(ok)
                     skipped += int(not ok)
+                    action, success, said = _verdict(
+                        ok, outcome, f"{why} — the campaign was stopped, so it is started "
+                                     f"again at that budget")
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                         "apply" if ok else "skip", None, target,
-                                         f"restart · {reason}", dry_run, True, kind="activation"))
+                                         action, None, target, said, dry_run, success,
+                                         kind="activation"))
                     landed = ok
                     continue
 
@@ -408,20 +461,28 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # The STOP is not gated at all — see below.
                 can_write_budget = current_state in (None, "running", "held")
 
+                state_words = writes.STATE_WORDS.get(current_state, current_state)
                 if not can_write_budget and want_state != "paused":
-                    # Stopped (and not due to start), on hold, completed, draft… nothing useful
-                    # to do, and nothing at risk in doing nothing.
+                    # Stopped (and not due to start), completed, draft… nothing useful to do,
+                    # and nothing at risk in doing nothing. Recorded all the same: this is a
+                    # decision a window EDGE made (a revert that could not happen), not an
+                    # idle poll, so it fires once per window — and "why is my budget still at
+                    # the window's value" has no other answer on the page.
+                    unwritable = (f"{platform.title()} does not take a budget change on a "
+                                  f"campaign that is {state_words}")
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
-                                 msg=f"{platform.title()} will not take a budget change on a "
-                                     f"campaign that is "
-                                     f"{writes.STATE_WORDS.get(current_state, current_state)}, "
-                                     f"so nothing is written")
+                                 msg=f"{unwritable}, so nothing is written")
                     skipped += 1
+                    log_rows.append(_row(tenant_id, platform, run_id, cid, cname, "skip",
+                                         current, target,
+                                         f"{why} — but {unwritable}, so the budget stays at "
+                                         f"{writes.money(current)}", dry_run, True))
                     landed = True              # nothing at risk, so nothing left to tear down
                     continue
 
                 budget_landed = True
-                budget_reason = reason
+                budget_reason = why
+                budget_success = True
                 if can_write_budget and writes.is_noop(target, current):
                     # Said here, in the engine's own voice, because it is the most common
                     # outcome of all: the hourly poll finding everything already correct.
@@ -437,19 +498,18 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                         target=target, current=current, dry_run=dry_run, recent_writes=0,
                         applied=patches, outcome=outcome,
                     )
-                    if not ok and outcome.get("reason"):
-                        budget_reason = f"{reason} - not applied: {outcome['reason']}"
-
-                    action = "apply" if ok else ("no-op" if current == target else "skip")
+                    action, budget_success, budget_reason = _verdict(ok, outcome, why)
                     applied += int(ok)
                     skipped += int(not ok)
                     budget_landed = ok or current == target
                 else:
                     ok, action = False, "skip"
+                    budget_reason = (f"{why} — but {platform.title()} does not take a budget "
+                                     f"change on a campaign that is {state_words}, so the "
+                                     f"budget stays at {writes.money(current)}")
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
                                  msg=f"the budget cannot be changed on a campaign that is "
-                                     f"{writes.STATE_WORDS.get(current_state, current_state)}"
-                                     f" — stopping it anyway")
+                                     f"{state_words} — stopping it anyway")
 
                 # Revert the budget FIRST, then stop (AD6): if the stop fails the campaign
                 # runs on at its DEFAULT budget rather than the elevated one, which bounds
@@ -469,9 +529,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     #
                     # AD6 is about the ORDER of revert-then-stop, not about making the stop
                     # conditional on the revert succeeding.
+                    stop_outcome: dict = {}
                     stopped_ok = await writes.apply_status(
                         adapter, client, run_id=run_id, campaign_id=cid, target="paused",
                         current=current_state, dry_run=dry_run, applied=patches,
+                        outcome=stop_outcome,
                         recent_writes=0 if dry_run else await repo.recent_write_count(
                             tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
                             kind="activation"),
@@ -482,10 +544,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     # be visible was the one that was invisible.
                     applied += int(stopped_ok)
                     skipped += int(not stopped_ok)
+                    stop_action, stop_success, stop_said = _verdict(
+                        stopped_ok, stop_outcome,
+                        "this automation has ended, so the campaign is stopped" if final
+                        else "the window ended, so the campaign is stopped until the next one")
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
-                                         "apply" if stopped_ok else "skip", None, None,
-                                         f"stop · {reason}", dry_run, stopped_ok,
-                                         kind="activation"))
+                                         stop_action, None, None, stop_said, dry_run,
+                                         stop_success, kind="activation"))
                     # A campaign that is already stopped, or completed, is a stop that landed.
                     stop_landed = stopped_ok or current_state in ("paused", "ended")
                 # A no-op (budget already correct — the common case for the hourly poll) is
@@ -495,7 +560,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 if action != "no-op":
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
                                          action, current, target, budget_reason, dry_run,
-                                         True))
+                                         budget_success))
                 landed = budget_landed and stop_landed
             finally:
                 # Only a LIVE run can land a teardown — a dry run wrote nothing.
@@ -544,7 +609,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
 
 async def _restart(adapter, client, run_id, campaign_id, budget, detail, dry_run,
-                   tenant_id, platform, patches: list | None = None) -> bool:
+                   tenant_id, platform, patches: list | None = None,
+                   outcome: dict | None = None) -> bool:
     """Bring a stopped campaign back, at `budget`.
 
     Split out because a restart is the heavy direction: Blinkit re-submits the whole
@@ -556,7 +622,7 @@ async def _restart(adapter, client, run_id, campaign_id, budget, detail, dry_run
 
     return await writes.apply_status(
         adapter, client, run_id=run_id, campaign_id=campaign_id, target="running",
-        current="paused", dry_run=dry_run, budget=budget, applied=patches,
+        current="paused", dry_run=dry_run, budget=budget, applied=patches, outcome=outcome,
         overwrites=restart_mod.overwrites(detail, budget=budget),
         recent_writes=0 if dry_run else await repo.recent_write_count(
             tenant_id, campaign_id, window_minutes=config.RATE_WINDOW_MINUTES,

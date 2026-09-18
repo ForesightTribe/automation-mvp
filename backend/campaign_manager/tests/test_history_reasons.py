@@ -79,6 +79,29 @@ def test_a_very_long_error_is_truncated():
     assert "…" in out and out.endswith(")")
 
 
+def test_a_known_technical_failure_is_said_in_words():
+    """26 rows 2026-09-16…18 read "(no Blinkit search headers captured for this session)"."""
+    out = bid._plain("no Blinkit search headers captured for this session",
+                     "could not check the search position, so the bid was left unchanged")
+    assert "headers" not in out and "retried next check" in out
+
+
+def test_a_budget_row_explains_the_decision_not_the_schedule():
+    """It used to be the rule summary alone — "Fri, Sat, Sun 19:30–02:00" — which is the
+    configuration, not what the engine made of it."""
+    from campaign_manager.budget import _history_reason
+    r = _history_reason(matched=True, has_rules=True, closing=False, target=800,
+                        reason="Fri, Sat, Sun 19:30–02:00")
+    assert r == "the Fri, Sat, Sun 19:30–02:00 window is open, so the budget goes to ₹800"
+    assert _history_reason(matched=False, has_rules=True, closing=True, target=300,
+                           reason="window ended").startswith("the window ended")
+    assert "never put back" in _history_reason(matched=False, has_rules=True, closing=False,
+                                               target=300, reason="x")
+    # Between windows there is no target, and nothing to explain beyond the plan's own words.
+    assert _history_reason(matched=False, has_rules=True, closing=False, target=None,
+                           reason="outside every window") == "outside every window"
+
+
 def test_an_empty_error_still_produces_a_sentence():
     """`_plain("")` must not yield a dangling '( )'."""
     out = bid._plain("", "the window closed, so the bid goes back to its floor")

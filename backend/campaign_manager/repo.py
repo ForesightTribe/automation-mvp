@@ -1105,6 +1105,28 @@ async def write_store_reads(rows: list[dict]) -> None:
         logger.error(f"cm: could not record per-store bid readings — {e}")
 
 
+async def campaign_name(tenant_id: uuid.UUID, campaign_id: int,
+                        platform: str = "blinkit") -> str | None:
+    """A campaign's name from the catalogue, for a History row whose writer never read it.
+
+    `set_budget` reads only the budget, so its rows went into `cm_run_log` nameless and the
+    Execution logs showed "—" for every one-off change. Best-effort: None when the campaign
+    has not been scraped yet, or on any error — a nameless row beats a failed run.
+    """
+    from app.models.blinkit_marketing import BlinkitAdCampaign
+    try:
+        async with AsyncSessionLocal() as db:
+            return (await db.execute(
+                select(BlinkitAdCampaign.name).where(
+                    BlinkitAdCampaign.tenant_id == tenant_id,
+                    BlinkitAdCampaign.platform == platform,
+                    BlinkitAdCampaign.campaign_id == campaign_id,
+                ).limit(1)
+            )).scalar()
+    except Exception:
+        return None
+
+
 async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str = "blinkit"):
     """What the bid-rule form needs to know about a campaign, from the DAILY SCRAPE (V7.4).
 
@@ -1304,12 +1326,24 @@ NO_CHANGE_ACTIONS = ("hold", "no-op")
 async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
                        kind: str | None = None, limit: int = 50, offset: int = 0,
                        campaign_id: int | None = None, rule_id: str | None = None,
-                       run_id: str | None = None, include_unchanged: bool = False):
+                       run_id: str | None = None, include_unchanged: bool = False,
+                       keyword: str | None = None, success: bool | None = None):
     """Recent cm_run_log rows for a tenant (newest first) + total count.
 
     Defaults to CHANGES ONLY. Pass `include_unchanged=True` for the full per-tick record —
     that is the per-automation drill-down, where "we held, and here is why" is the answer
     being looked for. `campaign_id` / `rule_id` narrow it to one campaign or automation.
+
+    `kind` takes a comma-separated list ("budget,activation"): a campaign automation's own
+    record is its budget changes AND the starts/stops it made, without the bid ticks of
+    every keyword automation on the same campaign, which outnumber them ~50:1.
+
+    `keyword` (with `campaign_id`) is how ONE keyword automation's record is asked for,
+    rather than `rule_id`: a Delete + reset writes its row after the rule is gone, with no
+    rule id, and rows from before 2026-09-04 carry none either — both belong to the keyword.
+
+    `success` filters on whether the row did what it meant to (a refused or failed write is
+    False). Server-side, so a "Failed" filter pages through ALL of them, not one page's worth.
 
     `run_id` narrows it to ONE RUN — every row a single job wrote, and nothing else. That is
     the filter that answers "did the thing I just asked for actually happen", because a
@@ -1324,14 +1358,19 @@ async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
     async with AsyncSessionLocal() as db:
         base = select(CmRunLog).where(CmRunLog.tenant_id == tenant_id,
                                       CmRunLog.platform == platform)
-        if kind:
-            base = base.where(CmRunLog.kind == kind)
+        kinds = [k.strip() for k in (kind or "").split(",") if k.strip()]
+        if kinds:
+            base = base.where(CmRunLog.kind.in_(kinds))
         if campaign_id is not None:
             base = base.where(CmRunLog.campaign_id == campaign_id)
         if rule_id is not None:
             base = base.where(CmRunLog.rule_id == rule_id)
+        if keyword is not None:
+            base = base.where(CmRunLog.keyword == keyword)
         if run_id is not None:
             base = base.where(CmRunLog.run_id == run_id)
+        if success is not None:
+            base = base.where(CmRunLog.success == success)
         if not include_unchanged:
             base = base.where(CmRunLog.action.notin_(NO_CHANGE_ACTIONS))
         total = (await db.execute(
@@ -1385,6 +1424,10 @@ async def recent_write_count(tenant_id: uuid.UUID, campaign_id: int, *,
             CmRunLog.kind == kind,
             CmRunLog.action.in_(_WRITE_ACTIONS),
             CmRunLog.dry_run == False,  # noqa: E712 — only real writes count
+            # Only writes that LANDED, as the docstring always said. A `reset` row is filed
+            # under its write action whether or not it landed, so refused resets were being
+            # counted against the limit that guards against writes actually happening.
+            CmRunLog.success == True,  # noqa: E712
             CmRunLog.timestamp >= cutoff,
         )
         if keyword is not None:

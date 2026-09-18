@@ -68,7 +68,15 @@ export const useBidRules = () => {
 
 export const useHistory = (page = 1, kind, opts = {}) => {
 	const { activeClientId } = useClient();
-	const { campaignId, ruleId, includeUnchanged = false } = opts;
+	const {
+		campaignId,
+		ruleId,
+		keyword,
+		success,
+		includeUnchanged = false,
+		limit,
+		enabled = true,
+	} = opts;
 	return useQuery({
 		queryKey: [
 			HISTORY,
@@ -77,7 +85,10 @@ export const useHistory = (page = 1, kind, opts = {}) => {
 			kind ?? "all",
 			campaignId ?? "all",
 			ruleId ?? "all",
+			keyword ?? "all",
+			success ?? "all",
 			includeUnchanged,
+			limit ?? "default",
 		],
 		queryFn: () =>
 			getHistory(activeClientId, {
@@ -85,9 +96,12 @@ export const useHistory = (page = 1, kind, opts = {}) => {
 				kind,
 				campaignId,
 				ruleId,
+				keyword,
+				success,
 				includeUnchanged,
+				limit,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && enabled,
 	});
 };
 
