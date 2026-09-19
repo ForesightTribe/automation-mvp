@@ -401,7 +401,7 @@ async def run_explorer(db: AsyncSession, spec: ExplorerSpec,
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+            browser = await pw.chromium.launch(headless=provider.headless, args=PLAYWRIGHT_ARGS)
             ticker = asyncio.create_task(_progress_ticker(run.id, stats, total, on_progress))
             try:
                 logger.info(

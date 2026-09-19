@@ -113,6 +113,17 @@ class Provider:
     # sleep wastes 10 minutes of every block.
     probe_every_s: int = 0
     max_block_waits: int = 0         # consecutive block waits before giving up
+    # Run the browser headful (needs an X display — xvfb-run in headless envs).
+    #
+    # Zepto sits behind AWS WAF. Measured 2026-09-19 from a residential IP: a
+    # HEADLESS browser is challenged (202) on every navigation and never recovers
+    # — the challenge.js does mint an `aws-waf-token` within a second, but every
+    # request after it is answered 429, so the warm-up search never fires and no
+    # session headers are captured. The SAME code headful under Xvfb gets 202 once
+    # (the expected challenge), then 200 on the warm-up and 200 on the search.
+    # Nothing about the IP: zepto.com loads normally in a real browser on that
+    # connection. Blinkit is unaffected and stays headless.
+    headless: bool = True
 
 
 _PROVIDERS: dict[str, Provider] = {
@@ -152,6 +163,7 @@ _PROVIDERS: dict[str, Provider] = {
         probe_every_s=ze_ep.PROBE_EVERY_S,
         max_block_waits=len(ze_ep.RECOVERY_WAITS_S),
         max_workers=ze_ep.MAX_WORKERS,
+        headless=False,
     ),
 }
 

@@ -407,7 +407,7 @@ async def run_targeted(
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+            browser = await pw.chromium.launch(headless=provider.headless, args=PLAYWRIGHT_ARGS)
             try:
                 logger.info(
                     f"targeted: tenant {tid} on {mp_slug} — {n_workers} workers × "
