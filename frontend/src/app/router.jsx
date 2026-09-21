@@ -20,6 +20,7 @@ import { OneTimeOpsPage } from "../features/one-time-ops/OneTimeOpsPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
+import { PurchaseOrdersPage } from "../features/purchase-orders/PurchaseOrdersPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 
 /**
@@ -77,6 +78,10 @@ export const router = createBrowserRouter([
 					{ path: "/competition", element: <CompetitionPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{ path: "/reports", element: <ReportsPage /> },
+					{
+						path: "/purchase-orders",
+						element: <PurchaseOrdersPage />,
+					},
 					{
 						element: <RequireAdmin />,
 						children: [

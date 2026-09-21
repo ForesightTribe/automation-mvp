@@ -46,6 +46,21 @@ export const downloadCsv = (filename, sections) => {
 	URL.revokeObjectURL(url);
 };
 
+/**
+ * Hands the browser a file the server built (an .xlsx, say). Revokes the object URL,
+ * or the blob is held for the session.
+ */
+export const downloadBlob = (blob, filename) => {
+	const url = URL.createObjectURL(blob);
+	const a = document.createElement("a");
+	a.href = url;
+	a.download = filename;
+	document.body.appendChild(a);
+	a.click();
+	a.remove();
+	URL.revokeObjectURL(url);
+};
+
 /** "campaign-insights_2026-08-07_2026-09-05.csv" */
 export const exportName = (base, range) =>
 	[base, range?.from, range?.to].filter(Boolean).join("_");
