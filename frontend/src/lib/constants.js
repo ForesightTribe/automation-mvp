@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
 	dateRange: "foresight.dateRange",
 	marketplaces: "foresight.marketplaces",
 	sidebarCollapsed: "foresight.sidebarCollapsed",
+	sidebarWidth: "foresight.sidebarWidth",
 };
 
 // Default `?days=` window for dashboard endpoints.
