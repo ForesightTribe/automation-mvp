@@ -1067,7 +1067,7 @@ def scrape_public(
     keyword: str = typer.Option(..., "--keyword", "-k", help="Search keyword (e.g. 'cola', 'sunflower oil')"),
     brand: str = typer.Option(..., "--brand", "-b", help="Brand slug for classification (e.g. 'dobra')"),
     city: str = typer.Option("bengaluru", "--city", "-c", help="City name from the store catalogue (`cli locations list`)"),
-    platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit | instamart | all"),
+    platform: str = typer.Option("all", "--platform", "-p", help="Platform: blinkit (zepto and instamart are local-first: use public-run)"),
     aliases: Optional[str] = typer.Option(None, "--aliases", help="Comma-separated brand name aliases (e.g. 'dobra,dobra cola')"),
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — required to --save (per-tenant storage)"),
     save: bool = typer.Option(False, "--save/--no-save", help="Save results to PostgreSQL (requires --tenant)"),
@@ -1101,24 +1101,26 @@ async def _scrape_public(
 ) -> None:
     from scraper.utils.locations import resolve_city, city_names
     from scraper.platforms.blinkit.public_data import scraper as bl_scraper, parser as bl_parser, storage as bl_storage
-    from scraper.platforms.instamart.public_data import scraper as im_scraper, parser as im_parser, storage as im_storage
 
-    # Zepto is deliberately NOT here. This command writes straight to Postgres,
-    # which is the opposite of the local-first staging path Zepto is built on
-    # (scrape -> SQLite -> `cli scrape load`), and ad-hoc one-off queries are
-    # already served by the Explorer. Supporting it here would mean a second,
-    # divergent write path for the same data.
-    SUPPORTED = {"blinkit", "instamart"}
+    # Zepto and Instamart are deliberately NOT here. This command writes straight
+    # to Postgres, which is the opposite of the local-first staging path both are
+    # built on (scrape -> SQLite -> `cli scrape load`), and ad-hoc one-off queries
+    # are already served by the Explorer. Supporting them here would mean a
+    # second, divergent write path for the same data. (Instamart was listed until
+    # 2026-09-17, backed by a scraper that hit swiggy.com and a storage module that
+    # was a no-op — it never wrote a row.)
+    SUPPORTED = {"blinkit"}
+    LOCAL_FIRST = {"zepto", "instamart"}
 
-    platforms_to_run = (
-        ["blinkit", "instamart"] if platform == "all" else [platform]
-    )
-    if "zepto" in platforms_to_run:
+    platforms_to_run = ["blinkit"] if platform == "all" else [platform]
+    local_first = [p for p in platforms_to_run if p in LOCAL_FIRST]
+    if local_first:
+        mp = local_first[0]
         console.print(
-            "[red]zepto is not supported by this command.[/red]\n"
-            "  It writes directly to Postgres; the Zepto public scrape is "
+            f"[red]{mp} is not supported by this command.[/red]\n"
+            f"  It writes directly to Postgres; the {mp} public scrape is "
             "local-first.\n"
-            "  Use  [cyan]cli scrape public-run -m zepto --city <city>[/cyan]  "
+            f"  Use  [cyan]cli scrape public-run -m {mp} --city <city>[/cyan]  "
             "for a real run,\n"
             "  or the Explorer for an ad-hoc one-off."
         )
@@ -1129,8 +1131,7 @@ async def _scrape_public(
         raise typer.Exit(1)
 
     scrapers = {
-        "blinkit":   (bl_scraper, bl_parser, bl_storage),
-        "instamart": (im_scraper, im_parser, im_storage),
+        "blinkit": (bl_scraper, bl_parser, bl_storage),
     }
 
     if save and not tenant_id:

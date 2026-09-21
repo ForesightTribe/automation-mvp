@@ -53,6 +53,9 @@ from typing import Any, Awaitable, Callable
 from scraper.platforms.blinkit.public_data import endpoints as bl_ep
 from scraper.platforms.blinkit.public_data import parser as bl_parser
 from scraper.platforms.blinkit.public_data import scraper as bl_scraper
+from scraper.platforms.instamart.public_data import endpoints as im_ep
+from scraper.platforms.instamart.public_data import parser as im_parser
+from scraper.platforms.instamart.public_data import scraper as im_scraper
 from scraper.platforms.zepto.public_data import endpoints as ze_ep
 from scraper.platforms.zepto.public_data import parser as ze_parser
 from scraper.platforms.zepto.public_data import scraper as ze_scraper
@@ -127,9 +130,30 @@ _PROVIDERS: dict[str, Provider] = {
         result_cap=bl_ep.RESULT_CAP,
         brand_cap=bl_ep.BRAND_RESULT_CAP,
     ),
-    # Modules exist but on the old one-shot interface — not yet on the session-reuse
-    # interface the worker pool needs. See docs/zepto.md.
-    "instamart": Provider(slug="instamart", name="Instamart", wired=False),
+    "instamart": Provider(
+        slug="instamart",
+        name="Instamart",
+        wired=True,
+        open_session=im_scraper.open_context_session,
+        search=im_scraper.search,
+        close_session=im_scraper.close_session,
+        parse=im_parser.parse,
+        result_cap=im_ep.RESULT_CAP,
+        brand_cap=im_ep.BRAND_RESULT_CAP,
+        # Rewritten 2026-09-17 onto instamart.in (the old module hit swiggy.com and
+        # never returned a product). Store binding is in the search URL, so the
+        # session re-targets by params alone; transport is in-page fetch() only.
+        # Pacing measured on a 40-call probe (30/30 at 1 s, no blocks) — a light
+        # probe. Single worker until the first full Bengaluru run says which
+        # limiter model Instamart follows; see endpoints.py.
+        search_gap_s=im_ep.SEARCH_GAP_S,
+        store_gap_s=im_ep.STORE_GAP_S,
+        pause_every=im_ep.PAUSE_EVERY,
+        pause_s=im_ep.PAUSE_S,
+        probe_every_s=im_ep.PROBE_EVERY_S,
+        max_block_waits=len(im_ep.RECOVERY_WAITS_S),
+        max_workers=im_ep.MAX_WORKERS,
+    ),
     "zepto": Provider(
         slug="zepto",
         name="Zepto",
