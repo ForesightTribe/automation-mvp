@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useState } from "react";
 import { NavLink, useLocation } from "react-router-dom";
 import { ChevronsLeft, ChevronsRight } from "lucide-react";
 import { NAV_ITEMS } from "../config/nav";
@@ -56,12 +56,6 @@ const LABEL =
 // truth for how wide it is.
 const RAIL_OPEN = "w-56 lg:w-60";
 const RAIL_SHUT = "w-16 lg:w-22";
-// Drag limits for the open rail. Below MIN there is not room for the longest label,
-// and past MAX the rail starts taking space the page needs; dragging under SNAP
-// collapses it, which is what a hard pull to the left means.
-const MIN_W = 200;
-const MAX_W = 420;
-const SNAP_W = 150;
 // Open, every row fills the rail's padded width, so the client tile, the nav labels
 // and the submenu all start on the same left edge. Collapsed, a row is just the
 // 44px icon box.
@@ -164,67 +158,6 @@ export const Sidebar = () => {
 	const [collapsed, setCollapsed] = useState(
 		() => localStorage.getItem(STORAGE_KEYS.sidebarCollapsed) === "true",
 	);
-	// A width the reader chose by dragging. Null means "whatever the class says",
-	// so an untouched rail keeps its responsive default.
-	const [width, setWidth] = useState(() => {
-		const stored = Number(localStorage.getItem(STORAGE_KEYS.sidebarWidth));
-		return stored >= MIN_W && stored <= MAX_W ? stored : null;
-	});
-	const [dragging, setDragging] = useState(false);
-	const frame = useRef(0);
-
-	// Drag on the window, not the handle: the pointer routinely outruns a 6px strip,
-	// and a resize that stops when the cursor slips off it feels broken.
-	useEffect(() => {
-		if (!dragging) return;
-		const onMove = (e) => {
-			cancelAnimationFrame(frame.current);
-			frame.current = requestAnimationFrame(() => {
-				const next = Math.round(e.clientX);
-				if (next < SNAP_W) {
-					setCollapsed(true);
-					localStorage.setItem(STORAGE_KEYS.sidebarCollapsed, "true");
-					setDragging(false);
-					return;
-				}
-				const clamped = Math.min(MAX_W, Math.max(MIN_W, next));
-				setWidth(clamped);
-				if (collapsed) {
-					setCollapsed(false);
-					localStorage.setItem(
-						STORAGE_KEYS.sidebarCollapsed,
-						"false",
-					);
-				}
-			});
-		};
-		const stop = () => setDragging(false);
-		window.addEventListener("pointermove", onMove);
-		window.addEventListener("pointerup", stop);
-		// The whole window takes the resize cursor, and text stops selecting under it.
-		const prev = document.body.style.cssText;
-		document.body.style.cursor = "col-resize";
-		document.body.style.userSelect = "none";
-		return () => {
-			window.removeEventListener("pointermove", onMove);
-			window.removeEventListener("pointerup", stop);
-			cancelAnimationFrame(frame.current);
-			document.body.style.cssText = prev;
-		};
-	}, [dragging, collapsed]);
-
-	// Persist only when the drag ends, not on every frame.
-	useEffect(() => {
-		if (!dragging && width) {
-			localStorage.setItem(STORAGE_KEYS.sidebarWidth, String(width));
-		}
-	}, [dragging, width]);
-
-	// Double-click the handle to go back to the default width.
-	const resetWidth = useCallback(() => {
-		setWidth(null);
-		localStorage.removeItem(STORAGE_KEYS.sidebarWidth);
-	}, []);
 
 	const toggle = useCallback(
 		() =>
@@ -246,32 +179,19 @@ export const Sidebar = () => {
 	const items = NAV_ITEMS.filter((item) => !item.adminOnly || isAdmin);
 	const owner = ownerOf(pathname, items);
 
-	// A dragged width only applies to the open rail: collapsed is a fixed icon strip,
-	// and the hover overlay must not change the room the column reserves.
-	const sized = width && !collapsed ? { width } : undefined;
-	const motion = dragging ? "" : "transition-[width] duration-300 ease-out";
-
 	return (
 		<div
-			style={sized}
-			className={`relative h-full shrink-0 ${motion} ${
-				width && !collapsed ? "" : collapsed ? RAIL_SHUT : RAIL_OPEN
+			className={`relative h-full shrink-0 transition-[width] duration-300 ease-out ${
+				collapsed ? RAIL_SHUT : RAIL_OPEN
 			}`}
 		>
 			<aside
-				style={{
-					scrollbarGutter: "stable",
-					...(width && open ? { width } : {}),
-				}}
+				style={{ scrollbarGutter: "stable" }}
 				onMouseEnter={() => setHovered(true)}
 				onMouseLeave={() => setHovered(false)}
-				className={`absolute inset-y-0 left-0 z-40 flex flex-col items-center gap-1 overflow-x-hidden overflow-y-auto border-r border-border bg-card px-2.5 pb-4 gap-0.5 ${
-					dragging
-						? ""
-						: "transition-[width,box-shadow] duration-300 ease-out"
-				} ${width && open ? "" : open ? RAIL_OPEN : RAIL_SHUT} ${
-					floating ? "shadow-xl" : ""
-				}`}
+				className={`absolute inset-y-0 left-0 z-40 flex flex-col items-center gap-1 overflow-x-hidden overflow-y-auto border-r border-border bg-card px-2.5 pb-4 gap-0.5 transition-[width,box-shadow] duration-300 ease-out ${
+					open ? RAIL_OPEN : RAIL_SHUT
+				} ${floating ? "shadow-xl" : ""}`}
 			>
 				{/* The corner the rail owns, at exactly the navbar's height and
 				    carrying the same bottom rule, so the two read as one bar across the top
@@ -351,54 +271,6 @@ export const Sidebar = () => {
 					),
 				)}
 			</aside>
-
-			{/* The drag edge. It sits on the rail's right border, not inside the scrolling
-			    panel, so it stays put while the menu scrolls. Keyboard users get the same
-			    range with the arrow keys; double-click returns the default width. */}
-			<div
-				role="separator"
-				aria-orientation="vertical"
-				aria-label="Resize sidebar"
-				aria-valuenow={width ?? undefined}
-				aria-valuemin={MIN_W}
-				aria-valuemax={MAX_W}
-				tabIndex={0}
-				title="Drag to resize · double-click to reset"
-				onPointerDown={(e) => {
-					e.preventDefault();
-					setDragging(true);
-				}}
-				onDoubleClick={resetWidth}
-				onKeyDown={(e) => {
-					const step = e.shiftKey ? 32 : 8;
-					if (e.key === "ArrowLeft" || e.key === "ArrowRight") {
-						e.preventDefault();
-						const base = width ?? 240;
-						setWidth(
-							Math.min(
-								MAX_W,
-								Math.max(
-									MIN_W,
-									base +
-										(e.key === "ArrowRight" ? step : -step),
-								),
-							),
-						);
-					}
-				}}
-				className={`group absolute inset-y-0 right-0 z-50 w-1.5 translate-x-1/2 cursor-col-resize focus-visible:outline-none ${
-					collapsed && !hovered ? "hidden" : ""
-				}`}
-			>
-				<span
-					aria-hidden
-					className={`absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 rounded-full transition-colors ${
-						dragging
-							? "bg-brand"
-							: "bg-transparent group-hover:bg-brand/40 group-focus-visible:bg-brand"
-					}`}
-				/>
-			</div>
 		</div>
 	);
 };
