@@ -34,6 +34,11 @@ def _bid_rule(**over) -> SimpleNamespace:
         min_bid=100, max_bid=None, target_position=1, state="active", active=True,
         type="once", date="2026-09-01", days=[], start_date=None, stop_date=None,
         start_time="09:00", stop_time="21:00", lat=18.55, lon=73.93, location_name="Borate Vasti",
+        # Pinned to a store, so no measurement city — `city_id` is precisely what pinning
+        # means it lacks. Present because `repo.city_names_for` reads it off every rule on
+        # the response path; a fake missing it dies as an AttributeError mid-module and
+        # takes every test after it down silently (2026-09-15).
+        city_id=None,
         ended_at=EARLIER_CLOSE, settled_at=EARLIER_CLOSE, settle_attempts=0,
         created_at=datetime(2026, 8, 30, 12, 0))
     rule.__dict__.update(over)
@@ -104,6 +109,11 @@ class _Service:
         async def reconcile(session, tenant_id):
             me.reconciles += 1
 
+        async def city_names_for(platform, rules):
+            # Resolved for display on every single-rule response, through its own DB
+            # session — real, it would connect to Supabase from a pure calendar test.
+            return {r.id: "Pune" for r in rules}
+
         fakes = {
             (repo, "get_bid_rule"): get_bid_rule, (repo, "update_bid_rule"): update_bid_rule,
             (repo, "set_bid_state"): set_bid_state, (repo, "get_keyword_floor"): get_keyword_floor,
@@ -111,6 +121,7 @@ class _Service:
             (repo, "get_budget_schedule"): get_budget_schedule,
             (repo, "update_budget_rule"): update_budget_rule,
             (repo, "get_budget_schedules"): get_budget_schedules, (repo, "get_armed"): get_armed,
+            (repo, "city_names_for"): city_names_for,
             (svc, "enqueue"): enqueue, (svc, "_reconcile"): reconcile,
             (svc, "now_ist"): lambda: NOW,
         }

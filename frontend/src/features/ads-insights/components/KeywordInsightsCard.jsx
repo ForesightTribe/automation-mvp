@@ -1,20 +1,14 @@
 import { ExportButton } from "../../../components/ui/ExportButton";
 import { useEffect, useMemo, useState } from "react";
-import { useKeywords } from "../hooks";
-import { getKeywords } from "../api";
+import { useAllKeywordRows } from "../hooks";
 import { Card } from "../../../components/ui/Card";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
-import { useClient } from "../../../context/ClientContext";
 import { useDateRange } from "../../../context/DateRangeContext";
 import { useMarketplaces } from "../../../context/MarketplaceContext";
-import {
-	downloadCsv,
-	exportName,
-	fetchAllPages,
-} from "../../../lib/exportTable";
+import { downloadCsv, exportName } from "../../../lib/exportTable";
 import { formatCurrency, formatNumber } from "../../../lib/format";
 import {
 	LIFTED_L,
@@ -42,8 +36,60 @@ const LIMIT = 20;
  * they are a different question, and mixing them in here would put them into this table's
  * totals and its export without belonging to either.
  */
-const TARGET_TYPE = "keyword";
 const dash = "—";
+
+/**
+ * One line per search term, summed across every campaign that bids on it.
+ *
+ * ⚠️ The endpoint's grain is campaign × keyword × match type, and this table used to render
+ * that grain directly with no campaign column, so "soda" appeared once per campaign (eight
+ * times) and read as duplicates. The per-campaign split is still one click away in the
+ * drawer. RoAS and ACoS are recomputed from the sums, never averaged. CPM is the
+ * impression-weighted mean of Blinkit's reported figures, because Blinkit's CPM is not
+ * spend ÷ impressions and deriving it here would disagree with every single-campaign row.
+ */
+const groupByKeyword = (rows) => {
+	const by = new Map();
+	for (const r of rows) {
+		if (!by.has(r.target)) by.set(r.target, []);
+		by.get(r.target).push(r);
+	}
+	return [...by.entries()].map(([target, members]) => {
+		const sum = (pick) => members.reduce((s, r) => s + (pick(r) ?? 0), 0);
+		const spend = sum((r) => r.budget_consumed);
+		const direct = sum((r) => r.direct_sales);
+		const indirect = sum((r) => r.indirect_sales);
+		const sales = direct + indirect;
+		const impressions = sum((r) => r.impressions);
+		const positions = members
+			.map((r) => r.most_viewed_position)
+			.filter((p) => p != null);
+		return {
+			target,
+			match_types: [
+				...new Set(members.map((r) => r.match_type).filter(Boolean)),
+			],
+			campaigns: new Set(members.map((r) => r.campaign_id)).size,
+			budget_consumed: spend,
+			direct_sales: direct,
+			indirect_sales: indirect,
+			total_sales: sales,
+			total_roas: spend ? sales / spend : null,
+			direct_roas: spend ? direct / spend : null,
+			acos: sales ? (spend / sales) * 100 : null,
+			impressions,
+			cpm: impressions
+				? sum((r) => (r.cpm ?? 0) * (r.impressions ?? 0)) / impressions
+				: (members[0].cpm ?? null),
+			atc: sum((r) => (r.direct_atc ?? 0) + (r.indirect_atc ?? 0)),
+			most_viewed_position: positions.length
+				? Math.min(...positions)
+				: null,
+		};
+	});
+};
+
+const matchText = (types) => types.map(enumLabel).join(", ") || dash;
 const roas = (v) => (v == null ? dash : `${v.toFixed(2)}x`);
 
 // ⚠️ NOT `formatPercent`, which takes a FRACTION and multiplies by 100. The ratios computed
@@ -56,7 +102,8 @@ const pctText = (v) => (v == null ? "—" : `${v.toFixed(1)}%`);
  */
 /** What each column measures, in plain terms. Definitions, not platform notes. */
 const ABOUT = {
-	Target: "The search term the campaign bids on. One term can run in several campaigns, so it can appear more than once; open it to see each campaign separately.",
+	Target: "The search term bid on, totalled across every campaign that runs it. Open it to see each campaign separately.",
+	Campaigns: "How many current campaigns bid on this term.",
 	Match: "How closely a shopper's search had to match the term for the ad to be eligible.",
 	Spend: "The money spent on this keyword.",
 	"Direct sales": "Sales of the advertised product itself.",
@@ -78,7 +125,8 @@ const ABOUT = {
 /**
  * Keyword insights: the same table treatment as Campaign insights, one level down.
  *
- * Search terms only. See TARGET_TYPE for what is excluded and why.
+ * Search terms only (`target_type=keyword` in getKeywordRowsPage), current campaigns only.
+ * One row per term; see groupByKeyword.
  *
  * The rows come from the latest campaign-detail snapshot, which is a window aggregate
  * rather than a daily series, so this table answers "which keywords earn their spend" and
@@ -91,45 +139,24 @@ export const KeywordInsightsCard = () => {
 	const [busy, setBusy] = useState(false);
 	const [openTarget, setOpenTarget] = useState(null);
 
-	const { activeClientId } = useClient();
 	const { range } = useDateRange();
 	const { selected } = useMarketplaces();
 
-	useEffect(() => setPage(1), [range, selected]);
+	const { data, isLoading, error, refetch, isFetching } = useAllKeywordRows();
 
-	const { data, isLoading, error, refetch, isFetching } = useKeywords({
-		page,
-		limit: LIMIT,
-		targetType: TARGET_TYPE,
-		sort: "spend",
-		order: "desc",
-	});
-
-	const rows = useMemo(() => {
-		const items = data?.items ?? [];
+	// Search runs over every keyword, not just the page on screen.
+	const derived = useMemo(() => {
 		const q = query.trim().toLowerCase();
+		const grouped = groupByKeyword(data ?? []);
 		return q
-			? items.filter((r) => r.target?.toLowerCase().includes(q))
-			: items;
+			? grouped.filter((r) => r.target?.toLowerCase().includes(q))
+			: grouped;
 	}, [data, query]);
-
-	const derived = useMemo(
-		() =>
-			rows.map((r) => {
-				const sales = (r.direct_sales ?? 0) + (r.indirect_sales ?? 0);
-				return {
-					...r,
-					total_sales: sales,
-					atc: (r.direct_atc ?? 0) + (r.indirect_atc ?? 0),
-					acos: sales ? (r.budget_consumed / sales) * 100 : null,
-				};
-			}),
-		[rows],
-	);
 
 	const ACCESSORS = {
 		target: (r) => r.target,
-		match: (r) => r.match_type,
+		campaigns: (r) => r.campaigns,
+		match: (r) => r.match_types.join(","),
 		spend: (r) => r.budget_consumed,
 		direct_sales: (r) => r.direct_sales,
 		indirect_sales: (r) => r.indirect_sales,
@@ -148,10 +175,16 @@ export const KeywordInsightsCard = () => {
 		"spend",
 	);
 
+	// Paged in the browser: the whole set is already here, and sorting has to see all of it
+	// for "highest spend" to mean highest across the account rather than on this page.
+	const pages = Math.max(1, Math.ceil(sorted.length / LIMIT));
+	useEffect(() => setPage(1), [range, selected, query, sort, order]);
+	const visible = sorted.slice((page - 1) * LIMIT, page * LIMIT);
+
 	const columns = [
 		{ header: "Target", value: (r) => r.target },
-		{ header: "Campaign ID", value: (r) => r.campaign_id },
-		{ header: "Match", value: (r) => r.match_type ?? "" },
+		{ header: "Campaigns", value: (r) => r.campaigns },
+		{ header: "Match", value: (r) => r.match_types.join(", ") },
 		{ header: "Spend", value: (r) => r.budget_consumed },
 		{ header: "Direct sales", value: (r) => r.direct_sales },
 		{ header: "Indirect sales", value: (r) => r.indirect_sales },
@@ -171,34 +204,16 @@ export const KeywordInsightsCard = () => {
 		},
 	];
 
-	// The download carries every keyword for these filters, not the page on screen.
+	// The download carries every keyword for these filters, in the table's order, not the
+	// page on screen. Everything is already loaded, so it costs no request.
 	const onExport = async () => {
 		setBusy(true);
 		try {
-			const all = await fetchAllPages(({ page: p, limit }) =>
-				getKeywords(activeClientId, {
-					marketplaces: selected,
-					page: p,
-					limit,
-					targetType: TARGET_TYPE,
-					sort: "spend",
-					order: "desc",
-				}),
-			);
-			const full = all.map((r) => {
-				const sales = (r.direct_sales ?? 0) + (r.indirect_sales ?? 0);
-				return {
-					...r,
-					total_sales: sales,
-					atc: (r.direct_atc ?? 0) + (r.indirect_atc ?? 0),
-					acos: sales ? (r.budget_consumed / sales) * 100 : null,
-				};
-			});
 			downloadCsv(exportName("keyword-insights", range), [
 				{
 					title: `Keyword insights, ${range.from} to ${range.to}`,
 					columns,
-					rows: full,
+					rows: sorted,
 				},
 			]);
 		} finally {
@@ -235,7 +250,7 @@ export const KeywordInsightsCard = () => {
 							value={query}
 							onChange={(e) => setQuery(e.target.value)}
 							placeholder="Search keyword"
-							aria-label="Search keywords on this page"
+							aria-label="Search keywords"
 							className="w-44 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-content transition-colors focus:border-brand focus:outline-none"
 						/>
 					</div>
@@ -275,6 +290,7 @@ export const KeywordInsightsCard = () => {
 											onSort={onSort}
 											className={`${STICKY_NAME} ${STICKY_HEAD} ${scrolled ? LIFTED_L : ""} z-30`}
 										/>
+										{head("Campaigns", "campaigns")}
 										{head("Match", "match")}
 										{head("Spend", "spend")}
 										{head("Direct sales", "direct_sales")}
@@ -293,9 +309,9 @@ export const KeywordInsightsCard = () => {
 									</tr>
 								</thead>
 								<tbody>
-									{sorted.map((r, i) => (
+									{visible.map((r) => (
 										<tr
-											key={`${r.campaign_id}-${r.target}-${r.match_type ?? ""}-${i}`}
+											key={r.target}
 											className="group border-b border-border/60 last:border-0 hover:bg-muted"
 										>
 											<NameCell
@@ -306,10 +322,13 @@ export const KeywordInsightsCard = () => {
 													setOpenTarget(r.target)
 												}
 											/>
+											<td className={NUM}>
+												{formatNumber(r.campaigns)}
+											</td>
 											<td
 												className={`${TD} text-content-muted`}
 											>
-												{enumLabel(r.match_type)}
+												{matchText(r.match_types)}
 											</td>
 											<td className={NUM}>
 												{formatCurrency(
@@ -340,7 +359,9 @@ export const KeywordInsightsCard = () => {
 												{formatNumber(r.impressions)}
 											</td>
 											<td className={NUM}>
-												{formatCurrency(r.cpm)}
+												{r.cpm == null
+													? dash
+													: formatCurrency(r.cpm)}
 											</td>
 											<td className={NUM}>
 												{formatNumber(r.atc)}
@@ -357,16 +378,18 @@ export const KeywordInsightsCard = () => {
 						</div>
 						<Pagination
 							page={page}
-							pages={data?.pages ?? 1}
-							total={data?.total ?? 0}
+							pages={pages}
+							total={sorted.length}
 							limit={LIMIT}
 							onChange={setPage}
 						/>
 					</div>
 				)}
+				{/* The RAW rows, not the grouped ones: the drawer breaks a keyword out by campaign,
+				    and every campaign's row is here, not just those on the visible page. */}
 				<KeywordDrawer
 					target={openTarget}
-					rows={derived}
+					rows={data}
 					range={range}
 					open={Boolean(openTarget)}
 					onClose={() => setOpenTarget(null)}

@@ -12,6 +12,7 @@ import {
 } from "./ScheduleRowParts";
 import { StatusBadge } from "./StatusBadge";
 import { DateWindow, WhenSummary, timingOf } from "./TimingDisplay";
+import { formatMeasuredAt } from "../../../lib/format";
 import { describeTiming } from "./TimingFields";
 
 const Detail = ({ label, children }) => (
@@ -141,7 +142,10 @@ export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
 					<>
 						<dl className="grid gap-x-6 gap-y-3 sm:grid-cols-2 lg:grid-cols-4">
 							<Detail label="Measured at">
-								{rule.location_name || "—"}
+								{formatMeasuredAt(
+									rule.location_name,
+									rule.city_name,
+								) || "—"}
 							</Detail>
 							<Detail label="Active between">
 								{t.type === "once" ? (

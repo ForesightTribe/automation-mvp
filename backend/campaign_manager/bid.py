@@ -9,7 +9,9 @@ Each window is bracketed by the floor: the first fire of a window writes `min_bi
 re-checks until Blinkit reads it back), and the end-of-window `--reset` run writes it
 again. The pair is deliberate — the reset is best-effort (the campaign may be dark, or
 Blinkit may refuse), and without the window-open floor a reset that failed last night is
-never recovered, so the bid ratchets up across days until it pins at `max_bid`.
+never recovered, so the bid ratchets up across days until it pins at `max_bid`. An all-day
+rule's run of consecutive days counts as ONE window: no floor at midnight, and a reset only
+where the run ends (`window.run_start`, `reconciler._bid_reset_fires`).
 
 The decision (`compute_bid` / `next_raise_step` / `_in_window`) is **pure** — ported from
 `ad_campaigns.bid_optimizer` (validated v1 logic) and unit-tested in
@@ -23,7 +25,7 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.utils.time import now_ist
-from campaign_manager import config, lifecycle, logs, repo, window, writes
+from campaign_manager import config, coverage, lifecycle, logs, repo, stock, window, writes
 from campaign_manager.marketplaces import get_adapter
 
 HOLD_MINUTES = 10                       # after a bid change, wait this long before nudging again
@@ -59,6 +61,15 @@ def _window_start(rule: dict, now: datetime) -> datetime:
     """When the rule's CURRENT window opened — `window.window_start`. Only meaningful while
     the rule is in window (callers filter on `_in_window` first)."""
     return window.window_start(window.from_bid(rule), now)
+
+
+def _window_opened(rule: dict, updated_at: datetime | None, now: datetime) -> bool:
+    """Has this window already been opened — i.e. is the floor already behind us?
+
+    Measured from `window.run_start`, not `_window_start`: an all-day rule's midnight joins
+    yesterday's window to today's, so a tick at 00:01 that last persisted at 23:46 is carrying
+    on, not opening. Everything else keeps anchoring to its own window's start."""
+    return bool(updated_at and updated_at >= window.run_start(window.from_bid(rule), now))
 
 
 def is_recovery(position: float, target: int, current_cpm: int,
@@ -162,7 +173,7 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
                 last_position: float | None, minutes_since_change: float | None, *,
                 last_holding_cpm: int | None = None, drift_paused: bool = False,
                 drift_pct: float = 0.0, drift_min_step: int = 5,
-                raise_step: int) -> tuple[int | None, str]:
+                raise_step: int, position_text: str | None = None) -> tuple[int | None, str]:
     """The bid decision. Returns (new_cpm | None, reason); None = no change.
 
     "Holding" means position is at target **or better** — better is a success, not an error
@@ -212,8 +223,11 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
         # that history.
         step = raise_step
         new_cpm = min(int(current_cpm + step), int(max_bid))
-        return new_cpm, (f"raising to ₹{new_cpm} (+₹{step:g}) because position "
-                         f"{position:g} is worse than target {target}")
+        # `position_text` replaces the number when it is a placeholder — "position 49" only
+        # means "not on the page", and a client reading History should see that instead.
+        why = (position_text if position_text is not None
+               else f"position {position:g} is worse than target {target}")
+        return new_cpm, f"raising to ₹{new_cpm} (+₹{step:g}) because {why}"
 
     # ── holding (at target or better) ──
     # Kill switch: hold the position and never trim. Deliberately a no-op rather than a
@@ -258,32 +272,45 @@ def _rule_dict(r) -> dict:
             "start_time": r.start_time, "stop_time": r.stop_time}
 
 
-def measurement_point(rule, city_stores: dict) -> tuple[float, float, str | None, str]:
-    """Where this rule reads its position: `(lat, lon, label, source)`.
+def measurement_stores(rule, city_stores: dict, saved_ids: dict | None = None) -> list:
+    """Where this rule reads its position: `[repo.MeasurementStore, …]`, anchor first.
 
-    A rule saved by city (`city_id` set) follows that city's FROZEN store — the client's
-    override, else the global default (`repo.city_stores_for`) — looked up on every run, so
-    changing a city's store moves every automation measuring there on the next tick, with no
-    edits. A city with nothing frozen, and a rule pinned to one store (`city_id` NULL), keep
-    the store saved on the rule. Only a rule with neither falls back to the Bengaluru default.
+    A rule saved by city (`city_id` set) measures at that city's FROZEN SET — the client's
+    set, else the global one (`repo.city_stores_for`) — looked up on every run, so changing a
+    city's stores moves every automation measuring there on the next tick, with no edits. A
+    city with nothing frozen, and a rule pinned to one store (`city_id` NULL), keep the single
+    store saved on the rule. Only a rule with neither falls back to the Bengaluru default.
 
+    `saved_ids` maps saved coordinates to their catalog store id, so a saved store's stock can
+    be looked up; without it that store's stock is unknown (it still counts).
     `getattr`: pre-migration rows and test doubles carry no `city_id` at all.
     """
     city_id = getattr(rule, "city_id", None)
-    store = city_stores.get(city_id) if city_id is not None else None
-    if store is not None:
-        return float(store.lat), float(store.lon), store.label, store.source
+    frozen = city_stores.get(city_id) if city_id is not None else None
+    if frozen:
+        return list(frozen)
     if rule.lat is not None and rule.lon is not None:
-        return float(rule.lat), float(rule.lon), rule.location_name, "rule"
-    return _DEFAULT_LAT, _DEFAULT_LON, None, "default"
+        lat, lon = float(rule.lat), float(rule.lon)
+        return [repo.MeasurementStore(
+            lat=lat, lon=lon, label=(rule.location_name or "").strip(),
+            merchant_id=(saved_ids or {}).get((lat, lon), ""), city_id=city_id, source="rule")]
+    return [repo.MeasurementStore(lat=_DEFAULT_LAT, lon=_DEFAULT_LON, label="", merchant_id="",
+                                  city_id=None, source="default")]
+
+
+def measurement_point(rule, city_stores: dict) -> tuple[float, float, str | None, str]:
+    """The ANCHOR of `measurement_stores`, as `(lat, lon, label, source)`."""
+    anchor = measurement_stores(rule, city_stores)[0]
+    return float(anchor.lat), float(anchor.lon), (anchor.label or None), anchor.source
 
 
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
-              reset: bool = False, platform: str = "blinkit") -> dict:
+              reset: bool = False, platform: str = "blinkit",
+              run_id: str | None = None) -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
-    run_id = logs.new_run_id()
+    run_id = run_id or logs.new_run_id()
     started = now_ist()
     logs.run_start(run_id, "bid_reset" if reset else "bid_optimizer", tenant_id,
                    dry_run=dry_run, platform=platform,
@@ -325,11 +352,25 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                          processed=0, applied=0, skipped=0, errors=0)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
 
-    # Where each rule measures: its city's frozen store (the client's override, else the global
-    # default), resolved NOW rather than read off the rule — see `measurement_point`. One query
-    # for the whole run, made before any browser exists so a DB blip cannot leak one.
+    # Where each rule measures: its city's frozen store SET (the client's, else the global one),
+    # resolved NOW rather than read off the rule — see `measurement_stores`. Two queries for the
+    # whole run, made before any browser exists so a DB blip cannot leak one.
     city_stores = await repo.city_stores_for(
-        platform, tenant_id, {getattr(r, "city_id", None) for r, _ in active})
+        platform, tenant_id, {getattr(r, "city_id", None) for r, _ in active},
+        run_id=run_id, dry_run=dry_run)
+    saved_ids = await repo.store_ids_at(platform, _saved_coords(active, city_stores))
+    rule_stores = {r.id: measurement_stores(r, city_stores, saved_ids) for r, _ in active}
+    # What each rule's stores showed on recent ticks — to give up on a store that stays out of
+    # reach at the ceiling, and to warn about one that keeps giving unusable readings.
+    # Fail-open: without it nothing is given up and nothing is warned about.
+    try:
+        store_history = await repo.recent_store_reads(
+            tenant_id, platform, [r.id for r, _ in active],
+            since=now - timedelta(hours=26), dry_run=dry_run)
+    except Exception as e:
+        store_history = {}
+        logs.note(run_id, f"could not load recent store readings ({e}) — no store is given up "
+                          f"this run", dry_run=dry_run, level="warning")
 
     adapter = get_adapter(platform)
     mp = platform.title()          # what a human reads in the log lines below
@@ -372,6 +413,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     processed = applied = skipped = errors = 0
     runtime_rows: list[dict] = []
     log_rows: list[dict] = []
+    # Catalogue write-back, flushed once with the rows above (campaign_manager/writes.py).
+    patches: list[dict] = []
+    store_rows: list[dict] = []            # cm_bid_store_reads — what each store showed
     bids_cache: dict[int, dict] = {}       # campaign_id → {keyword: cpm}  (one detail fetch/campaign)
     products_cache: dict[int, list] = {}   # campaign_id → [products]
     status_cache: dict[int, str | None] = {}   # campaign_id → canonical status (same fetch)
@@ -389,10 +433,19 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     # every search then overrides lat/lon in the headers anyway.
     logs.note(run_id, f"{len(active)} keyword automations active in this window",
               dry_run=dry_run)
-    _lat0, _lon0, _, _ = measurement_point(active[0][0], city_stores)
-    pos_session = await adapter.open_position_session(pw, _lat0, _lon0)
+    _anchor0 = rule_stores[active[0][0].id][0]
+    pos_session = await adapter.open_position_session(pw, float(_anchor0.lat),
+                                                      float(_anchor0.lon))
+    stock_searches = 0
 
     try:
+        # Stock for every store this run measures at, before any decision: one brand search
+        # per store, cached for an hour (campaign_manager/stock.py). Never raises — knowing
+        # nothing just means every store counts.
+        stock_by_store, stock_searches = await stock.load(
+            adapter, pos_session, tenant_id, platform,
+            [s for stores in rule_stores.values() for s in stores],
+            now=now, run_id=run_id, dry_run=dry_run)
         for rule, runtime in active:
             processed += 1
             cid, kw = rule.campaign_id, rule.keyword
@@ -440,14 +493,16 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                               msg=(f"Blinkit's minimum for this keyword is ₹{min_bid}, above "
                                    f"the rule's ₹{min_bid} — bidding at ₹{min_bid}"))
 
-            lat, lon, where, where_from = measurement_point(rule, city_stores)
+            stores = rule_stores[rule.id]
+            anchor = stores[0]
             live_cpm = bids_cache[cid].get(kw)
             logs.rule_context(
                 run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                 target=rule.target_position,
                 current_cpm=live_cpm if live_cpm is not None else min_bid,
                 min_bid=min_bid, max_bid=rule.max_bid,
-                location_name=where, lat=lat, lon=lon, store_source=where_from)
+                location_name=anchor.label or None, lat=anchor.lat, lon=anchor.lon,
+                store_source=anchor.source, store_count=len(stores))
 
             # A stopped campaign isn't serving, so there is no position to chase — and
             # Blinkit rejects bid writes on one anyway. Skipping here saves the expensive
@@ -481,8 +536,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # parallel lane, and a RESTART re-submits the bids it read (restart.py) — so it
             # can land on top of our write. Re-checking each tick makes that self-correcting
             # (worst case: one lost tick) instead of silently losing the floor for a day.
-            opened = bool(runtime and runtime.updated_at
-                          and runtime.updated_at >= _window_start(_rule_dict(rule), now))
+            #
+            # An all-day rule's midnight is NOT a window start (`_window_opened`): its bid
+            # carries straight across, and it is floored only by the reset when its run of
+            # days actually ends.
+            opened = _window_opened(_rule_dict(rule),
+                                    runtime.updated_at if runtime else None, now)
             if not opened and (live_cpm is None or int(live_cpm) != int(min_bid)):
                 # Decision BEFORE the write, as everywhere else — a log that reports the
                 # outcome before the reason that caused it is exactly what makes a run
@@ -495,11 +554,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                  level="warning", msg=_PAUSED_MIDRUN)
                     skipped += 1
                     continue
+                outcome: dict = {}
                 ok, write_error = await _safe_apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                     new_cpm=min_bid, current_cpm=live_cpm, min_bid=min_bid,
                     max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                    recent_writes=0,
+                    recent_writes=0, applied=patches, outcome=outcome,
                 )
                 applied += int(ok)
                 skipped += int(not ok and write_error is None)
@@ -513,14 +573,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   f"not applied — {mp} rejected the change to ₹{min_bid}"))
                 open_reason = (f"the window opened, so the bid starts at its "
                                f"₹{min_bid} floor")
+                action, success, reason = _write_verdict(ok, write_error, outcome, mp=mp,
+                                                         landed="open", why=open_reason)
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     "open" if ok else ("error" if write_error is not None
-                                                        else "skip"),
-                                     live_cpm, min_bid,
-                                     open_reason if write_error is None else
-                                     _plain(write_error,
-                                            f"{open_reason} — but it could not be sent to {mp}"),
-                                     dry_run, ok,
+                                     action, live_cpm, min_bid, reason, dry_run, success,
                                      rule_id=rule.id, target=rule.target_position))
                 # No runtime row on purpose: `updated_at` must stay behind the window start
                 # so the next tick re-checks that the floor actually stuck. Dry-run never
@@ -552,11 +608,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                      level="warning", msg=_PAUSED_MIDRUN)
                         skipped += 1
                         continue
+                    outcome = {}
                     ok, write_error = await _safe_apply_bid(
                         adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=min_bid,
                         max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                        recent_writes=0,
+                        recent_writes=0, applied=patches, outcome=outcome,
                     )
                     applied += int(ok)
                     skipped += int(not ok and write_error is None)
@@ -567,16 +624,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                                           f"₹{bounded} could not be sent to {mp}")
                                       if write_error is not None else
                                       f"not applied — {mp} rejected the change to ₹{bounded}"))
-                    bounds_reason = (f"the live bid of ₹{live_cpm} was {why} ₹{limit} limit, "
-                                     f"so it was brought back to ₹{bounded}")
+                    # Present tense: this sentence also heads a row whose write did NOT land,
+                    # and "was brought back" would then describe something that never happened.
+                    bounds_reason = (f"the live bid of ₹{live_cpm} is {why} ₹{limit} limit, "
+                                     f"so it goes back to ₹{bounded}")
+                    action, success, reason = _write_verdict(ok, write_error, outcome, mp=mp,
+                                                             landed="bounds", why=bounds_reason)
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                         "bounds" if ok else ("error" if write_error is not None
-                                                              else "skip"),
-                                         live_cpm, bounded,
-                                         bounds_reason if write_error is None else
-                                         _plain(write_error, f"{bounds_reason} — but it could "
-                                                             f"not be sent to {mp}"),
-                                         dry_run, ok,
+                                         action, live_cpm, bounded, reason, dry_run, success,
                                          rule_id=rule.id, target=rule.target_position))
                     if ok and not dry_run:
                         runtime_rows.append({"rule_id": rule.id, "last_cpm": int(bounded)})
@@ -598,92 +653,130 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                            int((runtime.last_cpm if runtime else None)
                                or bids_cache[cid].get(kw) or min_bid))
 
-            # ── One scrape per (keyword, store), not per rule ──
-            # Several campaigns routinely target the SAME keyword at the same store — on
-            # 2026-08-22 thirteen rules resolved to four distinct pairs, so the run fired
-            # five identical "cotton candy" searches back to back and Blinkit began timing
-            # them out. The search results are identical for a shared pair; only the
-            # product match differs, so the fetch is shared and `locate_position` runs
-            # per rule. A failed fetch is cached as the failure too — re-scraping a
-            # keyword that just timed out only feeds the throttling that caused it.
-            pos_key = (kw, lat, lon)
-            reused = pos_key in positions_cache
-            if not reused:
-                try:
-                    positions_cache[pos_key] = (await adapter.fetch_positions(
-                        pos_session, kw, lat, lon), None)
-                except Exception as e:
-                    positions_cache[pos_key] = ([], e)
-            results, fetch_error = positions_cache[pos_key]
+            # ── Read every measurement store; act on the worst one that counts ──
+            #
+            # The goal is the target position at EVERY store where the campaign can be sold,
+            # which is the same as the worst such store being at target — so everything below
+            # is unchanged; it is simply handed the binding store's position
+            # (campaign_manager/coverage.py). A store where stock CONFIRMS the campaign can't
+            # sell is not read: we could not have won there, and counting it as a miss is how
+            # a stock-out used to turn into a raise.
+            campaign_pids = {str(p.get("pid")) for p in products if p.get("pid")}
+            # A store not showing our ad even at the ceiling, check after check, can't be won at
+            # this ceiling — chasing it would hold every other store at max_bid too.
+            window_open_at = _window_start(_rule_dict(rule), now)
+            give_up_ticks = config.BID_GIVE_UP_TICKS
+            given_up = {
+                s.merchant_id: (f"not showing even at the ₹{ceiling} ceiling for "
+                                f"{give_up_ticks} checks — left out until this window ends")
+                for s in stores
+                if s.merchant_id and coverage.gave_up(
+                    store_history.get((rule.id, s.merchant_id), []),
+                    window_start=window_open_at, ceiling=ceiling, ticks=give_up_ticks)
+            }
+            readings = await _read_stores(
+                adapter, pos_session, positions_cache, stores, kw,
+                products=products, campaign_pids=campaign_pids, stock_by_store=stock_by_store,
+                campaign_id=cid, match_type=rule.match_type, brand_name=rule.brand_name,
+                given_up=given_up)
+            outcome = coverage.aggregate(readings)
+            for reading in outcome.readings:
+                logs.store_reading(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                   reading=reading, many=len(stores) > 1)
+                # A store that keeps giving nothing usable drops out of every decision quietly
+                # — say so once it has happened twice in a row.
+                streak = coverage.unusable_streak(
+                    store_history.get((rule.id, reading.store.merchant_id), []),
+                    reading.verdict) if reading.store.merchant_id else 0
+                if streak >= config.STORE_PROBLEM_WARN_TICKS:
+                    name = reading.store.label or reading.store.merchant_id
+                    logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                  level="warning",
+                                  msg=f"{name} has given no usable reading for {streak} checks "
+                                      f"in a row — decisions are running without it")
+            store_rows.extend(_store_rows(tenant_id, platform, run_id, rule, outcome.readings,
+                                          outcome, current_cpm, dry_run))
 
-            try:
-                if fetch_error is not None:
-                    raise fetch_error
-                # `campaign_id` and `match_type` matter on a marketplace whose search
-                # results say which campaign and keyword won each sponsored slot (Zepto
-                # does; Blinkit does not and ignores them). Passing them unconditionally
-                # keeps the engine free of per-marketplace branching.
-                position, source = adapter.locate_position(
-                    results, kw, lat, lon,
-                    products=products, campaign_id=cid, match_type=rule.match_type,
-                    brand_name=rule.brand_name,
-                )
-            except Exception as e:
-                logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              level="error",
-                              msg=f"could not check position — {e}. Bid left unchanged")
-                errors += 1
+            if outcome.kind == "no_stock":
+                why = ("none of this campaign's products are available at the stores we check "
+                       "— a stock problem, not a bidding one, so the bid is left alone")
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                             level="warning", msg=why)
+                skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
-                                     "error", current_cpm, current_cpm,
-                                     _plain(e, "could not check the search position, so the "
-                                               "bid was left unchanged"), dry_run, False,
+                                     "skip", current_cpm, current_cpm, why, dry_run, True,
+                                     rule_id=rule.id, target=rule.target_position))
+                continue
+            if outcome.kind == "unwinnable":
+                why = (f"every store we count has stayed out of reach at the ₹{ceiling} ceiling "
+                       f"— the bid stays where it is until this window ends")
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                             level="warning", msg=why)
+                skipped += 1
+                log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
+                                     "skip", current_cpm, current_cpm, why, dry_run, True,
+                                     rule_id=rule.id, target=rule.target_position))
+                continue
+            if outcome.kind == "error":
+                err = outcome.binding.detail if outcome.binding else "no store could be read"
+                # A failed search is a fault worth an ERROR; a reading we merely couldn't trust
+                # (no products, a cut-short page) is not — it must not page anyone.
+                failed = bool(outcome.binding and outcome.binding.verdict == coverage.ERROR)
+                logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              level="error" if failed else "warning",
+                              msg=f"no store gave a usable reading — {err}. Bid left unchanged")
+                errors += int(failed)
+                skipped += int(not failed)
+                log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
+                                     "error" if failed else "skip", current_cpm, current_cpm,
+                                     _plain(err, "no store gave a usable search reading, so "
+                                                 "the bid was left unchanged"), dry_run,
+                                     not failed,
                                      rule_id=rule.id, target=rule.target_position))
                 continue
 
-            # What the search saw. A rule reusing this run's scrape says so, rather than
-            # implying it went and looked again.
-            sponsored = sum(1 for r in results if r.get("is_ad"))
-            seen = (f'reusing this run\'s "{kw}" search'
-                    if reused else
-                    f"found {len(results)} product{'' if len(results) == 1 else 's'}, "
-                    f"{sponsored} sponsored")
-            # ── Not in the results ──────────────────────────────────────────
+            binding = outcome.binding
+            position, source = binding.position, binding.detail
+            # Which store set the decision — said only when there was more than one to choose.
+            at_store = (f" at {binding.store.label or binding.store.merchant_id}"
+                        if outcome.counted > 1 else "")
+            # ── Not in a sponsored slot ──────────────────────────────────────
             #
             # Being absent is the WORST outcome, not a neutral one: the whole point of a
-            # sponsored slot is to appear. Skipping here means that once a keyword is
-            # outbid off the page it can never climb back — every tick sees "absent",
-            # skips, and the bid never moves. Worse, the next window open writes
-            # `min_bid`, which is lower still.
-            #
-            # So an opted-in marketplace treats absence as "worse than anything we could
-            # see" and raises. The synthetic position is `len(results) + 1` — a genuine
-            # lower bound on where we are, and one that keeps the escalation honest: if
-            # the next tick is still absent the position has not improved, so the step
-            # grows exactly as it would for a real slot.
+            # sponsored slot is to appear. Skipping would mean a keyword outbid off the page
+            # can never climb back. So an opted-in marketplace treats absence as "worse than
+            # anything we could see" and raises; the reading already carries the synthetic
+            # position `len(results) + 1` (coverage.absent_position), which keeps escalation
+            # honest — still absent next tick reads as "not improved".
             #
             # ⚠️ OPT-IN PER MARKETPLACE (`getattr(..., False)`), so a new marketplace never
-            # starts bidding against a signal nobody has verified it can read. BOTH live
-            # marketplaces now opt in: Zepto's marker is positive (`tagsV2` + `uclId`), and
-            # Blinkit's is `ads_campaign_id` — the DOM fallback that made its `is_ad`
-            # untrustworthy was deleted, so absence there is a fact about the auction too.
-            absent = position is None
+            # starts bidding against a signal nobody has verified it can read. Both live
+            # marketplaces opt in: Zepto's marker is `tagsV2` + `uclId`, Blinkit's
+            # `ads_campaign_id`.
+            #
+            # A store only gets here if it COUNTS — stock confirmed or unknown. A confirmed
+            # stock-out never reaches this raise.
+            absent = binding.verdict == coverage.ABSENT
             if absent and not getattr(adapter, "RAISE_WHEN_ABSENT", False):
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              level="warning", msg=f"{seen} — {source}, leaving the bid unchanged")
+                              level="warning",
+                              msg=f"no sponsored slot for us{at_store} — {source}, leaving the "
+                                  f"bid unchanged")
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "skip", current_cpm, current_cpm, source, dry_run, True,
                                      rule_id=rule.id, target=rule.target_position))
                 continue
             if absent:
-                position = float(len(results) + 1)
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning",
-                              msg=f"{seen} — {source}. Treating that as worse than position "
-                                  f"{len(results)} and bidding up to get on the page")
+                              msg=f"no sponsored slot for us{at_store} — bidding up to get onto "
+                                  f"the page")
             else:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              msg=f"{seen} — our ad is at position {position:g}",
+                              msg=(f"worst of {outcome.counted} stores: position "
+                                   f"{position:g}{at_store}" if outcome.counted > 1 else
+                                   f"our ad is at position {position:g}"),
                               position=position)
 
             last_pos = runtime.last_position if runtime else None
@@ -742,7 +835,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 last_pos, mins, last_holding_cpm=holding_cpm, drift_paused=drift_paused,
                 drift_pct=drift_pct, drift_min_step=config.bid_tuning(platform, "BID_DRIFT_MIN_STEP"),
                 raise_step=step_now,
+                position_text=(f"our ad is not in a sponsored slot{at_store}" if absent else None),
             )
+            if outcome.counted > 1 and not absent:
+                # Name the store that set it, so History says WHICH store is holding a bid up.
+                reason = (f"{reason} — worst of {outcome.counted} stores is "
+                          f"{binding.store.label or binding.store.merchant_id}")
             recovering = (drift_pct > 0
                           and is_recovery(position, target, current_cpm, holding_cpm))
             # `reason` is already a full sentence. The escalation clause is added here
@@ -804,7 +902,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                     "hold" if position > target else "no-op",
                     current_cpm, current_cpm, reason, dry_run, True,
-                    rule_id=rule.id, position=position, target=target))
+                    rule_id=rule.id, position=None if absent else position, target=target))
                 continue
 
             # Per-KEYWORD rate limit: the guard exists to catch a runaway loop, and a
@@ -822,11 +920,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                              level="warning", msg=_PAUSED_MIDRUN)
                 skipped += 1
                 continue
+            outcome: dict = {}
             ok, write_error = await _safe_apply_bid(
                 adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=min_bid,
                 max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
-                recent_writes=recent,
+                recent_writes=recent, applied=patches, outcome=outcome,
             )
             applied += int(ok)
             skipped += int(not ok and write_error is None)
@@ -841,33 +940,25 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                              msg=_plain(write_error,
                                         f"not applied — the change to ₹{final} could not "
                                         f"be sent to {mp}"))
-            elif recent >= config.MAX_WRITES_PER_WINDOW:
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — rate limit reached ({recent} changes this hour)")
-            elif final == int(current_cpm):
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — the bid is already ₹{final}")
             else:
+                # The choke point already knows why — rate limit, the marketplace's own
+                # bounds, its refusal message, "already ₹X" — so say that rather than guess.
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — {mp} rejected the change to ₹{final}")
+                             msg=f"not applied — {outcome.get('reason') or f'{mp} rejected the change to ₹{final}'}")
 
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
                 rt["last_cpm"] = final
                 rt["last_bid_updated_at"] = now.isoformat()
             runtime_rows.append(rt)
             drifted = drift_pct > 0 and position <= target
-            action = "recover" if recovering else ("drift" if drifted else "apply")
-            if write_error is not None:
-                # A write that could not be SENT is an error row, not a `skip` — a skip is
-                # a decision we made, and this was not one. Marked unsuccessful so it shows
-                # in the default History rather than hiding among the no-change rows.
-                action, success = "error", False
-                reason = _plain(write_error, f"{reason} — but it could not be sent to {mp}")
-            else:
-                action, success = (action if ok else "skip"), True
+            action, success, reason = _write_verdict(
+                ok, write_error, outcome, mp=mp, why=reason,
+                landed="recover" if recovering else ("drift" if drifted else "apply"))
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                  action, current_cpm, new_cpm, reason, dry_run, success,
-                                 rule_id=rule.id, position=position, target=target))
+                                 # The placeholder for "not on the page" is not a position.
+                                 rule_id=rule.id, position=None if absent else position,
+                                 target=target))
     except writes.SessionExpired as e:
         # The client already tried to re-authenticate once and could not. Continuing would
         # fire the same doomed call at every remaining keyword while logging that the
@@ -886,13 +977,133 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
     await repo.write_bid_runtime(runtime_rows)
     await repo.write_run_log(log_rows)
+    await repo.record_applied(tenant_id, platform, patches)
+    await repo.write_store_reads(store_rows)
     logs.blank(run_id, dry_run=dry_run)
     logs.run_summary(
         run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
         processed=processed, applied=applied, skipped=skipped, errors=errors,
         seconds=(now_ist() - started).total_seconds(),
-        note=f"{len(positions_cache)} searches for {processed} keywords")
+        note=(f"{len(positions_cache)} position searches"
+              + (f" + {stock_searches} stock searches" if stock_searches else "")
+              + f" for {processed} keywords"))
     return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
+
+
+def _saved_coords(active, city_stores: dict) -> set:
+    """Saved coordinates of rules that will measure at their OWN store — pinned, or in a city
+    with nothing frozen — whose catalog store id is needed to look their stock up."""
+    return {(r.lat, r.lon) for r, _ in active
+            if r.lat is not None and r.lon is not None
+            and not city_stores.get(getattr(r, "city_id", None))}
+
+
+async def _read_stores(adapter, session, positions_cache: dict, stores, keyword: str, *,
+                       products, campaign_pids, stock_by_store: dict, campaign_id, match_type,
+                       brand_name, given_up: dict | None = None) -> list:
+    """Read one keyword at each measurement store → `[coverage.Reading]`, in the stores' order.
+
+    A store whose stock CONFIRMS the campaign can't sell there, or one given up at the ceiling
+    for this window (`given_up`: merchant_id → why), is not searched at all. Every other store
+    is — once per (keyword, store) for the whole run, shared across rules through
+    `positions_cache`: several campaigns routinely target the same keyword at the same store
+    (on 2026-08-22 thirteen rules resolved to four pairs, and the duplicate searches got
+    Blinkit timing out). A failed fetch is cached as the failure too; re-scraping a keyword
+    that just timed out only feeds the throttling that caused it.
+
+    A search that answered but proves nothing becomes UNTRUSTED rather than "absent": no
+    products at all, a page cut short with our ad unseen, or a campaign whose products we
+    couldn't read. Any of those counted as absent would raise the bid on no evidence.
+
+    Never raises: a store that can't be read becomes an ERROR reading, and the decision is
+    left to the stores that could."""
+    given_up = given_up or {}
+    # Without product ids or a brand to match on, "our ad isn't there" is unknowable.
+    identifiable = bool(products) or bool(brand_name)
+    readings = []
+    for store in stores:
+        known = stock_by_store.get(store.merchant_id) if store.merchant_id else None
+        elig = coverage.eligibility(campaign_pids, known)
+        if not coverage.counts(elig):
+            readings.append(coverage.Reading(
+                store, elig, coverage.SKIPPED,
+                detail=("every product of this campaign is sold out here"
+                        if elig == coverage.OUT_OF_STOCK
+                        else "none of this campaign's products are sold here")))
+            continue
+        if store.merchant_id and store.merchant_id in given_up:
+            readings.append(coverage.Reading(store, elig, coverage.GAVE_UP,
+                                             detail=given_up[store.merchant_id]))
+            continue
+        key = (keyword, float(store.lat), float(store.lon))
+        if key not in positions_cache:
+            try:
+                positions_cache[key] = (await adapter.fetch_positions(
+                    session, keyword, store.lat, store.lon), None)
+            except Exception as e:
+                positions_cache[key] = ([], e)
+        results, fetch_error = positions_cache[key]
+        if fetch_error is not None:
+            readings.append(coverage.Reading(
+                store, elig, coverage.ERROR,
+                detail=str(fetch_error) or type(fetch_error).__name__))
+            continue
+        if not results:
+            # Used to become "position 1" — the empty page read as target held, and the bid
+            # was trimmed on nothing.
+            readings.append(coverage.Reading(
+                store, elig, coverage.UNTRUSTED,
+                detail="the search came back with no products at all, so it says nothing "
+                       "about our ad"))
+            continue
+        try:
+            # `campaign_id` and `match_type` matter where results say which campaign won a
+            # slot (Zepto); Blinkit ignores them. Passed always, so no per-marketplace branch.
+            position, source = adapter.locate_position(
+                results, keyword, store.lat, store.lon, products=products,
+                campaign_id=campaign_id, match_type=match_type, brand_name=brand_name)
+        except Exception as e:
+            readings.append(coverage.Reading(store, elig, coverage.ERROR,
+                                             detail=str(e) or type(e).__name__))
+            continue
+        if position is None and getattr(results, "truncated", False):
+            readings.append(coverage.Reading(
+                store, elig, coverage.UNTRUSTED, results=len(results),
+                detail="the search was cut short after its first page, so not seeing our ad "
+                       "proves nothing"))
+        elif position is None and not identifiable:
+            readings.append(coverage.Reading(
+                store, elig, coverage.UNTRUSTED, results=len(results),
+                detail="this campaign's products couldn't be read, so we can't tell whether "
+                       "our ad is on the page"))
+        elif position is None:
+            readings.append(coverage.Reading(store, elig, coverage.ABSENT,
+                                             coverage.absent_position(len(results)),
+                                             len(results), source))
+        else:
+            readings.append(coverage.Reading(store, elig, coverage.SPONSORED, float(position),
+                                             len(results), source))
+    return readings
+
+
+def _store_rows(tenant_id, platform, run_id, rule, readings, outcome, bid, dry_run) -> list[dict]:
+    """`cm_bid_store_reads` rows for one rule's tick. Stamped here, like `_row`: the run is
+    persisted in one batch at the end, and each row should say when its store was read."""
+    now = now_ist()
+    return [{
+        "tenant_id": tenant_id, "platform": platform, "run_id": run_id, "rule_id": rule.id,
+        "campaign_id": rule.campaign_id, "keyword": rule.keyword,
+        "city_id": getattr(rule, "city_id", None),
+        "merchant_id": r.store.merchant_id or "", "store_label": r.store.label or "",
+        "rank": int(getattr(r.store, "rank", 1) or 1),
+        "bid": int(bid) if bid is not None else None,
+        "eligibility": r.eligibility, "verdict": r.verdict,
+        # Only a real sponsored slot is a position; ABSENT's is a placeholder for the decision.
+        "position": r.position if r.verdict == coverage.SPONSORED else None,
+        "binding": outcome.binding is r,
+        "detail": " ".join((r.detail or "").split())[:500] or None,
+        "dry_run": dry_run, "observed_at": now,
+    } for r in readings]
 
 
 @dataclass
@@ -997,7 +1208,7 @@ def _target_of(rule) -> _Target:
 
 async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: int,
                   match_type: str = "EXACT", platform: str = "blinkit",
-                  dry_run: bool | None = None) -> dict:
+                  dry_run: bool | None = None, run_id: str | None = None) -> dict:
     """Write ONE keyword's bid, now. The mechanism behind Reset (and Delete + reset).
 
     Deliberately takes plain values rather than a rule id: Delete + reset removes the rule
@@ -1010,7 +1221,7 @@ async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: 
     minutes later.
     """
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
-    run_id = logs.new_run_id()
+    run_id = run_id or logs.new_run_id()
     logs.run_start(run_id, "set_bid", tenant_id, dry_run=dry_run, platform=platform,
                    tenant_name=await repo.get_tenant_name(tenant_id))
 
@@ -1110,6 +1321,8 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
     processed = applied = skipped = errors = 0
     runtime_rows: list[dict] = []
     log_rows: list[dict] = []
+    # Catalogue write-back, flushed once with the rows above (campaign_manager/writes.py).
+    patches: list[dict] = []
     landed_ids: list[str] = []                 # floors that landed or were already in place
     failed_ids: list[str] = []
     bids_cache: dict[int, dict] = {}
@@ -1178,6 +1391,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                          msg=f"{say} — resetting to the ₹{min_bid} floor so it does not "
                              f"keep spending high (campaign is "
                              f"{status or 'in an unknown state'})")
+            outcome: dict = {}
             try:
                 ok = await writes.apply_bid(
                     adapter, client, run_id=run_id, campaign_id=cid, keyword=kw,
@@ -1185,6 +1399,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     max_bid=resolve_ceiling(
                         r.max_bid, config.bid_tuning(platform, "BID_MAX_ABSOLUTE")),
                     match_type=r.match_type, dry_run=dry_run, recent_writes=0,
+                    applied=patches, outcome=outcome,
                 )
                 err = None
             except Exception as e:
@@ -1192,19 +1407,33 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             applied += int(ok)
             errors += int(not ok)
             (landed_ids if ok else failed_ids).append(r.id)
+            stuck = _stranded(mp, status, current) if not ok else ""
             logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
                          msg=(f"would set bid to ₹{min_bid} — not sent" if (ok and dry_run)
                               else f"applied — bid is now ₹{min_bid}" if ok
-                              else f"not applied — {mp} rejected the reset"
+                              else f"not applied — {stuck or f'{mp} rejected the reset'}"
                                    + (f" ({err})" if err else "")))
             # `r.id` is None once the rule is gone (Delete + reset), and a runtime row
             # cannot exist without one.
             if ok and not dry_run and r.id:
                 runtime_rows.append({"rule_id": r.id, "last_cpm": int(min_bid)})
             done = f"{say}, so the bid goes back to its ₹{min_bid} floor"
+            # A FAILED reset used to file `done` — "the bid goes back to its ₹200 floor" —
+            # which is a description of what did not happen. The row was marked
+            # unsuccessful, but the sentence beside it said the opposite, and that sentence
+            # is what a client reads. When we know why it did not land, say that instead:
+            # the exception when the write raised, the guardrail's or marketplace's refusal
+            # (`outcome`) when it did not.
+            if ok:
+                reason = done
+            elif stuck:
+                reason = stuck
+            else:
+                reason = _plain(err or outcome.get("reason") or "",
+                                f"{mp} would not accept the reset to ₹{min_bid}, so "
+                                f"the bid did not change")
             log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
-                                 "reset", current, min_bid,
-                                 _plain(err, done) if err else done, dry_run, ok,
+                                 "reset", current, min_bid, reason, dry_run, ok,
                                  rule_id=r.id, target=r.target_position))
     finally:
         if browser is not None:
@@ -1235,6 +1464,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     success=action == lifecycle.SETTLED))
     await repo.write_bid_runtime(runtime_rows)
     await repo.write_run_log(log_rows)
+    await repo.record_applied(tenant_id, platform, patches)
     logs.blank(run_id, dry_run=dry_run)
     logs.run_summary(run_id, "bid_reset", dry_run=dry_run, unit="keywords",
                      processed=processed, applied=applied, skipped=skipped, errors=errors)
@@ -1299,6 +1529,34 @@ async def _safe_apply_bid(adapter, client, **kw) -> tuple[bool, Exception | None
         return False, e
 
 
+# Canonical states a marketplace will not take a bid write in, and the word to say it with.
+# `running` and `held` are absent deliberately: ON_HOLD is a running campaign whose budget
+# ran out, and both marketplaces accept an UPDATE on one.
+_UNWRITABLE = {"paused": "paused", "ended": "finished", "draft": "still a draft"}
+
+
+def _stranded(mp: str, status: str | None, current) -> str:
+    """Why a bid write could not land, when the campaign's own state already explains it.
+
+    Returns `""` when it does not — an unreadable status (`None`) explains nothing, and a
+    guessed reason in a client's History is worse than a marketplace's raw one.
+
+    The second half is the part that actually costs money. A bid the reset could not lower
+    stays stored at its in-window peak, and both marketplaces bring a campaign back with the
+    bid it was carrying — so "paused, nothing to worry about" is wrong: the next restart
+    resumes at ₹1009, silently, possibly weeks later and with no automation left to trim it
+    (2026-09-15, campaign 638421). Saying so here is the only warning anyone gets.
+    """
+    word = _UNWRITABLE.get((status or "").lower())
+    if not word:
+        return ""
+    shown = f"₹{int(current)}" if current is not None else "its last value"
+    stays = (f"the campaign is {word} on {mp}, which does not accept bid changes — the bid "
+             f"stays at {shown}")
+    return (f"{stays}, and restarting the campaign would bring it back at {shown}"
+            if word == "paused" else stays)
+
+
 def _plain(err, what: str) -> str:
     """A failure a CLIENT can read, for the History row.
 
@@ -1308,9 +1566,55 @@ def _plain(err, what: str) -> str:
     still in Cloud Logging, where support can find it; this is the sentence.
     """
     detail = " ".join(str(err).split())          # collapse newlines — one row, one line
+    for marker, said in _PLAIN_CAUSES:
+        if marker in detail:
+            detail = said
+            break
     if len(detail) > 120:
         detail = detail[:117] + "…"
     return f"{what} ({detail})" if detail else what
+
+
+# Failures that recur and read as noise in their raw form, said the way a client needs them.
+# Matched on a fragment of the raw text; the raw text itself stays in Cloud Logging.
+# Only causes we have actually diagnosed belong here — a guessed explanation is worse than
+# the marketplace's own words (see `_stranded`).
+_PLAIN_CAUSES = (
+    # live_position.py: the search session never captured the signed headers Blinkit's
+    # search API needs, so no store could be searched. 26 rows 2026-09-16…18.
+    ("no Blinkit search headers captured",
+     "Blinkit's search could not be opened for this check; it is retried next check"),
+    # A search page that never finished loading (35 rows 2026-08-22, before the REST path).
+    ("Page.goto: Timeout",
+     "Blinkit's search page did not load in time; it is retried next check"),
+)
+
+
+def _write_verdict(ok: bool, write_error, outcome: dict, *, mp: str, landed: str,
+                   why: str) -> tuple[str, bool, str]:
+    """How ONE bid write is recorded: (action, success, reason).
+
+    Four outcomes, and History has to tell them apart, because they mean different things
+    to someone reading it:
+
+      * **landed** → `landed` (apply / drift / recover / open / bounds), the decision as-is;
+      * **could not be sent** (an exception) → `error`, with the cause;
+      * **not needed** ("the bid is already ₹200") → `no-op`, a success: nothing was wrong;
+      * **refused** (rate limit, the marketplace's own bounds, its rejection) → `skip`,
+        UNSUCCESSFUL, with the refusal's own words.
+
+    The last used to be filed as a successful `skip` whose reason was the decision — "raising
+    to ₹605 because position 13 is worse than target 1" — so the table showed a raise, marked
+    it green, and never said it had not happened or why.
+    """
+    if write_error is not None:
+        return "error", False, _plain(write_error, f"{why} — but it could not be sent to {mp}")
+    if ok:
+        return landed, True, why
+    said = (outcome or {}).get("reason")
+    if writes.not_needed(outcome):
+        return "no-op", True, f"{why} — {said}, so nothing was changed"
+    return "skip", False, f"{why} — not applied: {said or f'{mp} did not accept the change'}"
 
 
 def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, dry_run,

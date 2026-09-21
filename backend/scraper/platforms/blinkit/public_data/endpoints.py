@@ -43,6 +43,13 @@ RESULT_CAP = 48
 # so the full catalog is captured, but bounded so a huge brand can't run away.
 BRAND_RESULT_CAP = 60
 
+# Hard ceiling on pages followed per search. Ceiling only — the cap is what normally
+# stops paging (60 products = 5 pages; 10 leaves room for the similarity tail, which
+# overlaps what was already seen). It exists because Blinkit's next_url cannot be
+# trusted to end: Shillong store 47298 answered "dobra" with one product and a next_url
+# pointing back at offset=0, forever, and one such store hung a 2059-store run.
+MAX_PAGES = 10
+
 
 def first_search_url(keyword: str) -> str:
     """The offset-0 search request for a keyword."""

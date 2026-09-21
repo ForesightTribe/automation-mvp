@@ -17,10 +17,13 @@ export const getBudgetSchedules = (clientId) =>
 
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
-// `campaign_id` / `rule_id` narrow to ONE automation, server-side. `include_unchanged`
-// adds the ticks where the engine deliberately did nothing, which is the drill-down
-// case: "why has my bid not moved for six hours" is answered by the held ticks, and
-// they are suppressed by default so the unfiltered list is not buried in them.
+// Every filter here is applied BY THE SERVER, so paging and the total stay honest.
+// `campaign_id` + `keyword` is one keyword automation; `kind` may list several
+// ("budget,activation" is one campaign automation's own record). `success=false` is every
+// row that did not do what it meant to. `include_unchanged` adds the ticks where the engine
+// deliberately did nothing — the drill-down case: "why has my bid not moved for six hours"
+// is answered by the held ticks, and they are suppressed by default so the unfiltered list
+// is not buried in them.
 export const getHistory = (
 	clientId,
 	{
@@ -29,6 +32,8 @@ export const getHistory = (
 		kind,
 		campaignId,
 		ruleId,
+		keyword,
+		success,
 		includeUnchanged = false,
 	} = {},
 ) =>
@@ -39,6 +44,8 @@ export const getHistory = (
 			kind,
 			campaign_id: campaignId,
 			rule_id: ruleId,
+			keyword,
+			success,
 			include_unchanged: includeUnchanged,
 		},
 	});
@@ -117,6 +124,10 @@ export const getCampaignNames = (clientId) =>
 // service loaded every detail row for the tenant on EVERY page (~7-11 s, ~200 MB), and these
 // parallel fetches exhausted the Supabase connection pool. If this endpoint ever turns slow
 // again, fetch the tail sequentially instead.
+//
+// `recent_only` drops the pre-migration account's campaigns on the SERVER. The picker also
+// filters them client-side, but only once `/ads/campaigns` has loaded — keywords usually
+// land first, so for that moment every campaign showed twice under the same name.
 export const getKeywordMetricsPage = (clientId, page) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {
@@ -125,6 +136,7 @@ export const getKeywordMetricsPage = (clientId, page) =>
 			order: "desc",
 			limit: 500,
 			page,
+			recent_only: true,
 		},
 	});
 
@@ -197,26 +209,54 @@ export const resetBidRule = (clientId, ruleId) =>
 	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
 
 // ── On-demand actions (enqueue → poll) ───────────────────────────────────────
-export const setBudgetNow = (clientId, body) =>
-	api.post(`${base(clientId)}/set-budget`, body);
-
 export const setActivationNow = (clientId, campaignId, body) =>
 	api.post(`${base(clientId)}/campaigns/${campaignId}/activation`, body);
-
-export const runEngine = (clientId, which) =>
-	api.post(`${base(clientId)}/run/${which}`);
 
 export const refreshCampaigns = (clientId) =>
 	api.post(`${base(clientId)}/campaigns/refresh`);
 
 /**
- * The dark-store catalogue, which is where the evaluation-city suggestions come from.
+ * Everything ONE run recorded — the engine's own account of what it did.
  *
- * ⚠️ Read from the STORE catalogue, not from a city list. The catalogue is the only source
- * that reflects where stores actually are; a standalone city table drifts from it.
- * The engine resolves an evaluation city by lower-casing it against this same table
- * (`repo.py::resolve_store`), so a city offered here is one it can genuinely measure at.
+ * ⚠️ A finished job is not a finished WRITE. `status: success` only means the process
+ * exited cleanly — the CM commands return their counts and never set a non-zero exit code,
+ * so a write the marketplace REFUSED settles exactly like one it accepted. Reporting the
+ * job's status as though it answered "did my change happen" is how starting an ON_HOLD
+ * campaign reads as "Done" while nothing moved.
  *
- * Not client-scoped: these are the platform's stores, not this account's.
+ * Keyed on `run_id`, which the queue mints at enqueue and passes to the run, so this is
+ * an exact match rather than an inference. Matching on the CAMPAIGN instead — "the newest
+ * row for the campaign I think I acted on" — is wrong in two ways that bite: `cm_ops` and
+ * `cm_bid` are parallel lanes, so another engine's row for that campaign can be newer than
+ * yours, and a run spanning many campaigns has no single campaign to ask about.
+ *
+ * `include_unchanged` is required: a refusal is a `skip` and a tick that held is a `hold`,
+ * and "nothing changed" is exactly the answer being looked for here.
  */
-export const getStoreCatalogue = () => api.get("/reference/blinkit-zones");
+export const getRunOutcome = (clientId, runId) =>
+	api.get(`${base(clientId)}/history`, {
+		params: { run_id: runId, limit: 100, include_unchanged: true },
+	});
+
+/**
+ * What this client has recently ASKED FOR — the activity list.
+ *
+ * Deliberately a different source from the history rows it sits above. History is the run
+ * log: what the engines DID, written when a run ends. This is the job queue: what a person
+ * triggered, which exists from the moment it is queued and can therefore say "queued" and
+ * "running" — states no history row can describe, because those rows do not exist yet.
+ *
+ * Person-triggered only. The hourly budget and bid engines are excluded by the server, as
+ * is the reconciler the API fires on every rule edit: this list answers "what did I just
+ * ask for", and background work would bury the one line being waited on.
+ */
+export const getRecentActions = (clientId) =>
+	api.get(`${base(clientId)}/actions`);
+
+/**
+ * ⚠️ `getStoreCatalogue` (`GET /reference/blinkit-zones`) is gone from this feature
+ * (2026-09-15). The evaluation-city picker read it directly and raced `bid-context` for the
+ * same field; `bid-context` now returns the measurable cities itself, resolved against that
+ * very catalogue server-side. The route still exists for other readers — this form is just
+ * no longer one of them.
+ */

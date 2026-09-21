@@ -180,41 +180,87 @@ async def in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dic
 
 # ── Session lifecycle ────────────────────────────────────────────────────────
 
-async def _make_session(browser, lat: float, lon: float) -> dict | None:
-    """Create an isolated context on `browser`, warm it up, and capture the
-    session-bound search headers. Returns {context, page, headers} or None."""
-    ctx = await browser.new_context(
+async def new_search_context(browser, lat: float, lon: float):
+    """The browser context every Blinkit consumer-side session runs in.
+
+    PUBLIC because the campaign manager's position check opens one too. It used to build
+    its own — a different user agent, no locale, no geolocation, no launch args — and
+    that thinner fingerprint was the one Cloudflare refused on the VM. One setup, so a
+    change that gets us past Cloudflare applies to every caller."""
+    return await browser.new_context(
         user_agent=HEADERS_COMMON["User-Agent"],
         locale="en-IN",
         geolocation={"latitude": lat, "longitude": lon},
         permissions=["geolocation"],
     )
-    page = await ctx.new_page()
-    captured: dict[str, str] = {}
 
-    async def _on_req(req):
+
+# Page titles Cloudflare serves instead of the site when it challenges or blocks.
+_CF_TITLES = ("just a moment", "attention required", "access denied")
+
+
+async def warm_up(page, lat: float, lon: float) -> tuple[dict, str]:
+    """Load the homepage (fixes the location) and a throwaway search, and copy the
+    headers Blinkit's own page attaches to its `/v1/layout/search` request.
+
+    Returns (headers, why). `headers` is empty when capture failed, and `why` then says
+    what the browser actually saw — a Cloudflare page, an HTTP status, a timeout — so
+    the failure is diagnosable from the log instead of a bare "no headers"."""
+    captured: dict[str, str] = {}
+    seen_search = False
+
+    def _on_req(req):
+        nonlocal seen_search
         if ep.SEARCH_PATH in req.url and not captured:
+            seen_search = True
             captured.update(req.headers)
 
+    notes: list[str] = []
     page.on("request", _on_req)
-
     try:
-        await page.goto(ep.HOMEPAGE_URL.format(lat=lat, lon=lon),
-                        wait_until="networkidle", timeout=20000)
-        await page.wait_for_timeout(1000)
-    except PWTimeout:
-        logger.debug("Blinkit: homepage timeout")
-    try:
-        await page.goto(ep.WARMUP_SEARCH_URL, wait_until="networkidle", timeout=20000)
-        await page.wait_for_timeout(1500)
-    except PWTimeout:
-        logger.debug("Blinkit: warmup timeout")
-
-    page.remove_listener("request", _on_req)
+        for name, url, wait in (("homepage", ep.HOMEPAGE_URL.format(lat=lat, lon=lon), 1000),
+                                ("search page", ep.WARMUP_SEARCH_URL, 1500)):
+            status = None
+            try:
+                resp = await page.goto(url, wait_until="networkidle", timeout=20000)
+                status = resp.status if resp else None
+                await page.wait_for_timeout(wait)
+            except PWTimeout:
+                notes.append(f"{name}: timed out after 20s")
+                continue
+            except Exception as e:
+                notes.append(f"{name}: {type(e).__name__}: {str(e).splitlines()[0][:120]}")
+                continue
+            try:
+                title = (await page.title()).strip()
+            except Exception:
+                title = ""
+            if any(t in title.lower() for t in _CF_TITLES):
+                notes.append(f"{name}: Cloudflare page (HTTP {status}, '{title[:60]}')")
+            elif status and status >= 400:
+                notes.append(f"{name}: HTTP {status} ('{title[:60]}')")
+    finally:
+        page.remove_listener("request", _on_req)
 
     headers = {k: captured[k] for k in ep.SEARCH_HEADER_KEYS if k in captured}
+    if headers:
+        return headers, ""
+    if seen_search:
+        notes.append("the page's search request carried none of the expected headers "
+                     "(did Blinkit rename them?)")
+    else:
+        notes.append("Blinkit's page never sent its own search request")
+    return {}, "; ".join(notes)
+
+
+async def _make_session(browser, lat: float, lon: float) -> dict | None:
+    """Create an isolated context on `browser`, warm it up, and capture the
+    session-bound search headers. Returns {context, page, headers} or None."""
+    ctx = await new_search_context(browser, lat, lon)
+    page = await ctx.new_page()
+    headers, why = await warm_up(page, lat, lon)
     if not headers:
-        logger.warning("Blinkit: no session headers captured")
+        logger.warning(f"Blinkit: no session headers captured — {why}")
         await ctx.close()
         return None
 
@@ -291,8 +337,24 @@ async def search(
     error = ""
     url: str | None = ep.first_search_url(keyword)
     body: dict | None = ep.SEARCH_BODY
+    requested: set[str] = set()
+    pages = 0
 
     while url and len(products) < cap:
+        # Three stops on top of the cap, because the cap alone cannot end a loop in
+        # which duplicates don't count: a next_url we already fetched, a page that
+        # added nothing, and a hard page ceiling. See ep.MAX_PAGES for the store
+        # that looped forever without them.
+        if url in requested or pages >= ep.MAX_PAGES:
+            logger.warning(
+                f"Blinkit search '{keyword}' @ ({lat},{lon}): stopped paging after "
+                f"{pages} pages ({'next page repeats one already fetched' if url in requested else 'page limit'})"
+            )
+            break
+        requested.add(url)
+        pages += 1
+        before = len(products)
+
         resp = await in_page_fetch(page, url, headers, body)
         if resp.get("status") != 200 or resp.get("body") is None:
             err_txt = resp.get("error", "")
@@ -344,6 +406,12 @@ async def search(
         if total_results is None:
             total_results = count
         if not next_url:
+            break
+        if len(products) == before:
+            logger.warning(
+                f"Blinkit search '{keyword}' @ ({lat},{lon}): page {pages} added no new "
+                f"products — stopped paging"
+            )
             break
         if method != ep.BASIC_SEARCH_METHOD and not follow_similarity:
             break

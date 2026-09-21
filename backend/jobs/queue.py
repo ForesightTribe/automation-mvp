@@ -41,11 +41,25 @@ async def enqueue(
     if spec.needs_tenant and tenant_id is None:
         raise ValueError(f"{job_type} requires a tenant_id")
 
+    params = dict(params or {})
+    # Correlation id, minted HERE because this is the single path both the API and the
+    # scheduler take — so an on-demand action and a cron fire are equally traceable, and
+    # a new correlated job type gets it without anyone remembering to.
+    #
+    # It is what lets a caller ask "what did MY run do?" instead of guessing from the
+    # newest row for a campaign, which races the parallel `cm_bid` / `cm_ops` lanes and
+    # cannot describe a run that spans many campaigns at all.
+    #
+    # An explicitly supplied one is kept: re-running a job with the same id deliberately
+    # files its rows under that id, which is what you want when reproducing a run.
+    if spec.carries_run_id and not params.get("run_id"):
+        params["run_id"] = uuid.uuid4().hex[:8]
+
     job = Job(
         job_type=job_type,
         lane=spec.lane,
         tenant_id=tenant_id,
-        params=params or {},
+        params=params,
         priority=priority,
         scheduled_for=scheduled_for or now_ist(),
         schedule_id=schedule_id,

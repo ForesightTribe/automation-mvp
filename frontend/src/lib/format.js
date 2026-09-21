@@ -61,3 +61,46 @@ export const formatDate = (value) => {
 				year: "numeric",
 			});
 };
+
+/**
+ * ISO/Date -> "7 Sept 2026, 4:00 pm".
+ *
+ * Separate from `formatDate` because a LOG without a time answers half the question —
+ * "did this happen before or after the change I made an hour ago" is the whole point of
+ * reading one. Falls back to the raw value rather than "—": in a log, an unparseable
+ * timestamp is evidence, and hiding it loses the only clue to what went wrong.
+ */
+export const formatDateTime = (value) => {
+	if (!value) return "—";
+	const d = value instanceof Date ? value : new Date(value);
+	return Number.isNaN(d.getTime())
+		? String(value)
+		: d.toLocaleString("en-IN", {
+				day: "numeric",
+				month: "short",
+				year: "numeric",
+				hour: "numeric",
+				minute: "2-digit",
+				hour12: true,
+			});
+};
+
+/**
+ * A measurement store, said in full: `("Block C", "Kolkata")` -> "Block C, Kolkata".
+ *
+ * Store labels are sub-city names — "Block C", "Sector 110", "Financial District" — and they
+ * repeat across the country, so a label on its own does not say where position was measured.
+ * Either half may be missing: an unresolved city shows the label alone, and a store whose
+ * label we never scraped shows the city alone rather than a dangling comma.
+ */
+export const formatMeasuredAt = (locationName, cityName) => {
+	const store = (locationName ?? "").trim();
+	const city = (cityName ?? "").trim();
+	if (!store || !city) return store || city || null;
+	// ⚠️ Skip the city when the label already carries it. 49 catalogue stores have no
+	// `location_name` of their own and fall back to "<city>/<merchant_id>" (see
+	// docs/darkstores.md), which would otherwise read "ahmednagar/41317, Ahmednagar".
+	return store.toLowerCase().includes(city.toLowerCase())
+		? store
+		: `${store}, ${city}`;
+};

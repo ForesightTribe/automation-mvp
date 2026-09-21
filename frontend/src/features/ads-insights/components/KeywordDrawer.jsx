@@ -105,6 +105,8 @@ export const KeywordDrawer = ({ target, rows, range, open, onClose }) => {
 			acos: total ? (spend / total) * 100 : null,
 			cpm: impressions ? (spend / impressions) * 1000 : null,
 			bestPosition: seen.length ? Math.min(...seen) : null,
+			// Distinct campaigns, not rows: one campaign bidding EXACT and SMART is two rows.
+			campaigns: new Set(mine.map((r) => r.campaign_id)).size,
 			matches: [
 				...new Set(mine.map((r) => r.match_type).filter(Boolean)),
 			],
@@ -118,7 +120,7 @@ export const KeywordDrawer = ({ target, rows, range, open, onClose }) => {
 			open={open}
 			onClose={onClose}
 			title={target}
-			subtitle={`${mine.length} campaign${mine.length === 1 ? "" : "s"}${
+			subtitle={`${totals.campaigns} campaign${totals.campaigns === 1 ? "" : "s"}${
 				totals.matches.length ? ` · ${totals.matches.join(", ")}` : ""
 			}`}
 			stats={

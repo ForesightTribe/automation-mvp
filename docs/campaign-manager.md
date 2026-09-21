@@ -136,7 +136,9 @@ All tables are `(tenant_id, platform)` scoped.
 | `cm_bid_runtime`       | System state, 1:1 with a bid rule (below)                                              |
 | `cm_platform_accounts` | `advertiser_id` + **`live_armed`** (the per-tenant arming switch)                      |
 | `cm_run_log`           | Slim append-only history for the UI                                                    |
-| `cm_city_stores`       | The frozen **measurement store** per city — a global default (`tenant_id` NULL) plus per-client overrides; see [7.6c](#76c-where-a-rule-measures--the-city-registry) |
+| `cm_city_stores`       | The frozen **measurement store set** per city — ranks 1–3 (1 = anchor), a global set (`tenant_id` NULL) a client can replace whole; see [7.6c](#76c-where-a-rule-measures--the-city-registry) |
+| `cm_store_stock`       | Stock cache: our products at each measurement store, with availability, from one brand search per store (~hourly) |
+| `cm_bid_store_reads`   | Append-only: what each store showed on each bid tick (verdict, position, bid in force, which store bound the decision); 30-day retention |
 
 **One schedule per (tenant, platform, campaign)** is a DB constraint — a campaign has one everyday
 budget, and two automations for it could only contradict each other. Extra windows go on the
@@ -390,6 +392,11 @@ best-effort (the campaign may be dark, or the write refused), and without the wi
 reset that failed last night is never recovered — `current_cpm` reads yesterday's `last_cpm` and
 steps _up_ from it, so the bid ratchets across days until it pins at `max_bid`.
 
+**All-day rules are the exception** (2026-09-18). Their window closes at midnight and the next
+opens the same minute, so a run of consecutive days is **one** window: no floor at midnight, and
+a reset only where the run ends. Before this, an every-day rule was floored nightly — "tapioca
+chips" went ₹842 → ₹200 at 00:01 and spent two hours climbing back. See §9.1 / §9.6.
+
 ### 7.2 Climbing — the escalating raise
 
 Position worse than target → raise. The step is **not** scaled by distance from target; it
@@ -546,6 +553,8 @@ that holds _it_.
   dangerous direction** — a stale relaxed target would have the optimizer keep drifting _down_ right
   after being handed more room to climb.
 - **Cleared at window open**, so every day re-climbs and retries the real target from scratch.
+  ⚠️ Except an all-day rule, whose window opens only at the start of its run of days: its
+  relaxed target holds until a `max_bid` edit, a resume, or the next run.
 
 There is deliberately **no acceptability floor**: even a relaxed target of position 15 is held
 rather than abandoned, because it is strictly better than the alternative — same position, a
@@ -647,51 +656,144 @@ Maintenance is the ~14 exceptions in `config.xlsx`'s `city_map` sheet; the other
 name. `cli cities seed` builds the list, `cli sync` applies the sheet and tags stores, `cli cities
 status` reports what still resolves to nothing.
 
-#### The store inside the city — frozen, not arbitrary
+#### The stores inside the city — a frozen set, and stock
 
 A city is still not a store. Until 2026-09-11 the store was the city's **lowest `merchant_id`** —
 deterministic, but a store nobody chose — copied onto the rule as lat/lon at save time, so moving it
 meant editing every rule.
 
-`cm_city_stores` (migration `d7c3e9a1f5b2`) freezes one store per (marketplace, city), in two layers:
+`cm_city_stores` (migration `d7c3e9a1f5b2`) freezes a **ranked set** of up to three stores per
+(marketplace, city): rank 1 is the **anchor**, ranks 2–3 **validate** it. Two layers:
 
-| Layer           | `tenant_id` | Set from                  | Wins   |
-| --------------- | ----------- | ------------------------- | ------ |
-| Client override | the client  | `cm stores set -t <id>`   | first  |
-| Global default  | NULL        | `cm stores set --global`  | second |
+| Layer      | `tenant_id` | Set from                            | Wins                                  |
+| ---------- | ----------- | ----------------------------------- | ------------------------------------- |
+| Client set | the client  | `cm stores set -t <id> --rank N`    | first — **replaces the global set whole** |
+| Global set | NULL        | `cm stores set --global --rank N`   | second                                |
 
-**CLI only, deliberately** (Deepansh, 2026-09-11): no API and no UI until frozen stores are proven in
-practice. Rules created from the dashboard still record their city, so a store set from the CLI
-reaches them too.
+A client's set is never mixed with the global one rank by rank: that could put one store in twice, or
+pair a client's anchor with validators chosen for everyone else. A client with only rank 1 set measures
+at that one store.
 
-A rule saved **by city** carries `cm_bid_rules.city_id` and **follows** that city's frozen store. The
-bid engine resolves it on every run (`bid.measurement_point`, one query per run), so changing a city's
-store moves every automation measuring there on the next tick, with no rule edits. A rule saved by an
-explicit store (`location_id`, `--lat/--lon`) has `city_id` NULL and stays **pinned**.
+**CLI only, deliberately** (Deepansh, 2026-09-11): no API and no UI until this is proven in practice.
+Rules created from the dashboard still record their city, so a set configured from the CLI reaches them.
 
-Where a rule measures, in order — the `rule.store` log line names which one applied (`store_source`):
+A rule saved **by city** carries `cm_bid_rules.city_id` and **follows** that city's set, resolved on every
+run (`bid.measurement_stores`), so changing a set moves every automation measuring there on the next
+tick, with no rule edits. A rule saved by an explicit store (`location_id`, `--lat/--lon`) has `city_id`
+NULL and stays **pinned** to that one store.
 
-1. the client's override, if its store is still an active catalog store with coordinates;
-2. the global default, same condition;
-3. the store saved on the rule (`rule`) — **a city with nothing frozen moves nobody**, which is why the
-   migration seeds no stores: nothing measures anywhere new until someone sets one;
-4. the Bengaluru fallback (`default`), only for a rule with no store at all.
+**The goal is the target position at every store where the campaign can actually be sold** (Deepansh,
+2026-09-16 — "all", not "most"). Each tick reads the keyword at every store in the set and acts on the
+**worst** store that counts. "All eligible stores at target" and "the worst eligible store at target" are
+the same statement, so `compute_bid`'s decision logic and its tests are unchanged (it only gained an
+optional `position_text`, so "not on the page" is worded as such rather than as a placeholder number):
+it is handed the binding store's
+position (`campaign_manager/coverage.py`). Reading every store every tick also means every reading in a
+decision was taken at the same moment and the same bid. History names the store holding a bid up:
+"… — worst of 3 stores is Block C".
+
+**Stock** (`campaign_manager/stock.py`). Once per run, before any decision, one **brand search** per store
+lists our catalogue there with availability (`cart_item.inventory` + `is_sold_out`, sold-out items
+included), cached in `cm_store_stock` for `CM_STOCK_MAX_AGE_MINUTES`. One read serves every keyword and
+campaign at the store. Product ids join a campaign's product list **exactly** — verified against Dobra
+2026-09-17: the ads API's campaign product id, the catalogue's `cart_item.product_id` and the position
+search's `identity.id` are one id space. Per store, the campaign is:
+
+| Eligibility  | Test                                                         | Effect                    |
+| ------------ | ------------------------------------------------------------ | ------------------------- |
+| eligible     | ≥1 campaign product listed **and** in stock                   | read; counts              |
+| out of stock | listed, none in stock, and the read saw our whole brand       | **not read; excluded**    |
+| not listed   | none listed, and the read saw our whole brand                 | **not read; excluded**    |
+| unknown      | no read, a failed or partial one, or no campaign product ids  | read; **counts**          |
+
+⚠️ **Only confirmed absence of stock excludes a store.** Not being on the keyword's results page is a
+ranking fact — exactly the case that must bid up — and "unknown" never becomes "sold out", or a campaign
+climbing from its floor would be stopped. Every store excluded → **no bid change**, logged as a stock
+problem, not a bidding one. A failed stock read is not cached, so the next run tries again; `stock.load`
+never raises.
+
+⚠️ **The brand search pads itself with other brands.** Following that tail walked 219 products (soda
+water, baking soda…) and hit HTTP 429 in recon, so the read is capped at the watchlist's `brand_cap`
+(default 48). A capped or 429-truncated read may not have reached all our products, so it is **complete**
+only if it ran out cleanly before the cap, or its last 10 results are all other brands — one foreign
+product mid-block proves nothing (a competitor's chips sat between our own combos). Only a complete read
+can conclude "not listed" or "out of stock" (`blinkit/catalog.py::summarise`). A search returning none of
+our products is a failed read, not a store that sells nothing.
+
+**A store we can't trust this tick gets no vote this tick** (Deepansh, 2026-09-17 — keep the blast
+radius small). A plain failed search was always excluded; the dangerous readings were the ones that
+*answered* but misled, because "our ad isn't there" raises the bid. Each of these is now `untrusted`,
+logged as "not counted — …", and left out of that tick's decision:
+
+| Reading                                                | Was                                  | Now        |
+| ------------------------------------------------------ | ------------------------------------ | ---------- |
+| search failed (429, timeout)                           | excluded                             | `error`    |
+| search returned **no products at all**                 | placeholder position 1 → "held" → **trim** | `untrusted` |
+| page 1 answered, a later page failed, our ad not seen  | "not showing" → **raise**            | `untrusted` (an ad we DID see still counts) |
+| the campaign's product list couldn't be read (and no brand name) | "not showing" everywhere → **raise** | `untrusted` |
+| stock unknown + our ad not showing, **while another store gives a clear reading** | "not showing" → **raise** | `untrusted` |
+
+A "clear reading" is our ad seen anywhere, or not seen at a store with confirmed stock. When "stock
+unknown + not showing" is ALL we know — a new campaign, stock not readable yet — it still counts, so a
+climb from the floor is never stopped. Nothing counted and at least one store unusable → no bid change
+(an ERROR log only when a search actually failed; an untrusted-only tick is a warning).
+
+**Giving up at the ceiling.** A store with confirmed stock that still doesn't show our ad at `max_bid`
+is not a bad reading — the ceiling genuinely can't buy a slot there, and under "all stores at target"
+it would hold the bid at the ceiling all window. After `CM_BID_GIVE_UP_TICKS` (2) checks in a row not
+showing with the bid already at the ceiling, the store is `gave_up`: not searched, not counted, **for
+the rest of that window** ("not chased — …"). It is sticky within the window, lifted by raising
+`max_bid` (the give-up bid is then below the new ceiling), and every new window starts fresh. If every
+counted store is given up, the bid stays where it is until the window closes (`unwinnable`). History for
+this comes from `cm_bid_store_reads` (same dry-run mode only), loaded once per run; if that read fails,
+nothing is given up.
+
+**Warnings.** A store that gives no usable reading (`error` / `untrusted`) for
+`CM_STORE_PROBLEM_WARN_TICKS` (2) checks in a row logs "Salt Lake has given no usable reading for N
+checks in a row — decisions are running without it", every tick until it recovers. WARNING, not ERROR:
+it narrows a decision, it is not an outage.
+
+Where a rule measures, in order — the `rule.store` log line names which applied (`store_source`):
+
+1. the client's set, using its stores that are still active catalog stores with coordinates;
+2. the global set, same condition;
+3. the store saved on the rule (`rule`) — **a city with nothing frozen moves nobody**; its stock is looked
+   up via the catalog store at those coordinates;
+4. the Bengaluru fallback (`default`), only for a rule with no store at all (stock unknown).
 
 A new rule in a city with nothing frozen is still saved at the lowest `merchant_id` (`catalog`).
 
-⚠️ Changing a city's store **clears the engine's memory** for every rule it re-points — the same
-`_RUNTIME_MEMORY` set Resume clears. Last position, holding price, relaxed target and escalation step
-were all observed at the old store, and positions differ between stores. Those rules' `lat` / `lon` /
-`location_name` are re-snapshotted in the same step, so lists show the store actually in use.
+Every store read lands in `cm_bid_store_reads` (verdict, position, eligibility, the bid in force, whether it
+bound the decision), trimmed to `CM_STORE_READS_RETENTION_DAYS` as it is written. `cm stores stock` shows
+the stock cache.
 
-Keyed by `merchant_id`, not `marketplace_locations.id`, because `cli sync --prune` deletes and
-re-creates catalog rows. A frozen store that leaves the catalog or closes is skipped (and logged),
-never honoured. `rank` 1 is the store; higher ranks are reserved for measuring at several stores per
-city, which is not built.
+⚠️ **Changing a set clears the engine's memory** for every rule it affects — the same `_RUNTIME_MEMORY`
+set Resume clears. A different anchor reads different positions, and different validators change which
+store is worst, so last position, holding price, relaxed target and escalation step would each describe
+another set. The rules' `lat` / `lon` / `location_name` are re-snapshotted to the new anchor. Setting a
+rank to the store it already holds changes nothing and clears nothing.
 
-⚠️ Zepto still resolves the store from the coordinate once per store per run (`get_page`). Passing the
-frozen `merchant_id` to its search would skip that, but it also drops the secondary hub ids the lookup
-returns, which can change what a search shows — left alone until that is measured.
+**Fewer stores without a deploy:** `cm stores clear --rank 2` / `--rank 3` drops a city back to its anchor.
+Stock still applies to the anchor.
+
+Keyed by `merchant_id`, not `marketplace_locations.id`, because `cli sync --prune` deletes and re-creates
+catalog rows. A frozen store that leaves the catalog or closes is skipped (and logged), never honoured —
+the set's lowest remaining rank becomes the anchor.
+
+| Setting                          | Default | Meaning                                                    |
+| -------------------------------- | ------- | ---------------------------------------------------------- |
+| `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 1              |
+| `CM_STOCK_MAX_AGE_MINUTES`       | 60      | reuse a store's stock read for this long                   |
+| `CM_STOCK_DEFAULT_BRAND_CAP`     | 48      | brand-search cap when the watchlist sets no `brand_cap`    |
+| `CM_STORE_READS_RETENTION_DAYS`  | 30      | trim `cm_bid_store_reads`                                  |
+| `CM_BID_GIVE_UP_TICKS`           | 2       | checks not showing at the ceiling before a store is given up for the window; 0 disables |
+| `CM_STORE_PROBLEM_WARN_TICKS`    | 2       | consecutive unusable readings before a store is warned about |
+
+⚠️ **Zepto stays on one store** — its anonymous search allows ~4-5 requests a minute — and has no
+catalogue read, so its stock is always unknown and it behaves exactly as before. It also still resolves
+the store from the coordinate once per store per run (`get_page`): passing the frozen `merchant_id` would
+skip that but drops the secondary hub ids the lookup returns, which can change what a search shows —
+left alone until measured.
 
 ### 7.7 Bounds are invariants
 
@@ -1187,6 +1289,7 @@ Everything below is the actual behaviour of the current code.
 | Campaign not running yet at open              | Skips, does **not** mark the window open, retries next tick                                                             |
 | Yesterday's drift / pause / relaxed target    | All cleared — every day retries the real target from scratch                                                            |
 | Overnight window (18:00–02:00), tick at 01:00 | Still the _same_ window. Midnight doesn't re-floor a bid mid-flight                                                     |
+| **All-day** rule, tick at 00:01               | Still the _same_ window if yesterday was in the run (`window.run_start`): no floor, and the bid, holding price, raise step and relaxed target all carry over. Floors only on the first day of a run (e.g. Friday for Fri/Sat/Sun, the start date) or if nothing touched the rule since before yesterday's window opened. Before 2026-09-18 it re-floored every night |
 | Dry run                                       | Simulates the write, then marks open anyway — otherwise a dry tenant re-opens forever and never exercises the optimizer |
 
 ### 9.2 Climbing
@@ -1250,6 +1353,7 @@ Everything below is the actual behaviour of the current code.
 | Reset fire missed (runner down >7 min)          | Recurring rule: window-open recovers it. **Last window**: the hourly settle pass floors it (≤3 tries, ≤24 h) |
 | Rule has **ended**, or not started yet          | **Never selected** — only a window that just closed is reset                                     |
 | Rule **paused** before the window closed        | No reset fires — Resume repairs it, or Reset does. See [9.6b](#96b-pause--resume--reset--delete) |
+| **All-day** rule                                | Resets at 23:59 only where its run of days ends — Sunday night for Fri/Sat/Sun, its end date, a `once` date. Every day with no end date never closes → no reset. The 23:59 cron runs nightly; the edge selection makes the other nights no-ops (no browser opened) |
 
 ### 9.6b Pause / Resume / Reset / Delete
 

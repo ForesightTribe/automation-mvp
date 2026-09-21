@@ -42,6 +42,14 @@ _LIVE = typer.Option(
 #
 # `--platform` stays accepted as an alias so older scripts and muscle memory keep
 # working; `--marketplace` matches the public scrape commands and is the name to use.
+# Correlation id, so a run's rows in `cm_run_log` can be found from the job that started
+# it. Normally supplied by the queue (jobs/queue.py mints one at enqueue for every
+# correlated cm.* type); omitted — as it is whenever a human types the command — the run
+# mints its own, exactly as it always has. Nothing about typing these commands changes.
+_RUN_ID = typer.Option(
+    None, "--run-id",
+    help="Correlation id to file this run's history rows under. Defaults to a fresh one.",
+)
 _MARKETPLACE = typer.Option(
     ..., "--marketplace", "-m", "--platform",
     help="Which marketplace to drive: blinkit | zepto. Required — no default, "
@@ -51,10 +59,11 @@ _MARKETPLACE = typer.Option(
 
 @app.command("budget-scheduler")
 def budget_scheduler(tenant: str = _TENANT, live: bool = _LIVE,
-                     marketplace: str = _MARKETPLACE):
+                     marketplace: str = _MARKETPLACE, run_id: str = _RUN_ID):
     """Apply budget rules for the current IST slot (dry-run unless --live)."""
     from campaign_manager import budget
-    asyncio.run(budget.run(uuid.UUID(tenant), dry_run=_dry(live), platform=marketplace))
+    asyncio.run(budget.run(uuid.UUID(tenant), dry_run=_dry(live), platform=marketplace,
+                           run_id=run_id))
 
 
 @app.command("bid-optimizer")
@@ -62,6 +71,7 @@ def bid_optimizer(
     tenant: str = _TENANT,
     live: bool = _LIVE,
     marketplace: str = _MARKETPLACE,
+    run_id: str = _RUN_ID,
     reset: bool = typer.Option(
         False, "--reset",
         help="End-of-window mode: de-escalate closed-window keywords to their min_bid "
@@ -73,16 +83,16 @@ def bid_optimizer(
     de-escalation instead of optimization."""
     from campaign_manager import bid
     asyncio.run(bid.run(uuid.UUID(tenant), dry_run=_dry(live), reset=reset,
-                        platform=marketplace))
+                        platform=marketplace, run_id=run_id))
 
 
 @app.command("reconcile")
 def reconcile(tenant: str = _TENANT, live: bool = _LIVE,
-              marketplace: str = _MARKETPLACE):
+              marketplace: str = _MARKETPLACE, run_id: str = _RUN_ID):
     """Compile a tenant's rules into job_schedules (dry-run unless --live)."""
     from campaign_manager import reconciler
     asyncio.run(reconciler.reconcile(uuid.UUID(tenant), dry_run=_dry(live),
-                                     platform=marketplace))
+                                     platform=marketplace, run_id=run_id))
 
 
 @app.command("set-advertiser")
@@ -206,11 +216,12 @@ def set_budget(
     budget: float = typer.Option(..., "--budget", help="Daily budget (₹)"),
     marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
+    run_id: str = _RUN_ID,
 ):
     """One-off: set a campaign's daily budget now (dry-run unless --live)."""
     from campaign_manager import set_budget as sb
     asyncio.run(sb.run(uuid.UUID(tenant), campaign, budget, dry_run=_dry(live),
-                       platform=marketplace))
+                       platform=marketplace, run_id=run_id))
 
 
 @app.command("set-bid")
@@ -223,6 +234,7 @@ def set_bid(
     match_type: str = typer.Option("EXACT", "--match-type", help="EXACT | BROAD"),
     marketplace: str = _MARKETPLACE,
     live: bool = _LIVE,
+    run_id: str = _RUN_ID,
 ):
     """One-off: set a single keyword's bid now (dry-run unless --live).
 
@@ -234,7 +246,7 @@ def set_bid(
     from campaign_manager import bid
     asyncio.run(bid.set_bid(uuid.UUID(tenant), campaign_id=campaign, keyword=keyword,
                             cpm=cpm, match_type=match_type, platform=marketplace,
-                            dry_run=_dry(live)))
+                            dry_run=_dry(live), run_id=run_id))
 
 
 @app.command("set-activation")
@@ -249,6 +261,7 @@ def set_activation(
         "budget, so one is always sent; omit to reuse the campaign's current budget.",
     ),
     live: bool = _LIVE,
+    run_id: str = _RUN_ID,
 ):
     """One-off: start or stop a campaign now (dry-run unless --live).
 
@@ -259,7 +272,8 @@ def set_activation(
     """
     from campaign_manager import set_activation as sa
     asyncio.run(sa.run(uuid.UUID(tenant), campaign, status,
-                       budget=budget, dry_run=_dry(live), platform=marketplace))
+                       budget=budget, dry_run=_dry(live), platform=marketplace,
+                       run_id=run_id))
 
 
 @app.command("stop")
@@ -701,8 +715,8 @@ async def _city_or_exit(platform: str, city: str):
 
 
 def _moved(n: int) -> str:
-    return (f"{n} saved automation{'s' if n != 1 else ''} re-pointed" if n
-            else "no saved automation needed moving")
+    return (f"{n} saved automation{'s' if n != 1 else ''} reset onto the new set" if n
+            else "no saved automation affected")
 
 
 @stores_app.command("list")
@@ -741,24 +755,39 @@ def stores_show(
     tenant: str = typer.Option(None, "--tenant", "-t",
                                help="Resolve as this client, so its override applies"),
 ):
-    """The store a city measures at right now, and every store it could be."""
+    """The stores a city measures at right now, and every store they could be."""
     async def _run():
         c = await _city_or_exit(platform, city)
         tid = uuid.UUID(tenant) if tenant else None
-        current = await repo.resolve_store(platform, city=c.name, tenant_id=tid)
-        frozen = {(cs.tenant_id, cs.merchant_id) for cs, _, _ in await repo.list_city_stores(
-            platform, tenant_ids=[tid] if tid else [], city_id=c.id)}
+        current = (await repo.city_stores_for(platform, tid, [c.id])).get(c.id)
+        frozen = {(cs.tenant_id, cs.merchant_id): cs.rank
+                  for cs, _, _ in await repo.list_city_stores(
+                      platform, tenant_ids=[tid] if tid else [], city_id=c.id)}
         if current:
-            console.print(f"[bold]{c.name}[/bold] measures at [bold]{escape(current.label)}"
-                          f"[/bold] ({current.merchant_id}) — {_SOURCE_WORDS[current.source]}")
+            console.print(f"[bold]{c.name}[/bold] measures at {len(current)} "
+                          f"store{'s' if len(current) != 1 else ''} — "
+                          f"{_SOURCE_WORDS[current[0].source]}:")
+            for s in current:
+                role = "anchor" if s is current[0] else "validation"
+                console.print(f"  rank {s.rank}  {escape(s.label)} ({s.merchant_id})  "
+                              f"[dim]{role}[/dim]")
         else:
-            console.print(f"[yellow]{c.name} has no active {platform} store in the catalog.[/yellow]")
+            fallback = await repo.resolve_store(platform, city=c.name, tenant_id=tid)
+            if fallback:
+                console.print(f"[bold]{c.name}[/bold] has no frozen stores — new automations are "
+                              f"saved at {escape(fallback.label)} ({fallback.merchant_id}), "
+                              f"{_SOURCE_WORDS['catalog']}")
+            else:
+                console.print(f"[yellow]{c.name} has no active {platform} store in the catalog.[/yellow]")
         table = Table(show_header=True, header_style="bold", title=f"{c.name} stores")
         for col in ("merchant_id", "store", "pincode", "frozen as"):
             table.add_column(col)
         for loc in await repo.city_store_candidates(platform, c.id):
-            marks = (["global"] if (None, loc.merchant_id) in frozen else []) + \
-                    (["client"] if tid and (tid, loc.merchant_id) in frozen else [])
+            marks = []
+            if (None, loc.merchant_id) in frozen:
+                marks.append(f"global rank {frozen[(None, loc.merchant_id)]}")
+            if tid and (tid, loc.merchant_id) in frozen:
+                marks.append(f"client rank {frozen[(tid, loc.merchant_id)]}")
             table.add_row(loc.merchant_id, escape(repo.store_label(loc)), loc.pincode or "",
                           ", ".join(marks))
         console.print(table)
@@ -770,23 +799,29 @@ def stores_show(
 def stores_set(
     city: str = _CITY,
     store: str = typer.Option(..., "--store", help="merchant_id (from `cm stores show --city …`)"),
+    rank: int = typer.Option(1, "--rank",
+                             help="1 = the anchor store; 2-3 = validation stores. Bids aim for "
+                                  "target at every ranked store where the campaign is in stock"),
     platform: str = _MARKETPLACE,
     tenant: str = _STORE_TENANT,
     global_: bool = _GLOBAL,
 ):
-    """Freeze the store a city's bid automations measure at (next run onwards)."""
+    """Put a store in a city's measurement set at a rank (next run onwards).
+
+    A client's set replaces the global set as a whole, so a client with only rank 1 set
+    measures at that one store — not at the global ranks 2-3."""
     scope = _scope(tenant, global_)
 
     async def _run():
         c = await _city_or_exit(platform, city)
         try:
-            s, moved = await repo.set_city_store(platform, c.id, store, tenant_id=scope)
-        except repo.StoreNotInCity as e:
+            s, moved = await repo.set_city_store(platform, c.id, store, tenant_id=scope, rank=rank)
+        except repo.StoreSetError as e:
             console.print(f"[red]{escape(str(e))}[/red]")
             raise typer.Exit(1)
-        who = "every client without an override" if scope is None else f"client {scope}"
-        console.print(f"[green]{c.name}[/green] → {escape(s.label)} ({s.merchant_id}) for {who} "
-                      f"· {_moved(moved)}")
+        who = "every client without its own set" if scope is None else f"client {scope}"
+        console.print(f"[green]{c.name}[/green] rank {rank} → {escape(s.label)} ({s.merchant_id}) "
+                      f"for {who} · {_moved(moved)}")
 
     asyncio.run(_run())
 
@@ -794,21 +829,65 @@ def stores_set(
 @stores_app.command("clear")
 def stores_clear(
     city: str = _CITY,
+    rank: int = typer.Option(None, "--rank", help="Clear one rank; omit to clear the whole set"),
     platform: str = _MARKETPLACE,
     tenant: str = _STORE_TENANT,
     global_: bool = _GLOBAL,
 ):
-    """Remove a frozen store. A client's override falls back to the global default; clearing
-    the global default leaves automations at the store they were last saved at."""
+    """Remove stores from a city's set — one rank, or the whole set. Clearing a client's whole
+    set moves it onto the global set; clearing the global set leaves automations at the store
+    they were last saved at."""
     scope = _scope(tenant, global_)
 
     async def _run():
         c = await _city_or_exit(platform, city)
-        removed, moved = await repo.clear_city_store(platform, c.id, tenant_id=scope)
-        who = "global default" if scope is None else f"override for client {scope}"
+        removed, moved = await repo.clear_city_store(platform, c.id, tenant_id=scope, rank=rank)
+        who = "global set" if scope is None else f"set for client {scope}"
+        what = f"rank {rank} of the {who}" if rank is not None else f"the {who}"
         if not removed:
-            console.print(f"[yellow]No {who} for {c.name}.[/yellow]")
+            console.print(f"[yellow]Nothing to clear — no {what} for {c.name}.[/yellow]")
             return
-        console.print(f"[green]Removed the {who} for {c.name}[/green] · {_moved(moved)}")
+        console.print(f"[green]Cleared {what} for {c.name}[/green] "
+                      f"({removed} store{'s' if removed != 1 else ''}) · {_moved(moved)}")
+
+    asyncio.run(_run())
+
+
+@stores_app.command("stock")
+def stores_stock(
+    tenant: str = _TENANT,
+    platform: str = _MARKETPLACE,
+    products: bool = typer.Option(False, "--products", help="List every product and whether it is available"),
+):
+    """What the bid engine last learned about stock at each measurement store (read-only).
+
+    The engine refreshes a store's stock at the start of a run when the cached read is older
+    than CM_STOCK_MAX_AGE_MINUTES; this only shows the cache."""
+    from app.utils.time import now_ist
+
+    async def _run():
+        rows = await repo.list_store_stock(uuid.UUID(tenant), platform)
+        if not rows:
+            console.print("[dim]No stock checked yet — the bid engine reads it per measurement "
+                          "store at the start of a run, at most hourly.[/dim]")
+            return
+        now = now_ist()
+        table = Table(show_header=True, header_style="bold", title=f"{platform} stock by store")
+        for col in ("store", "checked", "age", "read", "available / listed"):
+            table.add_column(col)
+        for r in rows:
+            items = r.products or []
+            available = sum(1 for p in items if p.get("in_stock"))
+            age = int((now - r.checked_at).total_seconds() // 60)
+            table.add_row(r.merchant_id, r.checked_at.strftime("%d %b %H:%M"), f"{age} min",
+                          "complete" if r.complete else "[yellow]partial[/yellow]",
+                          f"{available} / {len(items)}")
+        console.print(table)
+        if products:
+            for r in rows:
+                console.print(f"\n[bold]{r.merchant_id}[/bold]")
+                for p in sorted(r.products or [], key=lambda p: (not p.get("in_stock"), p.get("name") or "")):
+                    mark = "[green]in stock[/green]" if p.get("in_stock") else "[red]sold out[/red]"
+                    console.print(f"  {p.get('pid')}  {mark}  {escape(p.get('name') or '')}")
 
     asyncio.run(_run())

@@ -581,26 +581,40 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 
 ### Measurement stores — `cm stores …`
 
-A bid rule saved with `--city` measures at that city's **frozen store**: a global default per city,
-overridable per client. The engine looks it up on every run, so a change reaches every automation
-following that city on its next tick. Nothing is frozen until you set it — until then each rule keeps
-the store it was saved at. Design: [campaign-manager.md §7.6c](campaign-manager.md#76c-where-a-rule-measures--the-city-registry).
+A bid rule saved with `--city` measures at that city's **frozen store set**: up to three stores, rank 1
+the anchor and ranks 2–3 validating it. The bid aims for the target position at **every** store in the
+set where the campaign is listed and in stock — the worst such store sets the bid. There is a global set
+per city, which a client can replace whole. The engine reads stock itself (one brand search per store,
+at most hourly). Nothing is frozen until you set it — until then each rule keeps the store it was saved
+at. Design: [campaign-manager.md §7.6c](campaign-manager.md#76c-where-a-rule-measures--the-city-registry).
 
 ```bash
-python -m cli cm stores show  -m blinkit --city bengaluru [-t <id>]   # current store + why, and every candidate
-python -m cli cm stores set   -m blinkit --city bengaluru --store 30248 --global   # default for every client
-python -m cli cm stores set   -m blinkit --city bengaluru --store 31001 -t <id>    # this client only (wins)
-python -m cli cm stores list  -m blinkit [-t <id>]                    # every frozen store
-python -m cli cm stores clear -m blinkit --city bengaluru -t <id>     # client falls back to the default
+python -m cli cm stores show  -m blinkit --city bengaluru [-t <id>]                      # the set in force + every candidate
+python -m cli cm stores set   -m blinkit --city bengaluru --store 30248 --global            # rank 1 (anchor), every client
+python -m cli cm stores set   -m blinkit --city bengaluru --store 30311 --rank 2 --global   # a validation store
+python -m cli cm stores set   -m blinkit --city bengaluru --store 31001 -t <id>             # this client's own set (replaces the global set)
+python -m cli cm stores list  -m blinkit [-t <id>]                                      # every frozen store
+python -m cli cm stores clear -m blinkit --city bengaluru --rank 3 --global                # drop one rank
+python -m cli cm stores clear -m blinkit --city bengaluru -t <id>                          # drop a client's whole set → global set
+python -m cli cm stores stock -m blinkit -t <id> [--products]                            # cached stock per store (read-only)
 ```
 
 - `set` / `clear` need **exactly one** of `-t <id>` or `--global` — a forgotten `-t` must not move the
-  store for every client. Both layers are **CLI-only** for now — there is no API or UI for this until it
-  is proven.
+  stores for every client. Both layers are **CLI-only** — there is no API or UI for this until it is proven.
+- `--rank` is 1–3 on Blinkit, 1 on Zepto. A store holds one rank per set; setting a rank to the store it
+  already holds changes nothing. `clear` without `--rank` removes the whole set.
+- **A client's set replaces the global set whole** — a client with only rank 1 set measures at one store,
+  not at the global ranks 2–3.
 - `--city` takes any name the city registry resolves: canonical (`Gurugram`), Blinkit's, or our catalog's.
-- `set` refuses a store that is inactive or in a different city, and reports how many saved automations
-  it re-pointed. Re-pointed rules forget what the engine learned at the old store (last position, holding
-  price, relaxed target) — positions differ between stores.
+- `set` refuses a store that is inactive or in a different city. Any change to a set resets what the engine
+  learned for automations following that city (last position, holding price, relaxed target) — a different
+  set reads different positions.
+- **Back to one store without a deploy:** clear ranks 2 and 3.
+- A store where every product of a campaign is confirmed sold out (or not sold) is skipped for that
+  campaign; if every store is, the bid is left alone.
+- A store whose reading can't be trusted that tick (search failed, returned nothing, was cut short, or
+  stock unknown with our ad not showing while another store reads clearly) is left out of that tick.
+  A store not showing even at `max_bid` for 2 checks is given up until the window ends. See §7.6c.
 
 ### Reconcile — rules → schedules
 

@@ -13,7 +13,7 @@ slots; one-time rules carrying `days` and a date range they must ignore — at 2
 placed on every boundary those shapes have (both sides of midnight, 01:59/02:00,
 08:59/09:00, 23:29/23:30 …). At capture time window.py matched all of them.
 
-⚠️ A RECORD OF WHAT SHIPPED, not a specification. Three answers were then changed
+⚠️ A RECORD OF WHAT SHIPPED, not a specification. Three answers were first changed
 deliberately (2026-09-10) because what shipped was wrong:
 
   - `is_expired` — minute-precise for recurring rules (it was date-granular), and true for a
@@ -23,6 +23,11 @@ deliberately (2026-09-10) because what shipped was wrong:
     at midnight. Checked against its specification.
   - `reconciler.budget_boundaries` — drops rules whose last window has closed. Checked as
     "what shipped, minus the expired".
+
+And one on 2026-09-18:
+
+  - `reconciler._bid_reset_fires` — an all-day rule gets a 23:59 reset where its run of days
+    ends (it got none). Checked as "what shipped, plus the all-day close".
 
 Everything else is still held to exactly what shipped. Never edit the fixture to make a
 failing test pass.
@@ -297,14 +302,47 @@ def test_reconciler_bid_split_keeps_exactly_the_rules_with_windows_left():
     assert not bad, f"_bid_split differs from its spec in {len(bad)} cases: {bad[:3]}"
 
 
-def test_reconciler_reset_fires():
-    _compare("reconciler._bid_reset_fires (once)", "rf", lambda f: [
-        [_iso(d.next_run_at) for d in reconciler._bid_reset_fires(
-            [], {f["date"]: [_bid_rule(f)]}, "T", "blinkit", t)]
-        for t in FIRE_NOWS])
-    _compare("reconciler._bid_reset_fires (recurring)", "rc", lambda f: [
-        d.cron for d in reconciler._bid_reset_fires(
-            [_bid_rule(f)], {}, "T", "blinkit", REFERENCE_DAY)])
+def test_reconciler_reset_fires_are_what_shipped_plus_the_all_day_close():
+    """Changed on purpose (2026-09-18): an all-day rule now gets a reset where its run of days
+    ENDS — 23:59 on a `once` date, a daily 23:59 cron for a recurring rule with a weekday
+    filter or an end date. What shipped gave all-day rules no reset at all. Every other shape
+    is still held to exactly what shipped."""
+    def all_day(f):
+        return window.is_all_day(window.from_bid(_bid_dict(f)))
+
+    def once_want(case, f):
+        extra = (datetime.strptime(f["date"], "%Y-%m-%d").replace(hour=23, minute=59)
+                 if f["date"] and all_day(f) else None)
+        return [sorted(set(shipped) | ({_iso(extra)} if extra and extra > t else set()))
+                for shipped, t in zip(case["rf"], FIRE_NOWS)]
+
+    def rec_want(case, f):
+        closes = window.all_day_closes(window.from_bid(_bid_dict(f)))
+        return case["rc"] + (["59 23 * * *"] if closes and "59 23 * * *" not in case["rc"] else [])
+
+    bad, checked, added = [], 0, 0
+    for case in CASES:
+        f = _full(case["f"])
+        if "rf" in case:
+            checked += 1
+            got = [sorted(_iso(d.next_run_at) for d in reconciler._bid_reset_fires(
+                [], {f["date"]: [_bid_rule(f)]}, "T", "blinkit", t)) for t in FIRE_NOWS]
+            want = once_want(case, f)
+            added += want != case["rf"]
+            if got != want:
+                bad.append(("once", f, want, got))
+        if "rc" in case:
+            checked += 1
+            got = [d.cron for d in reconciler._bid_reset_fires(
+                [_bid_rule(f)], {}, "T", "blinkit", REFERENCE_DAY)]
+            want = rec_want(case, f)
+            added += want != case["rc"]
+            if got != want:
+                bad.append(("recurring", f, want, got))
+    assert checked, "no reset-fire cases recorded"
+    assert added, "no all-day shape gained a reset — the fixture no longer covers the change"
+    assert not bad, f"_bid_reset_fires wrong in {len(bad)}/{checked} cases:" + "".join(
+        f"\n      {k} {f}\n        want = {w!r}\n        got  = {g!r}" for k, f, w, g in bad[:3])
 
 
 def test_reconciler_budget_boundaries_are_what_shipped_minus_the_expired():

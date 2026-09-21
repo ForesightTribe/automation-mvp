@@ -79,6 +79,29 @@ def test_a_very_long_error_is_truncated():
     assert "…" in out and out.endswith(")")
 
 
+def test_a_known_technical_failure_is_said_in_words():
+    """26 rows 2026-09-16…18 read "(no Blinkit search headers captured for this session)"."""
+    out = bid._plain("no Blinkit search headers captured for this session",
+                     "could not check the search position, so the bid was left unchanged")
+    assert "headers" not in out and "retried next check" in out
+
+
+def test_a_budget_row_explains_the_decision_not_the_schedule():
+    """It used to be the rule summary alone — "Fri, Sat, Sun 19:30–02:00" — which is the
+    configuration, not what the engine made of it."""
+    from campaign_manager.budget import _history_reason
+    r = _history_reason(matched=True, has_rules=True, closing=False, target=800,
+                        reason="Fri, Sat, Sun 19:30–02:00")
+    assert r == "the Fri, Sat, Sun 19:30–02:00 window is open, so the budget goes to ₹800"
+    assert _history_reason(matched=False, has_rules=True, closing=True, target=300,
+                           reason="window ended").startswith("the window ended")
+    assert "never put back" in _history_reason(matched=False, has_rules=True, closing=False,
+                                               target=300, reason="x")
+    # Between windows there is no target, and nothing to explain beyond the plan's own words.
+    assert _history_reason(matched=False, has_rules=True, closing=False, target=None,
+                           reason="outside every window") == "outside every window"
+
+
 def test_an_empty_error_still_produces_a_sentence():
     """`_plain("")` must not yield a dangling '( )'."""
     out = bid._plain("", "the window closed, so the bid goes back to its floor")
@@ -135,6 +158,72 @@ def test_date_spans_read_as_dates():
 
 def test_an_unparseable_date_is_shown_rather_than_crashing():
     assert "not-a-date" in _budget_reason(start_date="not-a-date")
+
+
+# ── a write that did not land says so, and says what it left behind ─────────
+#
+# 2026-09-15: a reset fired on a campaign someone had stopped in the Blinkit dashboard.
+# Blinkit refused it with `['Not a valid campaign update']`, the row was filed
+# unsuccessful — and its reason read "the bid goes back to its ₹200 floor", describing the
+# thing that did not happen. Meanwhile the bid stayed at ₹1009 with its automation deleted.
+
+def test_a_stopped_campaign_explains_itself():
+    said = bid._stranded("Blinkit", "paused", 1009)
+    assert "paused" in said and "₹1009" in said
+
+
+def test_it_warns_that_a_restart_resurrects_the_bid():
+    """The part that costs money: the stranded bid comes back with the campaign."""
+    assert "restarting" in bid._stranded("Blinkit", "paused", 1009)
+
+
+def test_a_finished_campaign_does_not_promise_a_restart():
+    said = bid._stranded("Blinkit", "ended", 300)
+    assert "finished" in said and "restarting" not in said
+
+
+def test_a_writable_campaign_explains_nothing():
+    """`running` and `held` take an UPDATE, so the state is NOT the explanation — the
+    marketplace's own message has to stand."""
+    for status in ("running", "held"):
+        assert bid._stranded("Blinkit", status, 300) == ""
+
+
+def test_an_unreadable_status_explains_nothing():
+    """A guessed reason in a client's History is worse than a raw one."""
+    assert bid._stranded("Blinkit", None, 300) == ""
+    assert bid._stranded("Blinkit", "", 300) == ""
+
+
+def test_an_unreadable_bid_still_reads_as_a_sentence():
+    said = bid._stranded("Blinkit", "paused", None)
+    assert "its last value" in said and "None" not in said
+
+
+def test_blinkit_explains_a_refusal_it_can_prove():
+    """The marketplace half: a campaign whose `allowed_transitions` excludes UPDATE cannot
+    take a bid write, and Blinkit's own `Not a valid campaign update` does not say that."""
+    from campaign_manager.marketplaces.blinkit.client import BlinkitClient
+    client = BlinkitClient.__new__(BlinkitClient)
+    client._last_status, client._last_body = 400, ""
+    resp = {"message": "['Not a valid campaign update']"}
+    said = client._refused_because(
+        resp, {"status": "STOPPED", "allowed_transitions": ["RESTART"]})
+    assert "stopped" in said and "RESTART" in said
+    assert "Not a valid campaign update" in said, "Blinkit's own text must survive"
+
+
+def test_blinkit_does_not_guess_when_the_campaign_is_writable():
+    """An ACTIVE campaign's rejection was caused by something else — say nothing about it.
+    Inventing an explanation is what cost four weeks of scorecard diagnosis."""
+    from campaign_manager.marketplaces.blinkit.client import BlinkitClient
+    client = BlinkitClient.__new__(BlinkitClient)
+    client._last_status, client._last_body = 400, ""
+    resp = {"message": "['Start Date of Campaign is not allowed to be changed']"}
+    said = client._refused_because(
+        resp, {"status": "ACTIVE", "allowed_transitions": ["UPDATE"]})
+    assert said.startswith("Blinkit did not acknowledge")
+    assert "Start Date" in said
 
 
 def test_str_e_is_never_passed_straight_into_a_reason():

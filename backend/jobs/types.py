@@ -29,6 +29,36 @@ class JobTypeSpec(NamedTuple):
     # description; "Blinkit ads scrape" is what the run actually is. Every
     # human-facing surface reads this instead of the dotted type name.
     label: str = ""
+    # Does this type record what it did in `cm_run_log`? If so, `enqueue` mints a
+    # `run_id` into its params and the builder passes it through as `--run-id`, so the
+    # job row and the rows it writes share one id.
+    #
+    # Why it matters. A finished job says only that the process exited: the CM commands
+    # return their counts and never set a non-zero exit code, so a write the marketplace
+    # REFUSED settles exactly like one it accepted. The real answer is in the run log —
+    # and until this existed there was no way to get from a job to the rows it wrote.
+    # The UI guessed, by reading the newest row for the campaign it thought it had acted
+    # on, which is wrong whenever anything else touched that campaign in the same window
+    # (`cm_ops` and `cm_bid` are parallel lanes, so that is a real race, not a theoretical
+    # one) and impossible for a run that spans many campaigns.
+    #
+    # Minted at `enqueue`, which is the ONE path both the API and the scheduler take —
+    # so every correlated job gets one, whoever started it, and operational log↔job
+    # correlation works as a side effect rather than as a second feature.
+    carries_run_id: bool = False
+    # Is this something a PERSON does, as opposed to something the system does on its own?
+    #
+    # Only these appear in the dashboard's activity list — "what I just asked for", which is
+    # a different question from "what has the engine been doing", and the run log already
+    # answers the second. Without the split, every rule edit would post a `cm.reconcile`
+    # into that list (the API fires one on every save) and the hourly engines would bury the
+    # one action the reader is actually waiting on.
+    #
+    # ⚠️ Necessary but NOT sufficient on its own: it says the TYPE is a human action, while
+    # `schedule_id IS NULL` says THIS RUN was one. Both are required — the reconciler can
+    # schedule a type a person also triggers by hand, and a cron fire of it is not an action
+    # anyone is waiting for. The query applies both; see `campaign_manager_service.recent_actions`.
+    user_action: bool = False
 
 
 # Values that mean "off" for a boolean param. Without this, `sales=false` would be a
@@ -168,6 +198,7 @@ _DEFAULT_MP = "blinkit"
 def _cm_budget_scheduler(tenant_id, p):
     a = ["cm", "budget-scheduler", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--run-id", p.get("run_id"))
     _flag(a, "--live", p.get("live"))
     return a
 
@@ -175,6 +206,7 @@ def _cm_budget_scheduler(tenant_id, p):
 def _cm_bid_optimizer(tenant_id, p):
     a = ["cm", "bid-optimizer", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--run-id", p.get("run_id"))
     _flag(a, "--live", p.get("live"))
     _flag(a, "--reset", p.get("reset"))     # end-of-window de-escalation, not optimization
     return a
@@ -183,6 +215,7 @@ def _cm_bid_optimizer(tenant_id, p):
 def _cm_reconcile(tenant_id, p):
     a = ["cm", "reconcile", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--run-id", p.get("run_id"))
     _flag(a, "--live", p.get("live"))
     return a
 
@@ -197,6 +230,7 @@ def _cm_sync_campaigns(tenant_id, p):
 def _cm_set_budget(tenant_id, p):
     a = ["cm", "set-budget", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--run-id", p.get("run_id"))
     _opt(a, "--campaign", p.get("campaign"))
     _opt(a, "--budget", p.get("budget"))
     _flag(a, "--live", p.get("live"))
@@ -206,6 +240,7 @@ def _cm_set_budget(tenant_id, p):
 def _cm_set_bid(tenant_id, p):
     a = ["cm", "set-bid", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--run-id", p.get("run_id"))
     _opt(a, "--campaign", p.get("campaign"))
     _opt(a, "--keyword", p.get("keyword"))
     _opt(a, "--cpm", p.get("cpm"))
@@ -217,6 +252,7 @@ def _cm_set_bid(tenant_id, p):
 def _cm_set_activation(tenant_id, p):
     a = ["cm", "set-activation", "--tenant", str(tenant_id)]
     _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--run-id", p.get("run_id"))
     _opt(a, "--campaign", p.get("campaign"))
     _opt(a, "--status", p.get("status"))
     _opt(a, "--budget", p.get("budget"))     # resume only — a RESTART sets the budget
@@ -319,15 +355,18 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     # critical); budget + set-budget + sync share cm_ops (latency-tolerant); reconcile
     # is no-browser → the shared interactive lane (prompt).
     "cm.budget_scheduler": JobTypeSpec(
-        Lane.cm_ops, 15 * 60, _cm_budget_scheduler, param_keys=("marketplace", "live",),
+        Lane.cm_ops, 15 * 60, _cm_budget_scheduler, param_keys=("marketplace", "live", "run_id"),
+        carries_run_id=True,
         label="Campaign budget scheduler",
     ),
     "cm.bid_optimizer": JobTypeSpec(
-        Lane.cm_bid, 15 * 60, _cm_bid_optimizer, param_keys=("marketplace", "live", "reset"),
+        Lane.cm_bid, 15 * 60, _cm_bid_optimizer, param_keys=("marketplace", "live", "reset", "run_id"),
+        carries_run_id=True,
         label="Campaign bid optimizer",
     ),
     "cm.set_budget": JobTypeSpec(
-        Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("marketplace", "campaign", "budget", "live"),
+        Lane.cm_ops, 10 * 60, _cm_set_budget, param_keys=("marketplace", "campaign", "budget", "live", "run_id"),
+        carries_run_id=True, user_action=True,
         label="Campaign budget change",
     ),
     # Reset one keyword's bid to its floor — behind the dashboard's Reset, and behind
@@ -339,7 +378,8 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     # Priority is set by the caller (the API enqueues these ahead of scheduled work).
     "cm.set_bid": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_bid,
-        param_keys=("marketplace", "campaign", "keyword", "cpm", "match_type", "live"),
+        param_keys=("marketplace", "campaign", "keyword", "cpm", "match_type", "live", "run_id"),
+        carries_run_id=True, user_action=True,
         label="Campaign bid reset",
     ),
     # On-demand campaign start/stop (the dashboard's Start/Pause buttons). Shares the
@@ -347,7 +387,8 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     # concurrently with the budget scheduler against the same account.
     "cm.set_activation": JobTypeSpec(
         Lane.cm_ops, 10 * 60, _cm_set_activation,
-        param_keys=("marketplace", "campaign", "status", "budget", "live"),
+        param_keys=("marketplace", "campaign", "status", "budget", "live", "run_id"),
+        carries_run_id=True, user_action=True,
         label="Campaign start/pause",
     ),
     # Catalogue refresh — a READ (one list call), so it never writes to Blinkit and needs
@@ -355,10 +396,11 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     # backs a button someone is waiting on, so a hung run should surface fast.
     "cm.sync_campaigns": JobTypeSpec(
         Lane.cm_ops, 5 * 60, _cm_sync_campaigns, param_keys=("marketplace", "days",),
-        label="Campaign list refresh",
+        label="Campaign list refresh", user_action=True,
     ),
     "cm.reconcile": JobTypeSpec(
-        Lane.interactive, 5 * 60, _cm_reconcile, param_keys=("marketplace", "live",),
+        Lane.interactive, 5 * 60, _cm_reconcile, param_keys=("marketplace", "live", "run_id"),
+        carries_run_id=True,
         label="Campaign state reconcile",
     ),
     # Maintenance / monitoring — tenant-less. Heartbeat runs in the interactive lane

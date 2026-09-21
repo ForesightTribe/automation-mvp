@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useState } from "react";
 import { X, ScrollText } from "lucide-react";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
@@ -6,16 +6,13 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { ChannelBadge } from "./ChannelBadge";
 import { useHistory } from "../hooks";
+import { ActivityList } from "./ActivityList";
 import { Select } from "../../../components/ui/Select";
 import { ExportButton } from "../../../components/ui/ExportButton";
 import { downloadCsv } from "../../../lib/exportTable";
 import { HoverHint } from "../../../components/ui/HoverHint";
-
-const KIND_LABEL = {
-	budget: "Budget change",
-	bid: "Bid change",
-	activation: "Start / stop",
-};
+import { formatDateTime } from "../../../lib/format";
+import { KIND_LABEL, outcomeOf, rankOf, resultOf } from "../runLog";
 
 const TYPE_OPTIONS = [
 	["", "All types"],
@@ -24,65 +21,38 @@ const TYPE_OPTIONS = [
 	["activation", "Start / stop"],
 ];
 
+// `success` on the row means "did what it meant to": a refused or failed write is false, a
+// check that rightly changed nothing is true. So these two split the log cleanly.
 const STATUS_OPTIONS = [
-	["", "All statuses"],
-	["success", "Success"],
-	["failed", "Failed"],
+	["", "All results"],
+	["failed", "Not applied / errors"],
+	["success", "Worked as intended"],
 ];
 
 /**
- * The rank the engine was looking at, pulled out of the reason line.
+ * What one automation's log is, as a server query.
  *
- * ⚠️ Read from prose, because the run log has no rank column: the bid engine writes lines
- * like "raising to ₹658 (+₹112) because position 5 is worse than target 1". Roughly a third
- * of bid rows carry one, and the rest legitimately have none (an error, a skip, a window
- * opening). Blank means "not stated", never "position zero".
+ * A campaign automation's record is its budget changes AND the starts/stops it made — but
+ * NOT the bid ticks of keyword automations on the same campaign, which outnumber them ~50:1
+ * and used to bury them. A keyword automation's is its campaign + keyword rather than its
+ * rule id: a Delete + reset writes its row after the rule is gone, and rows from before
+ * 2026-09-04 carry no rule id at all — both still belong to the keyword.
  */
-const rankOf = (row) => {
-	if (row.kind !== "bid" || !row.reason) return null;
-	const at = row.reason.match(/position (\d+)/i);
-	const target = row.reason.match(/target (\d+)/i);
-	if (!at && !target) return null;
-	return { at: at?.[1] ?? null, target: target?.[1] ?? null };
+const focusQuery = (focusRow) => {
+	if (!focusRow) return null;
+	return focusRow.kind === "keyword"
+		? {
+				campaignId: focusRow.campaign_id,
+				keyword: focusRow.keyword,
+				kind: "bid",
+			}
+		: { campaignId: focusRow.campaign_id, kind: "budget,activation" };
 };
 
-/**
- * What the row actually did, in three or four words.
- *
- * The engine's own `action` is a verb from its vocabulary — drift, no-op, recover, open —
- * which is precise and means nothing to a reader. This maps it onto the outcome.
- */
-const OUTCOME = {
-	"budget:apply": "Budget changed",
-	"budget:skip": "No change needed",
-	"bid:apply": "Bid raised",
-	"bid:drift": "Cost trimmed",
-	"bid:no-op": "Rank held",
-	"bid:open": "Window opened",
-	"bid:reset": "Window closed",
-	"bid:recover": "Bid restored",
-	"bid:skip": "Skipped",
-	"bid:error": "Could not check",
-	"activation:apply": "Campaign started or paused",
-	"activation:skip": "Already in that state",
-};
-
-const outcomeOf = (r) => OUTCOME[`${r.kind}:${r.action}`] ?? r.action;
-
-/** "7 Sept 2026, 4:00 pm" — a log without a time answers half the question. */
-const stamp = (ts) => {
-	const d = new Date(ts);
-	return Number.isNaN(d.getTime())
-		? String(ts)
-		: d.toLocaleString("en-IN", {
-				day: "numeric",
-				month: "short",
-				year: "numeric",
-				hour: "numeric",
-				minute: "2-digit",
-				hour12: true,
-			});
-};
+const changeOf = (r) =>
+	r.old_value != null || r.new_value != null
+		? `${r.old_value ?? "—"} → ${r.new_value ?? "—"}`
+		: "—";
 
 /**
  * The log as export columns, for the shared CSV writer.
@@ -91,11 +61,11 @@ const stamp = (ts) => {
  * the BOM Excel needs to read the file as UTF-8, without which every ₹ in it arrives as
  * mojibake — which is exactly what the local writer this replaced did.
  *
- * Reason keeps a column of its own here even though the table hangs it on a hover: a
- * spreadsheet has no hover, and it is the field that explains every other one.
+ * `Run` groups the rows one engine run or one job wrote, and is the id to search for in
+ * Cloud Logging when a reason is not enough.
  */
 const exportColumns = (platformOf, locationOf) => [
-	{ header: "Time", value: (r) => stamp(r.timestamp) },
+	{ header: "Time", value: (r) => formatDateTime(r.timestamp) },
 	{ header: "Channel", value: (r) => platformOf(r.campaign_id) ?? "" },
 	{ header: "Campaign", value: (r) => r.campaign_name || "" },
 	{ header: "Keyword", value: (r) => r.keyword ?? "" },
@@ -105,6 +75,8 @@ const exportColumns = (platformOf, locationOf) => [
 	},
 	{ header: "Type", value: (r) => KIND_LABEL[r.kind] ?? r.kind },
 	{ header: "What happened", value: (r) => outcomeOf(r) },
+	{ header: "Result", value: (r) => resultOf(r).label },
+	{ header: "Why", value: (r) => r.reason ?? "" },
 	{
 		header: "Position seen",
 		value: (r) => {
@@ -121,12 +93,7 @@ const exportColumns = (platformOf, locationOf) => [
 				? `${r.old_value ?? ""} -> ${r.new_value ?? ""}`
 				: "",
 	},
-	{
-		header: "Status",
-		value: (r) =>
-			r.dry_run ? "test mode" : r.success ? "applied" : "failed",
-	},
-	{ header: "Reason", value: (r) => r.reason ?? "" },
+	{ header: "Run", value: (r) => r.run_id ?? "" },
 ];
 
 export const ChangeLogsModal = ({
@@ -135,47 +102,51 @@ export const ChangeLogsModal = ({
 	focusRow,
 	platformOf,
 	locationOf,
+	campaignNameOf,
 }) => {
 	const [page, setPage] = useState(1);
 	const [statusFilter, setStatusFilter] = useState("");
 	const [typeFilter, setTypeFilter] = useState("");
+	// The full list hides the ticks that changed nothing, or they would bury every real
+	// change. One automation's list always shows them — "why has this not moved" is what
+	// it is opened to answer — and the full list can opt in.
+	const [showUnchanged, setShowUnchanged] = useState(false);
 
 	/**
-	 * One automation's history is narrowed BY THE SERVER, and paged like any other list.
-	 * Filtering a single page of the unfiltered history client-side shows only whichever
-	 * of that automation's runs happen to fall in the newest twenty across every
-	 * automation, which is a fraction of them and never the older ones.
-	 *
-	 * `include_unchanged` comes with it: the held ticks are noise in the full list and
-	 * the answer in a single automation's, where "why has this not moved" is the question
-	 * being asked.
+	 * Every filter is applied BY THE SERVER. Filtering one page client-side — as this did —
+	 * showed a short page under a total that counted rows the filter had removed, and
+	 * "Failed" only ever searched the newest twenty rows.
 	 */
-	const focus = focusRow
-		? {
-				campaignId: focusRow.campaign_id,
-				ruleId: focusRow.kind === "keyword" ? focusRow.id : undefined,
-				includeUnchanged: true,
-			}
-		: {};
+	const focus = focusQuery(focusRow);
 	const { data, isLoading, error, refetch } = useHistory(
 		page,
-		undefined,
-		focus,
+		focus?.kind ?? (typeFilter || undefined),
+		{
+			campaignId: focus?.campaignId,
+			keyword: focus?.keyword,
+			success:
+				statusFilter === "failed"
+					? false
+					: statusFilter === "success"
+						? true
+						: undefined,
+			includeUnchanged: Boolean(focus) || showUnchanged,
+			enabled: open,
+		},
 	);
+	const rows = data?.items ?? [];
 
 	// Back to the first page whenever the question changes, so page 3 of one automation
-	// is never read as page 3 of the next.
+	// (or of one filter) is never read as page 3 of the next.
 	useEffect(() => {
 		setPage(1);
-	}, [focusRow?.campaign_id, focusRow?.id]);
-
-	const rows = useMemo(() => {
-		let r = data?.items ?? [];
-		if (typeFilter) r = r.filter((x) => x.kind === typeFilter);
-		if (statusFilter === "success") r = r.filter((x) => x.success);
-		if (statusFilter === "failed") r = r.filter((x) => !x.success);
-		return r;
-	}, [data, statusFilter, typeFilter]);
+	}, [
+		focusRow?.campaign_id,
+		focusRow?.id,
+		statusFilter,
+		typeFilter,
+		showUnchanged,
+	]);
 
 	if (!open) return null;
 
@@ -198,8 +169,8 @@ export const ChangeLogsModal = ({
 
 	return (
 		<div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-6">
-			<div className="flex h-full max-h-[85vh] w-full max-w-5xl flex-col rounded-xl border border-border bg-card shadow-2xl">
-				<header className="flex items-center justify-between gap-3 border-b border-border px-5 py-4">
+			<div className="flex h-full max-h-[85vh] w-full max-w-6xl flex-col rounded-xl border border-border bg-card shadow-2xl">
+				<header className="flex flex-wrap items-center justify-between gap-3 border-b border-border px-5 py-4">
 					<div className="flex items-center gap-2">
 						<ScrollText size={18} className="text-content-muted" />
 						<h2 className="font-display text-base font-semibold text-content">
@@ -213,15 +184,31 @@ export const ChangeLogsModal = ({
 							</span>
 						)}
 					</div>
-					<div className="flex items-center gap-3">
+					<div className="flex flex-wrap items-center gap-3">
+						{/* One automation is already one type, so its log has no type to pick. */}
+						{!focusRow && (
+							<>
+								<label className="flex items-center gap-1.5 text-xs text-content-muted">
+									<input
+										type="checkbox"
+										checked={showUnchanged}
+										onChange={(e) =>
+											setShowUnchanged(e.target.checked)
+										}
+										className="accent-brand"
+									/>
+									Include checks with no change
+								</label>
+								<Select
+									ariaLabel="Filter by type"
+									value={typeFilter}
+									onChange={setTypeFilter}
+									options={TYPE_OPTIONS}
+								/>
+							</>
+						)}
 						<Select
-							ariaLabel="Filter by type"
-							value={typeFilter}
-							onChange={setTypeFilter}
-							options={TYPE_OPTIONS}
-						/>
-						<Select
-							ariaLabel="Filter by status"
+							ariaLabel="Filter by result"
 							value={statusFilter}
 							onChange={setStatusFilter}
 							options={STATUS_OPTIONS}
@@ -242,12 +229,24 @@ export const ChangeLogsModal = ({
 				</header>
 
 				<div className="flex-1 overflow-auto px-5 py-4">
+					{/* What you asked for, above what the engines did. Hidden while a single
+					    automation is in focus: that view is about one rule's own history, and
+					    the account's recent actions are not part of that question. */}
+					{!focusRow && (
+						<ActivityList campaignNameOf={campaignNameOf} />
+					)}
 					{isLoading && <Loading label="Loading history…" />}
 					{error && (
 						<ErrorState message={error.message} onRetry={refetch} />
 					)}
 					{!isLoading && !error && rows.length === 0 && (
-						<EmptyState message="No automation activity yet." />
+						<EmptyState
+							message={
+								statusFilter || typeFilter
+									? "Nothing matches these filters."
+									: "No automation activity yet."
+							}
+						/>
 					)}
 					{!isLoading && !error && rows.length > 0 && (
 						<table className="w-full border-collapse text-sm">
@@ -257,19 +256,19 @@ export const ChangeLogsModal = ({
 										Time
 									</th>
 									<th className="px-3 py-2 text-left font-medium text-content-subtle">
-										Channel
+										Automation
 									</th>
 									<th className="px-3 py-2 text-left font-medium text-content-subtle">
-										Automation
+										What happened, and why
 									</th>
 									<th className="px-3 py-2 text-right font-medium text-content-subtle">
 										<HoverHint
-											label="Bid rows only: the position the engine SAW when it checked, over the target it was holding to. Not the rank after the write, since where a bid lands is only known at the next check. Budget changes and start/stop rows have no position, so they read n/a. Hover any row for the engine's own reason."
+											label="Bid rows only: the position the engine SAW when it checked, over the target it was holding to. Not the rank after the write, since where a bid lands is only known at the next check. Budget and start/stop rows have no position."
 											className="w-full justify-end"
 											tabIndex={0}
 										>
 											<span className="cursor-help decoration-content-subtle/40 decoration-dotted underline-offset-4 hover:decoration-content-subtle hover:underline">
-												Position seen
+												Position
 											</span>
 										</HoverHint>
 									</th>
@@ -277,131 +276,113 @@ export const ChangeLogsModal = ({
 										Change
 									</th>
 									<th className="px-3 py-2 text-left font-medium text-content-subtle">
-										Status
+										Result
 									</th>
 								</tr>
 							</thead>
 							<tbody>
-								{rows.map((r) => (
-									<tr
-										key={r.id}
-										className="border-b border-border/60 last:border-0 hover:bg-muted/50"
-									>
-										<td className="px-3 py-2 whitespace-nowrap text-content">
-											{stamp(r.timestamp)}
-										</td>
-										<td className="px-3 py-2">
-											<ChannelBadge
-												platform={platformOf(
-													r.campaign_id,
-												)}
-											/>
-										</td>
-										<td className="px-3 py-2 text-content">
-											{/* ⚠️ Campaign FIRST, with the store underneath. A bid row's rank is
-											    checked at one dark store, so "position 5" means position 5 there;
-											    a log line without it says where nothing. The keyword sits beside
-											    the type, since it qualifies the rule rather than naming it. */}
-											<div
-												className="max-w-[20rem] truncate font-medium"
-												title={r.campaign_name ?? ""}
-											>
-												{r.campaign_name || "—"}
-											</div>
-											<div className="text-xs text-content-subtle">
-												{[
-													KIND_LABEL[r.kind] ??
-														r.kind,
-													r.keyword
-														? `“${r.keyword}”`
-														: null,
-													locationOf?.(
-														r.campaign_id,
-														r.keyword,
-													),
-												]
-													.filter(Boolean)
-													.join(" · ")}
-											</div>
-										</td>
-										{/* ⚠️ The reason hangs HERE, on every row, including the ones with no
-										    position: a budget row's "window ended" has nowhere else to live now that
-										    the reason has no column of its own. Our own hover panel rather than the
-										    browser's title tooltip, so it matches the rest of these pages. */}
-										<td className="px-3 py-2 text-right tabular-nums">
-											<HoverHint
-												label={r.reason ?? null}
-												className="w-full justify-end"
-											>
-												{(() => {
-													const rank = rankOf(r);
-													const marked = r.reason
-														? "cursor-help decoration-content-subtle/40 decoration-dotted underline-offset-4 hover:decoration-content-subtle hover:underline"
-														: "";
-													// ⚠️ Two different blanks. A budget change or a start/stop has no position
-													// by nature, so it reads "n/a"; a BID row without one is a row the
-													// engine did not state a position for, which is a gap in the record
-													// rather than an inapplicable question, and reads "—".
-													if (r.kind !== "bid")
-														return (
-															<span
-																className={`text-content-subtle ${marked}`}
-															>
-																n/a
-															</span>
-														);
-													if (!rank)
-														return (
-															<span
-																className={`text-content-subtle ${marked}`}
-															>
-																—
-															</span>
-														);
-													return (
-														<span
-															className={`text-content ${marked}`}
-														>
-															{rank.at
-																? `#${rank.at}`
-																: "—"}
-															{rank.target && (
-																<span className="text-content-subtle">
-																	{" "}
-																	/ #
-																	{
-																		rank.target
-																	}
-																</span>
-															)}
-														</span>
-													);
-												})()}
-											</HoverHint>
-										</td>
-										<td className="px-3 py-2 text-right tabular-nums text-content">
-											{r.old_value != null ||
-											r.new_value != null
-												? `${r.old_value ?? "—"} → ${r.new_value ?? "—"}`
-												: "—"}
-										</td>
-										<td className="px-3 py-2 whitespace-nowrap">
-											<span
-												className={
-													r.success
-														? "text-success"
-														: "text-danger"
+								{rows.map((r) => {
+									const rank = rankOf(r);
+									const result = resultOf(r);
+									return (
+										<tr
+											key={r.id}
+											className="border-b border-border/60 align-top last:border-0 hover:bg-muted/50"
+										>
+											<td
+												className="px-3 py-2 whitespace-nowrap text-content"
+												title={
+													r.run_id
+														? `Run ${r.run_id}`
+														: undefined
 												}
 											>
-												{r.dry_run
-													? "Test mode"
-													: r.success
-														? "Applied"
-														: "Failed"}
-											</span>
-										</td>
-									</tr>
-								))}
+												{formatDateTime(r.timestamp)}
+											</td>
+											<td className="px-3 py-2 text-content">
+												{/* ⚠️ Campaign FIRST, with the store underneath. A bid row's rank is
+												    checked at one dark store, so "position 5" means position 5 there;
+												    a log line without it says where nothing. */}
+												<div className="flex items-center gap-1.5">
+													<ChannelBadge
+														platform={platformOf(
+															r.campaign_id,
+														)}
+													/>
+													<span
+														className="max-w-[16rem] truncate font-medium"
+														title={
+															r.campaign_name ??
+															""
+														}
+													>
+														{r.campaign_name ||
+															`Campaign ${r.campaign_id ?? "—"}`}
+													</span>
+												</div>
+												<div className="text-xs text-content-subtle">
+													{[
+														KIND_LABEL[r.kind] ??
+															r.kind,
+														r.keyword
+															? `“${r.keyword}”`
+															: null,
+														locationOf?.(
+															r.campaign_id,
+															r.keyword,
+														),
+													]
+														.filter(Boolean)
+														.join(" · ")}
+												</div>
+											</td>
+											{/* The reason is ON the row, not behind a hover: it is the field that
+											    explains every other one, and a hover cannot be scanned down a list. */}
+											<td className="max-w-md px-3 py-2">
+												<div className="font-medium text-content">
+													{outcomeOf(r)}
+												</div>
+												{r.reason && (
+													<div className="text-xs leading-relaxed text-content-muted">
+														{r.reason}
+													</div>
+												)}
+											</td>
+											<td className="px-3 py-2 text-right whitespace-nowrap tabular-nums">
+												{r.kind !== "bid" ? (
+													<span className="text-content-subtle">
+														n/a
+													</span>
+												) : !rank ? (
+													<span className="text-content-subtle">
+														—
+													</span>
+												) : (
+													<span className="text-content">
+														{rank.at != null
+															? `#${rank.at}`
+															: "—"}
+														{rank.target !=
+															null && (
+															<span className="text-content-subtle">
+																{" "}
+																/ #{rank.target}
+															</span>
+														)}
+													</span>
+												)}
+											</td>
+											<td className="px-3 py-2 text-right whitespace-nowrap tabular-nums text-content">
+												{changeOf(r)}
+											</td>
+											<td
+												className={`px-3 py-2 whitespace-nowrap font-medium ${result.tone}`}
+											>
+												{result.label}
+											</td>
+										</tr>
+									);
+								})}
 							</tbody>
 						</table>
 					)}

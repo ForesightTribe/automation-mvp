@@ -122,6 +122,11 @@ async def keywords(
     ),
     sort: str = Query("spend", pattern="^(spend|roas|sales|impressions)$"),
     order: str = Query("desc", pattern="^(asc|desc)$"),
+    recent_only: bool = Query(
+        False,
+        description="Only campaigns the latest catalogue scrape returned (hides the "
+        "pre-migration account's).",
+    ),
 ):
     return await ads_service.get_keywords(
         session,
@@ -132,6 +137,7 @@ async def keywords(
         target_type=target_type,
         sort=sort,
         order=order,
+        recent_only=recent_only,
     )
 
 

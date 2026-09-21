@@ -158,6 +158,11 @@ class BidRuleOut(BaseModel):
     lat: float | None = None
     lon: float | None = None
     location_name: str | None = None
+    # The city `location_name` is IN. Store labels are sub-city names ("Block C") that repeat
+    # across the country, so the label alone does not say where position is measured. Derived
+    # for display — from `city_id` when the rule was saved by city, from the pinned store's
+    # catalog row otherwise. None when neither resolves; the UI then shows the label alone.
+    city_name: str | None = None
     state: str
     status: str = "scheduled"           # running | scheduled | ended | paused (computed)
     platform: str
@@ -209,8 +214,15 @@ class KeywordBidRange(BaseModel):
 
 
 class TargetedCity(BaseModel):
-    id: int
+    # A stable render key, NOT a foreign key: the canonical `cities.id` where we could
+    # resolve one, else the marketplace's own region id, else None for a catalog city with
+    # no canonical row. Nothing keys data off it — rules are saved by `name`.
+    id: int | None = None
+    # Canonical spelling where we have one, so the picker reads consistently no matter which
+    # vocabulary the name arrived in (Blinkit's ads surface says `Gurugram`, our catalog says
+    # `hr-ncr`). This is the string a rule is saved with; `resolve_store` resolves it back.
     name: str
+    state: str | None = None
     # The dark store a rule measuring in this city would use, or None when our catalog has
     # no store there — the form then asks the user to pick one rather than blocking.
     location_name: str | None = None
@@ -222,8 +234,13 @@ class BidContextOut(BaseModel):
     campaign_id: int
     campaign_type: str | None = None
     scraped_at: datetime | None = None
-    # PAN_INDIA → the city picker stays free; CITY → offer `cities`, auto-filling when one.
+    # Why `cities` is what it is, for the copy under the picker — NOT for choosing a widget.
+    # CITY → the campaign's own cities. PAN_INDIA → it runs everywhere. None → we have not
+    # scraped its targeting, so "everywhere" is an assumption rather than a fact.
     region_type: str | None = None
+    # Where a bid rule for this campaign may measure, ALWAYS populated: the campaign's own
+    # cities when it targets some, every measurable city otherwise. One list, one shape, so
+    # the form never picks between sources — see `_measurement_cities`.
     cities: list[TargetedCity] = []
     keywords: list[KeywordBidRange] = []
     # Budget facts, for display. We deliberately do NOT enforce a minimum budget locally —
@@ -271,8 +288,47 @@ class CmJobOut(BaseModel):
     id: uuid.UUID
     job_type: str
     status: str
+    # The id this run files its `cm_run_log` rows under — the link between "the job
+    # finished" and "here is what it did". Set by the service from `params`; None for job
+    # types that record nothing (a catalogue refresh) and for rows enqueued before this
+    # existed, so every consumer must handle its absence.
+    #
+    # ⚠️ `status: success` means the process exited, NOT that the write landed. The CM
+    # commands return their counts and never set a non-zero exit code, so a refused write
+    # settles exactly like an accepted one. Ask `/history?run_id=` for the real outcome.
+    run_id: str | None = None
     error: str | None = None
     exit_code: int | None = None
+    created_at: datetime
+    started_at: datetime | None = None
+    completed_at: datetime | None = None
+
+
+class CmActionOut(BaseModel):
+    """One thing a person asked for, for the dashboard's activity list.
+
+    A job row, not a history row — which is the point: it exists from the moment the action
+    is queued, long before the run has written anything. The run log cannot answer "is my
+    change happening" because its rows are written when the run ENDS.
+
+    `run_id` links the two: once the job settles, the rows filed under that id are what it
+    actually did. `status` alone never answers that — the CM commands never set a non-zero
+    exit code, so a refused write settles exactly like an accepted one.
+    """
+    model_config = _orm
+    id: uuid.UUID
+    job_type: str
+    # Human wording for the type ("Campaign budget change"), from the job registry, so the
+    # UI never has to render a dotted type name at a reader.
+    label: str | None = None
+    status: str
+    run_id: str | None = None
+    campaign_id: int | None = None
+    # Set only by the actions that target ONE keyword (a bid reset). It is what makes a row
+    # in the table match exactly: without it, resetting one keyword would mark every bid
+    # rule on that campaign as busy.
+    keyword: str | None = None
+    error: str | None = None
     created_at: datetime
     started_at: datetime | None = None
     completed_at: datetime | None = None
@@ -281,6 +337,9 @@ class CmJobOut(BaseModel):
 class RunLogOut(BaseModel):
     model_config = _orm
     id: int
+    # The run that wrote this row — every row one engine tick or one job produced shares it,
+    # so the UI can show a run's decisions together (and match a row to Cloud Logging).
+    run_id: str | None = None
     kind: str
     campaign_id: int | None = None
     campaign_name: str | None = None

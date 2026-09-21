@@ -3,8 +3,12 @@ import { createPortal } from "react-dom";
 import { Check, ChevronDown } from "lucide-react";
 
 /**
- * A typeahead that stays typeable: suggestions narrow as you type, and a value that matches
- * nothing is still accepted.
+ * A typeahead. By default it stays typeable — suggestions narrow as you type and a value
+ * that matches nothing is still accepted.
+ *
+ * `strict` makes it a SEARCHABLE SELECT instead: typing filters but commits nothing, and the
+ * value only changes by choosing an option. Use it when the list is exhaustive, where free
+ * text cannot be a valid answer — only a typo that looks like one.
  *
  * ⚠️ Not a `<datalist>`. The browser draws that one itself, so it cannot take the app's
  * colours, its type or its radius, and on several browsers it gives no sign that suggestions
@@ -24,25 +28,30 @@ export const Combobox = ({
 	placeholder,
 	id = "combobox",
 	invalid = false,
+	strict = false,
 	className = "",
 }) => {
 	const [at, setAt] = useState(null);
 	const [active, setActive] = useState(0);
+	// Strict mode only: what has been TYPED, which is not what has been CHOSEN. `null` means
+	// nothing is being typed, so the field shows the committed value. In free-text mode the
+	// two are the same string and this stays unused.
+	const [query, setQuery] = useState(null);
 	const wrap = useRef(null);
 	const panel = useRef(null);
 	const isOpen = at != null;
 
+	const text = strict ? (query ?? value ?? "") : (value ?? "");
+
 	// Substring, not prefix: "delhi" should find "New Delhi", which is how people recall a
 	// place they half-remember.
 	const matches = useMemo(() => {
-		const q = String(value ?? "")
-			.trim()
-			.toLowerCase();
+		const q = String(text).trim().toLowerCase();
 		if (!q) return options;
 		return options.filter((o) => o.label.toLowerCase().includes(q));
-	}, [options, value]);
+	}, [options, text]);
 
-	useEffect(() => setActive(0), [value, isOpen]);
+	useEffect(() => setActive(0), [text, isOpen]);
 
 	const place = () => {
 		const r = wrap.current?.getBoundingClientRect();
@@ -60,7 +69,12 @@ export const Combobox = ({
 					},
 		);
 	};
-	const close = () => setAt(null);
+	// Abandoning a search must not look like clearing the field: dropping `query` snaps the
+	// input back to whatever is actually chosen.
+	const close = () => {
+		setAt(null);
+		setQuery(null);
+	};
 
 	useEffect(() => {
 		if (!isOpen) return;
@@ -88,8 +102,9 @@ export const Combobox = ({
 		};
 	}, [isOpen]);
 
-	const choose = (label) => {
-		onChange(label);
+	const choose = (o) => {
+		if (o.disabled) return;
+		onChange(o.label);
 		close();
 	};
 
@@ -107,7 +122,7 @@ export const Combobox = ({
 		}
 		if (e.key === "Enter" && isOpen && matches[active]) {
 			e.preventDefault();
-			choose(matches[active].label);
+			choose(matches[active]);
 		}
 	};
 
@@ -121,10 +136,11 @@ export const Combobox = ({
 				aria-autocomplete="list"
 				aria-invalid={invalid}
 				autoComplete="off"
-				value={value ?? ""}
+				value={text}
 				placeholder={placeholder}
 				onChange={(e) => {
-					onChange(e.target.value);
+					if (strict) setQuery(e.target.value);
+					else onChange(e.target.value);
 					place();
 				}}
 				onFocus={place}
@@ -159,7 +175,9 @@ export const Combobox = ({
 					>
 						{matches.length === 0 ? (
 							<li className="px-2.5 py-2 text-xs text-content-subtle">
-								No match. You can still use what you typed.
+								{strict
+									? "No match."
+									: "No match. You can still use what you typed."}
 							</li>
 						) : (
 							matches.map((o, i) => {
@@ -170,12 +188,16 @@ export const Combobox = ({
 											type="button"
 											role="option"
 											aria-selected={on}
+											aria-disabled={Boolean(o.disabled)}
+											disabled={Boolean(o.disabled)}
 											onMouseEnter={() => setActive(i)}
-											onClick={() => choose(o.label)}
+											onClick={() => choose(o)}
 											className={`flex w-full items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-sm transition-colors ${
-												i === active
-													? "bg-brand font-medium text-on-brand"
-													: "text-content hover:bg-muted"
+												o.disabled
+													? "cursor-not-allowed text-content-subtle"
+													: i === active
+														? "bg-brand font-medium text-on-brand"
+														: "text-content hover:bg-muted"
 											}`}
 										>
 											<span className="flex-1 truncate">
@@ -183,7 +205,7 @@ export const Combobox = ({
 											</span>
 											{o.hint && (
 												<span
-													className={`shrink-0 text-xs ${i === active ? "text-on-brand/80" : "text-content-subtle"}`}
+													className={`shrink-0 text-xs ${i === active && !o.disabled ? "text-on-brand/80" : "text-content-subtle"}`}
 												>
 													{o.hint}
 												</span>
