@@ -35,7 +35,13 @@ class CampaignRow(BaseModel):
     platform: str = "blinkit"
     name: str | None
     type: str | None
+    # `status` is the marketplace's own word (ACTIVE / ON_HOLD / DAILY_BUDGET_EXHAUSTED …);
+    # `state` is what it MEANS, in the vocabulary the engines act on: running / paused /
+    # held / ended / draft. UI decisions — offer Start or Stop — must read `state`: the raw
+    # words differ per marketplace, and a Zepto campaign out of budget is live (Stop), not
+    # stopped (Start). An unmapped status passes through unchanged in both.
     status: str | None
+    state: str | None = None
     daily_budget: int | None = None
     budget_consumed: float
     impressions: int

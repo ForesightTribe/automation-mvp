@@ -382,7 +382,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError as e:
-        logs.session_expired(run_id, dry_run=dry_run)
+        logs.session_expired(run_id, dry_run=dry_run, platform=platform)
         await _record_run_blocked(
             tenant_id, platform, run_id, [r for r, _ in active],
             _plain(e, f"could not sign in to {mp}, so no bids were changed"), dry_run)
@@ -964,7 +964,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         # fire the same doomed call at every remaining keyword while logging that the
         # MARKETPLACE rejected the bids — which is the misreporting this whole path exists
         # to stop. Abort, and say what actually happened.
-        logs.session_expired(run_id, dry_run=dry_run)
+        logs.session_expired(run_id, dry_run=dry_run, platform=platform)
         logs.note(run_id, f"stopped after {processed} of {len(active)} automations — {e}",
                   dry_run=dry_run)
         errors += 1
@@ -1291,7 +1291,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError as e:
-        logs.session_expired(run_id, dry_run=dry_run)
+        logs.session_expired(run_id, dry_run=dry_run, platform=platform)
         await _record_run_blocked(
             tenant_id, platform, run_id, to_reset,
             _plain(e, f"could not sign in to {mp}, so the bid was not reset to its floor — "

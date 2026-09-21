@@ -100,9 +100,14 @@ def live_refused(run_id: str, *, reason: str) -> None:
           f"LIVE write refused — {reason}", run_id=run_id, reason=reason)
 
 
-def session_expired(run_id: str, *, dry_run: bool) -> None:
+def session_expired(run_id: str, *, dry_run: bool, platform: str = "blinkit") -> None:
+    # Named the marketplace unconditionally ("Blinkit session expired — re-auth with `cli
+    # auth blinkit`") — on a Zepto run that is the wrong account AND a command that does
+    # not exist. Same bug `session_ok` had.
     _emit("error", "session.expired", dry_run,
-          "Blinkit session expired — re-auth with `cli auth blinkit`", run_id=run_id)
+          f"{platform.title()} session expired or could not be restored — re-auth with "
+          f"`python -m cli auth login {platform} -t <tenant>`",
+          run_id=run_id, platform=platform)
 
 
 def decision(run_id: str, *, dry_run: bool, campaign_id, verdict: str, reason: str,

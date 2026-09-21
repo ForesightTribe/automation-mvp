@@ -36,6 +36,8 @@ from app.models.blinkit_marketing import (
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
 from app.services import reference_service, zepto_ads
+# The pure status vocabularies — NOT the adapters, which pull in Playwright.
+from campaign_manager.marketplaces import canonical_status
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
 
@@ -259,7 +261,11 @@ async def get_campaigns(
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
     total = len(rows)
     page = rows[pagination.offset : pagination.offset + pagination.limit]
-    items = [CampaignRow.model_validate(r) for r in page]
+    # The canonical state beside the raw status — see `CampaignRow.state`. Computed by the
+    # same pure vocabulary the engines use, so the button the UI offers is the transition
+    # the engine will accept.
+    items = [CampaignRow.model_validate(
+        {**r, "state": canonical_status(r["platform"], r.get("status"))}) for r in page]
     return Page.build(items, total, pagination)
 
 

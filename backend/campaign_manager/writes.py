@@ -182,14 +182,36 @@ def exceeds_rate_limit(recent_writes: int, *, limit: int | None = None) -> bool:
 WRITABLE_STATES = ("running", "paused")
 
 
+def hold_reason(adapter, current: str | None, detail: dict | None) -> str | None:
+    """The marketplace's own words for WHY a `held` campaign is held, or None.
+
+    Optional on the adapter (`hold_reason(detail)`). Blinkit has one kind of hold, so it
+    declares nothing and the default ON_HOLD wording applies; Zepto has two needing
+    opposite advice (spent budget vs empty wallet). Pure, and never raises — it only ever
+    improves a sentence."""
+    reader = getattr(adapter, "hold_reason", None)
+    if current != "held" or reader is None:
+        return None
+    try:
+        return reader(detail or {})
+    except Exception:
+        return None
+
+
 def status_transition_denied(current: str | None, target: str, *,
-                             allow_draft: bool = False) -> str | None:
+                             allow_draft: bool = False,
+                             hold_reason: str | None = None) -> str | None:
     """Return a reason string if `current → target` must not be written, else None.
 
     `allow_draft` is True only for an on-demand action (AD8): a human clicking Start on
     a draft means it; a scheduled rule reaching one does not — drafts are often
     incomplete. A no-op (current == target) is NOT rejected here; the caller checks that
     separately so it can log it as a skip rather than a guardrail trip.
+
+    `hold_reason` is the marketplace's own explanation of a `held` campaign, from
+    `adapter.hold_reason(detail)`. `held` covers holds needing opposite advice — Zepto's
+    empty wallet is not revived by a budget, only by a top-up — so the default wording
+    (which is Blinkit's ON_HOLD) is used only when the adapter has nothing more precise.
     """
     if target not in WRITABLE_STATES:
         return f"refusing to write status {target!r} (only {'/'.join(WRITABLE_STATES)})"
@@ -208,8 +230,8 @@ def status_transition_denied(current: str | None, target: str, *,
         # restart, which is why Blinkit offers `['UPDATE']` and never `['RESTART']` for it.
         if target == "paused":
             return None
-        return ("campaign is ON_HOLD (its budget is exhausted) — raise the budget to revive "
-                "it; there is nothing to restart")
+        return hold_reason or ("campaign is ON_HOLD (its budget is exhausted) — raise the "
+                               "budget to revive it; there is nothing to restart")
     if current == "ended":
         return "campaign is COMPLETED — terminal, cannot be restarted"
     # An unmapped marketplace string. Refuse rather than guess: a new Blinkit status
@@ -595,8 +617,11 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                        dry_run: bool, recent_writes: int = 0, allow_draft: bool = False,
                        budget: float | None = None, overwrites: dict | None = None,
                        applied: list | None = None,
-                       outcome: dict | None = None) -> bool:
+                       outcome: dict | None = None,
+                       hold_reason: str | None = None) -> bool:
     """Guardrailed campaign start/stop. Returns True if applied (or would-apply in dry-run).
+
+    `hold_reason` — see `status_transition_denied`.
 
     The two directions are NOT symmetric, and HOW asymmetric depends on the
     marketplace — which is why the adapter declares it via `RESUME_RESUBMITS`
@@ -622,7 +647,8 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                              reason=already, level="debug")
         _refused(outcome, already, noop=True)
         return False
-    reason = status_transition_denied(current, target, allow_draft=allow_draft)
+    reason = status_transition_denied(current, target, allow_draft=allow_draft,
+                                      hold_reason=hold_reason)
     if reason:
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
                              passed=False, reason=reason)

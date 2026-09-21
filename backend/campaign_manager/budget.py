@@ -310,7 +310,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError as e:
-        logs.session_expired(run_id, dry_run=dry_run)
+        logs.session_expired(run_id, dry_run=dry_run, platform=platform)
         await _record_run_blocked(
             tenant_id, platform, run_id, schedules,
             f"could not sign in to {platform.title()}, so the budget was not changed "
@@ -428,10 +428,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                          dry_run, False))
                     continue
 
+                hold = writes.hold_reason(adapter, current_state, detail)
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid,
-                              msg=f"the campaign is "
-                                  f"{writes.STATE_WORDS.get(current_state, current_state or 'in an unknown state')}"
-                                  f" · its budget is {writes.money(current)}")
+                              msg=(f"the {hold}" if hold else
+                                   f"the campaign is "
+                                   f"{writes.STATE_WORDS.get(current_state, current_state or 'in an unknown state')}")
+                                  + f" · its budget is {writes.money(current)}")
 
                 # ── The activation branch (docs/campaign-manager.md §6) ──
                 # A stopped campaign that should be running is restarted, and the restart
@@ -533,7 +535,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     stopped_ok = await writes.apply_status(
                         adapter, client, run_id=run_id, campaign_id=cid, target="paused",
                         current=current_state, dry_run=dry_run, applied=patches,
-                        outcome=stop_outcome,
+                        outcome=stop_outcome, hold_reason=hold,
                         recent_writes=0 if dry_run else await repo.recent_write_count(
                             tenant_id, cid, window_minutes=config.RATE_WINDOW_MINUTES,
                             kind="activation"),
@@ -617,13 +619,17 @@ async def _restart(adapter, client, run_id, campaign_id, budget, detail, dry_run
     campaign, so `overwrites` (AD9) records what the call will rewrite — keywords, bids,
     pids — making a silently-reverted bid visible in the logs instead of discoverable
     weeks later in a report.
-    """
-    from campaign_manager.marketplaces.blinkit import restart as restart_mod
 
+    The ADAPTER says what its resume overwrites. This used to call Blinkit's
+    `restart.overwrites` directly, so a Zepto resume — an idempotent flip that rewrites
+    nothing — logged a Blinkit-shaped summary of a Zepto detail ("0 keywords, bids none,
+    start date reset by Blinkit").
+    """
+    describe = getattr(adapter, "resume_overwrites", None)
     return await writes.apply_status(
         adapter, client, run_id=run_id, campaign_id=campaign_id, target="running",
         current="paused", dry_run=dry_run, budget=budget, applied=patches, outcome=outcome,
-        overwrites=restart_mod.overwrites(detail, budget=budget),
+        overwrites=describe(detail, budget) if describe else None,
         recent_writes=0 if dry_run else await repo.recent_write_count(
             tenant_id, campaign_id, window_minutes=config.RATE_WINDOW_MINUTES,
             kind="activation"),

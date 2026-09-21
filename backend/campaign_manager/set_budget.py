@@ -28,7 +28,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
     try:
         pw, browser, client = await adapter.setup(str(tenant_id))
     except RuntimeError as e:
-        logs.session_expired(run_id, dry_run=dry_run)
+        logs.session_expired(run_id, dry_run=dry_run, platform=platform)
         # A person asked for this and is waiting on it. Without a row the job settles with
         # nothing on the page saying the change never happened, or why.
         await _record_blocked(tenant_id, platform, run_id, campaign_id, name, budget, dry_run,

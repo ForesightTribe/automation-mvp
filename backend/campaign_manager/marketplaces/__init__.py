@@ -22,6 +22,28 @@ _ADAPTERS: dict[str, str] = {
 }
 
 
+# Each marketplace's status vocabulary, as a PURE module the API may import (the adapters
+# may not be — Blinkit's pulls in Playwright).
+_STATUS: dict[str, str] = {
+    "blinkit": "campaign_manager.marketplaces.blinkit.status",
+    "zepto": "campaign_manager.marketplaces.zepto.status",
+}
+
+
+def canonical_status(slug: str | None, raw: str | None) -> str | None:
+    """A marketplace's raw campaign status → `running` / `paused` / `held` / `ended` /
+    `draft`, exactly as the engines read it. Safe to call from the API process.
+
+    An unknown marketplace, or an unmapped status, comes back unchanged — the same
+    "refuse it by name, never coerce it" rule the adapters follow.
+    """
+    path = _STATUS.get((slug or "").lower())
+    if path is None:
+        return raw
+    from importlib import import_module
+    return import_module(path).canonical(raw)
+
+
 def supported() -> list[str]:
     """Marketplaces the campaign manager can drive. Used by CLI help and errors."""
     return sorted(_ADAPTERS)

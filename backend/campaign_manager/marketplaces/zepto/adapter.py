@@ -30,16 +30,19 @@ whole-object diff would be wrong.
 
 ## Status vocabulary
 
-Zepto's own strings map onto the engine's canonical set. `DAILY_BUDGET_EXHAUSTED`
-is Zepto's `ON_HOLD`: live but out of budget — stoppable, not startable, and never
-ours to clear. An unmapped value passes through unchanged so a guardrail can refuse
-it by name rather than silently coercing it into something writable.
+Zepto's own strings map onto the engine's canonical set (`status.py`). Two are `held` —
+live, stoppable, not startable, never ours to clear: `DAILY_BUDGET_EXHAUSTED` (raise the
+budget) and `INSUFFICIENT_WALLET_BALANCE` (top up the wallet on Zepto; a budget change
+does nothing) — and `hold_reason` tells them apart. `ENDED` is terminal. An unmapped value
+passes through unchanged so a guardrail can refuse it by name rather than silently
+coercing it into something writable.
 """
 import json
 
 from app.utils.logger import logger
 from campaign_manager.marketplaces.zepto import client as zc
 from campaign_manager.marketplaces.zepto import endpoints as ep
+from campaign_manager.marketplaces.zepto import status as zstatus
 from campaign_manager.marketplaces.zepto import translate
 from campaign_manager.marketplaces.zepto.transport import setup  # noqa: F401  (contract)
 from campaign_manager.writes import SessionExpired, WriteRefused
@@ -95,25 +98,19 @@ RAISE_WHEN_ABSENT = True
 # fallback the bid engine uses, kept here so the adapter is self-contained.
 _DEFAULT_LAT, _DEFAULT_LON = 12.9767, 77.5713
 
-_STATUS_FROM_ZEPTO = {
-    ep.STATUS_ACTIVE: "running",
-    ep.STATUS_PAUSED: "paused",
-    # Live but out of budget — Zepto-imposed, exactly like Blinkit's ON_HOLD.
-    ep.STATUS_BUDGET_EXHAUSTED: "held",
-}
+# The vocabulary lives in `status.py` (pure — the API reads it too); `_canonical` keeps
+# its name here because the engines and tests reach it through the adapter.
+_canonical = zstatus.canonical
 
 
-def _canonical(status: str | None) -> str | None:
-    """Zepto's status -> ours. Unmapped values return as-is, on purpose."""
-    if not status:
-        return None
-    key = status.strip().upper()
-    if key not in _STATUS_FROM_ZEPTO:
-        logger.warning(
-            f"Zepto returned an unmapped campaign status {status!r} — treating it as "
-            "unknown. If it is legitimate, add it to _STATUS_FROM_ZEPTO."
-        )
-    return _STATUS_FROM_ZEPTO.get(key, status)
+def hold_reason(detail: dict) -> str | None:
+    """Why this campaign is held, when it is — for the refusal a person reads.
+
+    Zepto has two holds that need opposite advice: a spent daily budget (raise it) and an
+    empty wallet (top up on Zepto; a budget change does nothing). Both are canonical
+    `held`, so without this every wallet-held campaign was told to raise its budget.
+    """
+    return zstatus.hold_reason((detail or {}).get("status"))
 
 
 # ── reads (safe) ─────────────────────────────────────────────────────────────
