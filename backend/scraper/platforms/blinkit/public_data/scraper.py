@@ -291,8 +291,24 @@ async def search(
     error = ""
     url: str | None = ep.first_search_url(keyword)
     body: dict | None = ep.SEARCH_BODY
+    requested: set[str] = set()
+    pages = 0
 
     while url and len(products) < cap:
+        # Three stops on top of the cap, because the cap alone cannot end a loop in
+        # which duplicates don't count: a next_url we already fetched, a page that
+        # added nothing, and a hard page ceiling. See ep.MAX_PAGES for the store
+        # that looped forever without them.
+        if url in requested or pages >= ep.MAX_PAGES:
+            logger.warning(
+                f"Blinkit search '{keyword}' @ ({lat},{lon}): stopped paging after "
+                f"{pages} pages ({'next page repeats one already fetched' if url in requested else 'page limit'})"
+            )
+            break
+        requested.add(url)
+        pages += 1
+        before = len(products)
+
         resp = await in_page_fetch(page, url, headers, body)
         if resp.get("status") != 200 or resp.get("body") is None:
             err_txt = resp.get("error", "")
@@ -344,6 +360,12 @@ async def search(
         if total_results is None:
             total_results = count
         if not next_url:
+            break
+        if len(products) == before:
+            logger.warning(
+                f"Blinkit search '{keyword}' @ ({lat},{lon}): page {pages} added no new "
+                f"products — stopped paging"
+            )
             break
         if method != ep.BASIC_SEARCH_METHOD and not follow_similarity:
             break

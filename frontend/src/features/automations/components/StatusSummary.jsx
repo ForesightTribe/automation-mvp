@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useHistory } from "../hooks";
 import { formatCurrency } from "../../../lib/format";
+import { outcomeOf } from "../runLog";
 
 const DAY_INDEX = {
 	sunday: 0,
@@ -236,7 +237,11 @@ export const StatusSummary = ({ schedules = [], bidRules = [] }) => {
 						{lastRun ? (
 							<ul className="space-y-1">
 								{recent.map((r) => (
-									<li key={r.id} className="text-sm">
+									<li
+										key={r.id}
+										className="text-sm"
+										title={r.reason ?? undefined}
+									>
 										<span
 											className={
 												r.success
@@ -244,7 +249,7 @@ export const StatusSummary = ({ schedules = [], bidRules = [] }) => {
 													: "text-danger"
 											}
 										>
-											{r.action}
+											{outcomeOf(r)}
 											{r.new_value != null &&
 												` ${formatCurrency(r.new_value)}`}
 										</span>

@@ -17,7 +17,7 @@ import logging
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import distinct, func, select, update
+from sqlalchemy import Numeric, case, cast, distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
@@ -49,6 +49,21 @@ _CAMPAIGN_SORTS = {
     "sales": "ad_sales",
     "impressions": "impressions",
 }
+
+
+async def _recent_campaign_cutoff(session: AsyncSession, tenant_id: uuid.UUID):
+    """`scraped_at` a campaign must reach to count as part of the CURRENT account.
+
+    The catalogue scrape upserts whatever Blinkit returns, so a campaign that stops coming
+    back (the pre-migration account's) keeps its last `scraped_at` forever. Within 2 h of the
+    newest scrape = returned by the latest run. None when the tenant has no campaigns."""
+    latest = (
+        await session.execute(
+            select(func.max(BlinkitAdCampaign.scraped_at))
+            .where(BlinkitAdCampaign.tenant_id == tenant_id)
+        )
+    ).scalar()
+    return latest - timedelta(hours=2) if latest else None
 
 
 def _roas(ad_sales: float, spend: float) -> float:
@@ -183,14 +198,9 @@ async def get_campaigns(
     if status:
         conds.append(BlinkitAdCampaign.status == status)
     if recent_only:
-        latest_scraped_at = (
-            await session.execute(
-                select(func.max(BlinkitAdCampaign.scraped_at))
-                .where(BlinkitAdCampaign.tenant_id == tenant_id)
-            )
-        ).scalar()
-        if latest_scraped_at:
-            conds.append(BlinkitAdCampaign.scraped_at >= latest_scraped_at - timedelta(hours=2))
+        cutoff = await _recent_campaign_cutoff(session, tenant_id)
+        if cutoff:
+            conds.append(BlinkitAdCampaign.scraped_at >= cutoff)
     campaigns = (
         await session.execute(select(BlinkitAdCampaign).where(*conds))
     ).scalars().all()
@@ -345,12 +355,26 @@ async def get_keywords(
     target_type: str | None = None,
     sort: str = "spend",
     order: str = "desc",
+    recent_only: bool = False,
 ) -> Page[KeywordRow]:
     """Keyword / asset performance from the latest detail snapshot per campaign.
 
     `BlinkitAdCampaignDetail` is a range-aggregate snapshot (not daily), so we keep
     only each campaign's most recent `snapshot_date` rather than summing across
     snapshots.
+
+    ONE row per (campaign, target, match_type). Blinkit reports a keyword once per
+    SUB-campaign, so the raw snapshot can hold the same keyword 30 times for one campaign
+    (seen 2026-09-16); every list built on this endpoint showed it 30 times, each with a
+    slice of the numbers. Counts and money are summed; ROAS is recomputed from the sums;
+    position is the best held. A keyword Blinkit did not split keeps its reported ratios
+    untouched — Blinkit's `cpm` is not spend/impressions (351 reported vs 358 derived), so
+    a merged CPM is the impression-weighted mean of the reported ones, not a derivation.
+
+    `recent_only` drops campaigns the latest catalogue scrape no longer returns (the
+    pre-migration account's), same rule as `/ads/campaigns?recent_only`. Their last
+    snapshot is still "latest" for them, and they mostly share names with their
+    replacements, so without it every keyword picker lists each campaign twice.
 
     ⚠️ The latest-snapshot pick, sort, count and page slice all happen in SQL. This used
     to load every detail row for the tenant (51k, growing ~700/day) and do them in
@@ -364,6 +388,17 @@ async def get_keywords(
         conds.append(Detail.platform.in_(marketplaces))
     if target_type:
         conds.append(Detail.target_type == target_type)
+    if recent_only:
+        cutoff = await _recent_campaign_cutoff(session, tenant_id)
+        if cutoff:
+            conds.append(
+                Detail.campaign_id.in_(
+                    select(BlinkitAdCampaign.campaign_id).where(
+                        BlinkitAdCampaign.tenant_id == tenant_id,
+                        BlinkitAdCampaign.scraped_at >= cutoff,
+                    )
+                )
+            )
 
     # Each campaign's latest snapshot date under the SAME filters as the rows, so e.g.
     # target_type='keyword' picks each campaign's latest *keyword* snapshot. Every row on
@@ -374,35 +409,90 @@ async def get_keywords(
         .group_by(Detail.campaign_id)
         .subquery()
     )
-    base = (
-        select(Detail)
+
+    n = func.count()
+    spend = func.sum(Detail.budget_consumed)
+    impressions = func.sum(Detail.impressions)
+    direct_sales = func.sum(Detail.direct_sales)
+    indirect_sales = func.sum(Detail.indirect_sales)
+
+    def _merged_ratio(reported, derived):
+        # Unsplit → Blinkit's own figure; split → recomputed from the sums, rounded like
+        # Blinkit's (2 dp), 0.0 on no spend as the stored rows do.
+        return case(
+            (n == 1, func.max(reported)),
+            else_=func.coalesce(
+                func.round(cast(derived / func.nullif(spend, 0), Numeric), 2), 0.0
+            ),
+        )
+
+    merged = (
+        select(
+            Detail.campaign_id,
+            func.max(Detail.campaign_type).label("campaign_type"),
+            Detail.target_type,
+            Detail.target,
+            Detail.match_type,
+            impressions.label("impressions"),
+            spend.label("budget_consumed"),
+            case(
+                (n == 1, func.max(Detail.cpm)),
+                else_=func.coalesce(
+                    func.sum(Detail.cpm * Detail.impressions) / func.nullif(impressions, 0),
+                    func.max(Detail.cpm),
+                ),
+            ).label("cpm"),
+            func.sum(Detail.direct_atc).label("direct_atc"),
+            func.sum(Detail.indirect_atc).label("indirect_atc"),
+            direct_sales.label("direct_sales"),
+            indirect_sales.label("indirect_sales"),
+            func.sum(Detail.new_users_acquired).label("new_users_acquired"),
+            func.min(Detail.most_viewed_position).label("most_viewed_position"),
+            _merged_ratio(Detail.direct_roas, direct_sales).label("direct_roas"),
+            _merged_ratio(Detail.total_roas, direct_sales + indirect_sales).label("total_roas"),
+            latest.c.snapshot_date,
+        )
         .join(
             latest,
             (Detail.campaign_id == latest.c.campaign_id)
             & (Detail.snapshot_date == latest.c.snapshot_date),
         )
         .where(*conds)
+        .group_by(
+            Detail.campaign_id,
+            Detail.target_type,
+            Detail.target,
+            Detail.match_type,
+            latest.c.snapshot_date,
+        )
+        .subquery()
     )
-    total = await session.scalar(select(func.count()).select_from(base.subquery())) or 0
+    total = await session.scalar(select(func.count()).select_from(merged)) or 0
 
     sort_cols = {
-        "spend": Detail.budget_consumed,
-        "roas": Detail.total_roas,
-        "sales": Detail.direct_sales + Detail.indirect_sales,
-        "impressions": Detail.impressions,
+        "spend": merged.c.budget_consumed,
+        "roas": merged.c.total_roas,
+        "sales": merged.c.direct_sales + merged.c.indirect_sales,
+        "impressions": merged.c.impressions,
     }
     col = sort_cols.get(sort, sort_cols["spend"])
-    # `Detail.id` breaks ties so paging is stable. Without it, rows with equal values come
+    # The group key breaks ties so paging is stable. Without it, rows with equal values come
     # back in arbitrary order and pages fetched in parallel can repeat or skip a row.
     rows = (
         await session.execute(
-            base.order_by(col.asc() if order == "asc" else col.desc(), Detail.id)
+            select(merged)
+            .order_by(
+                col.asc() if order == "asc" else col.desc(),
+                merged.c.campaign_id,
+                merged.c.target,
+                merged.c.match_type,
+            )
             .offset(pagination.offset)
             .limit(pagination.limit)
         )
-    ).scalars().all()
+    ).mappings().all()
 
-    items = [KeywordRow.model_validate(r) for r in rows]
+    items = [KeywordRow.model_validate(dict(r)) for r in rows]
     return Page.build(items, total, pagination)
 
 

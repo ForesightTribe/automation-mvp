@@ -12,7 +12,7 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, BidContextOut, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn,
+    BudgetScheduleUpdate, BidContextOut, CmActionOut, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn,
     SetBudgetIn,
 )
 from app.schemas.common import Page
@@ -241,6 +241,22 @@ async def run_bid_optimizer(client: ClientDep, session: SessionDep):
 
 # ── Job status (poll) + history ─────────────────────────────────────────────
 
+@router.get("/actions", response_model=list[CmActionOut])
+async def recent_actions(client: ClientDep, session: SessionDep):
+    """What this client has recently ASKED FOR — the dashboard's activity list.
+
+    Distinct from `/history`, and the difference is the point. History is `cm_run_log`:
+    what the engines DID, written when a run ends, background work included. This is the
+    job queue: what a person triggered, visible from the moment it is queued and therefore
+    able to say "queued" and "running" — states no history row can ever describe, because
+    the rows do not exist until the run is over.
+
+    Person-triggered only: a job type people perform AND no schedule behind this run. The
+    hourly engines and the reconciler are excluded — see `svc.recent_actions`.
+    """
+    return await svc.recent_actions(session, client.id)
+
+
 @router.get("/jobs/{job_id}", response_model=CmJobOut)
 async def get_job(client: ClientDep, session: SessionDep, job_id: uuid.UUID):
     job = await svc.get_job(session, client.id, job_id)
@@ -252,7 +268,8 @@ async def get_job(client: ClientDep, session: SessionDep, job_id: uuid.UUID):
 @router.get("/history", response_model=Page[RunLogOut])
 async def history(client: ClientDep, pagination: PaginationDep, kind: str | None = None,
                   campaign_id: int | None = None, rule_id: str | None = None,
-                  include_unchanged: bool = False):
+                  run_id: str | None = None, include_unchanged: bool = False,
+                  keyword: str | None = None, success: bool | None = None):
     """What the automations did. **Changes only by default** — the engine now records every
     tick, including the ones where it deliberately did nothing, and a "held at ₹201" row
     every 15 minutes would bury the real changes.
@@ -260,11 +277,18 @@ async def history(client: ClientDep, pagination: PaginationDep, kind: str | None
     `include_unchanged=true` returns the full per-tick record: that is the per-automation
     drill-down, where "why has my bid not moved for six hours" is exactly the question, and
     the held ticks carry the answer in `reason` with the `position`/`target` behind it.
-    Narrow with `campaign_id` or `rule_id`.
+    Narrow with `campaign_id` or `rule_id` — or with `run_id` for everything ONE job did,
+    which is how a caller finds out whether the change it asked for actually happened (a
+    job's `status` only reports that the process exited).
+
+    `kind` may list several (`budget,activation` = one campaign automation's own record);
+    `campaign_id` + `keyword` is one keyword automation's; `success=false` is every row that
+    did not do what it meant to — refused, failed, or blocked.
     """
     rows, total = await svc.history(
         client.id, kind=kind, limit=pagination.limit, offset=pagination.offset,
-        campaign_id=campaign_id, rule_id=rule_id, include_unchanged=include_unchanged)
+        campaign_id=campaign_id, rule_id=rule_id, run_id=run_id,
+        include_unchanged=include_unchanged, keyword=keyword, success=success)
     return Page.build(rows, total, pagination)
 
 

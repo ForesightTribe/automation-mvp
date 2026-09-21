@@ -42,6 +42,12 @@ class _Rule:
         self.platform, self.active = "blinkit", True
         self.__dict__.update(over)
         self.lat, self.lon, self.location_name = 18.55, 73.93, "Borate Vasti"
+        # Pinned to a store, so no measurement city — `city_id` is what pinning means it
+        # lacks. It is here because `repo.city_names_for` reads it off every rule on the
+        # single-rule response path, and a fake missing a column the response path touches
+        # fails as an AttributeError halfway through the module, taking every test after it
+        # with it (2026-09-15).
+        self.city_id = None
         self.__dict__.update(over)
 
 
@@ -79,12 +85,20 @@ def _run(coro_fn, rule, **extra):
     async def _reconcile(session, tenant_id):
         calls["reconciled"] = True
 
+    async def city_names_for(platform, rules):
+        # Every single-rule response resolves the measurement city for display, and it does
+        # so through its OWN database session — so leaving it real makes these pure
+        # lifecycle-gate tests open a connection to Supabase to render a field none of them
+        # assert on.
+        return {r.id: "Pune" for r in rules}
+
     originals = (repo.get_bid_rule, repo.set_bid_state, repo.clear_bid_runtime,
-                 repo.delete_bid_rule, repo.get_armed, svc.enqueue, svc._reconcile,
-                 svc.now_ist)
+                 repo.delete_bid_rule, repo.get_armed, repo.city_names_for, svc.enqueue,
+                 svc._reconcile, svc.now_ist)
     repo.get_bid_rule, repo.set_bid_state = get_bid_rule, set_bid_state
     repo.clear_bid_runtime, repo.delete_bid_rule = clear_bid_runtime, delete_bid_rule
     repo.get_armed, svc.enqueue, svc._reconcile = get_armed, enqueue, _reconcile
+    repo.city_names_for = city_names_for
     svc.now_ist = lambda: NOW
     try:
         calls["result"] = asyncio.run(coro_fn(None, TENANT, rule.id, **extra))
@@ -93,8 +107,8 @@ def _run(coro_fn, rule, **extra):
         calls["result"], calls["error"] = None, str(e)
     finally:
         (repo.get_bid_rule, repo.set_bid_state, repo.clear_bid_runtime,
-         repo.delete_bid_rule, repo.get_armed, svc.enqueue, svc._reconcile,
-         svc.now_ist) = originals
+         repo.delete_bid_rule, repo.get_armed, repo.city_names_for, svc.enqueue,
+         svc._reconcile, svc.now_ist) = originals
     return calls
 
 

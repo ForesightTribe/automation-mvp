@@ -48,6 +48,8 @@ from app.models.campaign_manager_v2 import (
     CmBidRuntime,
     CmRunLog,
     CmCityStore,
+    CmStoreStock,
+    CmBidStoreRead,
 )
 
 __all__ = [

@@ -13,6 +13,31 @@ import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { getCampaigns, getPerformance, getBudgetSplit } from "../ads/api";
+import { getKeywordRowsPage } from "./api";
+import { fetchAllPages } from "../../lib/exportTable";
+
+/**
+ * Every current keyword row (one per campaign × keyword × match type), in a couple of
+ * 500-row requests. The keyword table groups these by search term, which only works on the
+ * whole set: grouping a page of twenty would split a keyword's campaigns across pages.
+ */
+export const useAllKeywordRows = () => {
+	const { activeClientId } = useClient();
+	const { selected } = useMarketplaces();
+	return useQuery({
+		queryKey: ["insights-keyword-rows", activeClientId, selected],
+		queryFn: () =>
+			fetchAllPages(({ page, limit }) =>
+				getKeywordRowsPage(activeClientId, {
+					marketplaces: selected,
+					page,
+					limit,
+				}),
+			),
+		enabled: Boolean(activeClientId),
+		staleTime: 5 * 60 * 1000,
+	});
+};
 
 /**
  * The window immediately before the selected one, of the same length.

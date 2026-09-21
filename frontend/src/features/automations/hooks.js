@@ -1,9 +1,8 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useState } from "react";
+import { useMemo, useRef, useState } from "react";
+import { invalidateCampaignData } from "../../lib/campaignData";
 import { sortRows } from "../../lib/sortRows";
 
-/** "navi mumbai" reads as "Navi Mumbai". The catalogue stores cities lower-cased. */
-const title = (s) => s.replace(/\b[a-z]/g, (c) => c.toUpperCase());
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import {
@@ -16,7 +15,6 @@ import {
 	deleteBudgetSchedule,
 	getAdvertiser,
 	getBidContext,
-	getStoreCatalogue,
 	getBidRules,
 	getBudgetSchedules,
 	getKeywordMetricsPage,
@@ -27,13 +25,13 @@ import {
 	getCampaigns,
 	getHistory,
 	getJob,
+	getRecentActions,
+	getRunOutcome,
 	refreshCampaigns,
 	resetBudgetSchedule,
-	runEngine,
 	setActivationNow,
 	setAdvertiser,
 	setBidState,
-	setBudgetNow,
 	updateBidRule,
 	updateBudgetRule,
 	updateBudgetSchedule,
@@ -70,7 +68,15 @@ export const useBidRules = () => {
 
 export const useHistory = (page = 1, kind, opts = {}) => {
 	const { activeClientId } = useClient();
-	const { campaignId, ruleId, includeUnchanged = false } = opts;
+	const {
+		campaignId,
+		ruleId,
+		keyword,
+		success,
+		includeUnchanged = false,
+		limit,
+		enabled = true,
+	} = opts;
 	return useQuery({
 		queryKey: [
 			HISTORY,
@@ -79,7 +85,10 @@ export const useHistory = (page = 1, kind, opts = {}) => {
 			kind ?? "all",
 			campaignId ?? "all",
 			ruleId ?? "all",
+			keyword ?? "all",
+			success ?? "all",
 			includeUnchanged,
+			limit ?? "default",
 		],
 		queryFn: () =>
 			getHistory(activeClientId, {
@@ -87,9 +96,12 @@ export const useHistory = (page = 1, kind, opts = {}) => {
 				kind,
 				campaignId,
 				ruleId,
+				keyword,
+				success,
 				includeUnchanged,
+				limit,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && enabled,
 	});
 };
 
@@ -198,16 +210,142 @@ export const useAdvertiser = () => {
 	});
 };
 
+/**
+ * Poll one enqueued job until it settles, then mark every screen's campaign data stale.
+ *
+ * ⚠️ The invalidation lives HERE and not on the mutations, because these writes happen on
+ * the VM. A mutation resolving means "the job was queued", nothing more — invalidating
+ * there would refetch the value as it was BEFORE the write and cache it as fresh, which is
+ * worse than not invalidating at all. The job settling is the first moment the catalogue
+ * can actually have changed.
+ *
+ * Invalidates rather than patches: the engine runs its own guardrails against a fresh
+ * read, so a job can settle having done something other than what was asked. What the
+ * account now says is the only reliable answer — which is also why `useRunOutcome` below
+ * exists rather than trusting `status: success`.
+ */
 export const useJob = (jobId) => {
 	const { activeClientId } = useClient();
+	const qc = useQueryClient();
 	return useQuery({
 		queryKey: ["auto-job", activeClientId, jobId],
-		queryFn: () => getJob(activeClientId, jobId),
+		queryFn: async () => {
+			const job = await getJob(activeClientId, jobId);
+			if (job.status === "success" || job.status === "failed") {
+				invalidateCampaignData(qc, activeClientId);
+				qc.invalidateQueries({ queryKey: [HISTORY, activeClientId] });
+			}
+			return job;
+		},
 		enabled: Boolean(activeClientId && jobId),
 		refetchInterval: (query) => {
 			const s = query.state.data?.status;
 			return s === "success" || s === "failed" ? false : 1500;
 		},
+	});
+};
+
+/**
+ * What this client has recently asked for, newest first — the activity list.
+ *
+ * Polls only while something is unfinished, and stops as soon as everything has settled:
+ * an idle dashboard makes no requests at all. 2s rather than the job poller's 1.5s because
+ * this is a list someone glances at, not a spinner they are watching.
+ *
+ * `ACTIVE` is what the badge counts and what keeps the poll alive.
+ */
+export const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
+
+export const useRecentActions = () => {
+	const { activeClientId } = useClient();
+	const qc = useQueryClient();
+	const settled = useRef(new Set());
+	return useQuery({
+		queryKey: ["auto-actions", activeClientId],
+		queryFn: async () => {
+			const actions = (await getRecentActions(activeClientId)) ?? [];
+			// The moment an action finishes, every screen's campaign data is out of date.
+			// Done here as well as in `useJob` because this list outlives the component
+			// that started the job: reload the page mid-run and nothing else is watching,
+			// so without this the tables would keep serving pre-write values.
+			const done = actions.filter((a) => !ACTIVE_JOB_STATUSES.has(a.status));
+			const fresh = done.filter((a) => !settled.current.has(a.id));
+			for (const a of done) settled.current.add(a.id);
+			if (fresh.length) {
+				invalidateCampaignData(qc, activeClientId);
+				qc.invalidateQueries({ queryKey: [HISTORY, activeClientId] });
+			}
+			return actions;
+		},
+		enabled: Boolean(activeClientId),
+		refetchInterval: (query) =>
+			(query.state.data ?? []).some((a) => ACTIVE_JOB_STATUSES.has(a.status))
+				? 2000
+				: false,
+	});
+};
+
+/**
+ * Which of your in-flight actions, if any, is acting on a given row.
+ *
+ * One definition rather than one per surface, because "is this row busy" has to mean the
+ * same thing in the automations table and in the wizard's campaign picker — and getting it
+ * subtly different in two places is how a control ends up clickable during the write it
+ * would conflict with.
+ *
+ * The match is deliberately narrow:
+ *
+ *   - a KEYWORD action (a bid reset) carries its keyword, so it marks only that rule busy.
+ *     Matching on the campaign alone would freeze every bid rule on a campaign because one
+ *     of its keywords was being reset.
+ *   - a CAMPAIGN action (budget, start/stop) marks only campaign-kind rows. A budget write
+ *     does not touch a keyword's bid, so its rules stay usable.
+ *
+ * Returns the action, so a caller can name what is happening rather than only that
+ * something is.
+ */
+export const useActiveActionFor = () => {
+	const { data: actions } = useRecentActions();
+	const live = useMemo(
+		() => (actions ?? []).filter((a) => ACTIVE_JOB_STATUSES.has(a.status)),
+		[actions],
+	);
+	return (row) => {
+		if (!row?.campaign_id) return null;
+		return (
+			live.find((a) =>
+				a.campaign_id !== row.campaign_id
+					? false
+					: a.keyword
+						? row.kind === "keyword" && row.keyword === a.keyword
+						: row.kind === "campaign",
+			) ?? null
+		);
+	};
+};
+
+/**
+ * Every row one run recorded — what the engine actually did, read once its job has settled.
+ *
+ * `enabled` is the settled flag on purpose: before then the run has written nothing, and an
+ * empty result would be indistinguishable from "it decided to change nothing".
+ *
+ * Keyed on the RUN, not the campaign. A run id is minted by the queue and travels into the
+ * run, so this is an exact match — where "the newest row for this campaign" was a guess
+ * that races the parallel cm_bid / cm_ops lanes and cannot describe a multi-campaign run.
+ *
+ * An EMPTY list is a real answer, not a missing one: the engines deliberately record no
+ * row for a tick that changed nothing (docs D6), so zero rows means "nothing needed doing".
+ */
+export const useRunOutcome = (runId, enabled) => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: ["auto-run-outcome", activeClientId, runId],
+		queryFn: () => getRunOutcome(activeClientId, runId),
+		enabled: Boolean(activeClientId && runId && enabled),
+		select: (page) => page?.items ?? [],
+		staleTime: 0,
+		gcTime: 0,
 	});
 };
 
@@ -335,13 +473,6 @@ export const useSetBidState = () => {
 	});
 };
 
-export const useSetBudgetNow = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: (body) => setBudgetNow(activeClientId, body),
-	});
-};
-
 export const useSetActivationNow = () => {
 	const { activeClientId } = useClient();
 	return useMutation({
@@ -362,13 +493,6 @@ export const useUpdateAdvertiser = () => {
 		mutationFn: (advertiserId) =>
 			setAdvertiser(activeClientId, advertiserId),
 		onSuccess: invalidate,
-	});
-};
-
-export const useRunEngine = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: (which) => runEngine(activeClientId, which),
 	});
 };
 
@@ -408,32 +532,17 @@ export const useWriteMode = () => {
 };
 
 /**
- * The cities the platform has stores in, derived from the store catalogue.
+ * ⚠️ There is no `useCities` here any more, deliberately (2026-09-15).
  *
- * The catalogue is per-store, so several hundred rows collapse to a couple of hundred
- * cities. Global reference data that changes when the catalogue is re-scraped, so it is
- * cached for the session rather than refetched per wizard.
+ * The wizard used to read the store catalogue for its own city list while `bid-context`
+ * supplied the campaign's targeted cities, and the picker chose between them by list
+ * length — which is also what "still loading" looks like. A sorted catalogue rendered
+ * first and was replaced a second later by an unsorted, differently-spelled list.
+ *
+ * `bid-context` now answers the whole question — the campaign's cities when it targets
+ * some, every measurable city when it does not — so the form has ONE source. Reintroducing
+ * a second one brings the swap back.
  */
-export const useCities = () =>
-	useQuery({
-		queryKey: ["store-catalogue-cities"],
-		queryFn: getStoreCatalogue,
-		staleTime: Infinity,
-		select: (rows) => {
-			const byCity = new Map();
-			for (const r of rows ?? []) {
-				if (!r.city || byCity.has(r.city)) continue;
-				byCity.set(r.city, {
-					slug: r.city,
-					name: title(r.city),
-					state: r.state,
-				});
-			}
-			return [...byCity.values()].sort((a, b) =>
-				a.name.localeCompare(b.name),
-			);
-		},
-	});
 
 /**
  * Click-to-sort over rows already in hand, for the wizard's picker tables.

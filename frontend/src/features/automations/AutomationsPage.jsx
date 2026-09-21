@@ -9,9 +9,8 @@ import { CampaignDetailDrawer } from "./components/CampaignDetailDrawer";
 import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
-import { JobLine } from "./components/JobLine";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
-import { formatCurrency } from "../../lib/format";
+import { formatCurrency, formatMeasuredAt } from "../../lib/format";
 import {
 	useBudgetSchedules,
 	useBidRules,
@@ -22,6 +21,9 @@ import {
 	useResetBudgetSchedule,
 	useResetBidRule,
 	useRefreshCampaigns,
+	useRecentActions,
+	useActiveActionFor,
+	ACTIVE_JOB_STATUSES,
 } from "./hooks";
 
 /**
@@ -118,6 +120,22 @@ const confirmCopy = (action, row) => {
 };
 
 /**
+ * Why an action could not even be QUEUED, in the reader's words.
+ *
+ * 409 is the expected answer, not an error: the campaign lanes hold ONE job each, and the
+ * queue refuses a second of the same kind for the same client rather than letting two
+ * writes race. So it is reported as a wait, not a failure — the first one is still running
+ * and will finish.
+ *
+ * Anything else keeps the server's own message, which is more specific than a generic
+ * sentence would be.
+ */
+const conflictMessage = (err, what) =>
+	err?.response?.status === 409
+		? `Another action is already running, so this one was not queued. Wait for it to finish, then try to ${what} again.`
+		: (err?.message ?? `Could not ${what}.`);
+
+/**
  * Automations — a new, independently-built management experience over the
  * same Campaign Manager v2 backend (budget schedules + bid rules), styled
  * after Dcluttr's Automations screen: a beta-tagged header with its own
@@ -155,9 +173,20 @@ export const AutomationsPage = () => {
 	// the alternative leaves a bid the optimizer raised with no rule left to lower it.
 	const [resetBidOnDelete, setResetBidOnDelete] = useState(true);
 	const [detailCampaign, setDetailCampaign] = useState(null);
-	// Reset / set-budget / refresh all enqueue a VM job and return its id; one slot is
-	// enough because they are one-at-a-time actions and the line reports the latest.
+	// The most recent action this page enqueued. It is NOT how the page reports progress
+	// any more — that is `useRecentActions`, which reads the queue from the server and so
+	// survives a reload and covers several actions at once, where this single slot could
+	// do neither.
+	//
+	// It is kept for one job only: the campaign toggle inside the wizard. That toggle sits
+	// behind a full-screen overlay, so its result has to be rendered inside the wizard, and
+	// the wizard needs the id to do it. The id alone is enough — the job carries a `run_id`
+	// and the outcome is read from the history rows filed under it.
 	const [actionJob, setActionJob] = useState(null);
+	// Why the last action could not even be QUEUED — distinct from what an action did once
+	// it ran, which the activity list reports. Nothing reaches the VM in this case, so
+	// there is no job and no run log row to read it from.
+	const [actionError, setActionError] = useState(null);
 
 	const setBidState = useSetBidState();
 	const setActivationNow = useSetActivationNow();
@@ -166,6 +195,23 @@ export const AutomationsPage = () => {
 	const resetSchedule = useResetBudgetSchedule();
 	const resetBid = useResetBidRule();
 	const refreshCampaigns = useRefreshCampaigns();
+	// In-flight actions, from the server rather than from component state — so the count
+	// survives a reload, and a job someone started in another tab still shows here.
+	const { data: recentActions } = useRecentActions();
+	const activeActionFor = useActiveActionFor();
+	const runningCount = (recentActions ?? []).filter((a) =>
+		ACTIVE_JOB_STATUSES.has(a.status),
+	).length;
+
+	/**
+	 * A campaign id to the name a person recognises. The activity list gets ids (that is
+	 * what the job carries), and "Campaign budget change · 637511" tells a reader nothing.
+	 * Read off the automations already loaded for the table, so it costs no extra request.
+	 */
+	const campaignNameOf = (id) =>
+		schedules?.find((x) => x.campaign_id === id)?.campaign_name ??
+		bidRules?.find((x) => x.campaign_id === id)?.campaign_name ??
+		null;
 
 	const rows = useMemo(() => {
 		const campaignRows = (schedules ?? []).map((s) => ({
@@ -205,15 +251,20 @@ export const AutomationsPage = () => {
 	 * there. The run log carries no location field, so it is joined here rather than
 	 * left off. Trimmed, because the value arrives with trailing whitespace from the
 	 * scrape ("Financial District\r\n").
+	 *
+	 * WITH the city, because the store label alone does not locate anything: "Block C"
+	 * and "Sector 110" name a neighbourhood in a city the reader has to already know.
 	 */
-	const locationOf = (campaignId, keyword) =>
-		bidRules
-			?.find(
-				(b) =>
-					b.campaign_id === campaignId &&
-					(!keyword || b.keyword === keyword),
-			)
-			?.location_name?.trim() || null;
+	const locationOf = (campaignId, keyword) => {
+		const rule = bidRules?.find(
+			(b) =>
+				b.campaign_id === campaignId &&
+				(!keyword || b.keyword === keyword),
+		);
+		return rule
+			? formatMeasuredAt(rule.location_name, rule.city_name)
+			: null;
+	};
 
 	const isLoading = loadingSchedules || loadingBidRules;
 	const error = schedulesError || bidRulesError;
@@ -229,11 +280,20 @@ export const AutomationsPage = () => {
 	// The campaign's state, which is a different thing entirely — enqueued the same way
 	// Campaign Manager v2 does it, and reported through the shared job line.
 	const handleActivate = async (row, status) => {
-		const res = await setActivationNow.mutateAsync({
-			campaignId: row.campaign_id,
-			status,
-		});
-		setActionJob(res.job_id);
+		// ⚠️ This used to have no error path at all. The endpoint answers 409 when an
+		// activation for this client is already active — a normal, expected outcome on a
+		// single-slot lane — and the rejection went nowhere: no message, no console entry a
+		// user would see, just a click that appeared to do nothing.
+		try {
+			const res = await setActivationNow.mutateAsync({
+				campaignId: row.campaign_id,
+				status,
+			});
+			setActionJob(res.job_id);
+			setActionError(null);
+		} catch (err) {
+			setActionError(conflictMessage(err, "start or stop a campaign"));
+		}
 	};
 
 	/**
@@ -273,8 +333,13 @@ export const AutomationsPage = () => {
 	};
 
 	const handleRefreshCampaigns = async () => {
-		const res = await refreshCampaigns.mutateAsync();
-		setActionJob(res.job_id);
+		try {
+			const res = await refreshCampaigns.mutateAsync();
+			setActionJob(res.job_id);
+			setActionError(null);
+		} catch (err) {
+			setActionError(conflictMessage(err, "refresh the campaign list"));
+		}
 	};
 
 	return (
@@ -304,7 +369,6 @@ export const AutomationsPage = () => {
 						schedules={schedules ?? []}
 						bidRules={bidRules ?? []}
 					/>
-					<JobLine jobId={actionJob} />
 					<Button
 						variant="secondary"
 						size="sm"
@@ -314,6 +378,10 @@ export const AutomationsPage = () => {
 					>
 						<RefreshCw size={14} /> Refresh Campaigns
 					</Button>
+					{/* The one signal that has to live OUTSIDE the logs modal: without it a
+					    click would have no visible consequence at all until you thought to
+					    open something. A count rather than a word — it stays meaningful when
+					    two things are queued, which "Applying…" never was. */}
 					<Button
 						variant="secondary"
 						size="sm"
@@ -321,11 +389,37 @@ export const AutomationsPage = () => {
 							setLogRow(null);
 							setLogsOpen(true);
 						}}
+						title={
+							runningCount
+								? `${runningCount} action${runningCount > 1 ? "s" : ""} in progress`
+								: "What the automations have been doing"
+						}
 					>
 						<ScrollText size={14} /> Execution logs
+						{runningCount > 0 && (
+							<span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-on-primary">
+								{runningCount}
+							</span>
+						)}
 					</Button>
 				</div>
 			</header>
+
+			{/* A refusal to QUEUE, which is different from a write that was refused: nothing
+			    reached the marketplace, so there is no run to look up and the activity list
+			    will show nothing. Dismissible, and cleared by the next successful action. */}
+			{actionError && (
+				<div className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-content">
+					<span>{actionError}</span>
+					<button
+						type="button"
+						onClick={() => setActionError(null)}
+						className="shrink-0 cursor-pointer text-xs text-content-muted underline hover:text-content"
+					>
+						Dismiss
+					</button>
+				</div>
+			)}
 
 			{/* Two CTAs instead of one generic button plus a promo banner: the kind of
 			    automation is the first real decision, so it is made here rather than on the
@@ -395,6 +489,7 @@ export const AutomationsPage = () => {
 				{!isLoading && !error && (
 					<div className="overflow-hidden rounded-xl border border-border bg-card">
 						<AutomationsTable
+							activeActionFor={activeActionFor}
 							rows={rows}
 							onEdit={setEditRow}
 							onDelete={(row) => ask("delete", row)}
@@ -425,6 +520,9 @@ export const AutomationsPage = () => {
 				/* The picker's start/stop acts on the CAMPAIGN, so it goes through the same
 				   handler and the same job feedback as the toggle on the list below. */
 				onActivateCampaign={handleActivate}
+				/* The toggle lives inside this overlay, so its result has to be reported
+				   inside it too — the page behind is not visible while it is open. */
+				activationJobId={actionJob}
 				onClose={() => {
 					setWizardKind(null);
 					setEditRow(null);
@@ -436,6 +534,7 @@ export const AutomationsPage = () => {
 				focusRow={logRow}
 				platformOf={platformOf}
 				locationOf={locationOf}
+				campaignNameOf={campaignNameOf}
 			/>
 
 			<ConfirmDialog
