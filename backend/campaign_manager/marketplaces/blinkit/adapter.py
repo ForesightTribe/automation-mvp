@@ -223,10 +223,12 @@ async def close_position_session(session: dict) -> None:
     await live_position.close_session(session)
 
 
-async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -> list[dict]:
+async def fetch_positions(session: dict, keyword: str, lat: float, lon: float, *,
+                          merchant_id: str | None = None) -> list[dict]:
     """Raw search results for (keyword, store) on an open session — one API request, no
     page navigation. The store is selected by the lat/lon HEADERS, so a run spanning
-    several stores costs no more than one at a single store.
+    several stores costs no more than one at a single store. `merchant_id` is accepted
+    for the contract and ignored: the coordinate is how Blinkit picks the store.
 
     Raises when the search could not be performed, so the caller can tell "our ad isn't
     there" (empty list) from "we couldn't look" (error)."""

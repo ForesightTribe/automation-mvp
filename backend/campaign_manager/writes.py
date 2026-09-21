@@ -374,6 +374,21 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
                           reason=str(e))
         _refused(outcome, str(e))
         return False
+    except WriteUnverified as e:
+        # Sent, and the answer does not say whether it landed. Read the budget back — the
+        # same reasoning as `apply_bid`: guessing "failed" makes our record disagree with
+        # the marketplace whenever the write did go through.
+        ok = await verify_budget(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                                 intended=target, why=str(e))
+        why = None if ok else f"{e}; and the budget did not change"
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
+                          subject="the budget", old=money(current), new=money(target),
+                          reason=why)
+        if ok:
+            _record(applied, adapter, "budget", campaign_id=campaign_id, value=target)
+        else:
+            _refused(outcome, why)
+        return ok
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       subject="the budget", old=money(current), new=money(target),
@@ -445,7 +460,8 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         # The write went out and we did not get a usable answer. Ask the marketplace what
         # the bid IS now, rather than assuming the worst — see WriteUnverified.
         ok = await verify_bid(adapter, client, run_id=run_id, campaign_id=campaign_id,
-                              keyword=keyword, intended=clamped, why=str(e))
+                              keyword=keyword, intended=clamped, why=str(e),
+                              match_type=match_type)
         # `resp` never existed on this path. The reason is the unverified reply itself,
         # which `verify_bid` has already narrated in full; this is its one-line form.
         why = None if ok else f"{e}; and the bid did not change"
@@ -462,7 +478,7 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
 
 
 async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
-                     intended: int, why: str) -> bool:
+                     intended: int, why: str, match_type: str | None = None) -> bool:
     """Did an unacknowledged bid write actually land? Read the bid back and see.
 
     Returns True only when the marketplace now reports the value we sent. Anything else —
@@ -471,8 +487,14 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
 
     Compares against `adapter.read_bids`, which is the SAME source the engine reads
     `current_cpm` from, so a confirmation here means the next tick will agree with us.
+
+    ⚠️ Where the adapter can read bids per `(keyword, match_type)` it is asked for exactly
+    the pair we wrote. `read_bids` is keyed by text alone, which on Zepto collapses a
+    keyword bid under EXACT and PHRASE into one value — confirming a write against the
+    OTHER match type's bid would record a change that never happened.
     """
-    read = getattr(adapter, "read_bids", None)
+    by_match = getattr(adapter, "read_bids_by_match", None) if match_type else None
+    read = by_match or getattr(adapter, "read_bids", None)
     if read is None:                              # a marketplace with no read-back path
         logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
                              reason=f"{why}; this marketplace cannot be read back",
@@ -486,7 +508,7 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
                              keyword=keyword)
         return False
 
-    current = live.get(keyword)
+    current = live.get((keyword, match_type) if by_match else keyword)
     if current is not None and int(current) == int(intended):
         logs.note(run_id, f'"{keyword}" — {why}, but the bid IS now ₹{intended} on the '
                           f"marketplace, so the change did land", level="warning")
@@ -495,6 +517,58 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
     logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
                          reason=f"{why}; the bid is still {shown}, so it did not land",
                          keyword=keyword)
+    return False
+
+
+async def _read_back(read, client, campaign_id, *, run_id: str, why: str, what: str):
+    """`(value, readable)` from a best-effort read-back. Narrates a failed read itself."""
+    if read is None:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; this marketplace cannot read {what} back")
+        return None, False
+    try:
+        return await read(client, campaign_id), True
+    except Exception as e:                        # the read is best-effort by definition
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; reading {what} back failed too ({e})")
+        return None, False
+
+
+async def verify_budget(adapter, client, *, run_id: str, campaign_id, intended,
+                        why: str) -> bool:
+    """Did an unacknowledged budget write land? `verify_bid`'s rules, for the budget:
+    True only when the marketplace now reports the value we sent."""
+    live, readable = await _read_back(getattr(adapter, "read_budget", None), client,
+                                      campaign_id, run_id=run_id, why=why, what="the budget")
+    if not readable:
+        return False
+    if live is not None and is_noop(intended, live):
+        logs.note(run_id, f"campaign {campaign_id} — {why}, but its budget IS now "
+                          f"{money(intended)}, so the change did land", level="warning")
+        return True
+    logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                         reason=f"{why}; the budget is still {money(live)}, so it did not land")
+    return False
+
+
+async def verify_status(adapter, client, *, run_id: str, campaign_id, target: str,
+                        why: str) -> bool:
+    """Did an unacknowledged start/stop land? Read the status back.
+
+    A start that comes back `held` DID land: the campaign is live and Zepto/Blinkit is
+    holding delivery for budget or wallet reasons — which is theirs to lift, not ours."""
+    live, readable = await _read_back(getattr(adapter, "read_status", None), client,
+                                      campaign_id, run_id=run_id, why=why, what="the status")
+    if not readable:
+        return False
+    if live == target or (target == "running" and live == "held"):
+        logs.note(run_id, f"campaign {campaign_id} — {why}, but it IS now "
+                          f"{STATE_WORDS.get(live, live)}, so the change did land",
+                  level="warning")
+        return True
+    logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                         reason=f"{why}; the campaign is still "
+                                f"{STATE_WORDS.get(live, live or 'unknown')}, so it did not land")
     return False
 
 
@@ -599,6 +673,19 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                           new=_status_words(target, budget), reason=str(e))
         _refused(outcome, str(e))
         return False
+    except WriteUnverified as e:
+        ok = await verify_status(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                                 target=target, why=str(e))
+        why = None if ok else f"{e}; and the campaign did not change"
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
+                          subject="the campaign", old=was,
+                          new=_status_words(target, budget), reason=why)
+        if ok:
+            _record(applied, adapter, "status", campaign_id=campaign_id, value=target,
+                    budget=budget)
+        else:
+            _refused(outcome, why)
+        return ok
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       subject="the campaign", old=was,

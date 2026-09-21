@@ -11,10 +11,13 @@ invariant). Nothing should call `update_campaign` directly.
 from datetime import timedelta
 from typing import Any
 
+import httpx
+
 from app.utils.logger import logger
 from app.utils.time import now_ist
 from campaign_manager.marketplaces.zepto import endpoints as ep
 from campaign_manager.marketplaces.zepto.transport import ZeptoClient
+from campaign_manager.writes import SessionExpired, WriteRefused, WriteUnverified
 
 # Zepto's own key for the response envelope. Most endpoints wrap in `data`; the
 # campaign DETAIL does not, which is a real inconsistency worth handling once here
@@ -106,13 +109,11 @@ async def update_campaign(client: ZeptoClient, campaign_id: int,
     `retry_writes=False`: a 401 is safe to retry (rejected before processing), but a
     TIMEOUT is not — the write may have applied and we simply never heard the answer.
     Retrying that blindly turns a retry into a second unintended write.
+
+    Failures are classified, not raised raw — see `_write`.
     """
-    r = await client.request("PUT", ep.CAMPAIGN_PLA.format(id=campaign_id),
-                             json=payload, retry_writes=False)
-    if r.status_code != 200:
-        raise RuntimeError(f"Zepto PUT campaign {campaign_id} -> "
-                           f"{r.status_code}: {r.text[:200]}")
-    return r.json()
+    return await _write(client, "PUT", ep.CAMPAIGN_PLA.format(id=campaign_id),
+                        payload, what=f"update campaign {campaign_id}")
 
 
 async def set_status(client: ZeptoClient, campaign_id: int, *, pause: bool) -> dict:
@@ -124,12 +125,77 @@ async def set_status(client: ZeptoClient, campaign_id: int, *, pause: bool) -> d
     keeps the prior budget and bids.
     """
     path = (ep.CAMPAIGN_PAUSE if pause else ep.CAMPAIGN_ACTIVATE).format(id=campaign_id)
-    r = await client.request("POST", path, json={"brand_id": client.brand_id},
-                             retry_writes=False)
-    if r.status_code != 200:
-        raise RuntimeError(f"Zepto {'pause' if pause else 'activate'} "
-                           f"{campaign_id} -> {r.status_code}: {r.text[:200]}")
-    return r.json()
+    return await _write(client, "POST", path, {"brand_id": client.brand_id},
+                        what=f"{'pause' if pause else 'activate'} campaign {campaign_id}")
+
+
+def _reason(r: httpx.Response) -> str:
+    """Zepto's own words for a failed call, or the start of the body when it gave none.
+
+    Its errors are JSON (`{"message": "keyword bid validation failed: …"}`) — that sentence
+    is what a person needs in History, so it is passed through rather than the status code.
+    """
+    try:
+        body = r.json()
+    except ValueError:
+        body = None
+    if isinstance(body, dict):
+        for key in ("message", "error", "detail", "errors"):
+            val = body.get(key)
+            if isinstance(val, (list, tuple)):
+                val = "; ".join(str(v) for v in val if v)
+            if val:
+                return str(val)[:200]
+    return (r.text or "").strip()[:200] or f"HTTP {r.status_code}, empty body"
+
+
+async def _write(client: ZeptoClient, method: str, path: str, body: dict, *,
+                 what: str) -> dict:
+    """Send one write and translate the outcome into what the choke point understands.
+
+    `writes.py` treats three failures differently, and a bare `RuntimeError` is none of
+    them — it escaped the choke point and aborted the whole engine run, skipping every
+    campaign after the one that failed. So each outcome is sorted by the only question
+    that matters afterwards: *could this have changed the campaign?*
+
+    * **Nothing was sent / Zepto said no** → `WriteRefused`. A 4xx is a decision
+      (`bid 8.00 is below minimum bid 10.00`), a connect failure never reached Zepto,
+      and a WAF challenge (202/429) is answered by CloudFront before the origin sees it.
+      One failed write with a reason; the run carries on.
+    * **It may have landed** → `WriteUnverified`. A read timeout, a dropped connection,
+      a 5xx (Zepto's gateway answers 500 when its upstream is slow, and the upstream may
+      still finish), or a 200 we cannot parse. The choke point reads the value back to
+      decide instead of guessing.
+    * **401** → `SessionExpired`. Not a verdict on this change: every later write in the
+      run would fail the same way, which is exactly when a run should stop.
+    """
+    try:
+        r = await client.request(method, path, json=body, retry_writes=False)
+    except (httpx.ConnectError, httpx.ConnectTimeout) as e:
+        raise WriteRefused(f"could not reach Zepto to {what} ({type(e).__name__}) — "
+                           "nothing was sent") from e
+    except httpx.TransportError as e:
+        raise WriteUnverified(f"Zepto did not answer the request to {what} "
+                              f"({type(e).__name__}) — it may still have applied") from e
+
+    status = r.status_code
+    if status == 200:
+        try:
+            return r.json()
+        except ValueError as e:
+            raise WriteUnverified(f"Zepto answered 200 to {what} but the reply was not "
+                                  f"JSON ({(r.text or '')[:80]!r})") from e
+    if status == 401:
+        raise SessionExpired(f"Zepto rejected the session (401) while trying to {what} — "
+                             "nothing was changed; the session was taken over or expired")
+    if status in (202, 429):
+        raise WriteRefused(f"Zepto's firewall challenged the request to {what} "
+                           f"(HTTP {status}) — nothing was sent")
+    if status >= 500:
+        raise WriteUnverified(f"Zepto answered {status} to {what} ({_reason(r)}) — its "
+                              "gateway does this when the upstream is slow, so it may have "
+                              "applied")
+    raise WriteRefused(f"Zepto refused to {what}: {_reason(r)}")
 
 
 def campaign_row(raw: dict) -> dict[str, Any]:

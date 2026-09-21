@@ -216,6 +216,7 @@ async def get_campaigns(
     rows = [
         {
             "campaign_id": c.campaign_id,
+            "platform": c.platform,
             "name": c.name,
             "type": c.type,
             "status": c.status,
@@ -236,6 +237,7 @@ async def get_campaigns(
             rows.append(
                 {
                     "campaign_id": z["campaign_id"],
+                    "platform": zepto_ads.SLUG,
                     "name": z["name"],
                     "type": z.get("campaign_type"),
                     "status": z.get("status"),

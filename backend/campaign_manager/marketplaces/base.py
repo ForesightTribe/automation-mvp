@@ -180,8 +180,18 @@ class CampaignAdapter(Protocol):
         """
 
     async def fetch_positions(self, session: dict, keyword: str,
-                              lat: float, lon: float) -> list[dict]:
-        """Search results for one keyword at one store, ad-flagged."""
+                              lat: float, lon: float, *,
+                              merchant_id: str | None = None) -> list[dict]:
+        """Search results for one keyword at one store, ad-flagged.
+
+        `merchant_id` is the store the engine means, when it knows it (every catalogue
+        store does). Passed always, so the engine needs no per-marketplace branch.
+
+        Blinkit: ignored — its store is chosen by the lat/lon headers.
+        Zepto:   REQUIRED in practice. Zepto binds a search to a store by HEADER; without
+                 the id the scraper resolves the coordinate through `get_page`, a separate
+                 and scarce allowance, on every search.
+        """
 
     def locate_position(self, results: list[dict], keyword: str,
                         lat: float, lon: float, *, products: list[dict],

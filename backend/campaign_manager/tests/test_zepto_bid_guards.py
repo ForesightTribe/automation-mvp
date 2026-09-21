@@ -131,7 +131,7 @@ def test_keyword_index_is_pure_and_reads_the_payload_it_is_given():
 def test_an_absent_keyword_refuses_instead_of_adding_one():
     try:
         zad._keyword_index({"keyword_targeting": []}, 7, "nope", "EXACT")
-    except RuntimeError as e:
+    except writes.WriteRefused as e:
         assert "adding a keyword is not a bid change" in str(e)
     else:
         raise AssertionError("must refuse")

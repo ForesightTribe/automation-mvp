@@ -1105,6 +1105,38 @@ async def write_store_reads(rows: list[dict]) -> None:
         logger.error(f"cm: could not record per-store bid readings — {e}")
 
 
+async def campaign_marketplaces(tenant_id: uuid.UUID, campaign_id: int) -> set[str]:
+    """Every marketplace whose catalogue knows this campaign id for this client.
+
+    The automation API is pinned to one marketplace, but the campaign lists it is fed from
+    merge Blinkit and Zepto — and the two id spaces are separate. This is what lets a write
+    surface refuse a campaign that belongs to the OTHER marketplace instead of filing it
+    under its own and sending the id to the wrong ad account.
+
+    Empty means "no catalogue has seen it", which is a normal state (a campaign created
+    since the last scrape) and is the caller's to allow — not a refusal.
+    """
+    from app.models.blinkit_marketing import BlinkitAdCampaign
+    from app.models.zepto_seller import ZeptoAdCampaignDaily
+
+    async with AsyncSessionLocal() as db:
+        found = set((await db.execute(
+            select(BlinkitAdCampaign.platform).where(
+                BlinkitAdCampaign.tenant_id == tenant_id,
+                BlinkitAdCampaign.campaign_id == campaign_id,
+            ).distinct()
+        )).scalars().all())
+        zepto = (await db.execute(
+            select(ZeptoAdCampaignDaily.id).where(
+                ZeptoAdCampaignDaily.tenant_id == tenant_id,
+                ZeptoAdCampaignDaily.campaign_id == campaign_id,
+            ).limit(1)
+        )).scalars().first()
+    if zepto is not None:
+        found.add("zepto")
+    return {p for p in found if p}
+
+
 async def campaign_name(tenant_id: uuid.UUID, campaign_id: int,
                         platform: str = "blinkit") -> str | None:
     """A campaign's name from the catalogue, for a History row whose writer never read it.

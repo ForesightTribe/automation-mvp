@@ -421,7 +421,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     status_cache: dict[int, str | None] = {}   # campaign_id → canonical status (same fetch)
     # campaign_id → {(keyword, match_type): marketplace minimum bid} (V7.6).
     floors_cache: dict[int, dict] = {}
-    # (keyword, lat, lon) → (results, error). ONE consumer-search scrape per distinct pair
+    # (keyword, lat, lon, merchant_id) → (results, error). ONE consumer-search scrape per distinct pair
     # for the whole run — see the note at the fetch site.
     positions_cache: dict[tuple, tuple[list, Exception | None]] = {}
 
@@ -1035,11 +1035,15 @@ async def _read_stores(adapter, session, positions_cache: dict, stores, keyword:
             readings.append(coverage.Reading(store, elig, coverage.GAVE_UP,
                                              detail=given_up[store.merchant_id]))
             continue
-        key = (keyword, float(store.lat), float(store.lon))
+        # The store id rides along: Zepto binds a search to a store by it (without it, every
+        # read resolves the coordinate through a scarce separate allowance); Blinkit ignores
+        # it. It is part of the key too — the id, not the coordinate, is what a store IS.
+        key = (keyword, float(store.lat), float(store.lon), store.merchant_id or "")
         if key not in positions_cache:
             try:
                 positions_cache[key] = (await adapter.fetch_positions(
-                    session, keyword, store.lat, store.lon), None)
+                    session, keyword, store.lat, store.lon,
+                    merchant_id=store.merchant_id or None), None)
             except Exception as e:
                 positions_cache[key] = ([], e)
         results, fetch_error = positions_cache[key]

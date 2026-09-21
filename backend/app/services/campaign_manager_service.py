@@ -30,6 +30,11 @@ class EditError(ValueError):
     """A rejected edit (e.g. editing a spent one-time rule) — the route maps it to 400."""
 
 
+class WrongMarketplace(EditError):
+    """The campaign belongs to a different marketplace than this API drives. A 400: the
+    request itself is wrong, and retrying it will never succeed."""
+
+
 class StateError(ValueError):
     """The action is fine, the automation is just not in a state where it makes sense —
     resuming one that is already running, pausing one that has ended, resetting one that
@@ -47,6 +52,25 @@ async def _reconcile(session, tenant_id: uuid.UUID) -> None:
         await enqueue(session, job_type="cm.reconcile", tenant_id=tenant_id, params={"live": "true"})
     except DuplicateActiveJob:
         pass
+
+
+async def _require_marketplace(tenant_id: uuid.UUID, campaign_id: int) -> None:
+    """Refuse a campaign that only another marketplace's catalogue knows.
+
+    Every path that takes a campaign id from the caller and turns it into an automation or
+    a job goes through this. Without it, a Zepto campaign picked from the merged
+    `/ads/campaigns` list was saved as a `PLATFORM` automation and its id sent to that
+    marketplace's ad account.
+
+    A campaign no catalogue has seen is allowed — one created since the last scrape is a
+    normal state, and refusing it would make it unautomatable until tomorrow.
+    """
+    found = await repo.campaign_marketplaces(tenant_id, campaign_id)
+    if found and PLATFORM not in found:
+        other = ", ".join(sorted(p.title() for p in found))
+        raise WrongMarketplace(
+            f"Campaign {campaign_id} is a {other} campaign. Automations here run on "
+            f"{PLATFORM.title()} only, so nothing was created.")
 
 
 async def _reapply(session, tenant_id: uuid.UUID, job_type: str) -> None:
@@ -127,6 +151,7 @@ async def list_budget_schedules(tenant_id: uuid.UUID) -> list[BudgetScheduleOut]
 
 
 async def create_budget_schedule(session, tenant_id: uuid.UUID, body: BudgetScheduleIn) -> BudgetScheduleOut:
+    await _require_marketplace(tenant_id, body.campaign_id)
     s = await repo.create_budget_schedule(
         tenant_id, PLATFORM, body.campaign_id,
         body.campaign_name or f"campaign {body.campaign_id}", body.default_budget, body.name,
@@ -373,6 +398,7 @@ async def _check_bid_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
 
 async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> BidRuleOut:
     d = body.model_dump()
+    await _require_marketplace(tenant_id, body.campaign_id)
     await _check_bid_floor(tenant_id, body.campaign_id, body.keyword,
                            body.match_type, body.min_bid)
     # Resolve the measurement store from a city / store id when lat/lon weren't given.
@@ -571,6 +597,7 @@ async def _enqueue_bid_reset(session, tenant_id: uuid.UUID, rule) -> uuid.UUID:
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
 async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float) -> uuid.UUID:
+    await _require_marketplace(tenant_id, campaign_id)
     params = {"campaign": str(campaign_id), "budget": str(budget)}
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
         params["live"] = "true"
@@ -587,6 +614,7 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     campaign's current budget from a fresh read, which is better than anything the API
     could guess from stale scraped data.
     """
+    await _require_marketplace(tenant_id, campaign_id)
     params = {"campaign": str(campaign_id), "status": status}
     if status == "running" and budget is not None:
         params["budget"] = str(budget)

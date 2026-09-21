@@ -41,6 +41,9 @@ async def create_budget_schedule(client: ClientDep, session: SessionDep, body: B
         # The UI has always had a message for this; without the mapping it never saw the
         # 409 and showed a generic failure instead.
         raise HTTPException(status.HTTP_409_CONFLICT, str(e))
+    except EditError as e:
+        # A campaign from another marketplace (WrongMarketplace).
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
 @router.patch("/budget-schedules/{schedule_id}", response_model=BudgetScheduleOut)
@@ -186,6 +189,8 @@ async def set_budget_now(client: ClientDep, session: SessionDep, body: SetBudget
         job_id = await svc.set_budget_now(session, client.id, body.campaign_id, body.budget)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A set-budget job is already active")
+    except EditError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return EnqueuedOut(job_id=job_id)
 
 
@@ -203,6 +208,8 @@ async def set_activation_now(client: ClientDep, session: SessionDep, campaign_id
                                               body.status, body.budget)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "An activation job is already active")
+    except EditError as e:
+        raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     return EnqueuedOut(job_id=job_id)
 
 

@@ -42,6 +42,7 @@ from campaign_manager.marketplaces.zepto import client as zc
 from campaign_manager.marketplaces.zepto import endpoints as ep
 from campaign_manager.marketplaces.zepto import translate
 from campaign_manager.marketplaces.zepto.transport import setup  # noqa: F401  (contract)
+from campaign_manager.writes import SessionExpired, WriteRefused
 
 # Platform-imposed bounds, published by Zepto at campaigns/metadata
 # (budget_types[0].minimum_value). `writes.py` reads these off the adapter, so a
@@ -287,7 +288,7 @@ async def close_position_session(session: dict) -> None:
 
 
 async def fetch_positions(session: dict, keyword: str, lat: float,
-                          lon: float) -> list[dict]:
+                          lon: float, *, merchant_id: str | None = None) -> list[dict]:
     """Search results for one keyword at one store, ad-flagged.
 
     ⚠️ Zepto binds a search to a store by HEADER, not by coordinate — sending lat/lon
@@ -295,6 +296,10 @@ async def fetch_positions(session: dict, keyword: str, lat: float,
     to say so. The store id is passed explicitly where we have one; otherwise the
     scraper resolves the coordinate, which spends a separate and independently
     rate-limited budget (`get_page`) that this project has exhausted once before.
+
+    `merchant_id` comes from the engine's measurement store (every catalogue store has
+    one). It used to be read only from `session["_merchant_id"]`, which nothing ever
+    set — so every multi-store read quietly paid the `get_page` cost.
 
     Raises when the search could not be performed — a block, or a transport failure —
     so the caller records an error rather than a silent "nothing found". That
@@ -313,7 +318,7 @@ async def fetch_positions(session: dict, keyword: str, lat: float,
 
     async def _once():
         return await zs.search(session, keyword, lat=lat, lon=lon,
-                               merchant_id=session.get("_merchant_id") or None)
+                               merchant_id=merchant_id or session.get("_merchant_id") or None)
 
     res = await _once()
     kind = res.get("kind")
@@ -379,9 +384,19 @@ async def _rebased_payload(client, campaign_id: int) -> tuple[dict, dict]:
     Always a fresh read. Reusing a detail fetched earlier in the run would let us
     resubmit a campaign as it was minutes ago — silently reverting anything changed
     in the dashboard meanwhile.
+
+    A failed read means NOTHING was sent, so it is a refusal of this one write, not a
+    crash of the run — except a dead session, which every later write would hit too.
     """
-    detail = await zc.get_campaign_detail(client, campaign_id)
-    options = await _targeting_options(client)
+    try:
+        detail = await zc.get_campaign_detail(client, campaign_id)
+        options = await _targeting_options(client)
+    except SessionExpired:
+        raise
+    except Exception as e:
+        raise WriteRefused(
+            f"could not re-read campaign {campaign_id} from Zepto before writing "
+            f"({' '.join(str(e).split())[:160]}) — nothing was sent") from e
     return translate.to_put(detail, options, campaign_id), detail
 
 
@@ -430,7 +445,7 @@ async def _put_one_field(client, campaign_id: int, field_path: str,
     # are exactly what we intend to differ.
     paths = [line.split(":", 1)[0] for line in changed]
     if paths != [field_path]:
-        raise RuntimeError(
+        raise WriteRefused(
             f"Zepto write REFUSED for campaign {campaign_id}: expected exactly "
             f"{field_path!r} to change, got {changed or 'no change'}. The campaign "
             "may have been edited since it was read, or the translator has drifted. "
@@ -493,7 +508,7 @@ def _keyword_index(payload: dict, campaign_id: int, keyword: str,
     for i, kw in enumerate(payload.get("keyword_targeting", [])):
         if kw.get("text") == keyword and kw.get("match_type") == match_type:
             return i
-    raise RuntimeError(
+    raise WriteRefused(
         f"Zepto campaign {campaign_id} has no keyword {keyword!r} with match type "
         f"{match_type!r}. Refusing to write — adding a keyword is not a bid change."
     )

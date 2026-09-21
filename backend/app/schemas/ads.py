@@ -22,11 +22,17 @@ class AdsSummary(BaseModel):
 
 
 class CampaignRow(BaseModel):
-    """Campaign metadata + its metric rollup over the window."""
+    """Campaign metadata + its metric rollup over the window.
+
+    `platform` says which marketplace the campaign belongs to. The list merges Blinkit and
+    Zepto rows, and their campaign ids are separate namespaces — without it a Zepto row is
+    indistinguishable from a Blinkit one, which is how a Zepto campaign could be picked on a
+    Blinkit-only write surface."""
 
     model_config = ConfigDict(from_attributes=True)
 
     campaign_id: int
+    platform: str = "blinkit"
     name: str | None
     type: str | None
     status: str | None
