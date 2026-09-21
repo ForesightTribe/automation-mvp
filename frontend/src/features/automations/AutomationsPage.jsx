@@ -24,13 +24,6 @@ import {
 	useRefreshCampaigns,
 } from "./hooks";
 
-/**
- * What each confirmation says, per action and per kind of automation.
- *
- * Kept together and out of the component because the wording is the point of the
- * dialog: the two kinds of automation share four verbs, and every one of them means
- * something different on a budget schedule than on a bid rule.
- */
 const confirmCopy = (action, row) => {
 	const who =
 		row.kind === "campaign"
@@ -84,8 +77,7 @@ const confirmCopy = (action, row) => {
 		return {
 			title: "Put the bid back to the minimum?",
 			confirmLabel: "Reset bid",
-			// The engine refuses this while the rule is running and says why. Saying the
-			// same thing here saves a request that is going to come back a 409.
+
 			blocked:
 				row.status === "running"
 					? "This automation is running right now. Pause it first, or the next check will bid it straight back up."
@@ -120,7 +112,7 @@ const confirmCopy = (action, row) => {
 /**
  * Automations — a new, independently-built management experience over the
  * same Campaign Manager v2 backend (budget schedules + bid rules), styled
- * after Dcluttr's Automations screen: a beta-tagged header with its own
+ * after Dcluttr's Automations screen: a header with its own
  * Create/Change-Logs actions, a rank-automation promo, channel pills +
  * underlined type tabs, a list with an inline on/off toggle and icon
  * controls, and a full-screen change-log overlay. Campaign Manager's own
@@ -284,14 +276,9 @@ export const AutomationsPage = () => {
 		<div className="space-y-6">
 			<header className="flex flex-wrap items-center justify-between gap-3">
 				<div>
-					<div className="flex items-center gap-2">
-						<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
-							Automations
-						</h1>
-						<span className="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
-							Beta
-						</span>
-					</div>
+					<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
+						Automations
+					</h1>
 					<p className="text-sm text-content-muted">
 						Budget and bid automations across channels.
 					</p>
