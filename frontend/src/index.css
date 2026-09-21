@@ -107,6 +107,28 @@ summary {
 	}
 }
 
+/* The "New" badge on a nav item. Tailwind has no keyframes for an animated
+   box-shadow, so the glow is declared here. */
+@keyframes badge-glow {
+	0%,
+	100% {
+		box-shadow: 0 0 0 0 rgb(2 132 199 / 0.45);
+	}
+	50% {
+		box-shadow: 0 0 9px 2px rgb(2 132 199 / 0.65);
+	}
+}
+
+.badge-new {
+	animation: badge-glow 2.6s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.badge-new {
+		animation: none;
+	}
+}
+
 /* Slim scrollbars.
 
    The tables and the wizard scroll inside their own boxes, and on any machine set to show
