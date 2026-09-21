@@ -123,7 +123,12 @@ const Step = ({ title, lede, children }) => (
 
 export const OnboardingModal = ({ open, platform, onClose }) => {
 	const { activeClient } = useClient();
-	const { data: platforms, isLoading, error, refetch } = usePlatforms();
+	const {
+		data: platforms,
+		isLoading,
+		error,
+		refetch,
+	} = usePlatforms({ watch: open });
 
 	const [step, setStep] = useState(0);
 	const [forwarded, setForwarded] = useState(false);

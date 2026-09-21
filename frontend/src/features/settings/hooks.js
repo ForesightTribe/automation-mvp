@@ -10,12 +10,20 @@ import {
 
 const PLATFORMS = "connections-platforms";
 
-export const usePlatforms = () => {
+/**
+ * The client's marketplace connections.
+ *
+ * `watch` re-reads them every few seconds. A sign-in finishes on the server with
+ * nothing to announce it, so while one is running the screen asks again until the
+ * session shows up, rather than waiting for someone to reload the page.
+ */
+export const usePlatforms = ({ watch = false } = {}) => {
 	const { activeClientId } = useClient();
 	return useQuery({
 		queryKey: [PLATFORMS, activeClientId],
 		queryFn: () => getPlatforms(activeClientId),
 		enabled: Boolean(activeClientId),
+		refetchInterval: watch ? 4000 : false,
 	});
 };
 
