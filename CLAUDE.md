@@ -97,8 +97,11 @@ The things that bite:
   whose _login_ is scheduled — `auth.login`, 00:05 IST, and `refresh-all` correctly
   reports it `not_refreshable`. And it permits **one session per user**: a new login
   revokes the previous one, so our login evicts a human's dashboard and theirs kills our
-  session mid-run. Trust `auth probe`, never `expires_at` alone. The Zepto schedule stays
-  **disabled** until the client provisions a service user.
+  session mid-run. Trust `auth probe`, never `expires_at` alone. **No service user is coming
+  (2026-09-21) and the client accepts evictions**, so Zepto jobs log in whenever they must:
+  on a 401 they first adopt a fresher session another job saved, else log in and resend —
+  writes included. Bounded by 2 re-logins per run + the circuit breaker; the old 30-min
+  floor is off (`CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS=0`). See docs/platform-auth.md.
 - **Anything scheduled needs the full interpreter path** and an explicit output
   redirect — cron/systemd never run `activate` and have no terminal, so a bare
   `python` fails with `ModuleNotFoundError` and unredirected output vanishes.

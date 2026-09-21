@@ -23,6 +23,7 @@ from scraper.platforms.zepto.dashboard_data.seller.scraper import (
     fetch_po_items as zepto_fetch_po_items,
     fetch_ad_campaigns as zepto_fetch_ad_campaigns,
     fetch_ads_tabular as zepto_fetch_ads_tabular,
+    fetch_campaign_catalog as zepto_fetch_campaign_catalog,
 )
 from scraper.platforms.zepto.dashboard_data.seller.parser import (
     parse_sales_daily as parse_zepto_sales_daily,
@@ -37,11 +38,13 @@ from scraper.platforms.zepto.dashboard_data.seller.parser import (
     parse_ad_keywords as parse_zepto_ad_keywords,
     parse_ad_products as parse_zepto_ad_products,
     parse_ad_breakdown as parse_zepto_ad_breakdown,
+    parse_campaign_catalog as parse_zepto_campaign_catalog,
 )
 from scraper.platforms.zepto.dashboard_data.seller.storage import (
     save_sales_results as zepto_save_sales_results,
     save_po_results as zepto_save_po_results,
     save_ad_results as zepto_save_ad_results,
+    save_campaign_catalog as zepto_save_campaign_catalog,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
 from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
@@ -2020,12 +2023,24 @@ async def _scrape_zepto_ads(
                 await asyncio.sleep(_ZEPTO_DAY_GAP_S)
                 await _fetch_day_tabs(day)
 
+            # The campaign CATALOGUE — every campaign's current configuration, for the
+            # campaign manager (zepto_ad_campaigns / zepto_ad_campaign_keywords). Read once
+            # per run, not per day: it is "now", not a series. Blinkit's marketing scrape
+            # fills blinkit_ad_campaigns the same way.
+            catalog: dict = {}
+
+            async def _catalog() -> None:
+                _tick("Campaign catalogue")
+                catalog.clear()
+                catalog.update(await zepto_fetch_campaign_catalog(headers))
+
             try:
                 with console.status("[cyan]Fetching campaigns...[/cyan]") as st:
                     status = st
                     n = 0
                     for day in days:
                         await _attempt(day, lambda day=day: _fetch_day(day))
+                    await _attempt("campaign catalogue", _catalog)
             except _SessionGone as e:
                 session_died = True
                 console.print(f"[yellow]{escape(str(e))}[/yellow]")
@@ -2061,13 +2076,23 @@ async def _scrape_zepto_ads(
                     session_died = True
                     console.print(f"[yellow]{escape(str(e))}[/yellow]")
             failed = [label for label, _ in lost]
+            # A campaign whose detail could not be read even on retry keeps its last good
+            # detail and gets a list-only row — but it is still a lost fetch, and a run
+            # that lost fetches must not report success (see the note at the end).
+            failed += [f"catalogue detail {cid}" for cid in catalog.get("failed") or []]
 
             written: dict[str, int] = {}
+            cat_written: dict[str, int] = {}
             if save:
                 written = await zepto_save_ad_results(
                     db, rows, kw_rows, prod_rows, bd_rows
                 )
-                await complete_scrape_job(db, job_id, sum(written.values()))
+                if catalog.get("campaigns"):
+                    cat_written = await zepto_save_campaign_catalog(
+                        db, *parse_zepto_campaign_catalog(catalog, tenant_id, job_id))
+                await complete_scrape_job(
+                    db, job_id, sum(written.values()) + cat_written.get("campaigns", 0)
+                    + cat_written.get("keywords", 0))
             else:
                 await complete_scrape_job(db, job_id)
 
@@ -2088,6 +2113,12 @@ async def _scrape_zepto_ads(
             console.print(f"  Keywords: [bold]{len(kw_unique)}[/bold] row(s), spend ₹{sum(k['spend'] for k in kw_unique):,.0f}")
             console.print(f"  Products: [bold]{len(prod_unique)}[/bold] row(s), spend ₹{sum(k['spend'] for k in prod_unique):,.0f}")
             console.print(f"  Breakdown (category/city/page): [bold]{len(bd_unique)}[/bold] row(s)")
+            if catalog.get("campaigns"):
+                console.print(
+                    f"  Catalogue: [bold]{len(catalog['campaigns'])}[/bold] campaign(s), "
+                    f"{len(catalog.get('details') or {})} with full detail"
+                    + (f", [yellow]{len(catalog['failed'])} detail read(s) failed[/yellow]"
+                       if catalog.get("failed") else ""))
             if recovered:
                 console.print(
                     f"  [green]{len(recovered)} fetch(es) failed once and succeeded on "
@@ -2104,7 +2135,8 @@ async def _scrape_zepto_ads(
             if save:
                 console.print(
                     "  [green]Saved to DB:[/green] "
-                    + ", ".join(f"{v} {k}" for k, v in written.items())
+                    + ", ".join(f"{v} {k}" for k, v in {**written, **{
+                        f"catalogue {k}": v for k, v in cat_written.items()}}.items())
                 )
             else:
                 console.print("  [yellow]--no-save: nothing written[/yellow]")

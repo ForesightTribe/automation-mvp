@@ -1105,6 +1105,47 @@ async def write_store_reads(rows: list[dict]) -> None:
         logger.error(f"cm: could not record per-store bid readings — {e}")
 
 
+# ── The campaign CATALOGUE, per marketplace ─────────────────────────────────
+#
+# Each marketplace keeps its campaigns' CURRENT configuration in its own pair of tables —
+# Blinkit's `blinkit_ad_campaigns` / `_keywords`, Zepto's `zepto_ad_campaigns` / `_keywords`
+# (ZC-B2/B3) — with different column names for the same facts. Every reader below picks
+# its tables here, from ONE mapping, never from an `if platform ==` chain at the call site.
+
+@dataclass(frozen=True)
+class _Catalog:
+    campaigns: object          # the campaign model
+    keywords: object           # the (campaign, keyword, match_type) model
+    name_col: str              # the campaign-name column
+    floor_col: str             # the keyword's published minimum-bid column
+
+
+def _catalog(platform: str) -> _Catalog:
+    if platform == "zepto":
+        from app.models.zepto_seller import ZeptoAdCampaign, ZeptoAdCampaignKeyword
+        return _Catalog(ZeptoAdCampaign, ZeptoAdCampaignKeyword, "campaign_name", "min_bid")
+    from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
+    return _Catalog(BlinkitAdCampaign, BlinkitAdCampaignKeyword, "name", "min_bid")
+
+
+async def catalog_cutoff(tenant_id: uuid.UUID, platform: str = "blinkit"):
+    """`scraped_at` a campaign must reach to count as part of the CURRENT account (ZC-B8).
+
+    Every catalogue write upserts what the marketplace returned, so a campaign that stops
+    coming back (deleted, or on an account the client left) keeps its last `scraped_at`
+    forever. Within 2 h of the newest write = returned by the latest scrape or Refresh.
+    Same rule as `ads_service._recent_campaign_cutoff` (Blinkit). None when there is none.
+    """
+    from sqlalchemy import func
+
+    model = _catalog(platform).campaigns
+    async with AsyncSessionLocal() as db:
+        latest = (await db.execute(
+            select(func.max(model.scraped_at)).where(model.tenant_id == tenant_id)
+        )).scalar()
+    return latest - timedelta(hours=2) if latest else None
+
+
 async def campaign_marketplaces(tenant_id: uuid.UUID, campaign_id: int) -> set[str]:
     """Every marketplace whose catalogue knows this campaign id for this client.
 
@@ -1117,7 +1158,7 @@ async def campaign_marketplaces(tenant_id: uuid.UUID, campaign_id: int) -> set[s
     since the last scrape) and is the caller's to allow — not a refusal.
     """
     from app.models.blinkit_marketing import BlinkitAdCampaign
-    from app.models.zepto_seller import ZeptoAdCampaignDaily
+    from app.models.zepto_seller import ZeptoAdCampaign, ZeptoAdCampaignDaily
 
     async with AsyncSessionLocal() as db:
         found = set((await db.execute(
@@ -1126,12 +1167,14 @@ async def campaign_marketplaces(tenant_id: uuid.UUID, campaign_id: int) -> set[s
                 BlinkitAdCampaign.campaign_id == campaign_id,
             ).distinct()
         )).scalars().all())
-        zepto = (await db.execute(
-            select(ZeptoAdCampaignDaily.id).where(
-                ZeptoAdCampaignDaily.tenant_id == tenant_id,
-                ZeptoAdCampaignDaily.campaign_id == campaign_id,
-            ).limit(1)
-        )).scalars().first()
+        # Zepto: its catalogue, or — for a campaign scraped before the catalogue existed —
+        # its daily metrics table.
+        zepto = None
+        for model in (ZeptoAdCampaign, ZeptoAdCampaignDaily):
+            zepto = zepto or (await db.execute(
+                select(model.id).where(model.tenant_id == tenant_id,
+                                       model.campaign_id == campaign_id).limit(1)
+            )).scalars().first()
     if zepto is not None:
         found.add("zepto")
     return {p for p in found if p}
@@ -1145,14 +1188,15 @@ async def campaign_name(tenant_id: uuid.UUID, campaign_id: int,
     Execution logs showed "—" for every one-off change. Best-effort: None when the campaign
     has not been scraped yet, or on any error — a nameless row beats a failed run.
     """
-    from app.models.blinkit_marketing import BlinkitAdCampaign
     try:
+        cat = _catalog(platform)
+        model = cat.campaigns
         async with AsyncSessionLocal() as db:
             return (await db.execute(
-                select(BlinkitAdCampaign.name).where(
-                    BlinkitAdCampaign.tenant_id == tenant_id,
-                    BlinkitAdCampaign.platform == platform,
-                    BlinkitAdCampaign.campaign_id == campaign_id,
+                select(getattr(model, cat.name_col)).where(
+                    model.tenant_id == tenant_id,
+                    model.platform == platform,
+                    model.campaign_id == campaign_id,
                 ).limit(1)
             )).scalar()
     except Exception:
@@ -1167,26 +1211,29 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str 
     blocking, because a campaign created since the last scrape is a normal state, not an
     error.
 
-    Reads only scraped tables, never Blinkit: this is served by the API on Render, which
-    has no browser (D2). The authoritative floor check happens at WRITE time on the VM.
-    """
-    from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
+    Reads only scraped tables, never the marketplace: this is served by the API on Render,
+    which has no browser (D2). The authoritative floor check happens at WRITE time on the VM.
 
+    Returns the marketplace's OWN row types (their columns differ — see `_catalog`); the
+    service shapes them for the API. On Zepto the keyword rows include negatives
+    (`is_negative`), which are not bid targets.
+    """
+    cat = _catalog(platform)
+    cm, km = cat.campaigns, cat.keywords
     async with AsyncSessionLocal() as db:
         campaign = (await db.execute(
-            select(BlinkitAdCampaign).where(
-                BlinkitAdCampaign.tenant_id == tenant_id,
-                BlinkitAdCampaign.platform == platform,
-                BlinkitAdCampaign.campaign_id == campaign_id,
+            select(cm).where(
+                cm.tenant_id == tenant_id,
+                cm.platform == platform,
+                cm.campaign_id == campaign_id,
             )
         )).scalars().first()
         keywords = (await db.execute(
-            select(BlinkitAdCampaignKeyword).where(
-                BlinkitAdCampaignKeyword.tenant_id == tenant_id,
-                BlinkitAdCampaignKeyword.platform == platform,
-                BlinkitAdCampaignKeyword.campaign_id == campaign_id,
-            ).order_by(BlinkitAdCampaignKeyword.keyword,
-                       BlinkitAdCampaignKeyword.match_type)
+            select(km).where(
+                km.tenant_id == tenant_id,
+                km.platform == platform,
+                km.campaign_id == campaign_id,
+            ).order_by(km.keyword, km.match_type)
         )).scalars().all()
     return campaign, list(keywords)
 
@@ -1200,16 +1247,17 @@ async def get_keyword_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str
     is trying to set up.
     """
     from sqlalchemy import func
-    from app.models.blinkit_marketing import BlinkitAdCampaignKeyword
 
+    cat = _catalog(platform)
+    km = cat.keywords
     async with AsyncSessionLocal() as db:
         return (await db.execute(
-            select(BlinkitAdCampaignKeyword.min_bid).where(
-                BlinkitAdCampaignKeyword.tenant_id == tenant_id,
-                BlinkitAdCampaignKeyword.platform == platform,
-                BlinkitAdCampaignKeyword.campaign_id == campaign_id,
-                func.lower(BlinkitAdCampaignKeyword.keyword) == (keyword or "").strip().lower(),
-                BlinkitAdCampaignKeyword.match_type == (match_type or "EXACT").upper(),
+            select(getattr(km, cat.floor_col)).where(
+                km.tenant_id == tenant_id,
+                km.platform == platform,
+                km.campaign_id == campaign_id,
+                func.lower(km.keyword) == (keyword or "").strip().lower(),
+                km.match_type == (match_type or "EXACT").upper(),
             )
         )).scalars().first()
 
@@ -1506,6 +1554,8 @@ async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
     """
     if not campaigns:
         return 0
+    if platform == "zepto":
+        return await _upsert_zepto_catalog(tenant_id, campaigns)
     from sqlalchemy.dialects.postgresql import insert
 
     from app.models.blinkit_marketing import BlinkitAdCampaign
@@ -1569,10 +1619,43 @@ def _catalog_model(table: str):
     `app.models`); this is the one place that resolves it, so a second marketplace adds a
     line here rather than a branch in the choke point."""
     from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
+    from app.models.zepto_seller import ZeptoAdCampaign, ZeptoAdCampaignKeyword
     return {
         "blinkit.campaigns": BlinkitAdCampaign,
         "blinkit.keywords": BlinkitAdCampaignKeyword,
+        "zepto.campaigns": ZeptoAdCampaign,
+        "zepto.keywords": ZeptoAdCampaignKeyword,
     }.get(table)
+
+
+async def _upsert_zepto_catalog(tenant_id: uuid.UUID, campaigns: list[dict]) -> int:
+    """`cm.sync_campaigns -m zepto` — the LIST fields of `zepto_ad_campaigns`. (ZC-B5, A4)
+
+    Through the scraper's own parser and writer, exactly as the Blinkit branch above reuses
+    the marketing scraper's `parse_campaign`: one definition of a row. List fields only —
+    `save_campaign_catalog` updates only the columns a row carries, so a Refresh can never
+    blank the targeting, products or keywords the daily scrape stored. `scrape_job_id` is
+    dropped for the same reason the Blinkit branch drops it: this run has no scrape job,
+    and blanking it would destroy the scraper's lineage.
+
+    This used to run Blinkit's parser on Zepto rows, which skipped every one (they carry
+    `campaign_id`, not `id`) and reported success with 0 campaigns (ZC-A4).
+    """
+    from scraper.platforms.zepto.dashboard_data.seller.parser import parse_catalog_list_row
+    from scraper.platforms.zepto.dashboard_data.seller.storage import save_campaign_catalog
+
+    rows = []
+    for raw in campaigns:
+        if raw.get("campaign_id") is None:
+            continue
+        row = parse_catalog_list_row(raw, str(tenant_id), None)
+        row.pop("scrape_job_id")
+        rows.append(row)
+    if not rows:
+        return 0
+    async with AsyncSessionLocal() as db:
+        written = await save_campaign_catalog(db, [], rows, {})
+    return written["campaigns"]
 
 
 def merge_patches(patches: list[dict]) -> list[dict]:

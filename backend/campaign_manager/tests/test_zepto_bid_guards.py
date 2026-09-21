@@ -93,17 +93,16 @@ def test_the_pure_bounds_predicate():
 
 # ── cross-run re-login bound (§5.4) ─────────────────────────────────────────
 
-def test_the_cross_run_interval_is_a_real_gap_not_a_token_one():
-    """The bid optimizer ticks every 15 min in a FRESH subprocess, so the floor has to
-    exceed one tick or it bounds nothing at all."""
-    assert ztr.MIN_REAUTH_INTERVAL_SECONDS > 15 * 60
+def test_the_cross_run_floor_is_off_by_default():
+    """Decided 2026-09-21 (Deepansh): no service user is coming and the client accepts being
+    logged out, so a missed action is the worse outcome. The floor stays configurable
+    (`CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS`) — see test_zepto_session_sharing."""
+    assert ztr.MIN_REAUTH_INTERVAL_SECONDS == 0
 
 
-def test_both_bounds_still_exist_and_answer_different_questions():
-    """Per-run stops a ping-pong inside one process; cross-run stops it across the 16
-    processes a 4-hour window spawns. Removing either leaves a real hole."""
-    assert ztr.MAX_REAUTH_PER_RUN >= 1
-    assert ztr.MIN_REAUTH_INTERVAL_SECONDS >= 1
+def test_the_per_run_bound_still_exists():
+    """With the cross-run floor off, this is what stops one job looping on logins."""
+    assert 1 <= ztr.MAX_REAUTH_PER_RUN <= 3
 
 
 def test_the_auth_store_exposes_the_cross_run_signal():

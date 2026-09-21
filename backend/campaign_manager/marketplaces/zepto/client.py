@@ -28,39 +28,82 @@ def _unwrap(body: dict) -> dict:
 
 
 async def get_campaigns(client: ZeptoClient, days: int = 90) -> list[dict]:
-    """Every sponsored-products campaign on the account, in ONE call.
+    """Every campaign on the account (all tabs — `categoryType` is ignored), all pages.
 
     ⚠️ The list is DATE-SCOPED. A narrow window silently omits campaigns rather than
     erroring, so anything reading this to decide "what exists" must pass a generous
     window — the same hazard `cm sync-campaigns` guards with MIN_DAYS on Blinkit.
+
+    ⚠️ PAGED, and `limit` is ignored: this used to ask once with `limit=200` and got the
+    first page only (a recorded dashboard call: 8 of 21, `has_next: true`). Only `page`
+    works (1-based) — the private scraper established that by elimination. The loop stops
+    on `total_count`, on a page that adds no new ids, or at `_MAX_PAGES`: `has_next` alone
+    has been seen staying true after the last campaign.
     """
     today = now_ist().date()
-    params = {
-        "selectedBrand": client.brand_id,
-        "brand_id": client.brand_id,
-        "categoryType": "sponsored_products",
-        "campaign_category": "sponsored_products",
-        "from_date": str(today - timedelta(days=days)),
-        "to_date": str(today),
-        "limit": "200",
-        "page": "1",
-        "sort_field": "nudges",
-        "sort_order": "ASC",
-        "date_field": "",
-        "campaign_sub_types": "",
-    }
-    body = await client.get_json(ep.CAMPAIGNS, params=params)
-    data = _unwrap(body)
-    campaigns = data.get("campaigns") or []
-    total = data.get("total_count")
-    if total is not None and len(campaigns) < total:
-        # Paging exists (`page`/`limit`); say so loudly rather than silently
-        # under-reporting the account.
-        logger.warning(
-            f"Zepto returned {len(campaigns)} of {total} campaigns — raise `limit` "
-            "or add paging before trusting this as the full account."
-        )
+    by_id: dict = {}
+    total = None
+    for page in range(1, _MAX_PAGES + 1):
+        params = {
+            "selectedBrand": client.brand_id,
+            "brand_id": client.brand_id,
+            "categoryType": "sponsored_products",
+            "campaign_category": "sponsored_products",
+            "from_date": str(today - timedelta(days=days)),
+            "to_date": str(today),
+            "page": str(page),
+            "sort_field": "nudges",
+            "sort_order": "ASC",
+            "date_field": "",
+            "campaign_sub_types": "",
+        }
+        data = _unwrap(await client.get_json(ep.CAMPAIGNS, params=params))
+        rows = data.get("campaigns") or []
+        if total is None:
+            total = data.get("total_count")
+        before = len(by_id)
+        for r in rows:
+            if r.get("campaign_id") is not None:
+                by_id[r["campaign_id"]] = r
+        if not rows or len(by_id) == before or (total and len(by_id) >= total):
+            break
+    campaigns = list(by_id.values())
+    if total and len(campaigns) < total:
+        logger.warning(f"Zepto returned {len(campaigns)} of {total} campaigns — paging "
+                       "stopped early; treat this as a partial account.")
     return campaigns
+
+
+# A bound, not an expectation: rows come ~10 a page, so 30 pages = ~300 campaigns.
+_MAX_PAGES = 30
+
+
+async def get_keyword_floors(client: ZeptoClient, keywords: list[tuple[str, str]]
+                             ) -> dict[tuple[str, str], int]:
+    """Zepto's minimum bid per `(keyword, match_type)` — ONE request for the whole list.
+
+    `POST /ads-bff/api/v1/keyword/config` {"keywords": [{keyword, match_type}]} →
+    {"keywords": [{keyword, match_type, min_bid}]}. The direct analogue of Blinkit's
+    `keywords/attributes`. Answers EXACT, PHRASE and BROAD (verified 2026-09-21 — an
+    earlier note that it was EXACT-only was wrong or out of date).
+
+    A keyword Zepto leaves out is simply ABSENT from the result. Absent means "unknown",
+    never "no floor" — `pink toffee` was once absent and a write was still refused at ₹10.
+    """
+    if not keywords:
+        return {}
+    body = {"keywords": [{"keyword": k, "match_type": m} for k, m in keywords]}
+    r = await client.request("POST", ep.KEYWORD_CONFIG, json=body)
+    if r.status_code != 200:
+        raise RuntimeError(f"Zepto keyword/config -> {r.status_code}: {r.text[:200]}")
+    out: dict[tuple[str, str], int] = {}
+    for k in (r.json() or {}).get("keywords") or []:
+        if k.get("keyword") and k.get("match_type") and k.get("min_bid") is not None:
+            try:
+                out[(k["keyword"], k["match_type"])] = int(round(float(k["min_bid"])))
+            except (TypeError, ValueError):
+                continue
+    return out
 
 
 async def get_campaign_detail(client: ZeptoClient, campaign_id: int) -> dict:
@@ -119,9 +162,10 @@ async def update_campaign(client: ZeptoClient, campaign_id: int,
     targeting rather than failing. `adapter.py` builds the payload from a fresh read
     and refuses unless exactly the intended field differs.
 
-    `retry_writes=False`: a 401 is safe to retry (rejected before processing), but a
-    TIMEOUT is not — the write may have applied and we simply never heard the answer.
-    Retrying that blindly turns a retry into a second unintended write.
+    A 401 is recovered inside the transport — a fresher stored session, else a new
+    login — and resent once; that is safe because a 401 is rejected before Zepto
+    processes anything. A TIMEOUT is never resent: the write may have applied and we
+    simply never heard. That becomes `WriteUnverified` and is resolved by reading back.
 
     Failures are classified, not raised raw — see `_write`.
     """
@@ -179,11 +223,13 @@ async def _write(client: ZeptoClient, method: str, path: str, body: dict, *,
       a 5xx (Zepto's gateway answers 500 when its upstream is slow, and the upstream may
       still finish), or a 200 we cannot parse. The choke point reads the value back to
       decide instead of guessing.
-    * **401** → `SessionExpired`. Not a verdict on this change: every later write in the
-      run would fail the same way, which is exactly when a run should stop.
+    * **401** → `SessionExpired`. Only reached once the transport has ALREADY tried to
+      recover (adopt a fresher session, else log in, then resend) and still got a 401 —
+      so the session genuinely cannot be restored, and every later write would fail the
+      same way. That is when a run should stop.
     """
     try:
-        r = await client.request(method, path, json=body, retry_writes=False)
+        r = await client.request(method, path, json=body)
     except (httpx.ConnectError, httpx.ConnectTimeout) as e:
         raise WriteRefused(f"could not reach Zepto to {what} ({type(e).__name__}) — "
                            "nothing was sent") from e
@@ -199,8 +245,8 @@ async def _write(client: ZeptoClient, method: str, path: str, body: dict, *,
             raise WriteUnverified(f"Zepto answered 200 to {what} but the reply was not "
                                   f"JSON ({(r.text or '')[:80]!r})") from e
     if status == 401:
-        raise SessionExpired(f"Zepto rejected the session (401) while trying to {what} — "
-                             "nothing was changed; the session was taken over or expired")
+        raise SessionExpired(f"Zepto rejected the session (401) while trying to {what}, "
+                             "even after logging in again — nothing was changed")
     if status in (202, 429):
         raise WriteRefused(f"Zepto's firewall challenged the request to {what} "
                            f"(HTTP {status}) — nothing was sent")

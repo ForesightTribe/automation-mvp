@@ -397,10 +397,9 @@ async def read_restart_context(client, campaign_id: int) -> dict:
 # function. An MP-agnostic caller must never know a marketplace's words.
 #
 # ⚠️ A marketplace with no `catalog_patch` gets NO write-back at all, silently and by
-# design. That is how Zepto stays untouched today: not an `if platform == "blinkit"` in
-# the choke point, but an absent attribute. When Zepto's turn comes it defines its own
-# `catalog_patch`, adds its table names to `repo._catalog_model`, and nothing in
-# `writes.py` or the engines changes.
+# design — not an `if platform == "blinkit"` in the choke point, but an absent attribute.
+# Zepto got its own on 2026-09-21 (`zepto/adapter.catalog_patch` + two lines in
+# `repo._catalog_model`) exactly that way: nothing in `writes.py` or the engines changed.
 
 # The inverse of `_STATUS_FROM_BLINKIT`, and deliberately NOT derived from it: that map is
 # many-to-one (`ACTIVE` and the transient `SCHEDULED` both mean `running`), so inverting it

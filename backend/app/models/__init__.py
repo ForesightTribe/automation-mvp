@@ -30,6 +30,8 @@ from app.models.zepto_seller import (
     ZeptoAdKeywordDaily,
     ZeptoAdProductDaily,
     ZeptoAdBreakdownDaily,
+    ZeptoAdCampaign,
+    ZeptoAdCampaignKeyword,
 )
 from app.models.blinkit_marketing import (
     BlinkitAdCampaign,
@@ -63,7 +65,7 @@ __all__ = [
     "BlinkitSellerSale", "BlinkitSellerSalesSummary", "BlinkitPO", "BlinkitPOSnapshot",
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",
     "ZeptoSellerSalesSummary", "ZeptoSellerSales", "ZeptoAdCampaignDaily", "ZeptoAdKeywordDaily",
-    "ZeptoAdProductDaily", "ZeptoAdBreakdownDaily",
+    "ZeptoAdProductDaily", "ZeptoAdBreakdownDaily", "ZeptoAdCampaign", "ZeptoAdCampaignKeyword",
     "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",
     "BlinkitAdCampaignKeyword",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",

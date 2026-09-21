@@ -179,35 +179,28 @@ def bids_from_detail(detail: dict) -> dict[str, int]:
 
 async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
                           ) -> dict[tuple[str, str], int]:
-    """Zepto's published minimum bid per (keyword, match_type). NOT YET WIRED.
+    """Zepto's published minimum bid per (keyword, match_type) for a campaign (ZC-C1).
 
-    Returns `{}`, which `effective_floor` reads as "no floor known" and falls back to
-    the rule's own `min_bid` — today's behaviour, unchanged. The method exists because
-    the engine calls it unconditionally; without it every Zepto tick raised
-    AttributeError inside the campaign-read `try` and reported "could not read the
-    campaign", skipping the rule entirely.
+    One `keyword/config` request for the campaign's whole bidding-keyword list — the
+    analogue of Blinkit's `get_keyword_attributes` — read LIVE because it decides what gets
+    written. Keyed in OUR vocabulary, which on Zepto is Zepto's own (EXACT/PHRASE/BROAD):
+    the engine looks up `(keyword, rule.match_type)` and must not translate.
 
-    The endpoint IS known and verified live (2026-09-02) — the direct analogue of
-    Blinkit's `get_keyword_attributes`:
-
-        POST /ads-bff/api/v1/keyword/config   (`ep.KEYWORD_CONFIG`)
-        -> {"keywords": [{"keyword": "bread", "match_type": "EXACT"}]}
-        <- {"keywords": [{"keyword": "bread", "match_type": "EXACT", "min_bid": 9}]}
-
-    Wiring it is deliberately deferred (Deepansh, 2026-09-02) rather than done inside
-    a merge. Three things to honour when it is:
-
-    * **Floors vary per keyword** — bread 9, ricotta 3 in one sample. `MIN_BID = 10`
-      is currently enforced flat, so it is conservative and over-restrictive; it
-      should become the fallback for keywords the lookup does not cover.
-    * **EXACT only.** PHRASE and BROAD returned nothing for any keyword tested.
-    * **Absence is not permission.** `pink toffee` is missing from the response for
-      every match type, yet a live write was refused against a floor of 10.
-
-    Key the returned dict in OUR vocabulary (see `blinkit.adapter._our_match`) — the
-    engine looks up `(keyword, rule.match_type)` and must not translate.
+    Floors genuinely vary per keyword (bread 9, ricotta 3). A keyword Zepto omits is
+    absent here, and `effective_floor` then falls back to the rule's own `min_bid`;
+    `writes.apply_bid` still enforces `MIN_BID` flat on top (the observed default of ₹10
+    for keywords with no config). Returns {} on any failure — refusing to bid because a
+    lookup failed would be worse than bidding at the configured minimum.
     """
-    return {}
+    try:
+        if detail is None:
+            detail = await zc.get_campaign_detail(client, campaign_id)
+        pairs = sorted(translate.bids_from_detail(detail or {}))
+        return await zc.get_keyword_floors(client, pairs)
+    except Exception as e:
+        logger.warning(f"Zepto campaign {campaign_id}: could not read keyword floors ({e}) "
+                       "— falling back to the rule's own minimum")
+        return {}
 
 
 async def read_products(client, campaign_id: int) -> list[dict]:
@@ -620,6 +613,47 @@ def set_advertiser(client, advertiser_id) -> None:
 async def resolve_advertiser(client):
     """What a write would be scoped to. Derived, not stored."""
     return client.brand_id
+
+
+# ── Catalogue write-back (ZC-B7; Blinkit's twin is in blinkit/adapter.py) ─────
+#
+# A landed write changes Zepto but not `zepto_ad_campaigns` / `_keywords` — the catalogue
+# the product reads — until the next scrape. `writes.py` asks the adapter WHERE a write
+# lands and `repo.record_applied` patches it (UPDATE only; never advances `scraped_at`).
+
+CATALOG_CAMPAIGNS = "zepto.campaigns"
+CATALOG_KEYWORDS = "zepto.keywords"
+
+# Only the two states we ever WRITE. Zepto's activate/pause are dedicated flips, so the
+# status is exactly this — unlike Blinkit, a resume never re-submits the budget.
+_STATUS_TO_ZEPTO = {"running": ep.STATUS_ACTIVE, "paused": ep.STATUS_PAUSED}
+
+
+def catalog_patch(what: str, *, campaign_id: int, value, keyword: str | None = None,
+                  match_type: str | None = None, budget: float | None = None) -> list[dict]:
+    """Where a landed write lands in OUR catalogue — `[{table, key, set}]`. Pure.
+
+    No vocabulary translation for bids: a Zepto rule's match type IS Zepto's own
+    (EXACT/PHRASE/BROAD), unlike Blinkit's BROAD→SMART. `budget` is ignored on a status
+    write for the same reason `RESUME_RESUBMITS` is False: activating changes no budget.
+    An unknown `what` returns [] — the marketplace has already been mutated by now, so a
+    stale column beats a failed run.
+    """
+    if what == "budget":
+        return [{"table": CATALOG_CAMPAIGNS, "key": {"campaign_id": campaign_id},
+                 "set": {"daily_budget": int(round(float(value)))}}]
+    if what == "status":
+        zepto_status = _STATUS_TO_ZEPTO.get(value)
+        if zepto_status is None:
+            return []
+        return [{"table": CATALOG_CAMPAIGNS, "key": {"campaign_id": campaign_id},
+                 "set": {"status": zepto_status}}]
+    if what == "bid":
+        return [{"table": CATALOG_KEYWORDS,
+                 "key": {"campaign_id": campaign_id, "keyword": keyword,
+                         "match_type": (match_type or "EXACT").upper()},
+                 "set": {"bid_value": int(value)}}]
+    return []
 
 
 def campaign_name(detail: dict) -> str | None:
