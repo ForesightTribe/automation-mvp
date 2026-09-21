@@ -303,13 +303,19 @@ def test_keywords_are_keyed_by_text_AND_match_type():
 
 
 def test_negative_keywords_never_become_bid_targets():
+    """...but they DO travel in the PUT. This test used to assert they were dropped from
+    `keyword_targeting` — which was the ZC-A14 bug: that list replaces the campaign's
+    keywords, so dropping them deleted them. See test_zepto_translate_manual.py for the
+    real dashboard save that settled it."""
     detail = {**GET_DETAIL, "keyword_config": [
         {"keyword": "cheap", "match_type": "EXACT", "is_negative": True, "bid_value": 0},
         {"keyword": "pink toffee", "match_type": "EXACT", "is_negative": False, "bid_value": 10},
     ]}
     assert list(translate.bids_from_detail(detail)) == [("pink toffee", "EXACT")]
-    assert [k["text"] for k in translate.to_put(
-        detail, TARGETING_OPTIONS, CAMPAIGN_ID)["keyword_targeting"]] == ["pink toffee"]
+    assert translate.to_put(detail, TARGETING_OPTIONS, CAMPAIGN_ID)["keyword_targeting"] == [
+        {"text": "cheap", "match_type": "EXACT", "is_negative": True},
+        {"text": "pink toffee", "match_type": "EXACT", "bid_value": 10},
+    ]
 
 
 def test_diff_ignores_list_reordering_but_catches_membership():

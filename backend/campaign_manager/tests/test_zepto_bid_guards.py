@@ -140,25 +140,33 @@ def test_an_absent_keyword_refuses_instead_of_adding_one():
 def test_apply_bid_reads_the_campaign_exactly_once():
     """Counts the reads. Two would widen the window in which a parallel budget write
     can land between our read and our PUT."""
+    # A REAL campaign read (the golden fixture), because the faithfulness check refuses to
+    # write from an empty one. What is counted is the reads BEFORE the PUT — the post-write
+    # read-back is a separate call after the write has landed and widens nothing.
+    from campaign_manager.marketplaces.zepto import translate
+    from campaign_manager.tests.test_zepto_translate import (
+        CAMPAIGN_ID, GET_DETAIL, TARGETING_OPTIONS)
     reads = []
 
     async def fake_rebased(client, campaign_id):
         reads.append(campaign_id)
-        return ({"daily_budget": 500,
-                 "keyword_targeting": [{"text": "kw", "match_type": "EXACT",
-                                        "bid_value": 10}]}, {})
+        return translate.to_put(GET_DETAIL, TARGETING_OPTIONS, campaign_id), GET_DETAIL
 
     async def fake_update(client, campaign_id, payload):
         return {"ok": True}
 
-    orig_rebased, orig_update = zad._rebased_payload, zad.zc.update_campaign
-    zad._rebased_payload, zad.zc.update_campaign = fake_rebased, fake_update
-    try:
-        asyncio.run(zad.apply_bid(None, 42, "kw", 12, "EXACT"))
-    finally:
-        zad._rebased_payload, zad.zc.update_campaign = orig_rebased, orig_update
+    async def fake_detail(client, campaign_id):          # the post-write read-back
+        return GET_DETAIL
 
-    assert reads == [42], f"expected exactly one read, got {len(reads)}"
+    orig = (zad._rebased_payload, zad.zc.update_campaign, zad.zc.get_campaign_detail)
+    zad._rebased_payload, zad.zc.update_campaign, zad.zc.get_campaign_detail = (
+        fake_rebased, fake_update, fake_detail)
+    try:
+        asyncio.run(zad.apply_bid(None, CAMPAIGN_ID, "pink toffee", 12, "EXACT"))
+    finally:
+        zad._rebased_payload, zad.zc.update_campaign, zad.zc.get_campaign_detail = orig
+
+    assert reads == [CAMPAIGN_ID], f"expected exactly one read, got {len(reads)}"
 
 
 if __name__ == "__main__":

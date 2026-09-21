@@ -71,11 +71,24 @@ async def get_campaign_detail(client: ZeptoClient, campaign_id: int) -> dict:
     return _unwrap(await client.get_json(ep.CAMPAIGN_PLA.format(id=campaign_id)))
 
 
-async def get_targeting_options(client: ZeptoClient) -> dict:
-    """Brand-level targeting vocabulary. Needed by `translate.to_put` for the city
-    list when a campaign targets ALL cities."""
-    return await client.get_json(ep.TARGETING_OPTIONS,
-                                 params={"brand_id": client.brand_id})
+async def get_targeting_options(client: ZeptoClient, *, campaign_type: str = "PLA",
+                                campaign_sub_type: str = "AUCTION_UP_SELL") -> dict:
+    """The brand's targeting vocabulary — `cities[{id, name}]` and categories.
+
+    Needed by `translate.to_put` (an all-cities campaign's PUT carries the full city list)
+    and by the catalogue, to turn a campaign's city ids into names.
+
+    ⚠️ The params are the dashboard's own, and ALL of them matter (ZC-A12). With only
+    `brand_id` the endpoint answers 200 with `{"cities": [], "categories": []}` —
+    verified live 2026-09-21: 0 cities that way, 9 this way. That empty answer went
+    unnoticed because the translator's golden test was captured WITH the params.
+    """
+    return await client.get_json(ep.TARGETING_OPTIONS, params={
+        "brand_id": client.brand_id,
+        "include": "category,geo",
+        "campaign_type": campaign_type or "PLA",
+        "campaign_sub_type": campaign_sub_type or "AUCTION_UP_SELL",
+    })
 
 
 async def get_metadata(client: ZeptoClient) -> dict:

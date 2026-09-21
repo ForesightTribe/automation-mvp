@@ -42,6 +42,7 @@ import json
 from app.utils.logger import logger
 from campaign_manager.marketplaces.zepto import client as zc
 from campaign_manager.marketplaces.zepto import endpoints as ep
+from campaign_manager.marketplaces.zepto import payload as zpayload
 from campaign_manager.marketplaces.zepto import status as zstatus
 from campaign_manager.marketplaces.zepto import translate
 from campaign_manager.marketplaces.zepto.transport import setup  # noqa: F401  (contract)
@@ -387,56 +388,75 @@ async def _rebased_payload(client, campaign_id: int) -> tuple[dict, dict]:
     """
     try:
         detail = await zc.get_campaign_detail(client, campaign_id)
-        options = await _targeting_options(client)
+        options = await _targeting_options(client, detail)
     except SessionExpired:
         raise
     except Exception as e:
         raise WriteRefused(
             f"could not re-read campaign {campaign_id} from Zepto before writing "
             f"({' '.join(str(e).split())[:160]}) — nothing was sent") from e
-    return translate.to_put(detail, options, campaign_id), detail
+    payload = translate.to_put(detail, options, campaign_id)
+    # The diff guard cannot see a translation that is wrong in both copies; this catches
+    # the one that happened (an empty city list — ZC-A12).
+    refusal = translate.write_refusal(payload)
+    if refusal:
+        raise WriteRefused(f"campaign {campaign_id}: {refusal}")
+    return payload, detail
 
 
-async def _targeting_options(client) -> dict:
-    """Brand-level city list, cached for the life of the client.
+async def _targeting_options(client, detail: dict | None = None) -> dict:
+    """The brand's city list for this kind of campaign, cached for the life of the client.
 
-    Needed by every write (a campaign targeting ALL cities sends the explicit list),
-    but it is brand-level and static within a run — fetching it per write would
-    triple the request count for no benefit.
+    Needed by every write (a campaign targeting ALL cities sends the explicit list), but
+    static within a run — fetching it per write would triple the request count. Cached
+    per (campaign_type, sub_type), since the dashboard asks per type.
     """
-    cached = getattr(client, "_targeting_options", None)
-    if cached is None:
-        cached = await zc.get_targeting_options(client)
-        client._targeting_options = cached
-    return cached
+    detail = detail or {}
+    key = (detail.get("campaign_type") or "PLA",
+           detail.get("campaign_sub_type") or "AUCTION_UP_SELL")
+    cache = getattr(client, "_targeting_options", None)
+    if not isinstance(cache, dict) or not all(isinstance(k, tuple) for k in cache):
+        cache = {}
+        client._targeting_options = cache
+    if key not in cache:
+        cache[key] = await zc.get_targeting_options(
+            client, campaign_type=key[0], campaign_sub_type=key[1])
+    return cache[key]
 
 
 async def _put_one_field(client, campaign_id: int, field_path: str,
-                         mutate, *, base: dict | None = None) -> dict:
+                         mutate, *, shape: str, keyword: tuple[str, str] | None = None,
+                         base: dict | None = None, detail: dict | None = None) -> dict:
     """THE Zepto write primitive: change exactly one field of a live campaign.
 
     Zepto has no targeted write. Budget and bid are both a PUT of the WHOLE
-    campaign, so the body carries geo targeting, the product list and every other
-    keyword's bid. A wrong payload does not fail — it rewrites live configuration.
+    campaign, so the body carries geo targeting, the product list, every negative
+    keyword and every other keyword's bid. A wrong payload does not fail — it
+    rewrites live configuration. Three guards, each catching what the others cannot:
 
-    Hence the guard: build the payload from a fresh read, apply the mutation, and
-    diff the two. If anything other than `field_path` moved, refuse.
+    1. **The one-field diff** — the payload before and after our mutation differ in
+       exactly `field_path`. Catches a mutation that touches more than it should.
+       It is a SELF-consistency check, so it cannot see a translator that is wrong in
+       both copies (ZC-A12..A14 all passed it).
+    2. **The faithfulness check** (`payload.verify`) — Blinkit's design: every field
+       we send is read back and compared with the campaign AS ZEPTO REPORTED IT; only
+       what `shape` declares (the budget, or ONE keyword's bid) may differ. This is the
+       guard that catches a translator bug.
+    3. **The read-back** (after the PUT) — the campaign must now equal what we sent.
+       Catches Zepto normalising something away. It cannot undo a write, so it logs an
+       ERROR (which alerts) and reports the mismatch in the response; it never raises,
+       because the write has already landed.
 
-    That single check catches both failure modes at once — a translator bug, and a
-    campaign edited in the dashboard between our read and our write. The second is
-    routine here, not exotic: one session per user means a human is often in there.
-
-    `base` lets a caller that ALREADY read the campaign hand that payload in rather
-    than causing a second read. `apply_bid` needs one to locate the keyword's index,
-    and reusing it is not merely cheaper: computing the index from one read and
-    mutating a different one means the index can point at the wrong keyword if the
-    campaign's keyword list changed in between. Same read, same indices.
+    `base` (+ its `detail`) lets a caller that ALREADY read the campaign hand that read
+    in: `apply_bid` needs it to find the keyword's index, and the index is only valid for
+    the list it was computed from. Same read, same indices.
     """
-    if base is None:
-        base, _detail = await _rebased_payload(client, campaign_id)
+    if base is None or detail is None:
+        base, detail = await _rebased_payload(client, campaign_id)
     new = json.loads(json.dumps(base))      # deep copy; payloads nest
     mutate(new)
 
+    # 1 — exactly the intended path moved.
     changed = translate.diff(base, new)
     # `diff` yields "<path>: <old> -> <new>"; compare the PATHS, since the values
     # are exactly what we intend to differ.
@@ -448,7 +468,33 @@ async def _put_one_field(client, campaign_id: int, field_path: str,
             "may have been edited since it was read, or the translator has drifted. "
             "Nothing was sent."
         )
-    return await zc.update_campaign(client, campaign_id, new)
+    # 2 — the whole body says what the campaign says, apart from the intended change.
+    zpayload.verify(detail, new, shape=shape, campaign_id=campaign_id, keyword=keyword)
+
+    resp = await zc.update_campaign(client, campaign_id, new)
+
+    # 3 — did the campaign end up as we sent it?
+    mismatch = await _read_back_mismatch(client, campaign_id, new)
+    if mismatch:
+        logger.error(
+            f"Zepto campaign {campaign_id}: the {shape} write LANDED, but the campaign now "
+            f"differs from what we sent — " + "; ".join(mismatch)
+            + ". Check it in the dashboard; nothing was rolled back.")
+        return {**(resp if isinstance(resp, dict) else {"response": resp}),
+                "post_write_mismatch": mismatch}
+    return resp
+
+
+async def _read_back_mismatch(client, campaign_id: int, sent: dict) -> list[str]:
+    """Differences between a FRESH read and the body we just PUT. Never raises — the write
+    has landed, and a failed confirmation must not turn it into a failed run."""
+    try:
+        after = await zc.get_campaign_detail(client, campaign_id)
+    except Exception as e:
+        logger.warning(f"Zepto campaign {campaign_id}: could not read it back after the "
+                       f"write to confirm it ({' '.join(str(e).split())[:120]})")
+        return []
+    return zpayload.check(after, sent, shape=zpayload.READBACK)
 
 
 async def apply_budget(client, campaign_id: int, budget: float) -> dict:
@@ -461,11 +507,12 @@ async def apply_budget(client, campaign_id: int, budget: float) -> dict:
     resp = await _put_one_field(
         client, campaign_id, ".daily_budget",
         lambda p: p.update(daily_budget=target),
+        shape=zpayload.BUDGET,
     )
     logger.info(f"Zepto campaign {campaign_id}: daily_budget -> ₹{target}")
     # Zepto answers {"message": "Campaign updated successfully"} with no status
     # field; writes.py reads `status`/`success`, so map it into that shape.
-    return {"success": True, "response": resp}
+    return _landed(resp)
 
 
 async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
@@ -479,16 +526,25 @@ async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
     """
     target = int(round(float(cpm)))
     # ONE read, used for both the index lookup and the mutation — see `_put_one_field`.
-    base, _detail = await _rebased_payload(client, campaign_id)
+    base, detail = await _rebased_payload(client, campaign_id)
     index = _keyword_index(base, campaign_id, keyword, match_type)
     resp = await _put_one_field(
         client, campaign_id, f".keyword_targeting[{index}].bid_value",
         lambda p: p["keyword_targeting"][index].update(bid_value=target),
-        base=base,
+        shape=zpayload.BID, keyword=(keyword, match_type), base=base, detail=detail,
     )
     logger.info(
         f"Zepto campaign {campaign_id}: bid[{keyword!r}/{match_type}] -> ₹{target}")
-    return {"success": True, "response": resp}
+    return _landed(resp)
+
+
+def _landed(resp) -> dict:
+    """The shape `writes.py` reads (`success`), with any post-write mismatch lifted to the top
+    so a caller can see it without digging into Zepto's own reply."""
+    out = {"success": True, "response": resp}
+    if isinstance(resp, dict) and resp.get("post_write_mismatch"):
+        out["post_write_mismatch"] = resp["post_write_mismatch"]
+    return out
 
 
 def _keyword_index(payload: dict, campaign_id: int, keyword: str,
@@ -501,8 +557,13 @@ def _keyword_index(payload: dict, campaign_id: int, keyword: str,
 
     Pure, and takes the payload rather than fetching one: the index is only valid for
     the exact list it was computed from, so the caller must mutate that same payload.
+
+    Negative keywords share the list (ZC-A14) and are skipped: a bid rule whose keyword
+    happens to equal a negative one must not give that negative a bid.
     """
     for i, kw in enumerate(payload.get("keyword_targeting", [])):
+        if kw.get("is_negative"):
+            continue
         if kw.get("text") == keyword and kw.get("match_type") == match_type:
             return i
     raise WriteRefused(

@@ -36,7 +36,7 @@ def _install(monkey_detail=None):
     async def get_detail(client, campaign_id):
         return monkey_detail or client.detail
 
-    async def get_options(client):
+    async def get_options(client, **_):
         return TARGETING_OPTIONS
 
     async def update(client, campaign_id, payload):
@@ -134,7 +134,7 @@ def test_guard_refuses_when_the_mutation_touches_a_second_field():
 
         try:
             asyncio.run(adapter._put_one_field(
-                c, CAMPAIGN_ID, ".daily_budget", greedy))
+                c, CAMPAIGN_ID, ".daily_budget", greedy, shape="budget"))
         except WriteRefused as e:
             assert "REFUSED" in str(e)
             assert "geo_targeting" in str(e), "the reason should name what moved"
@@ -153,7 +153,7 @@ def test_guard_refuses_a_mutation_that_changes_nothing():
         c = _FakeClient()
         try:
             asyncio.run(adapter._put_one_field(
-                c, CAMPAIGN_ID, ".daily_budget", lambda p: None))
+                c, CAMPAIGN_ID, ".daily_budget", lambda p: None, shape="budget"))
         except WriteRefused as e:
             assert "no change" in str(e)
             assert c.sent is None

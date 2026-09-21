@@ -27,6 +27,7 @@ Echoing it back is either rejected or — worse — silently shifts the campaign
 date. No amount of reading the payload reveals that; only diffing our output against
 what the dashboard really sent.
 """
+import copy
 from typing import Any
 
 _UNSET_LIFETIME_BUDGET = -1     # how the GET spells "no lifetime budget"
@@ -75,21 +76,23 @@ def to_put(detail: dict, targeting_options: dict, campaign_id: int) -> dict:
     The result is the campaign as it currently IS. Callers mutate exactly one field
     of it and send it back — see `adapter.apply_budget` / `apply_bid`, which also
     enforce that only that one field differs.
+
+    ⚠️ Returned as a DEEP copy. The multipliers and subcategory list used to be the
+    detail's own nested objects, so mutating the payload silently mutated the read it was
+    built from — and `payload.check`, which compares the two, then saw them agree. Found by
+    `test_zepto_payload_invariant` on 2026-09-21; harmless in the write path only because
+    `_put_one_field` happens to deep-copy before mutating.
     """
+    return copy.deepcopy(_to_put(detail, targeting_options, campaign_id))
+
+
+def _to_put(detail: dict, targeting_options: dict, campaign_id: int) -> dict:
     cfg = detail.get("campaign_configs") or {}
 
     # bid_multipliers == campaign_configs.multiplier_config, plus a `time` key the
     # GET never returns. The dashboard always sends it, nested once.
     multipliers: dict[str, Any] = dict(cfg.get("multiplier_config") or {})
     multipliers.setdefault("time", {"time": {}})
-
-    # `campaign_configs.city_targeting` carries the MODE; the GET's own top-level
-    # `city_targeting` list is populated only for explicit targeting. Under "ALL"
-    # the dashboard still sends the brand's full city list, so mirror that rather
-    # than sending an empty include and risking a change in meaning.
-    mode = cfg.get("city_targeting") or "ALL"
-    cities = (city_ids(targeting_options) if mode == "ALL"
-              else list(detail.get("city_targeting") or []))
 
     budget = detail.get("budget")
     lifetime = 0 if budget in (None, _UNSET_LIFETIME_BUDGET) else budget
@@ -108,7 +111,7 @@ def to_put(detail: dict, targeting_options: dict, campaign_id: int) -> dict:
         "start_date": _date_only(detail.get("start_date")),
         "end_date": _date_only(detail.get("end_date")),
         "bid_multipliers": multipliers,
-        "geo_targeting": {"city": {"include": cities, "exclude": []}, "type": mode},
+        "geo_targeting": geo_targeting(detail, targeting_options),
         "product_config": {
             "product_variant_ids": [
                 a["product_variant_id"] for a in (detail.get("ad_assets_pla") or [])
@@ -120,16 +123,79 @@ def to_put(detail: dict, targeting_options: dict, campaign_id: int) -> dict:
             "targeting_type": cfg.get("bid_targeting"),
             "subcategory_targeting": detail.get("subcategory_targeting") or [],
         },
-        "keyword_targeting": [
-            {"text": k["keyword"], "match_type": k["match_type"],
-             "bid_value": k["bid_value"]}
-            for k in (detail.get("keyword_config") or [])
-            if not k.get("is_negative")
-        ],
+        "keyword_targeting": keyword_targeting(detail),
         # A STRING here, though the campaign list returns an int — and the GET's own
         # `campaign_id` field is 0, so the id must come from the caller/URL.
         "campaignId": str(campaign_id),
     }
+
+
+def geo_targeting(detail: dict, targeting_options: dict) -> dict:
+    """The PUT's `geo_targeting`, exactly as the dashboard sends it.
+
+    `campaign_configs.city_targeting` is the MODE:
+
+    * **ALL** — the dashboard still sends the brand's FULL city list in `include`, taken
+      from `targeting-options`. That list used to arrive empty (ZC-A12: we called the
+      endpoint without the dashboard's `include=geo` params), so every write to an
+      all-cities campaign sent `include: []`. `write_refusal` now refuses that case.
+    * **MANUAL** — the GET lists the chosen cities as OBJECTS
+      (`{city_id, is_included, is_active}`); the PUT wants plain id STRINGS (ZC-A13,
+      verified against a dashboard save of 2427461 on 2026-09-21). Passing the objects
+      through — which this did — sends a shape the dashboard never sends.
+    """
+    mode = ((detail.get("campaign_configs") or {}).get("city_targeting")) or "ALL"
+    if mode == "ALL":
+        return {"city": {"include": city_ids(targeting_options), "exclude": []},
+                "type": mode}
+    include: list[str] = []
+    exclude: list[str] = []
+    for c in detail.get("city_targeting") or []:
+        if isinstance(c, str):                  # tolerate a bare id, should Zepto send one
+            include.append(c)
+            continue
+        cid = c.get("city_id")
+        if not cid or c.get("is_active") is False:
+            continue
+        (include if c.get("is_included", True) else exclude).append(cid)
+    return {"city": {"include": include, "exclude": exclude}, "type": mode}
+
+
+def keyword_targeting(detail: dict) -> list[dict]:
+    """The PUT's `keyword_targeting`: negative keywords FIRST, then the bidding ones.
+
+    ⚠️ Negatives travel in this same list (`{text, match_type, is_negative: true}`, no bid)
+    — verified on the dashboard save of 2026-09-21. They used to be filtered OUT here
+    (ZC-A14), and since this list replaces the campaign's keywords, every budget or bid
+    write would have deleted them. The order mirrors the dashboard's.
+
+    The dashboard also sends each bidding keyword's `min_bid`. We leave it out: an earlier
+    dashboard save without it was accepted, and a value we would have to look up
+    separately is one more thing that can be stale.
+    """
+    rows = detail.get("keyword_config") or []
+    negatives = [{"text": k["keyword"], "match_type": k["match_type"], "is_negative": True}
+                 for k in rows if k.get("is_negative")]
+    bidding = [{"text": k["keyword"], "match_type": k["match_type"],
+                "bid_value": k["bid_value"]}
+               for k in rows if not k.get("is_negative")]
+    return negatives + bidding
+
+
+def write_refusal(payload: dict) -> str | None:
+    """Why this PUT must not be sent, or None. Pure.
+
+    The one-field diff guard compares our translation with ITSELF, so it cannot see a
+    translation that is wrong in both copies. This catches the case that did happen: an
+    empty city list, which on an all-cities campaign means `targeting-options` failed us,
+    and on a chosen-cities campaign would target nowhere.
+    """
+    geo = payload.get("geo_targeting") or {}
+    if not ((geo.get("city") or {}).get("include")):
+        return (f"the campaign's city targeting ({geo.get('type') or 'unknown'}) came out "
+                "with no cities — sending it could change where the campaign runs, so "
+                "nothing was sent")
+    return None
 
 
 def diff(a: Any, b: Any, path: str = "") -> list[str]:
