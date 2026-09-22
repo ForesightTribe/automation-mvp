@@ -6,7 +6,11 @@ tenant watchlist, accumulating results in memory (no fact-table writes) under on
 """
 from scraper.public.explorer.export import write_workbook
 from scraper.public.explorer.insights import build_insights
-from scraper.public.explorer.orchestrator import ExplorerResult, run_explorer
+from scraper.public.explorer.orchestrator import (
+    ExplorerResult,
+    clear_checkpoint,
+    run_explorer,
+)
 from scraper.public.explorer.providers import (
     Provider,
     all_marketplaces,
@@ -16,6 +20,7 @@ from scraper.public.explorer.providers import (
 
 __all__ = [
     "run_explorer",
+    "clear_checkpoint",
     "ExplorerResult",
     "build_insights",
     "write_workbook",
