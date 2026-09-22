@@ -21,10 +21,8 @@ import {
 	useResetBudgetSchedule,
 	useResetBidRule,
 	useRefreshCampaigns,
-	useRecentActions,
-	useActiveActionFor,
-	ACTIVE_JOB_STATUSES,
 } from "./hooks";
+import { useActiveActionFor } from "../../lib/actions";
 
 const confirmCopy = (action, row) => {
 	const who =
@@ -165,10 +163,9 @@ export const AutomationsPage = () => {
 	// the alternative leaves a bid the optimizer raised with no rule left to lower it.
 	const [resetBidOnDelete, setResetBidOnDelete] = useState(true);
 	const [detailCampaign, setDetailCampaign] = useState(null);
-	// The most recent action this page enqueued. It is NOT how the page reports progress
-	// any more — that is `useRecentActions`, which reads the queue from the server and so
-	// survives a reload and covers several actions at once, where this single slot could
-	// do neither.
+	// The most recent action this page enqueued. It is NOT how the page reports progress —
+	// that is inline, on the row being acted on (`activeActionFor`, below), which reads the
+	// queue from the server and so survives a reload and covers several actions at once.
 	//
 	// It is kept for one job only: the campaign toggle inside the wizard. That toggle sits
 	// behind a full-screen overlay, so its result has to be rendered inside the wizard, and
@@ -176,7 +173,7 @@ export const AutomationsPage = () => {
 	// and the outcome is read from the history rows filed under it.
 	const [actionJob, setActionJob] = useState(null);
 	// Why the last action could not even be QUEUED — distinct from what an action did once
-	// it ran, which the activity list reports. Nothing reaches the VM in this case, so
+	// it ran, which the row and the run log report. Nothing reaches the VM in this case, so
 	// there is no job and no run log row to read it from.
 	const [actionError, setActionError] = useState(null);
 
@@ -187,23 +184,10 @@ export const AutomationsPage = () => {
 	const resetSchedule = useResetBudgetSchedule();
 	const resetBid = useResetBidRule();
 	const refreshCampaigns = useRefreshCampaigns();
-	// In-flight actions, from the server rather than from component state — so the count
-	// survives a reload, and a job someone started in another tab still shows here.
-	const { data: recentActions } = useRecentActions();
+	// In-flight actions against each row, from the server rather than component state — so
+	// a row stays busy across a reload, and one started in another tab still shows.
+	// UNFILTERED on purpose: a clash on a campaign is a clash whichever page caused it.
 	const activeActionFor = useActiveActionFor();
-	const runningCount = (recentActions ?? []).filter((a) =>
-		ACTIVE_JOB_STATUSES.has(a.status),
-	).length;
-
-	/**
-	 * A campaign id to the name a person recognises. The activity list gets ids (that is
-	 * what the job carries), and "Campaign budget change · 637511" tells a reader nothing.
-	 * Read off the automations already loaded for the table, so it costs no extra request.
-	 */
-	const campaignNameOf = (id) =>
-		schedules?.find((x) => x.campaign_id === id)?.campaign_name ??
-		bidRules?.find((x) => x.campaign_id === id)?.campaign_name ??
-		null;
 
 	const rows = useMemo(() => {
 		const campaignRows = (schedules ?? []).map((s) => ({
@@ -365,10 +349,6 @@ export const AutomationsPage = () => {
 					>
 						<RefreshCw size={14} /> Refresh Campaigns
 					</Button>
-					{/* The one signal that has to live OUTSIDE the logs modal: without it a
-					    click would have no visible consequence at all until you thought to
-					    open something. A count rather than a word — it stays meaningful when
-					    two things are queued, which "Applying…" never was. */}
 					<Button
 						variant="secondary"
 						size="sm"
@@ -376,18 +356,9 @@ export const AutomationsPage = () => {
 							setLogRow(null);
 							setLogsOpen(true);
 						}}
-						title={
-							runningCount
-								? `${runningCount} action${runningCount > 1 ? "s" : ""} in progress`
-								: "What the automations have been doing"
-						}
+						title="What the automations have been doing"
 					>
 						<ScrollText size={14} /> Execution logs
-						{runningCount > 0 && (
-							<span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-on-primary">
-								{runningCount}
-							</span>
-						)}
 					</Button>
 				</div>
 			</header>
@@ -521,7 +492,6 @@ export const AutomationsPage = () => {
 				focusRow={logRow}
 				platformOf={platformOf}
 				locationOf={locationOf}
-				campaignNameOf={campaignNameOf}
 			/>
 
 			<ConfirmDialog

@@ -9,7 +9,7 @@ import { ActionsSummaryPills } from "./ActionsSummaryPills";
 import { useCampaignsForRange, useHistory, useKeywordMetrics } from "../hooks";
 import { useDateRange } from "../../../context/DateRangeContext";
 import { formatCurrency, formatNumber } from "../../../lib/format";
-import { outcomeOf } from "../runLog";
+import { outcomeOf } from "../../../lib/runLog";
 
 const when = (iso) =>
 	new Intl.DateTimeFormat("en-IN", {

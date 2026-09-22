@@ -215,43 +215,7 @@ export const setActivationNow = (clientId, campaignId, body) =>
 export const refreshCampaigns = (clientId) =>
 	api.post(`${base(clientId)}/campaigns/refresh`);
 
-/**
- * Everything ONE run recorded — the engine's own account of what it did.
- *
- * ⚠️ A finished job is not a finished WRITE. `status: success` only means the process
- * exited cleanly — the CM commands return their counts and never set a non-zero exit code,
- * so a write the marketplace REFUSED settles exactly like one it accepted. Reporting the
- * job's status as though it answered "did my change happen" is how starting an ON_HOLD
- * campaign reads as "Done" while nothing moved.
- *
- * Keyed on `run_id`, which the queue mints at enqueue and passes to the run, so this is
- * an exact match rather than an inference. Matching on the CAMPAIGN instead — "the newest
- * row for the campaign I think I acted on" — is wrong in two ways that bite: `cm_ops` and
- * `cm_bid` are parallel lanes, so another engine's row for that campaign can be newer than
- * yours, and a run spanning many campaigns has no single campaign to ask about.
- *
- * `include_unchanged` is required: a refusal is a `skip` and a tick that held is a `hold`,
- * and "nothing changed" is exactly the answer being looked for here.
- */
-export const getRunOutcome = (clientId, runId) =>
-	api.get(`${base(clientId)}/history`, {
-		params: { run_id: runId, limit: 100, include_unchanged: true },
-	});
-
-/**
- * What this client has recently ASKED FOR — the activity list.
- *
- * Deliberately a different source from the history rows it sits above. History is the run
- * log: what the engines DID, written when a run ends. This is the job queue: what a person
- * triggered, which exists from the moment it is queued and can therefore say "queued" and
- * "running" — states no history row can describe, because those rows do not exist yet.
- *
- * Person-triggered only. The hourly budget and bid engines are excluded by the server, as
- * is the reconciler the API fires on every rule edit: this list answers "what did I just
- * ask for", and background work would bury the one line being waited on.
- */
-export const getRecentActions = (clientId) =>
-	api.get(`${base(clientId)}/actions`);
+// Recent actions and run outcomes: lib/actions.js, shared with One-time Ops.
 
 /**
  * ⚠️ `getStoreCatalogue` (`GET /reference/blinkit-zones`) is gone from this feature

@@ -8,7 +8,7 @@ Convention: functions return schema DTOs (or None for not-found / access-denied,
 route maps to 404); a `DuplicateActiveJob` from the queue propagates for the route to 409.
 """
 import uuid
-from datetime import timedelta
+from datetime import datetime, timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
@@ -570,8 +570,31 @@ async def _enqueue_bid_reset(session, tenant_id: uuid.UUID, rule) -> uuid.UUID:
 
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
-async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float) -> uuid.UUID:
-    params = {"campaign": str(campaign_id), "budget": str(budget)}
+# Which dashboard surface asked for an action. The One-time Ops page lists ONLY what was
+# started from it, and the server cannot otherwise tell: that page and Ad Automation call
+# the same three endpoints (set budget, start/stop, refresh), so the job type says nothing
+# about where the click came from.
+#
+# An allowlist, so a caller cannot write arbitrary strings into job rows. An unknown value
+# is dropped rather than rejected — a mislabelled request should still run.
+ACTION_SOURCES = frozenset({"one-time-ops"})
+
+
+def _stamp_source(params: dict, source: str | None) -> dict:
+    """Record `source` in the job's params when it is a known surface.
+
+    ⚠️ METADATA, not an input. It rides in `params` because that is where a job's
+    attributes live (and it needs no migration), but no CLI builder reads it, so it never
+    reaches `argv` and cannot change what the run does. `run_id` is the same kind of guest.
+    """
+    if source in ACTION_SOURCES:
+        params["source"] = source
+    return params
+
+
+async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float,
+                         source: str | None = None) -> uuid.UUID:
+    params = _stamp_source({"campaign": str(campaign_id), "budget": str(budget)}, source)
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
         params["live"] = "true"
     job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
@@ -579,7 +602,8 @@ async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget
 
 
 async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, status: str,
-                             budget: float | None = None) -> uuid.UUID:
+                             budget: float | None = None,
+                             source: str | None = None) -> uuid.UUID:
     """Enqueue a start/stop of one campaign. Like set_budget_now, the API only queues —
     the VM opens the browser, reads the campaign's real state and runs the guardrails.
 
@@ -587,7 +611,7 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     campaign's current budget from a fresh read, which is better than anything the API
     could guess from stale scraped data.
     """
-    params = {"campaign": str(campaign_id), "status": status}
+    params = _stamp_source({"campaign": str(campaign_id), "status": status}, source)
     if status == "running" and budget is not None:
         params["budget"] = str(budget)
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
@@ -596,10 +620,12 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     return job.id
 
 
-async def refresh_campaigns(session, tenant_id: uuid.UUID) -> uuid.UUID:
+async def refresh_campaigns(session, tenant_id: uuid.UUID,
+                            source: str | None = None) -> uuid.UUID:
     """Enqueue a catalogue refresh from the live account. No `live` param — it is a read,
     so it runs the same whether or not the tenant is armed."""
-    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id)
+    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id,
+                        params=_stamp_source({}, source))
     return job.id
 
 
@@ -612,15 +638,30 @@ async def run_engine(session, tenant_id: uuid.UUID, job_type: str) -> uuid.UUID:
 
 # ── Recent actions (the dashboard's activity list) ──────────────────────────
 
-# How many to show, and how far back to look. Small on purpose: this answers "what did I
-# just ask for", not "what has happened lately" — the run log answers that, and is where
-# anything older belongs.
-_ACTIONS_LIMIT = 10
-_ACTIONS_WINDOW_HOURS = 6
+# One page. There is NO time window: the One-time Ops panel shows an account's whole
+# history of operations, paged. (It used to stop at 6 hours / 10 rows, a limit nothing
+# required — and `jobs` rows are never deleted, so the full history is really there.)
+#
+# Paged rather than fetched whole because the newest page is POLLED while anything runs;
+# re-reading an ever-growing history every two seconds is what the paging avoids.
+_ACTIONS_PAGE = 20
+_ACTIONS_PAGE_MAX = 100
 
 
-async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LIMIT):
-    """This client's recent PERSON-TRIGGERED campaign jobs, newest first.
+async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_PAGE,
+                         source: str | None = None, before: datetime | None = None):
+    """One page of this client's PERSON-TRIGGERED campaign jobs, newest first.
+
+    Returns `(items, has_more)`. Paged by KEYSET, not offset: `before` is the `created_at` of
+    the oldest item already shown, and the next page is everything older than it. Offset
+    would shift under a live list — a new action arriving at the top between two "load
+    older" clicks would push one row onto the next page and show it twice. Keyset cannot.
+    `has_more` comes from fetching one extra row, so paging never needs a COUNT over the
+    whole job history.
+
+    `source` narrows it to actions started from one surface (see `ACTION_SOURCES`). Filtered
+    in SQL rather than after the LIMIT, so a burst of actions on another page cannot push
+    this page's own actions out of the list.
 
     Two conditions, and both are needed:
 
@@ -645,16 +686,28 @@ async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LI
 
     actionable = [t for t, spec in JOB_TYPES.items() if spec.user_action]
     if not actionable:
-        return []
-    since = now_ist() - timedelta(hours=_ACTIONS_WINDOW_HOURS)
+        return [], False
+    limit = max(1, min(int(limit), _ACTIONS_PAGE_MAX))
+    conds = [
+        Job.tenant_id == tenant_id,
+        Job.job_type.in_(actionable),
+        Job.schedule_id.is_(None),
+    ]
+    if before is not None:
+        conds.append(Job.created_at < before)
+    if source is not None:
+        # An unknown source matches nothing rather than everything: a typo in a filter must
+        # not silently widen it to the whole account.
+        conds.append(Job.params["source"].as_string() == source)
+    # `id` breaks ties so the order is total — two jobs enqueued in the same instant must
+    # not swap places between pages.
     rows = (await session.execute(
-        select(Job).where(
-            Job.tenant_id == tenant_id,
-            Job.job_type.in_(actionable),
-            Job.schedule_id.is_(None),
-            Job.created_at >= since,
-        ).order_by(Job.created_at.desc()).limit(limit)
+        select(Job).where(*conds)
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(limit + 1)
     )).scalars().all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
 
     out = []
     for job in rows:
@@ -668,7 +721,7 @@ async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LI
         item.campaign_id = int(campaign) if str(campaign or "").isdigit() else None
         item.keyword = (job.params or {}).get("keyword") or None
         out.append(item)
-    return out
+    return out, has_more
 
 
 # ── Status + history ────────────────────────────────────────────────────────

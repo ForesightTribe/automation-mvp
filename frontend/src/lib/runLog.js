@@ -1,7 +1,8 @@
 /**
- * How a `cm_run_log` row reads, shared by every surface that shows one: the Execution
- * logs, the campaign drawer's recent activity, and the header's status summary. One
- * vocabulary, so the same row never reads three ways on one page.
+ * How a `cm_run_log` row reads, shared by every surface that shows one: Ad Automation's
+ * Execution logs, its campaign drawer and status summary, One-time Ops' Recent operations,
+ * and the inline outcomes on both pages. One vocabulary, so the same row never reads two
+ * ways — in lib/ rather than a feature because features may not import each other.
  */
 
 export const KIND_LABEL = {
