@@ -117,6 +117,18 @@ class CampaignAdapter(Protocol):
         `product_variant_id`, which is exactly what its consumer search reports back.
         """
 
+    async def read_store_catalog(self, session, query: str, lat: float, lon: float, *,
+                                 cap: int, names) -> dict:
+        """OPTIONAL. Our products at one store, with availability, for the stock check.
+
+        `{"ok": False, "error"}`, or `{"ok": True, "complete", "served_by",
+        "products": [{pid, name, in_stock, inventory}]}` — `pid` in the SAME id space as
+        `read_products`, or the join to a campaign silently finds nothing.
+
+        Blinkit: one capped brand search on the position session (a few requests).
+        Zepto:   not implemented — stock stays unknown, and every store counts.
+        """
+
     # ── writes (guarded; only reached via writes.py) ─────────────────────────
     async def apply_budget(self, client, campaign_id: int, budget: float) -> dict:
         """Set the daily budget.

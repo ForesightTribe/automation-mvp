@@ -93,3 +93,72 @@ class POSnapshotOut(BaseModel):
     expired_partial: int | None = None
     po_amount: float | None = None
     items_delivered: int | None = None
+
+
+class POInsightsSummary(BaseModel):
+    """The headline figures above the PO table, for one reporting window.
+
+    `prev_*` repeat them for the window of equal length immediately before, and
+    `*_delta` is the change as a fraction (0.12 = up 12%). A delta is None where it
+    cannot be stated: no earlier figure, or a fill rate with no closed POs behind it.
+    """
+
+    po_value: float
+    fill_rate: float | None          # received ÷ ordered, closed POs only
+    value_at_risk: float             # undelivered value on POs still open
+    value_missed: float              # undelivered value on POs that closed short
+    open_pos: int
+    closed_pos: int
+    short_pos: int                   # closed POs that were not filled in full
+
+    # `value_at_risk` has no comparison: it counts what is open RIGHT NOW, and an
+    # older window's figure decays to nothing as its POs close.
+    prev_po_value: float | None = None
+    prev_fill_rate: float | None = None
+    prev_value_missed: float | None = None
+
+    po_value_delta: float | None = None
+    fill_rate_delta: float | None = None
+    value_missed_delta: float | None = None
+
+
+class POInsightRow(BaseModel):
+    """One PO as the insights table shows it."""
+
+    po_number: str
+    facility_name: str | None = None
+    city_name: str | None = None
+    po_state: str | None = None
+    is_open: bool
+    priority: str                    # high | medium | low
+    lines: int
+    short_lines: int
+    units_ordered: int
+    units_received: int
+    fill_rate: float | None
+    po_amount: float | None
+    undelivered_value: float         # short units × landing rate
+    delivery_days: int | None        # issue → delivery
+    issue_date: date | None
+    delivery_date: date | None
+    schedule_date: datetime | None = None   # the booked delivery slot, if one exists
+    expiry_date: date | None = None
+    days_to_expiry: int | None = None       # from today; negative once past
+    needs_booking: bool = False             # open, still undelivered, no slot booked
+
+
+class POSkuRow(BaseModel):
+    """One SKU across every PO in the window."""
+
+    item_id: str
+    name: str | None = None
+    units_ordered: int
+    units_short: int
+    fill_rate: float | None          # received ÷ ordered, closed POs only
+    undelivered_value: float
+    open_value: float                # of that, still to come
+    missed_value: float              # of that, already lost
+    po_count: int
+    short_po_count: int
+    cities: int
+    last_ordered: date | None = None

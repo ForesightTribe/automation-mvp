@@ -74,7 +74,29 @@ PO_MAX_PAGES = 20
 # attempts, randomly distributed"). It was never random: the failures were the
 # WIDE windows, which return more rows. Narrow windows happened to stay under
 # whatever the endpoint chokes on.
-ASN_PAGE_SIZE = 50
+#
+# ⚠️ 50 STOPPED WORKING. Re-measured 2026-09-16 (the 14/15/16 Sep scheduled runs
+# all lost ASNs, three days with zero rows written):
+#
+#     31-day window, limit=50  ->  HTTP 500 after 21.3s, 21.0s, 21.5s  (3/3)
+#     31-day window, limit=25  ->  HTTP 200 in 1.1s
+#     31-day window, limit=10  ->  HTTP 200 in 0.7s
+#     14-day window, limit=50  ->  HTTP 200 in 1.1s   (34 rows)
+#      7-day window, limit=50  ->  HTTP 200 in 0.8s   (16 rows)
+#     po/filter & grn/filter, limit=100 -> HTTP 200 in 0.7s / 1.6s
+#
+# The 500 body finally named the cause, which the 5 Sep measurements could only
+# infer: their gateway fans out per page to an internal service and that call
+# times out —
+#     Post "http://wms-inbound.zepto.co/api/v1/inbound/inbound-details-by-requestIds":
+#     context deadline exceeded (Client.Timeout exceeded while awaiting headers)
+#
+# So the limit is ROWS PER REQUEST against a deadline on their side, not a fixed
+# number: as the window fills with ASNs, the page size that fits shrinks. 25 is
+# 20x under the deadline (1.1s vs 21s), which buys room for that to drift again.
+# If ASNs start failing once more, halve this and re-measure — do NOT reach for
+# a longer retry ladder, because every attempt burns the same 21s and fails.
+ASN_PAGE_SIZE = 25
 
 
 # ── Ads (`ads-bff`) ─────────────────────────────────────────────────────────────

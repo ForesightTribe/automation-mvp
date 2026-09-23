@@ -1,5 +1,6 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
+import { useActiveActionFor } from "../../../lib/actions";
 import { useCampaigns, useTableSort } from "../hooks";
 import { CampaignStateToggle } from "./CampaignStateToggle";
 import { Loading } from "../../../components/feedback/Loading";
@@ -94,6 +95,9 @@ export const CampaignPickerList = ({
 	label = "Choose a campaign",
 }) => {
 	const { data: campaigns, isLoading } = useCampaigns();
+	// A start/stop of this campaign already on its way. The toggle is inert while one is,
+	// so a second click cannot queue a contradictory write behind the first.
+	const activeActionFor = useActiveActionFor();
 	const [search, setSearch] = useState("");
 	const [scrolled, setScrolled] = useState(false);
 	const edge = `${EDGE} ${scrolled ? EDGE_LIFTED : ""}`;
@@ -395,6 +399,10 @@ export const CampaignPickerList = ({
 										<CampaignStateToggle
 											name={c.name}
 											status={c.status}
+											busy={activeActionFor?.({
+												kind: "campaign",
+												campaign_id: c.campaign_id,
+											})}
 											onActivate={(next) =>
 												onActivate?.(c, next)
 											}

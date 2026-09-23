@@ -36,6 +36,23 @@ from scraper.utils.browser import PLAYWRIGHT_ARGS
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
 _JITTER_FRAC = 0.15     # ± spread on the block-recovery wait, so workers stop retrying in lockstep
+# Seconds between worker start-ups. Opening a session means loading the
+# marketplace's homepage and capturing the first search request's headers; five
+# workers doing that in the same second on the VM left three of them past the
+# capture window ("no session headers captured", all at 11:00:59 on 2026-09-14)
+# and a worker that fails to open its session exits and is not replaced, so the
+# whole 10-hour run went on two workers. Worker N waits (N-1) x this before its
+# first page load. 0 restores the old all-at-once start.
+_WORKER_STAGGER_S = 5
+# The stagger took the VM from 2 to 4 live workers. What loses the rest is
+# not a slow page but Cloudflare rate-limiting the VM's IP ("HTTP 429 ·
+# non-JSON body" surfaced mid-run on 2026-09-15) — a challenge page instead
+# of the site, so no search request fires and no headers are captured. Its
+# window is short, so a worker that fails to open waits and tries again,
+# with a longer wait each time, before giving up. On the VM the second
+# attempt rescued two of three failed workers; the third wait is for the
+# one it did not. A single entry restores the old give-up-at-once.
+_OPEN_SESSION_RETRY_S = (10, 30)      # waits before attempt 2, attempt 3
 
 
 def _clamp_workers(requested: int, total: int, provider) -> int:
@@ -188,7 +205,16 @@ async def _worker(
     this list — see the backlog pass there. A keyword that fails there too is genuinely
     left out of this run, not queued forever.
     """
-    session = await provider.open_session(browser, seed[0], seed[1])
+    if _WORKER_STAGGER_S and wid > 1:
+        await asyncio.sleep(_WORKER_STAGGER_S * (wid - 1))
+    session = None
+    for attempt, wait in enumerate((*_OPEN_SESSION_RETRY_S, None), start=1):
+        session = await provider.open_session(browser, seed[0], seed[1])
+        if session or wait is None:
+            break
+        logger.warning(f"worker {wid}: could not open session (attempt {attempt}) — "
+                       f"retrying in {wait}s")
+        await asyncio.sleep(wait)
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return

@@ -26,6 +26,32 @@ const BY_CAMPAIGN = "campaign";
 const ratio = (num, den) => (den ? num / den : null);
 const fmtRoas = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
 
+// Active campaigns first, then by spend. The account reuses names ("Soda KW [Bengaluru]"
+// is two current campaigns, both stopped, beside an active one in another city), so the
+// one a rule should usually go on has to be the one at the top.
+const byActiveThenSpend = (a, b) =>
+	(b.status === "ACTIVE") - (a.status === "ACTIVE") ||
+	b.metrics.spend - a.metrics.spend;
+
+/** Status + ID under a campaign's name. The name alone cannot tell two same-named
+ *  campaigns apart, and a bid rule binds to exactly one of them. */
+const CampaignTag = ({ id, status }) => (
+	<span className="inline-flex items-center gap-1.5 text-[11px] text-content-subtle">
+		{status && (
+			<span
+				className={`rounded-full px-1.5 py-px font-medium ${
+					status === "ACTIVE"
+						? "bg-success-soft text-success"
+						: "bg-muted text-content-muted"
+				}`}
+			>
+				{status}
+			</span>
+		)}
+		ID {id}
+	</span>
+);
+
 /** Sum a group of (campaign, keyword) rows into one line. ROAS and CPM are recomputed
  *  from the totals rather than averaged — averaging ratios weights a ₹10 keyword the
  *  same as a ₹10,000 one. */
@@ -229,10 +255,18 @@ const DrillModal = ({
 											{on ? "✓" : ""}
 										</td>
 										<td
-											className={`${TD} ${STICKY_NAME} ${edge} ${cellBg} max-w-[20rem] truncate font-medium`}
+											className={`${TD} ${STICKY_NAME} ${edge} ${cellBg} max-w-[20rem]`}
 											title={r.label}
 										>
-											{r.label}
+											<div className="truncate font-medium">
+												{r.label}
+											</div>
+											{r.isCampaign && (
+												<CampaignTag
+													id={r.campaign_id}
+													status={r.status}
+												/>
+											)}
 										</td>
 										<MetricCells m={r.metrics} />
 									</tr>
@@ -282,19 +316,25 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 		return (id) => m.get(id) ?? `Campaign ${id}`;
 	}, [campaigns]);
 
-	// Only campaigns the picker may bind to. `/ads/campaigns` applies `recent_only`, which
-	// hides a stale pre-migration account's dead campaigns; the raw keyword rows have no
-	// such filter, so without this the keyword pivot would quietly offer campaigns the
-	// campaign picker refuses to show.
-	const selectable = useMemo(
-		() => new Set((selectableCampaigns ?? []).map((c) => c.campaign_id)),
+	// Only campaigns the picker may bind to, with their status. `/ads/campaigns` applies
+	// `recent_only`, which hides a stale pre-migration account's dead campaigns. The keyword
+	// rows are fetched with the same flag, so this filter is the second line: it keeps both
+	// lists agreeing if the two scrapes ever drift apart.
+	const statusOf = useMemo(
+		() =>
+			new Map(
+				(selectableCampaigns ?? []).map((c) => [
+					c.campaign_id,
+					c.status,
+				]),
+			),
 		[selectableCampaigns],
 	);
 
 	const groups = useMemo(() => {
 		const by = new Map();
 		for (const r of rows ?? []) {
-			if (selectable.size && !selectable.has(r.campaign_id)) continue;
+			if (statusOf.size && !statusOf.has(r.campaign_id)) continue;
 			const key = view === BY_KEYWORD ? r.target : r.campaign_id;
 			if (!by.has(key)) by.set(key, []);
 			by.get(key).push(r);
@@ -304,22 +344,32 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 			.map(([key, members]) => ({
 				key,
 				label: view === BY_KEYWORD ? String(key) : nameOf(key),
+				status: view === BY_CAMPAIGN ? statusOf.get(key) : undefined,
 				members,
 				metrics: aggregate(members),
 			}))
-			.filter((g) => !q || g.label.toLowerCase().includes(q))
-			.sort((a, b) => b.metrics.spend - a.metrics.spend);
-	}, [rows, view, search, nameOf, selectable]);
+			.filter(
+				(g) =>
+					!q ||
+					g.label.toLowerCase().includes(q) ||
+					// Campaign IDs are searchable: the ID is what tells same-named ones apart.
+					(view === BY_CAMPAIGN && String(g.key).includes(q)),
+			)
+			.sort(
+				view === BY_CAMPAIGN
+					? byActiveThenSpend
+					: (a, b) => b.metrics.spend - a.metrics.spend,
+			);
+	}, [rows, view, search, nameOf, statusOf]);
 
 	if (isLoading) return <Loading label="Loading keywords…" />;
 
 	const selectedKey = view === BY_KEYWORD ? keyword : campaignId;
 
-	// ONE row per key. `/ads/keywords` can return several rows for the same
-	// (campaign, keyword) — Blinkit splits them by sub-campaign — and keying rows by the
-	// keyword alone made every duplicate share a key, so selecting one highlighted all of
-	// them and the modal read as multi-select. Duplicates are merged and their numbers
-	// summed, which is also the honest total for that keyword in that campaign.
+	// ONE row per key. `/ads/keywords` merges Blinkit's per-sub-campaign rows server-side
+	// now, but still returns one row per MATCH TYPE, so a keyword run as both EXACT and
+	// SMART arrives twice. Keying by the keyword alone made those share a key, so selecting
+	// one highlighted both and the modal read as multi-select. Merged and summed here.
 	const drillRows = (group) => {
 		const by = new Map();
 		for (const r of group.members) {
@@ -333,9 +383,15 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 				label: view === BY_KEYWORD ? nameOf(key) : String(key),
 				campaign_id: members[0].campaign_id,
 				keyword: members[0].target,
+				isCampaign: view === BY_KEYWORD,
+				status: view === BY_KEYWORD ? statusOf.get(key) : undefined,
 				metrics: aggregate(members),
 			}))
-			.sort((a, b) => b.metrics.spend - a.metrics.spend);
+			.sort(
+				view === BY_KEYWORD
+					? byActiveThenSpend
+					: (a, b) => b.metrics.spend - a.metrics.spend,
+			);
 	};
 
 	return (
@@ -453,6 +509,15 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 												? "campaigns"
 												: "keywords"}
 										</span>
+										{view === BY_CAMPAIGN && (
+											<>
+												{" · "}
+												<CampaignTag
+													id={g.key}
+													status={g.status}
+												/>
+											</>
+										)}
 									</td>
 									<MetricCells m={g.metrics} />
 								</tr>

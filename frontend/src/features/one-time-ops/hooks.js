@@ -1,14 +1,13 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
+import { invalidateRecentActions } from "../../lib/actions";
 import {
 	getCampaigns,
 	setBudgetNow,
 	setActivationNow,
 	refreshCampaigns,
 	getCampaignTargets,
-	getLastVerdict,
-	getJob,
 } from "./api";
 
 /**
@@ -16,8 +15,8 @@ import {
  *
  * Everything here writes to a LIVE ad account the moment it is called, so nothing is
  * optimistic and nothing is cached as though it succeeded. A write enqueues a job on the
- * VM and returns its id; the truth arrives when that job finishes and the catalogue is
- * re-read.
+ * VM; its progress and its real outcome come from `lib/actions.js`, and the campaign list
+ * is refreshed there when the job finishes.
  */
 const CAMPAIGNS = "ots-campaigns";
 
@@ -47,71 +46,28 @@ export const useCampaignTargets = (campaignId) => {
 };
 
 /**
- * Poll one enqueued job until it settles.
- *
- * ⚠️ On success the campaign list is invalidated, not patched. What the account now says
- * is the only reliable answer: the VM applies its own guardrails (terminal states, budget
- * bounds, rate limits) against a fresh read, so a job can succeed having done something
- * other than exactly what was asked.
+ * A write that enqueues a job. On success it tells the operations list AT ONCE — the job row
+ * exists before the request returns, and without this the list kept its old all-finished
+ * state and never started polling (see `invalidateRecentActions`).
  */
-export const useJob = (jobId, { onSettled } = {}) => {
+const useEnqueue = (mutationFn) => {
 	const { activeClientId } = useClient();
 	const qc = useQueryClient();
-	return useQuery({
-		queryKey: ["ots-job", activeClientId, jobId],
-		queryFn: async () => {
-			const job = await getJob(activeClientId, jobId);
-			if (job.status === "success" || job.status === "failed") {
-				qc.invalidateQueries({ queryKey: [CAMPAIGNS, activeClientId] });
-				onSettled?.(job);
-			}
-			return job;
-		},
-		enabled: Boolean(activeClientId && jobId),
-		refetchInterval: (query) => {
-			const s = query.state.data?.status;
-			return s === "success" || s === "failed" ? false : 1500;
-		},
-	});
-};
-
-/**
- * What the engine actually did, read once a job has settled.
- *
- * Polling it before then would report the PREVIOUS action on that campaign, which is
- * worse than saying nothing: it would confirm a change that has not happened yet.
- */
-export const useLastVerdict = (campaignId, enabled) => {
-	const { activeClientId } = useClient();
-	return useQuery({
-		queryKey: ["ots-verdict", activeClientId, campaignId],
-		queryFn: () => getLastVerdict(activeClientId, campaignId),
-		enabled: Boolean(activeClientId && campaignId && enabled),
-		select: (page) => page.items?.[0] ?? null,
-		staleTime: 0,
-		gcTime: 0,
-	});
-};
-
-export const useSetBudget = () => {
-	const { activeClientId } = useClient();
 	return useMutation({
-		mutationFn: ({ campaignId, budget }) =>
-			setBudgetNow(activeClientId, campaignId, budget),
+		mutationFn: (vars) => mutationFn(activeClientId, vars),
+		onSuccess: () => invalidateRecentActions(qc, activeClientId),
 	});
 };
 
-export const useSetActivation = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: ({ campaignId, status, budget }) =>
-			setActivationNow(activeClientId, campaignId, status, budget),
-	});
-};
+export const useSetBudget = () =>
+	useEnqueue((clientId, { campaignId, budget }) =>
+		setBudgetNow(clientId, campaignId, budget),
+	);
 
-export const useRefreshCampaigns = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: () => refreshCampaigns(activeClientId),
-	});
-};
+export const useSetActivation = () =>
+	useEnqueue((clientId, { campaignId, status, budget }) =>
+		setActivationNow(clientId, campaignId, status, budget),
+	);
+
+export const useRefreshCampaigns = () =>
+	useEnqueue((clientId) => refreshCampaigns(clientId));

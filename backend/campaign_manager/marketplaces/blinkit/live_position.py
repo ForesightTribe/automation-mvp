@@ -31,7 +31,8 @@ from playwright.async_api import async_playwright
 
 from app.utils.logger import logger
 from scraper.platforms.blinkit.public_data import ads, endpoints as ep
-from scraper.platforms.blinkit.public_data.scraper import in_page_fetch
+from scraper.platforms.blinkit.public_data.scraper import in_page_fetch, new_search_context, warm_up
+from scraper.utils.browser import PLAYWRIGHT_ARGS
 
 # Default: Bengaluru MG Road / Shivajinagar dark store
 _DEFAULT_LAT = 12.9767
@@ -42,6 +43,16 @@ _TAG = "cm.pos"
 # One search page is 12 products. Positions past ~40 are far below anything worth
 # bidding for, and each extra page is another request against the same rate limit.
 _MAX_PRODUCTS = 48
+
+
+class PageResults(list):
+    """Search results that know whether paging was cut short.
+
+    A list, so every caller that just iterates results keeps working. `truncated` is set when
+    page 1 answered but a later page failed: what we have is still true, but "our ad is not
+    among these" no longer proves it isn't on the page (campaign_manager/coverage.py treats
+    that reading as untrusted)."""
+    truncated: bool = False
 
 
 def _log(keyword: str | None = None):
@@ -61,46 +72,26 @@ async def open_session(pw, lat: float = _DEFAULT_LAT, lon: float = _DEFAULT_LON)
     we can read the headers off it. Everything after this is a bare fetch.
 
     `headers` is empty if the capture failed; `search` then reports the failure per
-    keyword rather than silently returning nothing.
+    keyword rather than silently returning nothing, quoting `warmup_error` — what the
+    browser actually saw (a Cloudflare page, an HTTP status, a timeout).
+
+    The browser, context and warm-up are the public scraper's, not a copy: this used to
+    launch with no args, a different user agent and no locale/geolocation, and it was
+    this thinner setup that Cloudflare kept refusing on the VM (2026-09-17).
     """
-    browser = await pw.chromium.launch(headless=True)
-    context = await browser.new_context(
-        viewport={"width": 1280, "height": 900},
-        user_agent=(
-            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-            "AppleWebKit/537.36 (KHTML, like Gecko) "
-            "Chrome/124.0.0.0 Safari/537.36"
-        ),
-    )
+    browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+    context = await new_search_context(browser, lat, lon)
     page = await context.new_page()
 
-    captured: dict = {}
-
-    def _on_req(req):
-        if ep.SEARCH_PATH in req.url and not captured:
-            captured.update(req.headers)
-
-    page.on("request", _on_req)
-    try:
-        for url, wait in ((ep.HOMEPAGE_URL.format(lat=lat, lon=lon), 1000),
-                          (ep.WARMUP_SEARCH_URL, 1500)):
-            try:
-                await page.goto(url, wait_until="networkidle", timeout=20_000)
-                await page.wait_for_timeout(wait)
-            except Exception as e:
-                # Not fatal on its own: the headers may already have been captured by the
-                # first navigation, and `search` reports it properly if they weren't.
-                _log().debug(f"warm-up navigation failed ({url}): {e}")
-    finally:
-        page.remove_listener("request", _on_req)
-
-    headers = {k: captured[k] for k in ep.SEARCH_HEADER_KEYS if k in captured}
+    headers, why = await warm_up(page, lat, lon)
     if headers:
         _log().debug(f"session ready — {len(headers)} search headers captured")
     else:
-        _log().error("no search headers captured — position lookups will fail this run")
+        _log().error(f"no search headers captured — position lookups will fail this run. "
+                     f"Warm-up saw: {why}")
 
-    return {"browser": browser, "context": context, "page": page, "headers": headers}
+    return {"browser": browser, "context": context, "page": page, "headers": headers,
+            "warmup_error": why}
 
 
 async def close_session(session: dict) -> None:
@@ -174,10 +165,12 @@ async def search(session: dict, keyword: str, lat: float = _DEFAULT_LAT,
     log = _log(keyword)
     headers = session.get("headers") or {}
     if not headers:
-        raise RuntimeError("no Blinkit search headers captured for this session")
+        why = session.get("warmup_error")
+        raise RuntimeError("no Blinkit search headers captured for this session"
+                           + (f" — {why}" if why else ""))
     headers = {**headers, "lat": str(lat), "lon": str(lon)}
 
-    products: list[dict] = []
+    products = PageResults()
     url: str | None = ep.first_search_url(keyword)
     body: dict | None = ep.SEARCH_BODY
 
@@ -185,10 +178,12 @@ async def search(session: dict, keyword: str, lat: float = _DEFAULT_LAT,
         resp = await in_page_fetch(session["page"], url, headers, body)
         if resp.get("status") != 200 or resp.get("body") is None:
             if products:
-                # Page 1 worked; a later page failing just truncates the list. The ad we
-                # care about ranks near the top, so this is still a usable answer.
+                # Page 1 worked; a later page failing truncates the list. An ad we DID see is
+                # still a usable answer — but one we didn't see might be on the lost page, so
+                # the results say so and the engine won't read "absent" into them.
                 log.warning(f"paging stopped at {len(products)} products "
                             f"(HTTP {resp.get('status')})")
+                products.truncated = True
                 break
             detail = resp.get("error") or f"HTTP {resp.get('status')}"
             raise RuntimeError(f"search request failed: {detail}")

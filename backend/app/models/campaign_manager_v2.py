@@ -169,25 +169,28 @@ class CmBidRuntime(SQLModel, table=True):
 
 
 class CmCityStore(SQLModel, table=True):
-    """The dark store a CITY's bid automations measure at — frozen, not picked per rule.
+    """The dark stores a CITY's bid automations measure at — a frozen, ranked set.
 
     A bid rule names a city. Before this table the store inside it was the city's lowest
     `merchant_id` — deterministic, but a store nobody chose — baked into the rule at save
     time, so moving it meant editing every rule.
 
-    Two layers, resolved on every bid run (`repo.pick_city_store`):
-      - `tenant_id` NULL → the GLOBAL default for the city, set from the CLI only (it applies
-        to every client, so no one account's API may move it);
-      - `tenant_id` set  → one client's OVERRIDE — a brand not stocked at the global store needs
-        its own. CLI or API.
+    `rank` 1 is the ANCHOR; ranks 2..`config.max_stores` validate it. The bid aims for the
+    target position at every store in the set where the campaign is in stock — the worst such
+    store binds (campaign_manager/coverage.py).
+
+    Two layers, resolved on every bid run (`repo.pick_city_stores`), both set from the CLI only
+    (`cm stores set`):
+      - `tenant_id` NULL → the GLOBAL set for the city, used by every client without its own;
+      - `tenant_id` set  → one client's set, which REPLACES the global set whole — never mixed
+        rank by rank — e.g. a brand not stocked at the global stores.
 
     `merchant_id`, not a FK to `marketplace_locations.id`: `cli sync --prune` deletes and
     re-creates catalog rows, and the merchant id is the store's natural key across that. A
     frozen store that leaves the catalog is skipped at resolve time, never honoured.
 
-    `rank` 1 is THE store; higher ranks are reserved for measuring at several stores per city,
-    which is not built. The two partial unique indexes give one store per rank per city, for
-    the global layer and per client — a plain UNIQUE would let NULL tenants repeat.
+    The two partial unique indexes give one store per rank per city, for the global layer and
+    per client — a plain UNIQUE would let NULL tenants repeat.
 
     ⚠️ Migration `d7c3e9a1f5b2` first, model second.
     """
@@ -207,6 +210,83 @@ class CmCityStore(SQLModel, table=True):
     rank: int = Field(default=1)
     created_at: datetime = Field(default_factory=now_ist)
     updated_at: datetime = Field(default_factory=now_ist)
+
+
+class CmStoreStock(SQLModel, table=True):
+    """Our catalogue at one measurement store, with availability — the bid engine's stock cache.
+
+    One row per (tenant, marketplace, store), replaced on every SUCCESSFUL brand-search read
+    (campaign_manager/stock.py). A failed read writes nothing, so a store with no row — or one
+    older than `CM_STOCK_MAX_AGE_MINUTES` — is "stock unknown", which never stops a raise
+    (campaign_manager/coverage.py).
+
+    `products` = our brand's products the read found: `[{pid, name, in_stock, inventory}]`.
+    `complete` = the read reached the end of our brand's block. Only then may a campaign
+    product missing from `products` be treated as not sold at the store.
+
+    Tenant-scoped: the catalogue is the client's brand at a store, not the store's shelf.
+    `merchant_id` is the store we ASKED about (a `cm_city_stores` store); `served_by` is the
+    express store Blinkit reported answering, kept for diagnosis.
+
+    ⚠️ Migration `f3c8a1d6b9e2` first, model second.
+    """
+    __tablename__ = "cm_store_stock"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "platform", "merchant_id", name="uq_cm_store_stock"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    merchant_id: str
+    served_by: str = ""
+    complete: bool = False
+    products: list = Field(default=[], sa_column=Column(JSON))
+    checked_at: datetime = Field(default_factory=now_ist)
+
+
+class CmBidStoreRead(SQLModel, table=True):
+    """One store's reading for one keyword automation on one bid tick — append-only.
+
+    `cm_run_log` records the DECISION (one row per tick); this records what each store showed
+    on the way to it, so "held at ₹121 by Store C" can be checked after the fact. `binding`
+    marks the store whose position the decision acted on (the worst counted one).
+
+    `eligibility` (eligible / out_of_stock / not_listed / unknown) and `verdict` (sponsored /
+    absent / skipped / error) are campaign_manager/coverage.py's vocabulary. `bid` is the bid
+    in force when the store was read.
+
+    Grows with TIME (a row per store per in-window tick), so it is trimmed to
+    `CM_STORE_READS_RETENTION_DAYS` as it is written. No FKs to rules or cities, like
+    `cm_run_log`: history outlives what it describes.
+
+    ⚠️ Migration `f3c8a1d6b9e2` first, model second.
+    """
+    __tablename__ = "cm_bid_store_reads"
+    __table_args__ = (
+        Index("idx_cm_store_reads_tenant", "tenant_id", "observed_at"),
+        Index("idx_cm_store_reads_rule", "rule_id", "observed_at"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    run_id: str | None = None
+    rule_id: str | None = None
+    campaign_id: int
+    keyword: str
+    city_id: int | None = None
+    merchant_id: str = ""
+    store_label: str = ""
+    rank: int = 1
+    bid: int | None = None
+    eligibility: str
+    verdict: str
+    position: float | None = None
+    binding: bool = False
+    detail: str | None = None
+    dry_run: bool = True
+    observed_at: datetime = Field(default_factory=now_ist)
 
 
 class CmPlatformAccount(SQLModel, table=True):

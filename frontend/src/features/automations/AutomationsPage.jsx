@@ -9,9 +9,8 @@ import { CampaignDetailDrawer } from "./components/CampaignDetailDrawer";
 import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
-import { JobLine } from "./components/JobLine";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
-import { formatCurrency } from "../../lib/format";
+import { formatCurrency, formatMeasuredAt } from "../../lib/format";
 import {
 	useBudgetSchedules,
 	useBidRules,
@@ -23,14 +22,8 @@ import {
 	useResetBidRule,
 	useRefreshCampaigns,
 } from "./hooks";
+import { useActiveActionFor } from "../../lib/actions";
 
-/**
- * What each confirmation says, per action and per kind of automation.
- *
- * Kept together and out of the component because the wording is the point of the
- * dialog: the two kinds of automation share four verbs, and every one of them means
- * something different on a budget schedule than on a bid rule.
- */
 const confirmCopy = (action, row) => {
 	const who =
 		row.kind === "campaign"
@@ -84,8 +77,7 @@ const confirmCopy = (action, row) => {
 		return {
 			title: "Put the bid back to the minimum?",
 			confirmLabel: "Reset bid",
-			// The engine refuses this while the rule is running and says why. Saying the
-			// same thing here saves a request that is going to come back a 409.
+
 			blocked:
 				row.status === "running"
 					? "This automation is running right now. Pause it first, or the next check will bid it straight back up."
@@ -118,9 +110,25 @@ const confirmCopy = (action, row) => {
 };
 
 /**
+ * Why an action could not even be QUEUED, in the reader's words.
+ *
+ * 409 is the expected answer, not an error: the campaign lanes hold ONE job each, and the
+ * queue refuses a second of the same kind for the same client rather than letting two
+ * writes race. So it is reported as a wait, not a failure — the first one is still running
+ * and will finish.
+ *
+ * Anything else keeps the server's own message, which is more specific than a generic
+ * sentence would be.
+ */
+const conflictMessage = (err, what) =>
+	err?.response?.status === 409
+		? `Another action is already running, so this one was not queued. Wait for it to finish, then try to ${what} again.`
+		: (err?.message ?? `Could not ${what}.`);
+
+/**
  * Automations — a new, independently-built management experience over the
  * same Campaign Manager v2 backend (budget schedules + bid rules), styled
- * after Dcluttr's Automations screen: a beta-tagged header with its own
+ * after Dcluttr's Automations screen: a header with its own
  * Create/Change-Logs actions, a rank-automation promo, channel pills +
  * underlined type tabs, a list with an inline on/off toggle and icon
  * controls, and a full-screen change-log overlay. Campaign Manager's own
@@ -155,9 +163,19 @@ export const AutomationsPage = () => {
 	// the alternative leaves a bid the optimizer raised with no rule left to lower it.
 	const [resetBidOnDelete, setResetBidOnDelete] = useState(true);
 	const [detailCampaign, setDetailCampaign] = useState(null);
-	// Reset / set-budget / refresh all enqueue a VM job and return its id; one slot is
-	// enough because they are one-at-a-time actions and the line reports the latest.
+	// The most recent action this page enqueued. It is NOT how the page reports progress —
+	// that is inline, on the row being acted on (`activeActionFor`, below), which reads the
+	// queue from the server and so survives a reload and covers several actions at once.
+	//
+	// It is kept for one job only: the campaign toggle inside the wizard. That toggle sits
+	// behind a full-screen overlay, so its result has to be rendered inside the wizard, and
+	// the wizard needs the id to do it. The id alone is enough — the job carries a `run_id`
+	// and the outcome is read from the history rows filed under it.
 	const [actionJob, setActionJob] = useState(null);
+	// Why the last action could not even be QUEUED — distinct from what an action did once
+	// it ran, which the row and the run log report. Nothing reaches the VM in this case, so
+	// there is no job and no run log row to read it from.
+	const [actionError, setActionError] = useState(null);
 
 	const setBidState = useSetBidState();
 	const setActivationNow = useSetActivationNow();
@@ -166,6 +184,10 @@ export const AutomationsPage = () => {
 	const resetSchedule = useResetBudgetSchedule();
 	const resetBid = useResetBidRule();
 	const refreshCampaigns = useRefreshCampaigns();
+	// In-flight actions against each row, from the server rather than component state — so
+	// a row stays busy across a reload, and one started in another tab still shows.
+	// UNFILTERED on purpose: a clash on a campaign is a clash whichever page caused it.
+	const activeActionFor = useActiveActionFor();
 
 	const rows = useMemo(() => {
 		const campaignRows = (schedules ?? []).map((s) => ({
@@ -205,15 +227,20 @@ export const AutomationsPage = () => {
 	 * there. The run log carries no location field, so it is joined here rather than
 	 * left off. Trimmed, because the value arrives with trailing whitespace from the
 	 * scrape ("Financial District\r\n").
+	 *
+	 * WITH the city, because the store label alone does not locate anything: "Block C"
+	 * and "Sector 110" name a neighbourhood in a city the reader has to already know.
 	 */
-	const locationOf = (campaignId, keyword) =>
-		bidRules
-			?.find(
-				(b) =>
-					b.campaign_id === campaignId &&
-					(!keyword || b.keyword === keyword),
-			)
-			?.location_name?.trim() || null;
+	const locationOf = (campaignId, keyword) => {
+		const rule = bidRules?.find(
+			(b) =>
+				b.campaign_id === campaignId &&
+				(!keyword || b.keyword === keyword),
+		);
+		return rule
+			? formatMeasuredAt(rule.location_name, rule.city_name)
+			: null;
+	};
 
 	const isLoading = loadingSchedules || loadingBidRules;
 	const error = schedulesError || bidRulesError;
@@ -229,11 +256,20 @@ export const AutomationsPage = () => {
 	// The campaign's state, which is a different thing entirely — enqueued the same way
 	// Campaign Manager v2 does it, and reported through the shared job line.
 	const handleActivate = async (row, status) => {
-		const res = await setActivationNow.mutateAsync({
-			campaignId: row.campaign_id,
-			status,
-		});
-		setActionJob(res.job_id);
+		// ⚠️ This used to have no error path at all. The endpoint answers 409 when an
+		// activation for this client is already active — a normal, expected outcome on a
+		// single-slot lane — and the rejection went nowhere: no message, no console entry a
+		// user would see, just a click that appeared to do nothing.
+		try {
+			const res = await setActivationNow.mutateAsync({
+				campaignId: row.campaign_id,
+				status,
+			});
+			setActionJob(res.job_id);
+			setActionError(null);
+		} catch (err) {
+			setActionError(conflictMessage(err, "start or stop a campaign"));
+		}
 	};
 
 	/**
@@ -273,8 +309,13 @@ export const AutomationsPage = () => {
 	};
 
 	const handleRefreshCampaigns = async () => {
-		const res = await refreshCampaigns.mutateAsync();
-		setActionJob(res.job_id);
+		try {
+			const res = await refreshCampaigns.mutateAsync();
+			setActionJob(res.job_id);
+			setActionError(null);
+		} catch (err) {
+			setActionError(conflictMessage(err, "refresh the campaign list"));
+		}
 	};
 
 	return (
@@ -284,14 +325,9 @@ export const AutomationsPage = () => {
 		<div className="space-y-6">
 			<header className="flex flex-wrap items-center justify-between gap-3">
 				<div>
-					<div className="flex items-center gap-2">
-						<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
-							Automations
-						</h1>
-						<span className="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
-							Beta
-						</span>
-					</div>
+					<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
+						Automations
+					</h1>
 					<p className="text-sm text-content-muted">
 						Budget and bid automations across channels.
 					</p>
@@ -304,7 +340,6 @@ export const AutomationsPage = () => {
 						schedules={schedules ?? []}
 						bidRules={bidRules ?? []}
 					/>
-					<JobLine jobId={actionJob} />
 					<Button
 						variant="secondary"
 						size="sm"
@@ -321,11 +356,28 @@ export const AutomationsPage = () => {
 							setLogRow(null);
 							setLogsOpen(true);
 						}}
+						title="What the automations have been doing"
 					>
 						<ScrollText size={14} /> Execution logs
 					</Button>
 				</div>
 			</header>
+
+			{/* A refusal to QUEUE, which is different from a write that was refused: nothing
+			    reached the marketplace, so there is no run to look up and the activity list
+			    will show nothing. Dismissible, and cleared by the next successful action. */}
+			{actionError && (
+				<div className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-content">
+					<span>{actionError}</span>
+					<button
+						type="button"
+						onClick={() => setActionError(null)}
+						className="shrink-0 cursor-pointer text-xs text-content-muted underline hover:text-content"
+					>
+						Dismiss
+					</button>
+				</div>
+			)}
 
 			{/* Two CTAs instead of one generic button plus a promo banner: the kind of
 			    automation is the first real decision, so it is made here rather than on the
@@ -395,6 +447,7 @@ export const AutomationsPage = () => {
 				{!isLoading && !error && (
 					<div className="overflow-hidden rounded-xl border border-border bg-card">
 						<AutomationsTable
+							activeActionFor={activeActionFor}
 							rows={rows}
 							onEdit={setEditRow}
 							onDelete={(row) => ask("delete", row)}
@@ -425,6 +478,9 @@ export const AutomationsPage = () => {
 				/* The picker's start/stop acts on the CAMPAIGN, so it goes through the same
 				   handler and the same job feedback as the toggle on the list below. */
 				onActivateCampaign={handleActivate}
+				/* The toggle lives inside this overlay, so its result has to be reported
+				   inside it too — the page behind is not visible while it is open. */
+				activationJobId={actionJob}
 				onClose={() => {
 					setWizardKind(null);
 					setEditRow(null);

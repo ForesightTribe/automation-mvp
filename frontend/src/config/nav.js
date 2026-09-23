@@ -3,11 +3,10 @@ import {
 	BarChart3,
 	Package,
 	Warehouse,
-	Megaphone,
 	FlaskConical,
-	Target,
 	Gauge,
 	ClipboardCheck,
+	ClipboardList,
 	FileText,
 	Settings,
 } from "lucide-react";
@@ -18,18 +17,23 @@ import {
  * a page = adding one entry here (plus its feature folder).
  *
  * `icon` is a lucide component — the rail is icon-only, so `label` is what the
- * tooltip and aria-label read.
+ * tooltip and aria-label read. `badge` is an optional pill (e.g. "New"), shown
+ * only when the rail is expanded.
  */
 export const NAV_ITEMS = [
 	{ label: "Overview", path: "/overview", icon: LayoutGrid },
 	{ label: "Sales & Analytics", path: "/analytics", icon: BarChart3 },
 	{ label: "Products", path: "/products", icon: Package },
 	{ label: "Inventory", path: "/inventory", icon: Warehouse },
-	// A plain top-level entry, deliberately outside the AdsBeta group below.
-	{ label: "Ads", path: "/ads", icon: Megaphone },
+	{
+		label: "Purchase Orders",
+		path: "/purchase-orders",
+		icon: ClipboardList,
+		badge: "New",
+	},
 
 	{
-		label: "AdsBeta",
+		label: "Ads",
 		icon: FlaskConical,
 		children: [
 			{ label: "Insights", path: "/ads/insights" },
@@ -37,7 +41,6 @@ export const NAV_ITEMS = [
 			{ label: "One-time Ops", path: "/ads/one-time-ops" },
 		],
 	},
-	{ label: "Campaign Manager", path: "/campaign-manager", icon: Target },
 	{ label: "Competition", path: "/competition", icon: Gauge },
 	// A clipboard, not a document: Scorecard rates performance while Reports produces
 	// files, and both wearing FileText made two different destinations look like one.

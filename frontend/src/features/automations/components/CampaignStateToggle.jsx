@@ -13,35 +13,77 @@ import { Toggle } from "../../../components/ui/Toggle";
  * choose it. Disabled where the state is unknown rather than guessing a direction,
  * because flipping the wrong way stops something live.
  */
-export const CampaignStateToggle = ({ name, status, onActivate }) => {
+/**
+ * Blinkit states this control must NOT offer a Start for, and why in the reader's words.
+ *
+ * Both were previously treated as "not running, so offer Start" — the engine then refused
+ * every one of them (`writes.status_transition_denied`), and because a refused write still
+ * exits cleanly the row reported success. An action that cannot succeed should not be
+ * offered at all.
+ *
+ * ON_HOLD is the one worth being precise about: it does NOT mean stopped. Blinkit imposes
+ * it when the campaign's budget is exhausted, so the campaign is still live and there is
+ * nothing to restart — raising its budget is what revives it. That is why the engine
+ * answers a start with "there is nothing to restart" and accepts a budget write on it.
+ */
+const NOT_STARTABLE = {
+	ON_HOLD:
+		"Its budget is used up, so Blinkit has paused delivery. Raise the campaign's budget to bring it back — there is nothing to restart.",
+	COMPLETED:
+		"This campaign has finished. Blinkit treats that as final, so it cannot be started again.",
+};
+
+export const CampaignStateToggle = ({ name, status, busy, onActivate }) => {
 	const [confirming, setConfirming] = useState(false);
 	const live = status === "ACTIVE" || status === "SCHEDULED";
 	const known = Boolean(status);
+	// A campaign that is live can always be STOPPED — ON_HOLD included, which the engine
+	// accepts precisely because it is still a running campaign. The block below is only
+	// ever about the Start direction.
+	const blocked = !live ? NOT_STARTABLE[status] : null;
+	// A start/stop of this campaign is already queued or running. Inert until it settles:
+	// the second write would be decided against a state the first is in the middle of
+	// changing, and the two would race on a single-slot lane.
+	const hint = busy
+		? `Already ${busy.status === "pending" ? "queued" : "running"} — waiting for it to finish`
+		: !known
+			? "Campaign state unknown"
+			: blocked
+				? blocked
+				: live
+					? "Stop this campaign now"
+					: "Start this campaign now";
 	return (
 		<>
-			<Toggle
-				on={live}
-				disabled={!known}
-				aria-label={live ? "Stop this campaign" : "Start this campaign"}
-				title={
-					!known
-						? "Campaign state unknown"
-						: live
-							? "Stop this campaign now"
-							: "Start this campaign now"
-				}
-				onChange={() => setConfirming(true)}
-			/>
+			{/* ⚠️ The title sits on the WRAPPER, not the switch. A disabled <button> fires no
+			    mouse events in most browsers, so a tooltip on the button itself is invisible
+			    in exactly the case that most needs explaining — a Start we have turned off.
+			    `inline-flex` so the span does not change the cell's layout. */}
+			<span className="inline-flex" title={hint}>
+				<Toggle
+					on={live}
+					disabled={!known || Boolean(blocked)}
+					aria-label={
+						blocked
+							? `Cannot start this campaign — ${blocked}`
+							: live
+								? "Stop this campaign"
+								: "Start this campaign"
+					}
+					title={hint}
+					onChange={() => setConfirming(true)}
+				/>
+			</span>
 			{confirming && (
 				<div
 					onClick={(e) => e.stopPropagation()}
-					className="fixed inset-0 z-[70] flex items-center justify-center bg-black/40 p-6"
+					className="fixed inset-0 z-70 flex items-center justify-center bg-black/40 p-6"
 				>
 					{/* ⚠️ `whitespace-normal` is load-bearing. This dialog renders inside a table cell
 					    that sets `whitespace-nowrap`, and `position: fixed` escapes the cell's layout
 					    but NOT its inherited text properties: without it the sentence refuses to wrap
 					    and runs out of the box. */}
-					<div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 break-words whitespace-normal">
+					<div className="w-full max-w-sm rounded-lg border border-border bg-card p-5 wrap-break-word whitespace-normal">
 						<p className="font-display text-base font-semibold text-content">
 							{live
 								? "Stop this campaign?"

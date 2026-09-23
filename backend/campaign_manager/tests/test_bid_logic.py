@@ -8,7 +8,8 @@ the Blinkit product-matching (positions.match_position).
 from datetime import datetime, timedelta
 
 from campaign_manager.bid import (
-    HOLD_MINUTES, RESET_LOOKAHEAD_MINUTES, _in_window, _window_start, compute_bid, is_recovery,
+    HOLD_MINUTES, RESET_LOOKAHEAD_MINUTES, _in_window, _window_opened, _window_start, compute_bid,
+    is_recovery,
     next_raise_step, resolve_ceiling, should_relax_target, stored_effective_target,
 )
 from campaign_manager.marketplaces.blinkit.positions import match_position
@@ -434,6 +435,82 @@ def test_yesterdays_runtime_does_not_count_as_this_window_opened():
     now = datetime(2026, 8, 12, 9, 0)
     yesterday_evening = datetime(2026, 8, 11, 20, 45)
     assert yesterday_evening < _window_start(rule, now)
+
+
+# ── all-day rules: midnight is not a window start (2026-09-18) ───────────────
+#
+# "tapioca chips" (all day, every day) was floored ₹842 → ₹200 at 00:01 every night and
+# spent two hours climbing back. Its consecutive days are ONE window: no floor at midnight,
+# and a reset only where the run of days ends.
+#
+# 2026-09-18 is a Friday.
+
+ALL_DAY = {"type": "recurring", "start_time": None, "stop_time": None, "days": []}
+FRI_SAT_SUN = {**ALL_DAY, "days": ["friday", "saturday", "sunday"]}
+LAST_TICK = datetime(2026, 9, 17, 23, 46)          # Thursday's last optimizer tick
+
+
+def test_all_day_every_day_carries_the_bid_across_midnight():
+    assert _window_opened(ALL_DAY, LAST_TICK, datetime(2026, 9, 18, 0, 1))
+
+
+def test_all_day_still_floors_after_a_whole_day_untouched():
+    """One step back only: nothing since before YESTERDAY's window (paused, campaign dark all
+    day) re-opens at the floor — the ratchet protection the floor exists for."""
+    assert not _window_opened(ALL_DAY, datetime(2026, 9, 16, 23, 46), datetime(2026, 9, 18, 0, 1))
+    assert not _window_opened(ALL_DAY, None, datetime(2026, 9, 18, 0, 1))
+
+
+def test_all_day_weekdays_floor_at_the_start_of_the_run_only():
+    # Friday 00:01 follows Thursday, which is not in the run → a new window, floor.
+    assert not _window_opened(FRI_SAT_SUN, datetime(2026, 9, 14, 23, 46), datetime(2026, 9, 18, 0, 1))
+    # Saturday and Sunday 00:01 continue Friday's / Saturday's window.
+    assert _window_opened(FRI_SAT_SUN, datetime(2026, 9, 18, 23, 46), datetime(2026, 9, 19, 0, 1))
+    assert _window_opened(FRI_SAT_SUN, datetime(2026, 9, 19, 23, 46), datetime(2026, 9, 20, 0, 1))
+
+
+def test_all_day_first_day_of_a_date_range_floors():
+    rule = {**ALL_DAY, "start_date": "2026-09-18"}
+    assert not _window_opened(rule, LAST_TICK, datetime(2026, 9, 18, 0, 1))
+    assert _window_opened(rule, datetime(2026, 9, 18, 23, 46), datetime(2026, 9, 19, 0, 1))
+
+
+def test_timed_windows_still_floor_every_day():
+    """Unchanged: a closed minute before every open, so each day is its own window."""
+    for rule, prev, now in (
+        ({**ALL_DAY, "start_time": "09:00", "stop_time": "21:00"},
+         datetime(2026, 9, 17, 20, 45), datetime(2026, 9, 18, 9, 1)),
+        ({**ALL_DAY, "start_time": "00:00", "stop_time": "23:59"},
+         datetime(2026, 9, 17, 23, 45), datetime(2026, 9, 18, 0, 1)),
+        ({**ALL_DAY, "start_time": "18:00", "stop_time": "02:00"},
+         datetime(2026, 9, 18, 1, 45), datetime(2026, 9, 18, 18, 1)),
+        ({**ALL_DAY, "start_time": "09:00", "stop_time": None},
+         datetime(2026, 9, 17, 23, 45), datetime(2026, 9, 18, 9, 1)),
+    ):
+        assert not _window_opened(rule, prev, now), rule
+
+
+def test_one_time_all_day_rules_are_their_own_window():
+    rule = {**ALL_DAY, "type": "once", "date": "2026-09-18"}
+    assert not _window_opened(rule, LAST_TICK, datetime(2026, 9, 18, 0, 1))
+
+
+def test_all_day_mid_window_is_unchanged():
+    assert _window_opened(ALL_DAY, datetime(2026, 9, 18, 10, 0), datetime(2026, 9, 18, 10, 15))
+
+
+def test_all_day_reset_takes_only_the_night_the_run_ends():
+    """The 23:59 fire runs every night; it floors Fri/Sat/Sun only on Sunday."""
+    assert not _reset_takes(FRI_SAT_SUN, datetime(2026, 9, 18, 23, 59))    # Fri → Sat
+    assert not _reset_takes(FRI_SAT_SUN, datetime(2026, 9, 19, 23, 59))    # Sat → Sun
+    assert _reset_takes(FRI_SAT_SUN, datetime(2026, 9, 20, 23, 59))        # Sun → Mon
+    assert not _reset_takes(ALL_DAY, datetime(2026, 9, 18, 23, 59))        # never closes
+
+
+def test_all_day_reset_takes_the_end_date():
+    rule = {**ALL_DAY, "stop_date": "2026-09-19"}
+    assert not _reset_takes(rule, datetime(2026, 9, 18, 23, 59))
+    assert _reset_takes(rule, datetime(2026, 9, 19, 23, 59))
 
 
 # ── unreachable target (relax to what the ceiling can buy) ───────────────────

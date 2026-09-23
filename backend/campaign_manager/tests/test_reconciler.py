@@ -259,6 +259,28 @@ def test_bid_reset_fire_once_overnight_is_oneshot():
     assert reset.params == {"reset": "true", "marketplace": MP}
 
 
+def test_all_day_rules_reset_only_where_their_run_of_days_ends():
+    """An all-day rule closes at midnight — but only where its run of days ends. A weekday
+    filter or an end date → a daily 23:59 fire (the engine picks the right night). Every day
+    with no end date never closes → no reset at all (2026-09-18)."""
+    fri_sun = bidrule(True)
+    fri_sun.days = ["friday", "saturday", "sunday"]
+    whole_week = bidrule(True)
+    whole_week.days = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
+    for rule, wanted in ((fri_sun, True), (bidrule(True, stop_date=FUTURE), True),
+                         (bidrule(True), False), (whole_week, False),
+                         (bidrule(True, start_time="09:00"), False)):
+        resets = {n for n in _names(_desired(bid_rules=[rule])) if ":reset:" in n}
+        assert resets == ({"auto:cm:bid:T:blinkit:reset:2359"} if wanted else set()), rule
+
+
+def test_all_day_once_rule_resets_at_2359_on_its_date():
+    ds = _desired(bid_rules=[bidrule(True, type="once", date=FUTURE)])
+    reset = _by_name(ds)["auto:cm:bid:T:blinkit:reset:20260815T2359"]
+    assert reset.cron is None and reset.repeat is False
+    assert reset.next_run_at == datetime(2026, 8, 15, 23, 59)
+
+
 def test_armed_merges_live_into_reset_params():
     ds = desired_schedules(T, MP, [], [bidrule(True, "19:00", "23:00")], NOW, live=True)
     assert _by_name(ds)["auto:cm:bid:T:blinkit:reset:2259"].params == {

@@ -221,26 +221,33 @@ async def campaigns(
                 _AD_SALES,
                 _AD_ATC,
                 _AD_UNITS,
-                func.max(Ad.status),
                 func.max(Ad.campaign_type),
             )
             .where(*_conds(tenant_id, start, end))
             .group_by(Ad.campaign_id)
         )
     ).all()
-    # Daily budget is a setting, not a metric: it is stamped on every daily row
-    # and can be changed mid-window, so it is neither summed nor max'd — the
-    # value on the latest scraped day is what the dashboard shows as current.
-    latest_budget = dict(
-        (
+    # Daily budget and status are SETTINGS, not metrics: both are stamped on every daily
+    # row and can change mid-window, so neither is summed nor max'd — the value on the
+    # latest scraped day is what the dashboard shows as current.
+    #
+    # ⚠️ `status` used to be `func.max(Ad.status)` in the aggregate above, which orders
+    # alphabetically rather than by date: `max("ACTIVE", "PAUSED")` is "PAUSED", so one
+    # paused day made a campaign read as paused for the whole window, and a campaign
+    # resumed yesterday still read as paused. Same DISTINCT ON as the budget, one pass.
+    latest = {
+        cid: (budget, status)
+        for cid, budget, status in (
             await session.execute(
-                select(Ad.campaign_id, Ad.daily_budget)
+                select(Ad.campaign_id, Ad.daily_budget, Ad.status)
                 .distinct(Ad.campaign_id)
                 .where(*_conds(tenant_id, start, end))
                 .order_by(Ad.campaign_id, Ad.date.desc())
             )
         ).all()
-    )
+    }
+    latest_budget = {cid: b for cid, (b, _) in latest.items()}
+    latest_status = {cid: st for cid, (_, st) in latest.items()}
     return [
         {
             # CampaignRow types this as int, and Zepto's ids are numeric.
@@ -252,11 +259,11 @@ async def campaigns(
             "atc": int(atc),
             "units_sold": int(units),
             "roas": round(float(sales) / float(spend), 4) if spend else None,
-            "status": status,
+            "status": latest_status.get(cid),
             "campaign_type": ctype,
             "daily_budget": latest_budget.get(cid),
         }
-        for cid, name, spend, impr, sales, atc, units, status, ctype in rows
+        for cid, name, spend, impr, sales, atc, units, ctype in rows
     ]
 
 

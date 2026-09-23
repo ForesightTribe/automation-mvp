@@ -9,6 +9,7 @@ import { ActionsSummaryPills } from "./ActionsSummaryPills";
 import { useCampaignsForRange, useHistory, useKeywordMetrics } from "../hooks";
 import { useDateRange } from "../../../context/DateRangeContext";
 import { formatCurrency, formatNumber } from "../../../lib/format";
+import { outcomeOf } from "../../../lib/runLog";
 
 const when = (iso) =>
 	new Intl.DateTimeFormat("en-IN", {
@@ -39,7 +40,13 @@ export const CampaignDetailDrawer = ({
 	const { data: keywords, isLoading: loadingKw } = useKeywordMetrics(
 		open ? campaignId : null,
 	);
-	const { data: history } = useHistory(1);
+	// THIS campaign's rows, asked of the server. Filtering page 1 of every campaign's history
+	// found this one's only if it happened to be among the newest twenty account-wide.
+	const { data: history } = useHistory(1, undefined, {
+		campaignId,
+		limit: 6,
+		enabled: open && campaignId != null,
+	});
 
 	const campaign = (campaigns ?? []).find(
 		(c) => c.campaign_id === campaignId,
@@ -57,9 +64,7 @@ export const CampaignDetailDrawer = ({
 				.slice(0, 8),
 		[keywords],
 	);
-	const activity = (history?.items ?? [])
-		.filter((r) => r.campaign_id === campaignId)
-		.slice(0, 6);
+	const activity = history?.items ?? [];
 
 	if (!open) return null;
 
@@ -198,7 +203,7 @@ export const CampaignDetailDrawer = ({
 						<tbody>
 							{topKeywords.map((k) => (
 								<tr
-									key={k.target}
+									key={`${k.target}|${k.match_type}`}
 									className="border-b border-border/60 last:border-0"
 								>
 									<td className="py-1.5 pr-2 text-content">
@@ -235,6 +240,7 @@ export const CampaignDetailDrawer = ({
 							<li
 								key={r.id}
 								className="flex justify-between gap-3 text-sm"
+								title={r.reason ?? undefined}
 							>
 								<span
 									className={
@@ -243,7 +249,7 @@ export const CampaignDetailDrawer = ({
 											: "text-danger"
 									}
 								>
-									{r.action}
+									{outcomeOf(r)}
 									{r.new_value != null &&
 										` ${formatCurrency(r.new_value)}`}
 									{r.keyword && (

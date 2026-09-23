@@ -11,12 +11,21 @@ import logoMark from "../assets/brand/logo-mark.png";
  *
  * `showWordmark={false}` leaves the mark alone, for the collapsed rail where there
  * is no room for the word and the mark alone still reads as the product.
+
  */
-export const Logo = ({ showWordmark = true }) => (
-	<div className="flex shrink-0 items-center gap-1.5">
-		<img src={logoMark} alt="Foresight" className="h-6 w-auto" />
+export const Logo = ({ showWordmark = true, size = "sm" }) => (
+	<div className="flex shrink-0 items-center gap-2">
+		<img
+			src={logoMark}
+			alt="Foresight"
+			className={`${size === "lg" ? "h-8" : "h-6"} w-auto`}
+		/>
 		{showWordmark && (
-			<span className="font-display text-lg font-bold tracking-tight text-brand">
+			<span
+				className={`font-display font-bold tracking-tight text-brand ${
+					size === "lg" ? "text-2xl" : "text-lg"
+				}`}
+			>
 				Foresight
 			</span>
 		)}

@@ -17,10 +17,13 @@ export const getBudgetSchedules = (clientId) =>
 
 export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 
-// `campaign_id` / `rule_id` narrow to ONE automation, server-side. `include_unchanged`
-// adds the ticks where the engine deliberately did nothing, which is the drill-down
-// case: "why has my bid not moved for six hours" is answered by the held ticks, and
-// they are suppressed by default so the unfiltered list is not buried in them.
+// Every filter here is applied BY THE SERVER, so paging and the total stay honest.
+// `campaign_id` + `keyword` is one keyword automation; `kind` may list several
+// ("budget,activation" is one campaign automation's own record). `success=false` is every
+// row that did not do what it meant to. `include_unchanged` adds the ticks where the engine
+// deliberately did nothing — the drill-down case: "why has my bid not moved for six hours"
+// is answered by the held ticks, and they are suppressed by default so the unfiltered list
+// is not buried in them.
 export const getHistory = (
 	clientId,
 	{
@@ -29,6 +32,8 @@ export const getHistory = (
 		kind,
 		campaignId,
 		ruleId,
+		keyword,
+		success,
 		includeUnchanged = false,
 	} = {},
 ) =>
@@ -39,6 +44,8 @@ export const getHistory = (
 			kind,
 			campaign_id: campaignId,
 			rule_id: ruleId,
+			keyword,
+			success,
 			include_unchanged: includeUnchanged,
 		},
 	});
@@ -117,6 +124,10 @@ export const getCampaignNames = (clientId) =>
 // service loaded every detail row for the tenant on EVERY page (~7-11 s, ~200 MB), and these
 // parallel fetches exhausted the Supabase connection pool. If this endpoint ever turns slow
 // again, fetch the tail sequentially instead.
+//
+// `recent_only` drops the pre-migration account's campaigns on the SERVER. The picker also
+// filters them client-side, but only once `/ads/campaigns` has loaded — keywords usually
+// land first, so for that moment every campaign showed twice under the same name.
 export const getKeywordMetricsPage = (clientId, page) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {
@@ -125,6 +136,7 @@ export const getKeywordMetricsPage = (clientId, page) =>
 			order: "desc",
 			limit: 500,
 			page,
+			recent_only: true,
 		},
 	});
 
@@ -197,26 +209,18 @@ export const resetBidRule = (clientId, ruleId) =>
 	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
 
 // ── On-demand actions (enqueue → poll) ───────────────────────────────────────
-export const setBudgetNow = (clientId, body) =>
-	api.post(`${base(clientId)}/set-budget`, body);
-
 export const setActivationNow = (clientId, campaignId, body) =>
 	api.post(`${base(clientId)}/campaigns/${campaignId}/activation`, body);
-
-export const runEngine = (clientId, which) =>
-	api.post(`${base(clientId)}/run/${which}`);
 
 export const refreshCampaigns = (clientId) =>
 	api.post(`${base(clientId)}/campaigns/refresh`);
 
+// Recent actions and run outcomes: lib/actions.js, shared with One-time Ops.
+
 /**
- * The dark-store catalogue, which is where the evaluation-city suggestions come from.
- *
- * ⚠️ Read from the STORE catalogue, not from a city list. The catalogue is the only source
- * that reflects where stores actually are; a standalone city table drifts from it.
- * The engine resolves an evaluation city by lower-casing it against this same table
- * (`repo.py::resolve_store`), so a city offered here is one it can genuinely measure at.
- *
- * Not client-scoped: these are the platform's stores, not this account's.
+ * ⚠️ `getStoreCatalogue` (`GET /reference/blinkit-zones`) is gone from this feature
+ * (2026-09-15). The evaluation-city picker read it directly and raced `bid-context` for the
+ * same field; `bid-context` now returns the measurable cities itself, resolved against that
+ * very catalogue server-side. The route still exists for other readers — this form is just
+ * no longer one of them.
  */
-export const getStoreCatalogue = () => api.get("/reference/blinkit-zones");

@@ -8,12 +8,14 @@ Convention: functions return schema DTOs (or None for not-found / access-denied,
 route maps to 404); a `DuplicateActiveJob` from the queue propagates for the route to 409.
 """
 import uuid
+from datetime import datetime, timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
     BidContextOut, KeywordBidRange, TargetedCity,
     BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn, BudgetRuleOut, BudgetRuleUpdate,
-    BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmJobOut, RunLogOut,
+    BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmActionOut, CmJobOut,
+    RunLogOut,
 )
 from app.utils.time import now_ist
 # `window` is the same pure module the engines decide with, so the status the UI shows is
@@ -101,10 +103,18 @@ def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
     )
 
 
-def _bid_out(r, now=None) -> BidRuleOut:
+def _bid_out(r, now=None, city_name=None) -> BidRuleOut:
     o = BidRuleOut.model_validate(r)
     o.status = _bid_status(r, now or now_ist())
+    o.city_name = city_name
     return o
+
+
+async def _bid_out_async(r, now=None) -> BidRuleOut:
+    """`_bid_out` for the single-rule paths, which have no batch to resolve cities with.
+    Lists must NOT use this — see `list_bid_rules`, which resolves the whole page at once."""
+    names = await repo.city_names_for(PLATFORM, [r])
+    return _bid_out(r, now, names.get(r.id))
 
 
 # ── Budget schedules + rules ────────────────────────────────────────────────
@@ -240,33 +250,92 @@ async def list_bid_rules(tenant_id: uuid.UUID) -> list[BidRuleOut]:
     # The UI lists every automation — paused and ended included.
     pairs = await repo.get_bid_rules(tenant_id, PLATFORM, state=repo.ANY_STATE,
                                      calendar=repo.ANY_CALENDAR)
-    return [_bid_out(r, now) for r, _rt in pairs]
+    rules = [r for r, _rt in pairs]
+    # One resolve for the whole page — a per-row lookup would be a session per rule.
+    names = await repo.city_names_for(PLATFORM, rules)
+    return [_bid_out(r, now, names.get(r.id)) for r in rules]
+
+
+def _sorted(cities: list[TargetedCity]) -> list[TargetedCity]:
+    """Alphabetical, with the cities we cannot measure in last.
+
+    Blinkit returns `region_ids` in the order someone ticked boxes in its dashboard, and
+    that order reached the picker untouched. Sorting here rather than in the form keeps one
+    answer for every caller, and sinking the unmeasurable ones stops disabled options
+    interleaving with pickable ones.
+    """
+    return sorted(cities, key=lambda c: (c.lat is None, c.name.lower()))
+
+
+async def _measurement_cities(tenant_id: uuid.UUID, campaign) -> list[TargetedCity]:
+    """Where a bid rule for this campaign may measure position — ONE list, always populated.
+
+    Two branches, one shape, because the form should render a picker rather than choose
+    between sources:
+
+    - **CITY targeting** → the campaign's own cities, so a rule cannot be pointed somewhere
+      the campaign never runs. A targeted city our catalog has no store in is kept, not
+      dropped, carrying `lat=None`: the form disables it and says why, which is the honest
+      answer. Dropping it would quietly shrink the campaign's targeting on screen.
+    - **Anything else** → every measurable city. PAN_INDIA runs everywhere, so every city we
+      have a store in is legitimate. An unscraped campaign (`campaign is None`, or no
+      targeting captured) gets the same list for a different reason — we have no evidence it
+      is narrow — and `region_type` stays None so the form can word that differently.
+
+    Names come back canonical (`cities.name`) wherever they resolve, which is what stops the
+    picker mixing Blinkit's spelling with our catalog's.
+    """
+    targeted = (campaign.cities or []) if campaign and campaign.region_type == "CITY" else None
+
+    if targeted is None:
+        catalog = await repo.measurable_cities(PLATFORM, tenant_id=tenant_id)
+        return _sorted([
+            TargetedCity(id=key if isinstance(key, int) else None, name=name, state=state,
+                         location_name=store.label, lat=store.lat, lon=store.lon)
+            for key, (name, state, store) in catalog.items()
+        ])
+
+    named = [(c.get("id"), c["name"]) for c in targeted
+             if isinstance(c, dict) and c.get("name")]
+    resolved = await repo.resolve_city_ids(PLATFORM, [n for _rid, n in named])
+    catalog = await repo.measurable_cities(
+        PLATFORM, tenant_id=tenant_id, city_ids=set(resolved.values()))
+
+    cities: list[TargetedCity] = []
+    for region_id, name in named:
+        city_id = resolved.get(name.strip().lower())
+        entry = catalog.get(city_id)
+        if entry is None:
+            # No canonical city, so ask the single-city resolver — it also matches our
+            # catalog's own `city` TEXT, which reaches a store in a city that has no
+            # `cities` row yet. Normally this loop runs zero times (the canonical registry
+            # covers the catalog); it exists so seeding lag cannot make a city we can
+            # genuinely measure in look unmeasurable.
+            store = await repo.resolve_store(PLATFORM, city=name, tenant_id=tenant_id)
+            cities.append(TargetedCity(
+                id=city_id or region_id, name=name.title(),
+                location_name=store.label if store else None,
+                lat=store.lat if store else None,
+                lon=store.lon if store else None))
+            continue
+        canonical, state, store = entry
+        cities.append(TargetedCity(id=city_id, name=canonical, state=state,
+                                   location_name=store.label, lat=store.lat, lon=store.lon))
+    return _sorted(cities)
 
 
 async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextOut:
     """Everything the bid-rule form needs about one campaign (V7.4) — DB only, no Blinkit.
 
-    An unscraped campaign returns an empty shell with `scraped_at=None` rather than a 404:
-    the form then behaves exactly as it did before V7 (free city input, no bid prefill),
-    which is the right answer for a campaign created since the last scrape. Blocking would
-    make a brand-new campaign unautomatable for a day.
+    An unscraped campaign returns `scraped_at=None` and no bid prefill rather than a 404 —
+    the right answer for a campaign created since the last scrape, where blocking would make
+    it unautomatable for a day. It still gets a full city list: not knowing a campaign's
+    targeting is a reason to offer every measurable city, not to offer none.
     """
     campaign, keywords = await repo.get_bid_context(tenant_id, campaign_id, PLATFORM)
+    cities = await _measurement_cities(tenant_id, campaign)
     if campaign is None:
-        return BidContextOut(campaign_id=campaign_id)
-
-    cities: list[TargetedCity] = []
-    for c in campaign.cities or []:
-        name = c.get("name") if isinstance(c, dict) else None
-        if not name:
-            continue
-        # Each targeted city is resolved to the store a rule would actually measure at, so
-        # the form can say "no dark store in our catalog for X" up front instead of letting
-        # someone save a rule that silently has no measurement point.
-        store = await repo.resolve_store(PLATFORM, city=name, tenant_id=tenant_id)
-        lat, lon, label = (store.lat, store.lon, store.label) if store else (None, None, None)
-        cities.append(TargetedCity(id=c.get("id"), name=name,
-                                   location_name=label, lat=lat, lon=lon))
+        return BidContextOut(campaign_id=campaign_id, cities=cities)
 
     return BidContextOut(
         campaign_id=campaign_id,
@@ -323,7 +392,7 @@ async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> Bid
         d.pop("keyword"), d.pop("target_position"), d.pop("min_bid"), d.pop("max_bid"), **d,
     )
     await _reconcile(session, tenant_id)
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
@@ -360,7 +429,7 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
     r = await repo.get_bid_rule(rule_id)
     if window.in_window(window.from_bid(r), now_ist()):   # editing a live window → apply now
         await _reapply(session, tenant_id, "cm.bid_optimizer")
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def delete_bid_rule(session, tenant_id: uuid.UUID, rule_id: str, *,
@@ -415,7 +484,7 @@ async def pause_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRule
         raise StateError("This automation has already ended, so there is nothing to pause.")
     r = await repo.set_bid_state(rule_id, "paused")
     await _reconcile(session, tenant_id)
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
@@ -446,7 +515,7 @@ async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRul
     await _reconcile(session, tenant_id)
     if not window.in_window(window.from_bid(r), now_ist()):
         await _enqueue_bid_reset(session, tenant_id, r)
-    return _bid_out(r)
+    return await _bid_out_async(r)
 
 
 async def reset_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> uuid.UUID | None:
@@ -501,8 +570,31 @@ async def _enqueue_bid_reset(session, tenant_id: uuid.UUID, rule) -> uuid.UUID:
 
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
-async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float) -> uuid.UUID:
-    params = {"campaign": str(campaign_id), "budget": str(budget)}
+# Which dashboard surface asked for an action. The One-time Ops page lists ONLY what was
+# started from it, and the server cannot otherwise tell: that page and Ad Automation call
+# the same three endpoints (set budget, start/stop, refresh), so the job type says nothing
+# about where the click came from.
+#
+# An allowlist, so a caller cannot write arbitrary strings into job rows. An unknown value
+# is dropped rather than rejected — a mislabelled request should still run.
+ACTION_SOURCES = frozenset({"one-time-ops"})
+
+
+def _stamp_source(params: dict, source: str | None) -> dict:
+    """Record `source` in the job's params when it is a known surface.
+
+    ⚠️ METADATA, not an input. It rides in `params` because that is where a job's
+    attributes live (and it needs no migration), but no CLI builder reads it, so it never
+    reaches `argv` and cannot change what the run does. `run_id` is the same kind of guest.
+    """
+    if source in ACTION_SOURCES:
+        params["source"] = source
+    return params
+
+
+async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float,
+                         source: str | None = None) -> uuid.UUID:
+    params = _stamp_source({"campaign": str(campaign_id), "budget": str(budget)}, source)
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
         params["live"] = "true"
     job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
@@ -510,7 +602,8 @@ async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget
 
 
 async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, status: str,
-                             budget: float | None = None) -> uuid.UUID:
+                             budget: float | None = None,
+                             source: str | None = None) -> uuid.UUID:
     """Enqueue a start/stop of one campaign. Like set_budget_now, the API only queues —
     the VM opens the browser, reads the campaign's real state and runs the guardrails.
 
@@ -518,7 +611,7 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     campaign's current budget from a fresh read, which is better than anything the API
     could guess from stale scraped data.
     """
-    params = {"campaign": str(campaign_id), "status": status}
+    params = _stamp_source({"campaign": str(campaign_id), "status": status}, source)
     if status == "running" and budget is not None:
         params["budget"] = str(budget)
     if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
@@ -527,10 +620,12 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     return job.id
 
 
-async def refresh_campaigns(session, tenant_id: uuid.UUID) -> uuid.UUID:
+async def refresh_campaigns(session, tenant_id: uuid.UUID,
+                            source: str | None = None) -> uuid.UUID:
     """Enqueue a catalogue refresh from the live account. No `live` param — it is a read,
     so it runs the same whether or not the tenant is armed."""
-    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id)
+    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id,
+                        params=_stamp_source({}, source))
     return job.id
 
 
@@ -541,23 +636,122 @@ async def run_engine(session, tenant_id: uuid.UUID, job_type: str) -> uuid.UUID:
     return job.id
 
 
+# ── Recent actions (the dashboard's activity list) ──────────────────────────
+
+# One page. There is NO time window: the One-time Ops panel shows an account's whole
+# history of operations, paged. (It used to stop at 6 hours / 10 rows, a limit nothing
+# required — and `jobs` rows are never deleted, so the full history is really there.)
+#
+# Paged rather than fetched whole because the newest page is POLLED while anything runs;
+# re-reading an ever-growing history every two seconds is what the paging avoids.
+_ACTIONS_PAGE = 20
+_ACTIONS_PAGE_MAX = 100
+
+
+async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_PAGE,
+                         source: str | None = None, before: datetime | None = None):
+    """One page of this client's PERSON-TRIGGERED campaign jobs, newest first.
+
+    Returns `(items, has_more)`. Paged by KEYSET, not offset: `before` is the `created_at` of
+    the oldest item already shown, and the next page is everything older than it. Offset
+    would shift under a live list — a new action arriving at the top between two "load
+    older" clicks would push one row onto the next page and show it twice. Keyset cannot.
+    `has_more` comes from fetching one extra row, so paging never needs a COUNT over the
+    whole job history.
+
+    `source` narrows it to actions started from one surface (see `ACTION_SOURCES`). Filtered
+    in SQL rather than after the LIMIT, so a burst of actions on another page cannot push
+    this page's own actions out of the list.
+
+    Two conditions, and both are needed:
+
+      * the job TYPE is one a person performs (`spec.user_action`) — which excludes the
+        hourly engines and `cm.reconcile`, the latter being fired by the API on every rule
+        edit and so the noisiest thing that would otherwise qualify;
+      * THIS RUN had no schedule behind it (`schedule_id IS NULL`). The scheduler stamps
+        every job it fires with its schedule id and the API never sets one, so this is an
+        exact record of "a person asked for this" rather than an inference.
+
+    Neither alone is enough. The type says what KIND of thing it is; `schedule_id` says who
+    started THIS one. A cron fire of a type people also click is not an action anyone is
+    waiting on, and a reconcile nobody thinks of as an action should not appear just because
+    it came from the API.
+
+    Includes finished jobs, not only running ones — a job that wrote no history rows (a
+    catalogue refresh always does, and an engine tick that changed nothing does too) would
+    otherwise vanish on completion with nothing left to show it ever ran.
+    """
+    from sqlalchemy import select
+    from jobs.types import JOB_TYPES
+
+    actionable = [t for t, spec in JOB_TYPES.items() if spec.user_action]
+    if not actionable:
+        return [], False
+    limit = max(1, min(int(limit), _ACTIONS_PAGE_MAX))
+    conds = [
+        Job.tenant_id == tenant_id,
+        Job.job_type.in_(actionable),
+        Job.schedule_id.is_(None),
+    ]
+    if before is not None:
+        conds.append(Job.created_at < before)
+    if source is not None:
+        # An unknown source matches nothing rather than everything: a typo in a filter must
+        # not silently widen it to the whole account.
+        conds.append(Job.params["source"].as_string() == source)
+    # `id` breaks ties so the order is total — two jobs enqueued in the same instant must
+    # not swap places between pages.
+    rows = (await session.execute(
+        select(Job).where(*conds)
+        .order_by(Job.created_at.desc(), Job.id.desc())
+        .limit(limit + 1)
+    )).scalars().all()
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+
+    out = []
+    for job in rows:
+        spec = JOB_TYPES.get(job.job_type)
+        item = CmActionOut.model_validate(job)
+        item.label = (spec.label if spec else None) or job.job_type
+        item.run_id = (job.params or {}).get("run_id")
+        # The campaign this acted on, for a line that names its subject rather than
+        # saying "a budget change" and leaving the reader to guess which.
+        campaign = (job.params or {}).get("campaign")
+        item.campaign_id = int(campaign) if str(campaign or "").isdigit() else None
+        item.keyword = (job.params or {}).get("keyword") or None
+        out.append(item)
+    return out, has_more
+
+
 # ── Status + history ────────────────────────────────────────────────────────
 
 async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID) -> CmJobOut | None:
     job = await session.get(Job, job_id)
     if not job or job.tenant_id != tenant_id or not job.job_type.startswith("cm."):
         return None
-    return CmJobOut.model_validate(job)
+    out = CmJobOut.model_validate(job)
+    # Lifted out of `params` so callers never have to know where it is stored. It is a
+    # param because that is how it reaches the CLI (`--run-id`), but to a reader of a job
+    # it is identity, not input — and it is the key to what the run actually DID, since
+    # `status` only reports that the process exited.
+    out.run_id = (job.params or {}).get("run_id")
+    return out
 
 
 async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset: int,
                   campaign_id: int | None = None, rule_id: str | None = None,
-                  include_unchanged: bool = False):
+                  run_id: str | None = None, include_unchanged: bool = False,
+                  keyword: str | None = None, success: bool | None = None):
     """History for the UI. Changes only by default; `include_unchanged` returns every tick,
-    which is what a per-automation view wants (see repo.list_run_log)."""
+    which is what a per-automation view wants (see repo.list_run_log).
+
+    `run_id` is the one-run view — what a single job did, and the only exact answer to
+    "did my change happen" (see the note on `repo.list_run_log`)."""
     rows, total = await repo.list_run_log(
         tenant_id, PLATFORM, kind=kind, limit=limit, offset=offset,
-        campaign_id=campaign_id, rule_id=rule_id, include_unchanged=include_unchanged)
+        campaign_id=campaign_id, rule_id=rule_id, run_id=run_id,
+        include_unchanged=include_unchanged, keyword=keyword, success=success)
     return [RunLogOut.model_validate(r) for r in rows], total
 
 

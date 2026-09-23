@@ -4,6 +4,7 @@ import { useBidContext, useCreateBidRule, useUpdateBidRule } from "../hooks";
 import { CampaignPicker } from "./CampaignPicker";
 import { KeywordPicker } from "./KeywordPicker";
 import { TimingFields, emptyTiming, timingFromRule, timingPayload } from "./TimingFields";
+import { formatMeasuredAt } from "../../../lib/format";
 
 const FIELD =
 	"rounded-md border border-border bg-surface px-2.5 py-1.5 text-sm text-content focus:border-primary focus:outline-none";
@@ -201,7 +202,7 @@ export const AutomateBidForm = ({ editing = null, onDone }) => {
 								: "This campaign targets these cities — pick where to measure."
 							: isEdit
 								? editing?.location_name
-									? `Currently: ${editing.location_name}. Enter a new city to change; leave blank to keep.`
+									? `Currently: ${formatMeasuredAt(editing.location_name, editing.city_name)}. Enter a new city to change; leave blank to keep.`
 									: "Required — this rule has no measurement store yet."
 								: "Required — position is checked at one store here."
 					}

@@ -3,6 +3,7 @@ import { AppLayout } from "../layout/AppLayout";
 import { RequireAuth } from "../routes/RequireAuth";
 import { RequireAdmin } from "../routes/RequireAdmin";
 import { RedirectIfAuth } from "../routes/RedirectIfAuth";
+import { LoginPage } from "../routes/LoginPage";
 import { LandingPage } from "../routes/LandingPage";
 import { NotFoundPage } from "../routes/NotFoundPage";
 
@@ -19,6 +20,7 @@ import { OneTimeOpsPage } from "../features/one-time-ops/OneTimeOpsPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
+import { PurchaseOrdersPage } from "../features/purchase-orders/PurchaseOrdersPage";
 import { SettingsPage } from "../features/settings/SettingsPage";
 
 /**
@@ -33,7 +35,10 @@ import { SettingsPage } from "../features/settings/SettingsPage";
 export const router = createBrowserRouter([
 	{
 		element: <RedirectIfAuth />,
-		children: [{ path: "/", element: <LandingPage /> }],
+		children: [
+			{ path: "/", element: <LandingPage /> },
+			{ path: "/login", element: <LoginPage /> },
+		],
 	},
 	{
 		element: <RequireAuth />,
@@ -74,11 +79,25 @@ export const router = createBrowserRouter([
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{ path: "/reports", element: <ReportsPage /> },
 					{
+						path: "/purchase-orders",
+						element: <PurchaseOrdersPage />,
+					},
+					{
 						element: <RequireAdmin />,
 						children: [
 							{
 								path: "/settings",
 								element: <SettingsPage />,
+							},
+							// Onboarding and connections both live on Settings now (onboarding
+							// is a modal there); the old paths redirect for any saved links.
+							{
+								path: "/connections",
+								element: <Navigate to="/settings" replace />,
+							},
+							{
+								path: "/onboarding",
+								element: <Navigate to="/settings" replace />,
 							},
 						],
 					},
