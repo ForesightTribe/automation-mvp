@@ -9,6 +9,7 @@ import {
 	formatNumber,
 	formatUnitPrice,
 } from "../../../lib/format";
+import { marketplaceName } from "../../../lib/marketplace";
 
 const pct = (v) =>
 	v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`;
@@ -90,10 +91,12 @@ export const ProductPublicPanel = ({ itemId, marketplace }) => {
 					/* The marketplace name is not decoration — this panel is the
 					   private-to-public bridge, and `sku_map` is per marketplace.
 					   Naming Blinkit on a Zepto product told the reader to go
-					   looking for a mapping that was never the right one. */
-					message={`We haven't linked this product to its ${
-						marketplace === "zepto" ? "Zepto" : "Blinkit"
-					} listing. Once mapped, its live shelf presence, pricing and search rank show here.`}
+					   looking for a mapping that was never the right one; a
+					   two-way ternary then did the same to Instamart, so the name
+					   comes from one table now. */
+					message={`We haven't linked this product to its ${marketplaceName(
+						marketplace,
+					)} listing. Once mapped, its live shelf presence, pricing and search rank show here.`}
 				/>
 			)}
 			{!isLoading && !error && data?.mapped && (

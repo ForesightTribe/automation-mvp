@@ -303,20 +303,29 @@ class CityAlias(SQLModel, table=True):
 
 class SkuMap(SQLModel, table=True):
     """Bridges private seller data (`item_id`) to public scrape data
-    (`platform_product_id`) — the two Blinkit id systems share no key, so this is
-    built by normalized name matching (auto) with manual confirmation for the rest.
-    `platform_product_id` is NULL until matched. One row per (tenant, item_id).
+    (`platform_product_id`) — the private/public id systems share no key on any
+    marketplace, so this is built by normalized name matching (auto) with manual
+    confirmation for the rest. `platform_product_id` is NULL until matched.
+    One row per (tenant, mp_slug, item_id).
+
+    `mp_slug` exists because a tenant selling on more than one marketplace has
+    private item_ids and public names drawn from separate pools per marketplace —
+    without it, two marketplaces' rows fight over one slot and can cross-match
+    (an Instamart SKU matched to a Zepto listing of the same product name).
     """
 
     __tablename__ = "sku_map"
 
     __table_args__ = (
-        UniqueConstraint("tenant_id", "item_id", name="uq_skumap_tenant_item"),
+        UniqueConstraint(
+            "tenant_id", "mp_slug", "item_id", name="uq_skumap_tenant_mp_item"
+        ),
         Index("idx_skumap_tenant_pid", "tenant_id", "platform_product_id"),
     )
 
     id: int | None = Field(default=None, primary_key=True)
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    mp_slug: str = Field(foreign_key="marketplaces.slug")
     item_id: str                                   # private seller id
     platform_product_id: str | None = None         # public id (NULL until matched)
     item_name: str = ""                            # private name (reference)

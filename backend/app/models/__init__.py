@@ -40,6 +40,10 @@ from app.models.blinkit_marketing import (
     BlinkitBrandCollection,
     BlinkitVisibilityPlan,
 )
+from app.models.instamart_seller import (
+    InstamartSellerStoreDaily,
+    InstamartBrandCityDaily,
+)
 from app.models.explorer import ExplorerRun
 from app.models.campaign_manager_v2 import (
     CmBudgetSchedule,
@@ -67,6 +71,7 @@ __all__ = [
     "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",
     "BlinkitAdCampaignKeyword",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
+    "InstamartSellerStoreDaily", "InstamartBrandCityDaily",
     "ExplorerRun",
     "CmBudgetSchedule", "CmBudgetRule", "CmBidRule", "CmBidRuntime", "CmRunLog", "CmCityStore",
 ]

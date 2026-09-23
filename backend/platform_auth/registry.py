@@ -16,6 +16,7 @@ from platform_auth.errors import PlatformNotWired, UnknownPlatform
 from platform_auth.marketplaces.blinkit import marketing as blinkit_marketing
 from platform_auth.marketplaces.blinkit import seller as blinkit_seller
 from platform_auth.marketplaces.zepto import console as zepto_console
+from platform_auth.marketplaces.instamart import brand_portal as instamart_portal
 from platform_auth.types import Authenticator, SecretKind
 
 AUTHENTICATORS: dict[str, Authenticator] = {
@@ -63,15 +64,24 @@ AUTHENTICATORS: dict[str, Authenticator] = {
         # docs/platform-auth.md.
         refreshable=False,
     ),
-    # Placeholder — see docs/zepto.md. Listed so `cli auth platforms` shows the
-    # roadmap and so selecting it fails with a real message.
+    # ONE portal (partner.instamart.in) covers sales, ads, requisition orders and
+    # catalog — a single slug like Zepto, not two like Blinkit. Wired 2026-09-21
+    # against the live Brik Oven account: email OTP, no password, a 5-hour JWT
+    # with a working refresh endpoint, so `auth.refresh` is what gets scheduled.
+    # The advertiser account id every data call needs is configured per tenant
+    # in platform_credentials.extra (`account_id`) — see brand_portal.py.
     "instamart": Authenticator(
         slug="instamart",
-        name="Swiggy Instamart Seller",
+        name="Instamart Brand Portal (partner.instamart.in)",
         marketplace="instamart",
         secret_kind=SecretKind.OTP,
-        needs_password=False,          # unconfirmed — revisit when wiring it up
-        wired=False,
+        needs_password=False,
+        wired=True,
+        start_login=instamart_portal.start_login,
+        complete_login=instamart_portal.complete_login,
+        probe=instamart_portal.probe,
+        refresh=instamart_portal.refresh,
+        refreshable=True,
     ),
 }
 

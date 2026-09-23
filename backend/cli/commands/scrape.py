@@ -1,4 +1,5 @@
 import asyncio
+import uuid
 from datetime import date as _date, timedelta
 from typing import Optional
 import typer
@@ -2513,3 +2514,167 @@ async def _scrape_zepto_po(
                 await fail_scrape_job(db, job_id, str(e))
             console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
             raise typer.Exit(1)
+
+
+@app.command("instamart")
+def scrape_instamart(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    date_from: str = typer.Option(
+        None, "--from",
+        help="Start date YYYY-MM-DD (default: yesterday — the portal has nothing newer)",
+    ),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: --from)"),
+    days_back: int = typer.Option(
+        None, "--days-back",
+        help=(
+            "Trailing window ending yesterday, instead of --from/--to. Use 4 on a "
+            "catch-up run: Instamart reconciles for up to 86 hours, and re-loading "
+            "a date is harmless because the upsert key is (date, store, item)."
+        ),
+    ),
+    load: bool = typer.Option(
+        True, "--load/--no-load",
+        help="Write to Postgres. --no-load just downloads the xlsx and reports counts.",
+    ),
+    headed: bool = typer.Option(
+        False, "--headed", help="Show the browser (debugging the login form)."
+    ),
+    keep_file: bool = typer.Option(
+        False, "--keep-file/--no-keep-file",
+        help=(
+            "Keep the downloaded xlsx under backend/staging/instamart_reports/. "
+            "Off by default: every column of it is already in Postgres, and the "
+            "portal rebuilds a report for any past range on request, so the file "
+            "is a transport envelope rather than the record."
+        ),
+    ),
+):
+    """Scrape Instamart private sales (Brand Portal) into the seller tables.
+
+    One report per run, at the portal's finest grain: day x store x item, plus
+    the per-city brand metrics sheet. The portal only has data up to yesterday.
+
+    Needs `cli auth credentials set instamart -t <tenant> --email <e>
+    --extra account_id=<x-client-account-id>` to have been run once. The first
+    scrape logs into the portal in a browser (reading the OTP from the shared
+    inbox by itself) and reuses that session afterwards.
+    """
+    from pathlib import Path
+
+    from platform_auth import store as auth_store
+    from scraper.platforms.instamart.dashboard_data.seller import (
+        endpoints as im_ep, parser as im_parser, scraper as im_scraper,
+    )
+    from scraper.platforms.instamart.dashboard_data.seller.session import PortalSession
+    from scraper.platforms.instamart.dashboard_data.seller.storage import save_sales
+
+    yesterday = _date.today() - timedelta(days=1)
+    if days_back:
+        start, end = yesterday - timedelta(days=days_back - 1), yesterday
+    else:
+        start = _date.fromisoformat(date_from) if date_from else yesterday
+        end = _date.fromisoformat(date_to) if date_to else start
+    if start > end:
+        console.print("[red]--from is after --to[/red]")
+        raise typer.Exit(1)
+    span = (end - start).days + 1
+    if span > im_ep.MAX_REPORT_DAYS:
+        console.print(
+            f"[red]{span} days requested; the portal allows at most "
+            f"{im_ep.MAX_REPORT_DAYS} per report.[/red]"
+        )
+        raise typer.Exit(1)
+
+    dest = Path(__file__).resolve().parents[2] / "staging" / "instamart_reports"
+
+    async def _run():
+        job_id = None
+        async with AsyncSessionLocal() as db:
+            creds = await auth_store.get_credentials(db, tenant_id, "instamart")
+            if not creds or not creds.email:
+                console.print(
+                    "[red]No Instamart credentials for this tenant. Run:[/red]\n"
+                    "  cli auth credentials set instamart -t <tenant> --email <email> "
+                    "--extra account_id=<x-client-account-id>"
+                )
+                raise typer.Exit(1)
+            account_id = (creds.extra or {}).get("account_id")
+            if not account_id:
+                console.print(
+                    "[red]No account_id configured. Every Brand Portal data call "
+                    "needs it:[/red]\n  cli auth credentials set instamart -t "
+                    f"{tenant_id} --email {creds.email} --extra account_id=<id>"
+                )
+                raise typer.Exit(1)
+
+            try:
+                console.print(
+                    f"[cyan]Instamart sales {start} → {end} "
+                    f"({span} day{'s' if span > 1 else ''})[/cyan]"
+                )
+                async with PortalSession(tenant_id, creds.email, account_id,
+                                         headless=not headed) as portal:
+                    brand_account_id = (portal.brand_account_id()
+                                        or (creds.extra or {}).get("brand_account_id"))
+                    if not brand_account_id:
+                        console.print(
+                            "[red]Could not resolve the brand-account id. Open the "
+                            "portal once and pick the brand, or set it:[/red]\n"
+                            "  cli auth credentials set instamart -t <tenant> "
+                            "--email <email> --extra brand_account_id=<id>"
+                        )
+                        raise typer.Exit(1)
+                    console.print(f"  brand account: {brand_account_id}")
+                    console.print("  requesting the report…")
+                    path = await im_scraper.fetch_sales_report(
+                        portal, brand_account_id, start, end, dest)
+
+                console.print(f"  downloaded [green]{path.name}[/green]")
+                store_rows, brand_rows = im_parser.parse(path)
+                console.print(
+                    f"  parsed [bold]{len(store_rows)}[/bold] store rows, "
+                    f"[bold]{len(brand_rows)}[/bold] brand-city rows"
+                )
+                if store_rows:
+                    table = Table(title="Instamart sales")
+                    table.add_column("date"); table.add_column("GMV", justify="right")
+                    table.add_column("units", justify="right")
+                    table.add_column("stores", justify="right")
+                    by_day: dict = {}
+                    for r in store_rows:
+                        d = by_day.setdefault(r["date"], {"gmv": 0.0, "u": 0, "s": set()})
+                        d["gmv"] += r["gmv"]; d["u"] += r["units_sold"]
+                        d["s"].add(r["store_id"])
+                    for day in sorted(by_day):
+                        d = by_day[day]
+                        table.add_row(str(day), f"{d['gmv']:,.0f}",
+                                      str(d["u"]), str(len(d["s"])))
+                    console.print(table)
+
+                if not load:
+                    console.print("[yellow]--no-load: nothing written to the DB[/yellow]")
+                else:
+                    job_id = await create_scrape_job(
+                        db, tenant_id, "instamart_seller_sales", "instamart")
+                    written = await save_sales(db, tenant_id, store_rows, brand_rows,
+                                               uuid.UUID(job_id))
+                    await db.commit()
+                    total = written["store_daily"] + written["brand_city"]
+                    await complete_scrape_job(db, job_id, total)
+                    console.print(
+                        f"[green]Saved {written['store_daily']} store rows + "
+                        f"{written['brand_city']} brand-city rows[/green]"
+                    )
+                # Deleted only here — after the commit above — so a failed
+                # parse or load leaves the file on disk to retry from.
+                if not keep_file:
+                    path.unlink(missing_ok=True)
+            except typer.Exit:
+                raise
+            except Exception as e:
+                if job_id:
+                    await fail_scrape_job(db, job_id, str(e))
+                console.print(f"[red]Instamart scrape failed: {escape(str(e))}[/red]")
+                raise typer.Exit(1)
+
+    asyncio.run(_run())
