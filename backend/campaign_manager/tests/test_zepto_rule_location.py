@@ -15,6 +15,12 @@ TENANT = uuid.UUID("fa53082e-7e83-424d-aab9-086fe1b4c680")
 CAMPAIGN = 2427461
 
 
+async def _no_duplicate(*a, **k):
+    """`repo.require_no_live_bid_rule` stubbed away — ZC-C9 has its own test file, and it
+    would query the real `CmBidRule` these tests swap for a recorder."""
+    return None
+
+
 def _store(merchant_id="m1", source="catalog", city_id=1, label="A store"):
     return repo.MeasurementStore(lat=12.9, lon=77.6, label=label, merchant_id=merchant_id,
                                  city_id=city_id, source=source)
@@ -163,16 +169,18 @@ def test_a_rule_with_no_city_is_given_one_rather_than_refused():
         return _store(city_id=499, label="Byatarayanapura"), []
 
     restore = _fake_model(created)
-    orig = (repo.require_automatable, repo.pick_rule_location, repo.AsyncSessionLocal)
+    orig = (repo.require_automatable, repo.pick_rule_location, repo.AsyncSessionLocal,
+            repo.require_no_live_bid_rule)
     repo.require_automatable, repo.pick_rule_location = _ok, _pick_loc
+    repo.require_no_live_bid_rule = _no_duplicate       # ZC-C9, covered by its own tests
     repo.AsyncSessionLocal = _FakeDb()
     try:
         asyncio.run(repo.create_bid_rule(TENANT, "zepto", CAMPAIGN, "Tech Test",
                                          "pink toffee", 3, 10))
     finally:
         restore()
-        (repo.require_automatable, repo.pick_rule_location,
-         repo.AsyncSessionLocal) = orig
+        (repo.require_automatable, repo.pick_rule_location, repo.AsyncSessionLocal,
+         repo.require_no_live_bid_rule) = orig
 
     assert created["city_id"] == 499, "saved BY CITY, so it follows that city's frozen store"
     assert created["lat"] == 12.9 and created["lon"] == 77.6
@@ -208,14 +216,16 @@ def test_blinkit_still_saves_a_rule_with_no_location_at_all():
         raise AssertionError("Blinkit must not be sent through the placer")
 
     restore = _fake_model(created)
-    orig = (repo.pick_rule_location, repo.AsyncSessionLocal)
+    orig = (repo.pick_rule_location, repo.AsyncSessionLocal, repo.require_no_live_bid_rule)
     repo.pick_rule_location = _boom
+    repo.require_no_live_bid_rule = _no_duplicate
     repo.AsyncSessionLocal = _FakeDb()
     try:
         asyncio.run(repo.create_bid_rule(TENANT, "blinkit", 123, "C", "kw", 3, 10))
     finally:
         restore()
-        repo.pick_rule_location, repo.AsyncSessionLocal = orig
+        (repo.pick_rule_location, repo.AsyncSessionLocal,
+         repo.require_no_live_bid_rule) = orig
     assert created["city_id"] is None and created["lat"] is None
 
 

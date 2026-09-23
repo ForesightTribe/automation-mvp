@@ -4,7 +4,10 @@ Reads rules, writes the slim run-log, and (V2+) persists bid runtime. Everything
 scoped by tenant_id (+ platform). Kept thin: the orchestration decides *what*, this
 only reads/writes rows.
 """
+import asyncio
+import os
 import uuid
+from contextlib import asynccontextmanager
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
@@ -31,6 +34,28 @@ class DuplicateSchedule(Exception):
         super().__init__(
             f"campaign {campaign_id} already has a budget automation ({where}) — "
             "add a window to it instead of creating a second one")
+
+
+class DuplicateBidRule(Exception):
+    """A LIVE bid rule already exists for this (tenant, platform, campaign, keyword, match
+    type) — ZC-C9. Two of them chase the same keyword with different targets and ceilings,
+    each overwriting the other's bid every tick, so the keyword's bid oscillates and neither
+    rule's History explains it. Raised as a domain error so the API answers 409 and the CLI
+    can point at the rule that already exists."""
+
+    def __init__(self, keyword: str, match_type: str, campaign_id: int, rule_id: str | None):
+        self.rule_id = rule_id
+        where = f"rule {rule_id}" if rule_id else "an existing rule"
+        super().__init__(
+            f"{keyword!r} ({match_type}) on campaign {campaign_id} already has a live bid "
+            f"automation ({where}) — edit it instead of creating a second one, or pause it "
+            f"first. Nothing was created.")
+
+
+class WriteLockBusy(Exception):
+    """Another job is mid-write on this campaign and did not finish in time (ZC-C8). The
+    adapter turns this into a refusal — the write is safe to retry on the next tick, and
+    sending it now would mean two read-modify-writes racing over one campaign."""
 
 
 class NotAutomatable(ValueError):
@@ -288,6 +313,45 @@ async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_i
         return s
 
 
+async def live_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int, keyword: str,
+                        match_type: str = "EXACT", *, exclude_id: str | None = None):
+    """The LIVE rule for this (campaign, keyword, match type), or None (ZC-C9).
+
+    Live = `active`, which `set_bid_state` keeps in step with `state`: a paused rule frees
+    the slot deliberately, so a new rule for the same keyword is allowed while it sleeps —
+    and resuming it checks again. Case- and spacing-insensitive on the keyword, because
+    "Pink Toffee" and "pink toffee" are one keyword to the marketplace.
+    """
+    from sqlalchemy import func
+    from app.models.campaign_manager_v2 import CmBidRule
+
+    q = select(CmBidRule).where(
+        CmBidRule.tenant_id == tenant_id,
+        CmBidRule.platform == platform,
+        CmBidRule.campaign_id == campaign_id,
+        func.lower(func.trim(CmBidRule.keyword)) == (keyword or "").strip().lower(),
+        func.upper(func.coalesce(CmBidRule.match_type, "EXACT")) == (match_type or "EXACT").upper(),
+        CmBidRule.active == True,  # noqa: E712
+    )
+    if exclude_id:
+        q = q.where(CmBidRule.id != exclude_id)
+    async with AsyncSessionLocal() as db:
+        return (await db.execute(q.limit(1))).scalars().first()
+
+
+async def require_no_live_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
+                                   keyword: str, match_type: str = "EXACT", *,
+                                   exclude_id: str | None = None) -> None:
+    """Raise `DuplicateBidRule` when one already exists. The DB index is the authority
+    (migration `c4f7b2e81a93`); this runs first so the answer is a sentence rather than a
+    constraint violation — and it is what enforces the rule until that index is applied."""
+    existing = await live_bid_rule(tenant_id, platform, campaign_id, keyword, match_type,
+                                   exclude_id=exclude_id)
+    if existing is not None:
+        raise DuplicateBidRule(keyword, (match_type or "EXACT").upper(), campaign_id,
+                               getattr(existing, "id", None))
+
+
 async def add_budget_rule(schedule_id: int, *, budget: float, type: str = "recurring",
                           days: list | None = None, time_slots: list | None = None,
                           start_time=None, end_time=None, start_date=None, end_date=None, date=None):
@@ -362,6 +426,7 @@ async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
         lat, lon = store.lat, store.lon
         city_id = store.city_id
         location_name = location_name or store.label
+    await require_no_live_bid_rule(tenant_id, platform, campaign_id, keyword, match_type)
     async with AsyncSessionLocal() as db:
         r = CmBidRule(id=uuid.uuid4().hex, tenant_id=tenant_id, platform=platform,
                       campaign_id=campaign_id, campaign_name=campaign_name, keyword=keyword,
@@ -682,6 +747,89 @@ async def measurable_cities(platform: str, *, tenant_id: uuid.UUID | None = None
             name, state, _ = out[city_id]
             out[city_id] = (name, state, _store_of(picked[1], picked[2]))
     return out
+
+
+# ── One writer per campaign (ZC-C8) ─────────────────────────────────────────
+#
+# On Zepto every budget and bid change is a read-modify-write of the WHOLE campaign, and the
+# two engines run in PARALLEL lanes (`cm_ops`, `cm_bid` — one slot each). Without this, a
+# budget write and a bid write that overlap both read the campaign as it was, and whichever
+# PUTs second silently reverts the other's field. Nothing fails; the change simply vanishes.
+#
+# A Postgres ADVISORY lock, not a row lock: there is no row to lock (the campaign lives on
+# Zepto), and it is held only for the seconds between the read and the PUT. Session-scoped,
+# so a killed process releases it when its connection drops — a crash cannot wedge a campaign.
+
+CAMPAIGN_LOCK_TIMEOUT_S = float(os.getenv("CM_WRITE_LOCK_TIMEOUT_SECONDS", "45"))
+_LOCK_POLL_S = 0.25
+
+
+def _lock_key(platform: str, tenant_id, campaign_id: int) -> int:
+    """A stable signed 64-bit key. `hash()` is salted per process, so it would give two
+    runners different keys for the same campaign — the one bug this must not have."""
+    import hashlib
+
+    digest = hashlib.blake2b(f"{platform}:{tenant_id}:{campaign_id}".encode(),
+                             digest_size=8).digest()
+    return int.from_bytes(digest, "big", signed=True)
+
+
+@asynccontextmanager
+async def campaign_write_lock(platform: str, tenant_id, campaign_id: int, *,
+                              timeout_s: float | None = None):
+    """Hold the write lock for one campaign across a read-modify-write.
+
+    Raises `WriteLockBusy` if the holder does not finish within `timeout_s` — a refusal the
+    caller retries next tick, which is strictly better than joining a race it cannot see.
+
+    FAIL-OPEN on a DB error: if the lock cannot be taken *at all* (the database is
+    unreachable, the function is missing), the write proceeds unserialised with a warning.
+    Losing every write because the lock service is down would be a bigger outage than the
+    rare overlap this prevents.
+    """
+    from sqlalchemy import text
+
+    key = _lock_key(platform, tenant_id, campaign_id)
+    timeout = CAMPAIGN_LOCK_TIMEOUT_S if timeout_s is None else timeout_s
+    db = held = None
+    try:
+        db = AsyncSessionLocal()
+        await db.__aenter__()
+        deadline = asyncio.get_running_loop().time() + timeout
+        while True:
+            held = bool(await db.scalar(text("SELECT pg_try_advisory_lock(:k)"), {"k": key}))
+            if held or asyncio.get_running_loop().time() >= deadline:
+                break
+            await asyncio.sleep(_LOCK_POLL_S)
+        if not held:
+            raise WriteLockBusy(
+                f"another job has been writing to {platform} campaign {campaign_id} for more "
+                f"than {timeout:g}s")
+    except WriteLockBusy:
+        if db is not None:
+            await db.__aexit__(None, None, None)
+        raise
+    except Exception as e:
+        logger.warning(f"cm: could not take the write lock for {platform} campaign "
+                       f"{campaign_id} ({e}) — writing without it")
+        if db is not None:
+            try:
+                await db.__aexit__(None, None, None)
+            except Exception:
+                pass
+        db = held = None
+
+    try:
+        yield
+    finally:
+        if db is not None:
+            try:
+                if held:
+                    await db.execute(text("SELECT pg_advisory_unlock(:k)"), {"k": key})
+            except Exception as e:
+                logger.warning(f"cm: could not release the write lock for {platform} campaign "
+                               f"{campaign_id} ({e}) — it clears when the connection closes")
+            await db.__aexit__(None, None, None)
 
 
 FROZEN_SOURCES = ("tenant", "global")      # a store somebody chose, vs one we fell back to
@@ -1453,12 +1601,20 @@ async def set_budget_state(schedule_id: int, state: str):
 
 
 async def set_bid_state(rule_id: str, state: str):
-    """Set a bid rule's lifecycle state (`active` / `paused`). Returns the row or None."""
+    """Set a bid rule's lifecycle state (`active` / `paused`). Returns the row or None.
+
+    Resuming re-enters the live set, so it takes the same duplicate check a create does
+    (ZC-C9): pausing a rule frees its keyword, and something else may have taken it since.
+    Raises `DuplicateBidRule` rather than resuming into a bid fight.
+    """
     from app.models.campaign_manager_v2 import CmBidRule
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
         if not r:
             return None
+        if state == "active" and not r.active:
+            await require_no_live_bid_rule(r.tenant_id, r.platform, r.campaign_id, r.keyword,
+                                           r.match_type, exclude_id=r.id)
         r.state = state
         r.active = (state == "active")
         await db.commit()

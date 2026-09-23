@@ -453,7 +453,7 @@ def add_budget_schedule(
                 uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
                 default_budget, name, stop_after_window=stop_after_window,
             )
-        except repo.NotAutomatable as e:
+        except (repo.NotAutomatable, repo.DuplicateBidRule) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1)
         except repo.DuplicateSchedule as e:
@@ -571,7 +571,7 @@ def add_bid(
                 stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
                 city_id=rcity,
             )
-        except repo.NotAutomatable as e:
+        except (repo.NotAutomatable, repo.DuplicateBidRule) as e:
             console.print(f"[red]{e}[/red]")
             raise typer.Exit(1)
         if rlat is None and r.lat is not None:

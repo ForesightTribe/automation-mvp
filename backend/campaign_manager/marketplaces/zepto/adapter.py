@@ -506,18 +506,41 @@ async def _read_back_mismatch(client, campaign_id: int, sent: dict) -> list[str]
     return zpayload.check(after, sent, shape=zpayload.READBACK)
 
 
+def _write_lock(client, campaign_id: int):
+    """One writer at a time per campaign (ZC-C8), across the read AND the PUT.
+
+    Zepto has no targeted write, so a budget change and a bid change that overlap both read
+    the campaign as it was and the second PUT reverts the first's field — silently, since
+    both succeed. The budget and bid engines run in parallel lanes (`cm_ops`, `cm_bid`), so
+    this is a routine overlap, not a corner case: at a window boundary both fire at once.
+
+    Imported here rather than at module import: `repo` reaches the DB, and the adapter is
+    also imported by tooling that has none.
+    """
+    from campaign_manager import repo
+
+    return repo.campaign_write_lock("zepto", getattr(client, "tenant_id", None), campaign_id)
+
+
 async def apply_budget(client, campaign_id: int, budget: float) -> dict:
     """Set the daily budget via read-modify-write.
 
     `writes.py` has already applied policy (no-op, bounds, rate limit) by the time
     this runs; the diff guard here is the mechanism-level backstop.
     """
+    from campaign_manager import repo
+
     target = int(round(float(budget)))
-    resp = await _put_one_field(
-        client, campaign_id, ".daily_budget",
-        lambda p: p.update(daily_budget=target),
-        shape=zpayload.BUDGET,
-    )
+    try:
+        async with _write_lock(client, campaign_id):
+            resp = await _put_one_field(
+                client, campaign_id, ".daily_budget",
+                lambda p: p.update(daily_budget=target),
+                shape=zpayload.BUDGET,
+            )
+    except repo.WriteLockBusy as e:
+        raise WriteRefused(f"campaign {campaign_id}: {e} — nothing was sent, so the two "
+                           f"writes cannot overwrite each other") from e
     logger.info(f"Zepto campaign {campaign_id}: daily_budget -> ₹{target}")
     # Zepto answers {"message": "Campaign updated successfully"} with no status
     # field; writes.py reads `status`/`success`, so map it into that shape.
@@ -533,15 +556,24 @@ async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
     the absolute floors in config are rupee amounts and need per-platform tuning
     before this is trusted live (see PLAN-cm.md).
     """
+    from campaign_manager import repo
+
     target = int(round(float(cpm)))
-    # ONE read, used for both the index lookup and the mutation — see `_put_one_field`.
-    base, detail = await _rebased_payload(client, campaign_id)
-    index = _keyword_index(base, campaign_id, keyword, match_type)
-    resp = await _put_one_field(
-        client, campaign_id, f".keyword_targeting[{index}].bid_value",
-        lambda p: p["keyword_targeting"][index].update(bid_value=target),
-        shape=zpayload.BID, keyword=(keyword, match_type), base=base, detail=detail,
-    )
+    try:
+        # The lock covers the READ too: the keyword index is only valid for the list it was
+        # computed from, and a budget PUT landing in between would rewrite that list.
+        async with _write_lock(client, campaign_id):
+            # ONE read, for both the index lookup and the mutation — see `_put_one_field`.
+            base, detail = await _rebased_payload(client, campaign_id)
+            index = _keyword_index(base, campaign_id, keyword, match_type)
+            resp = await _put_one_field(
+                client, campaign_id, f".keyword_targeting[{index}].bid_value",
+                lambda p: p["keyword_targeting"][index].update(bid_value=target),
+                shape=zpayload.BID, keyword=(keyword, match_type), base=base, detail=detail,
+            )
+    except repo.WriteLockBusy as e:
+        raise WriteRefused(f"campaign {campaign_id}: {e} — nothing was sent, so the two "
+                           f"writes cannot overwrite each other") from e
     logger.info(
         f"Zepto campaign {campaign_id}: bid[{keyword!r}/{match_type}] -> ₹{target}")
     return _landed(resp)

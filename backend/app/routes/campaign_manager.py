@@ -18,7 +18,7 @@ from app.schemas.campaign_manager import (
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
 from app.services.campaign_manager_service import EditError, StateError
-from campaign_manager.repo import DuplicateSchedule
+from campaign_manager.repo import DuplicateBidRule, DuplicateSchedule
 from jobs.queue import DuplicateActiveJob
 
 router = APIRouter()
@@ -115,6 +115,10 @@ async def get_bid_context(client: ClientDep, campaign_id: int):
 async def create_bid_rule(client: ClientDep, session: SessionDep, body: BidRuleIn):
     try:
         return await svc.create_bid_rule(session, client.id, body)
+    except DuplicateBidRule as e:
+        # A live rule already chases this keyword — same 409 as a duplicate budget schedule,
+        # and the message names the rule to edit instead (ZC-C9).
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     except EditError as e:
         # A min_bid below Blinkit's published floor — same 400 mapping as an edit refusal.
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
@@ -147,7 +151,9 @@ async def delete_bid_rule(client: ClientDep, session: SessionDep, rule_id: str,
 async def _bid_lifecycle(action, client, session, rule_id: str) -> BidRuleOut:
     try:
         rule = await action(session, client.id, rule_id)
-    except StateError as e:
+    except (StateError, DuplicateBidRule) as e:
+        # DuplicateBidRule: something took this keyword while the automation was paused, so
+        # resuming would start a bid fight (ZC-C9).
         raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     if rule is None:
         raise _NOT_FOUND
