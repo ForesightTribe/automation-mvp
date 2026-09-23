@@ -253,6 +253,16 @@ def _listings(result: ExplorerResult) -> Section | None:
             _c("product_state", "State"), _c("l0", "Category"), _c("l1", "Sub-category"),
             _c("l2", "Group"), _c("merchant_type", "Store tier"),
             _c("is_combo", "Multipack", width=12),
+            # Sponsored placement. The orchestrator attaches these to every row,
+            # but the workbook used to drop them — which left paid and organic
+            # indistinguishable in the only artefact that outlives the run.
+            _c("is_ad", "Sponsored", width=12),
+            _c("ad_advertiser_id", "Ad advertiser", "id"),
+            _c("ad_campaign_id", "Ad campaign", "id"),
+            _c("ad_keyword", "Ad keyword",
+               help="The keyword that won the slot, which is not always the term searched."),
+            _c("ad_match_type", "Ad match type", width=14),
+            _c("ad_model", "Ad model", width=12),
         ],
         rows=result.listings,
     )
