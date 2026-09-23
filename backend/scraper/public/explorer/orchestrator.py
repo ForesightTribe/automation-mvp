@@ -723,14 +723,32 @@ async def _progress_ticker(run_id: uuid.UUID, stats: dict, total: int,
 
 async def _finalize(db: AsyncSession, run_id: uuid.UUID, status: JobStatus, stats: dict,
                     processed: int, error: str | None = None) -> None:
-    if error is not None:
-        await db.rollback()  # clear any aborted txn so the failure record itself commits
-    await db.execute(update(ExplorerRun).where(ExplorerRun.id == run_id).values(
+    stmt = update(ExplorerRun).where(ExplorerRun.id == run_id).values(
         status=status, processed=processed, snapshots=stats.get("snapshots", 0),
         rows=_row_total(stats), errors=stats.get("errors", 0),
         completed_at=now_ist(), error=error,
-    ))
-    await db.commit()
+    )
+    if error is None:
+        await db.execute(stmt)
+        await db.commit()
+        return
+
+    # Failure path. The caller's session has just carried a run that may have
+    # lasted hours, and it can be aborted or its connection already gone — a
+    # rollback on it then raises rather than clearing anything. Recording the
+    # failure must not itself fail: an incomplete run that cannot write its own
+    # record took down the export as well, losing a finished scrape. So the
+    # rollback is best-effort and the write goes on a session of our own.
+    try:
+        await db.rollback()
+    except Exception as e:  # noqa: BLE001 - never mask the original failure
+        logger.warning(f"explorer: rollback before failure record failed: {e}")
+    try:
+        async with AsyncSessionLocal() as fresh:
+            await fresh.execute(stmt)
+            await fresh.commit()
+    except Exception as e:  # noqa: BLE001
+        logger.error(f"explorer: could not write failure record for {run_id}: {e}")
 
 
 def _uuid_or_none(v: str | None) -> uuid.UUID | None:
@@ -799,11 +817,17 @@ async def run_explorer(db: AsyncSession, spec: ExplorerSpec,
     db.add(run)
     await db.commit()
     await db.refresh(run)
-    result.run_id = str(run.id)
+    # Hold the id as a plain value, and never read it off the ORM object again.
+    # A rollback expires every instance in the session regardless of
+    # expire_on_commit, so a later `run.id` is a lazy refresh — sync IO from an
+    # async context, which raises MissingGreenlet. That killed the export of a
+    # finished scrape whenever a run ended with an unresolved location.
+    run_id = run.id
+    result.run_id = str(run_id)
 
     if not locations:
         logger.warning("explorer: no catalog locations matched the requested cities — nothing to scrape")
-        await _finalize(db, run.id, JobStatus.success, stats, 0)
+        await _finalize(db, run_id, JobStatus.success, stats, 0)
         return result
     if spec.mode in ("keyword", "both") and not spec.keywords:
         logger.warning("explorer: keyword mode but no keywords supplied")
@@ -837,7 +861,7 @@ async def run_explorer(db: AsyncSession, spec: ExplorerSpec,
                 await pw.chromium.launch(headless=provider.headless, args=PLAYWRIGHT_ARGS)
                 for _ in range(n_workers)
             ]
-            ticker = asyncio.create_task(_progress_ticker(run.id, stats, total, on_progress))
+            ticker = asyncio.create_task(_progress_ticker(run_id, stats, total, on_progress))
             # Progress watchdog. A job timeout cannot tell a slow run from a dead
             # one — a national census legitimately runs for hours, so its ceiling
             # has to sit high enough that a wedged run stalls for most of a day
@@ -849,7 +873,7 @@ async def run_explorer(db: AsyncSession, spec: ExplorerSpec,
             )
             try:
                 logger.info(
-                    f"explorer: run {run.id} — {n_workers} workers × {len(pending)} "
+                    f"explorer: run {run_id} — {n_workers} workers × {len(pending)} "
                     f"location(s) to do of {total}, mode={spec.mode}, brand={brand_slug}"
                     + (f" (resumed, {result.resumed_from} already done)"
                        if result.resumed_from else "")
@@ -924,24 +948,24 @@ async def run_explorer(db: AsyncSession, spec: ExplorerSpec,
         result.complete = scraped and not missing
         if not result.complete:
             logger.warning(
-                f"explorer: run {run.id} finished INCOMPLETE — "
+                f"explorer: run {run_id} finished INCOMPLETE — "
                 f"{stats['processed']}/{total} locations processed, "
                 f"{len(missing)} unresolved. Checkpoint kept for resume."
             )
         await _finalize(
-            db, run.id,
+            db, run_id,
             JobStatus.success if result.complete else JobStatus.failed,
             stats, stats["processed"],
             error=None if result.complete else
             f"incomplete: {stats['processed']}/{total} processed, {len(missing)} unresolved",
         )
     except Exception as e:
-        await _finalize(db, run.id, JobStatus.failed, stats, stats["processed"], error=str(e))
-        logger.error(f"explorer: run {run.id} failed: {e}")
+        await _finalize(db, run_id, JobStatus.failed, stats, stats["processed"], error=str(e))
+        logger.error(f"explorer: run {run_id} failed: {e}")
         raise
 
     logger.info(
-        f"explorer: run {run.id} done — {stats['snapshots']} snapshots, "
+        f"explorer: run {run_id} done — {stats['snapshots']} snapshots, "
         f"{stats['rows']} listings, {stats['skus']} skus, {stats['errors']} errors"
     )
     return result
