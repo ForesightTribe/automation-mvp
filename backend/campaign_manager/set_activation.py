@@ -102,6 +102,7 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
             target=status, current=current, dry_run=dry_run, allow_draft=True,
             budget=target_budget, overwrites=overwrites, applied=patches,
             outcome=outcome, hold_reason=writes.hold_reason(adapter, current, detail),
+            not_automatable=writes.automation_refusal(adapter, detail),
             recent_writes=0 if dry_run else await repo.recent_write_count(
                 tenant_id, campaign_id,
                 window_minutes=config.RATE_WINDOW_MINUTES, kind="activation"),

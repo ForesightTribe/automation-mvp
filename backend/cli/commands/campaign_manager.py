@@ -453,6 +453,9 @@ def add_budget_schedule(
                 uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
                 default_budget, name, stop_after_window=stop_after_window,
             )
+        except repo.NotAutomatable as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
         except repo.DuplicateSchedule as e:
             console.print(f"[red]{e}[/red]")
             if e.schedule_id:
@@ -559,14 +562,24 @@ def add_bid(
             console.print(f"[dim]measuring at {rloc} ({rlat}, {rlon}) — {store.source}"
                           f"{follows}[/dim]")
 
-        r = await repo.create_bid_rule(
-            uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
-            keyword, target, min_bid, max_bid, match_type=match_type,
-            type="once" if once else "recurring", date=date, days=_days(days),
-            start_time=start_time, stop_time=stop_time, start_date=start_date,
-            stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
-            city_id=rcity,
-        )
+        try:
+            r = await repo.create_bid_rule(
+                uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
+                keyword, target, min_bid, max_bid, match_type=match_type,
+                type="once" if once else "recurring", date=date, days=_days(days),
+                start_time=start_time, stop_time=stop_time, start_date=start_date,
+                stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
+                city_id=rcity,
+            )
+        except repo.NotAutomatable as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        if rlat is None and r.lat is not None:
+            # The marketplace needs a store and none was given, so it was chosen from the
+            # campaign's own targeting (ZC-C14) — say where, and never silently.
+            console.print(f"[dim]no --city given → measuring at "
+                          f"{r.location_name or 'the chosen store'} ({r.lat}, {r.lon}) "
+                          f"· follows that city's frozen store[/dim]")
         shape = f"once {date}" if once else "recurring"
         band = f"{min_bid}–{max_bid}" if max_bid else f"{min_bid}+ (no ceiling)"
         console.print(f"[green]Bid rule {r.id} created[/green] — {keyword!r} → pos {target} "

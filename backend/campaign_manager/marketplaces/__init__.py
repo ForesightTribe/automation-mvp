@@ -44,6 +44,33 @@ def canonical_status(slug: str | None, raw: str | None) -> str | None:
     return import_module(path).canonical(raw)
 
 
+# Which campaigns a marketplace lets the automations touch, as a PURE module (ZC-C3). A
+# marketplace with no entry puts no limit on it (Blinkit).
+_ELIGIBILITY: dict[str, str] = {
+    "zepto": "campaign_manager.marketplaces.zepto.eligibility",
+}
+
+
+def automation_refusal(slug: str | None, campaign_type: str | None,
+                       bid_targeting: str | None) -> str | None:
+    """Why a campaign of this type may not be automated on this marketplace, or None.
+    From catalogue fields, so it is safe to call from the API process."""
+    path = _ELIGIBILITY.get((slug or "").lower())
+    if path is None:
+        return None
+    from importlib import import_module
+    return import_module(path).refusal(campaign_type, bid_targeting)
+
+
+def rule_needs_location(slug: str | None) -> bool:
+    """Must a bid rule on this marketplace name a city or a store (ZC-C14)? API-safe."""
+    path = _ELIGIBILITY.get((slug or "").lower())
+    if path is None:
+        return False
+    from importlib import import_module
+    return bool(getattr(import_module(path), "RULE_NEEDS_LOCATION", False))
+
+
 def supported() -> list[str]:
     """Marketplaces the campaign manager can drive. Used by CLI help and errors."""
     return sorted(_ADAPTERS)

@@ -33,6 +33,13 @@ class DuplicateSchedule(Exception):
             "add a window to it instead of creating a second one")
 
 
+class NotAutomatable(ValueError):
+    """This campaign — or this rule as written — is not something the automations may run on
+    this marketplace (ZC-C3: Zepto automates only product ads bid by keyword; ZC-C14: a
+    Zepto bid rule must name a city or a store). A ValueError, so the API answers 400 and the
+    CLI prints the sentence: the request is wrong, and retrying it will never succeed."""
+
+
 # ── Rule loaders: the caller says WHICH automations, on both axes ────────────
 #
 # `state` is the user axis (what a person chose, stored). `calendar` is the calendar axis
@@ -253,10 +260,12 @@ async def create_budget_schedule(tenant_id: uuid.UUID, platform: str, campaign_i
                                  campaign_name: str, default_budget: float, name: str | None = None,
                                  stop_after_window: bool = False):
     """Create a budget-schedule container for a campaign. Raises on the unique
-    (tenant, platform, campaign_id) conflict."""
+    (tenant, platform, campaign_id) conflict, and `NotAutomatable` for a campaign this
+    marketplace does not let the automations touch."""
     from sqlalchemy.exc import IntegrityError
 
     from app.models.campaign_manager_v2 import CmBudgetSchedule
+    await require_automatable(tenant_id, platform, campaign_id)
     async with AsyncSessionLocal() as db:
         s = CmBudgetSchedule(tenant_id=tenant_id, platform=platform, campaign_id=campaign_id,
                              campaign_name=campaign_name, name=name, default_budget=default_budget,
@@ -331,8 +340,28 @@ async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
                           start_date=None, stop_date=None, lat=None, lon=None,
                           location_name=None, brand_name=None, city_id=None):
     """Create a keyword bid rule (runtime row is created lazily by the optimizer).
-    `city_id` set → the rule follows that city's frozen store; None → pinned to lat/lon."""
+    `city_id` set → the rule follows that city's frozen store; None → pinned to lat/lon.
+    Raises `NotAutomatable` for an ineligible campaign, or a rule with nowhere to measure on
+    a marketplace that needs one (ZC-C3, C14)."""
     from app.models.campaign_manager_v2 import CmBidRule
+    from campaign_manager.marketplaces import rule_needs_location
+    await require_automatable(tenant_id, platform, campaign_id)
+    # Nowhere to measure, on a marketplace where the coordinate fallback is not a store
+    # (ZC-C14): choose from the campaign's own targeting rather than refusing — and refuse
+    # only when even that yields nothing, saying which cities we could not place.
+    if (rule_needs_location(platform) and city_id is None
+            and (lat is None or lon is None)):
+        store, unresolved = await pick_rule_location(tenant_id, platform, campaign_id)
+        if store is None:
+            missing = (f" We could not match these targeted cities to ours: "
+                       f"{', '.join(sorted(unresolved))}." if unresolved else "")
+            raise NotAutomatable(
+                f"a {platform.title()} bid rule must say where to measure, and none of "
+                f"campaign {campaign_id}'s cities has a store we can read.{missing} "
+                f"Name a city or a store. Nothing was created.")
+        lat, lon = store.lat, store.lon
+        city_id = store.city_id
+        location_name = location_name or store.label
     async with AsyncSessionLocal() as db:
         r = CmBidRule(id=uuid.uuid4().hex, tenant_id=tenant_id, platform=platform,
                       campaign_id=campaign_id, campaign_name=campaign_name, keyword=keyword,
@@ -653,6 +682,99 @@ async def measurable_cities(platform: str, *, tenant_id: uuid.UUID | None = None
             name, state, _ = out[city_id]
             out[city_id] = (name, state, _store_of(picked[1], picked[2]))
     return out
+
+
+FROZEN_SOURCES = ("tenant", "global")      # a store somebody chose, vs one we fell back to
+
+
+def best_measurement_city(cities: dict, store_counts: dict):
+    """Pick one city to measure in, from `{city_id: (name, state, store)}`. Pure.
+
+    A city whose store was FROZEN wins — that is a deliberate choice (`cm stores`), so
+    honouring it is how freezing takes over from the fallback. Otherwise the city with the
+    most stores, which is the most representative place to read a position, and alphabetical
+    order breaks a tie so the same campaign always lands on the same city.
+    """
+    return min(cities.items(),
+               key=lambda kv: (kv[1][2].source not in FROZEN_SOURCES,
+                               -store_counts.get(kv[0], 0), (kv[1][0] or "").lower()))
+
+
+async def campaign_target_cities(tenant_id: uuid.UUID, platform: str,
+                                 campaign_id: int) -> tuple[bool, list[str]]:
+    """`(targets chosen cities?, the marketplace's own city names)` from the catalogue.
+
+    The names are the ad platform's spelling ("Belgavi", "Mysuru"); `resolve_city_ids` maps
+    them onto ours. False means the campaign runs everywhere it can — or that we have not
+    scraped it, which is the same answer for the caller: nothing narrows the choice.
+    On Zepto an excluded city is listed alongside the included ones, so it is filtered here.
+    """
+    cat = _catalog(platform)
+    model = cat.campaigns
+    mode_col, mode_val = cat.city_mode
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(getattr(model, mode_col), model.cities).where(
+                model.tenant_id == tenant_id,
+                model.platform == platform,
+                model.campaign_id == campaign_id,
+            ).limit(1)
+        )).first()
+    if row is None:
+        return False, []
+    mode, cities = row
+    names = [str(c["name"]).strip() for c in (cities or [])
+             if isinstance(c, dict) and c.get("name") and c.get("included", True)]
+    return (str(mode or "").strip().upper() == mode_val, names)
+
+
+async def pick_rule_location(tenant_id: uuid.UUID, platform: str, campaign_id: int
+                             ) -> tuple[MeasurementStore | None, list[str]]:
+    """Where a bid rule should measure when its author named no city (ZC-C14).
+
+    Returns `(store, city names we could not resolve)`. The store carries its `city_id`, so
+    the rule is saved BY CITY and follows that city's frozen store from then on — freezing
+    one later moves the rule with no edit (ZC-C5).
+
+    Chosen from the campaign's OWN targeting, so a rule cannot measure where the campaign
+    does not run. Among those cities, in order: one with a store somebody FROZE (that is a
+    deliberate choice, so it wins), then the city with the most stores (the most
+    representative read, and stable), then alphabetically. A campaign that runs everywhere
+    picks from every city we can measure in, by the same rule.
+
+    None means there is nowhere to measure — every targeted city is either unknown to us or
+    has no store — and the caller refuses the rule rather than guessing.
+    """
+    from sqlalchemy import func
+    from app.models.search import MarketplaceLocation
+
+    specific, names = await campaign_target_cities(tenant_id, platform, campaign_id)
+    ids, unresolved = None, []
+    if specific and names:
+        resolved = await resolve_city_ids(platform, names)
+        ids = {v for v in resolved.values() if v is not None}
+        unresolved = [n for n in names if resolved.get(n.strip().lower()) is None]
+        if not ids:
+            return None, unresolved
+
+    catalog = await measurable_cities(platform, tenant_id=tenant_id, city_ids=ids)
+    numbered = {cid: v for cid, v in catalog.items() if isinstance(cid, int)}
+    if not numbered:
+        return None, unresolved
+
+    async with AsyncSessionLocal() as db:
+        counts = dict((await db.execute(
+            select(MarketplaceLocation.city_id, func.count())
+            .where(MarketplaceLocation.mp_slug == platform,
+                   MarketplaceLocation.is_active == True,  # noqa: E712
+                   MarketplaceLocation.city_id.in_(list(numbered)))
+            .group_by(MarketplaceLocation.city_id)
+        )).all())
+
+    city_id, (name, _state, store) = best_measurement_city(numbered, counts)
+    logger.info(f"cm: {platform} campaign {campaign_id} — no city on the rule, measuring in "
+                f"{name} at {store.label or store.merchant_id} ({store.source})")
+    return store, unresolved
 
 
 async def resolve_store(platform: str, *, city: str | None = None,
@@ -1118,14 +1240,50 @@ class _Catalog:
     keywords: object           # the (campaign, keyword, match_type) model
     name_col: str              # the campaign-name column
     floor_col: str             # the keyword's published minimum-bid column
+    # (campaign-type column, bidding-mode column) for the eligibility check (ZC-C3), or None
+    # on a marketplace that does not limit which campaigns may be automated.
+    type_cols: tuple[str, str] | None = None
+    # How the row says "this campaign targets chosen cities": (column, value). Anything else
+    # in that column means it runs everywhere. The cities themselves are `cities`, a list of
+    # {id, name} in the MARKETPLACE's spelling (ZC-C4 resolves them to `cities.id`).
+    city_mode: tuple[str, str] = ("region_type", "CITY")
 
 
 def _catalog(platform: str) -> _Catalog:
     if platform == "zepto":
         from app.models.zepto_seller import ZeptoAdCampaign, ZeptoAdCampaignKeyword
-        return _Catalog(ZeptoAdCampaign, ZeptoAdCampaignKeyword, "campaign_name", "min_bid")
+        return _Catalog(ZeptoAdCampaign, ZeptoAdCampaignKeyword, "campaign_name", "min_bid",
+                        ("campaign_type", "bid_targeting_type"),
+                        city_mode=("city_targeting", "MANUAL"))
     from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
     return _Catalog(BlinkitAdCampaign, BlinkitAdCampaignKeyword, "name", "min_bid")
+
+
+async def require_automatable(tenant_id: uuid.UUID, platform: str, campaign_id: int) -> None:
+    """Raise `NotAutomatable` when the catalogue says this campaign is not one the
+    automations may touch (ZC-C3). A campaign the catalogue has not seen is allowed — one
+    created since the last scrape is a normal state — and the write-time check on the fresh
+    read (the adapter) still stands behind it."""
+    from campaign_manager.marketplaces import automation_refusal
+
+    cat = _catalog(platform)
+    if cat.type_cols is None:
+        return
+    model = cat.campaigns
+    type_col, bidding_col = cat.type_cols
+    async with AsyncSessionLocal() as db:
+        row = (await db.execute(
+            select(getattr(model, type_col), getattr(model, bidding_col)).where(
+                model.tenant_id == tenant_id,
+                model.campaign_id == campaign_id,
+            ).limit(1)
+        )).first()
+    if row is None:
+        return
+    refused = automation_refusal(platform, row[0], row[1])
+    if refused:
+        raise NotAutomatable(f"campaign {campaign_id} cannot be automated: {refused}. "
+                             "Nothing was created.")
 
 
 async def catalog_cutoff(tenant_id: uuid.UUID, platform: str = "blinkit"):

@@ -421,6 +421,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     status_cache: dict[int, str | None] = {}   # campaign_id → canonical status (same fetch)
     # campaign_id → {(keyword, match_type): marketplace minimum bid} (V7.6).
     floors_cache: dict[int, dict] = {}
+    # campaign_id → why the automations may not touch it, or None (ZC-C3; same fetch).
+    refusal_cache: dict[int, str | None] = {}
     # (keyword, lat, lon, merchant_id) → (results, error). ONE consumer-search scrape per distinct pair
     # for the whole run — see the note at the fetch site.
     positions_cache: dict[tuple, tuple[list, Exception | None]] = {}
@@ -461,6 +463,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 try:
                     # ONE detail read gives status AND bids (docs/campaign-manager.md §8.3).
                     status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
+                    refusal_cache[cid] = writes.automation_refusal(adapter, detail)
                     bids_cache[cid] = adapter.bids_from_detail(detail)
                     products_cache[cid] = await adapter.read_products(client, cid)
                     # +1 request per campaign (never per keyword) for the marketplace's own
@@ -490,8 +493,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if min_bid != rule.min_bid:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning",
-                              msg=(f"Blinkit's minimum for this keyword is ₹{min_bid}, above "
-                                   f"the rule's ₹{min_bid} — bidding at ₹{min_bid}"))
+                              msg=(f"{mp}'s minimum for this keyword is ₹{min_bid}, above "
+                                   f"the rule's ₹{rule.min_bid} — bidding at ₹{min_bid}"))
 
             stores = rule_stores[rule.id]
             anchor = stores[0]
@@ -515,6 +518,27 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                              level="warning",
                              msg=f"campaign is {status_cache[cid]} on {mp} — not serving, "
                                  f"so there is nothing to optimise")
+                skipped += 1
+                continue
+
+            # Not a campaign the automations may touch (ZC-C3) — checked before the consumer
+            # search, which is the expensive part. The adapter refuses the write regardless.
+            if refusal_cache.get(cid):
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                             level="warning",
+                             msg=f"campaign is not automatable — {refusal_cache[cid]}; "
+                                 f"nothing is changed")
+                skipped += 1
+                continue
+
+            # Nowhere real to measure (ZC-C14). A marketplace that declares it needs one
+            # refuses the Bengaluru fallback rather than searching from a point that is not
+            # a store — on Zepto that costs a rate-limited store lookup on every tick.
+            if anchor.source == "default" and getattr(adapter, "REQUIRES_RULE_LOCATION", False):
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                             level="warning",
+                             msg=f"this automation has no city or store to measure at, which "
+                                 f"{mp} needs — edit it to name a city; nothing is changed")
                 skipped += 1
                 continue
 

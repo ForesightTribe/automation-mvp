@@ -28,16 +28,29 @@ date. No amount of reading the payload reveals that; only diffing our output aga
 what the dashboard really sent.
 """
 import copy
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 _UNSET_LIFETIME_BUDGET = -1     # how the GET spells "no lifetime budget"
+_IST = timezone(timedelta(hours=5, minutes=30))
 
 
 def _date_only(value: Any) -> Any:
-    """`2026-08-21T12:20:30.808196+05:30` -> `2026-08-21`. None stays None."""
+    """`2026-08-21T12:20:30.808196+05:30` -> `2026-08-21`. None stays None.
+
+    The date is taken on an INDIAN calendar: a timestamp carrying any other offset is
+    converted to IST first, so `2026-08-20T20:00:00Z` is the 21st, not the 20th (the
+    trap Blinkit's `e684aa4` fixed). A value with no offset is Zepto's own IST. Anything
+    unparseable falls back to the text before `T`, which `payload.py` then checks."""
     if not isinstance(value, str):
         return value
-    return value.split("T")[0]
+    try:
+        d = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return value.split("T")[0]
+    if d.tzinfo is not None:
+        d = d.astimezone(_IST)
+    return d.date().isoformat()
 
 
 def city_ids(targeting_options: dict) -> list[str]:

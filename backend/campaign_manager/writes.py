@@ -198,6 +198,22 @@ def hold_reason(adapter, current: str | None, detail: dict | None) -> str | None
         return None
 
 
+def automation_refusal(adapter, detail: dict | None) -> str | None:
+    """Why the automations must leave this campaign alone, or None (ZC-C3).
+
+    Optional on the adapter (`automation_refusal(detail)`), read off a campaign the caller
+    has ALREADY fetched. Zepto limits automations to keyword-bid product ads; Blinkit
+    declares nothing, so every Blinkit campaign stays eligible. Never raises: a checker
+    that crashes must not take the run down — the adapter's write-time check still stands."""
+    reader = getattr(adapter, "automation_refusal", None)
+    if reader is None:
+        return None
+    try:
+        return reader(detail or {})
+    except Exception:
+        return None
+
+
 def status_transition_denied(current: str | None, target: str, *,
                              allow_draft: bool = False,
                              hold_reason: str | None = None) -> str | None:
@@ -600,6 +616,17 @@ STATE_WORDS = {"running": "running", "paused": "stopped", "held": "on hold (out 
                 "ended": "finished", "draft": "a draft"}
 
 
+def state_words(state: str | None, hold_reason: str | None = None) -> str | None:
+    """`STATE_WORDS`, except a `held` campaign the marketplace has explained.
+
+    "Out of budget" is Blinkit's only hold, but Zepto also holds for an empty ad wallet —
+    where the budget is irrelevant. With a `hold_reason` in hand, say "on hold" and let the
+    reason (logged beside it) name the cause, rather than guess the wrong one."""
+    if state == "held" and hold_reason:
+        return "on hold"
+    return STATE_WORDS.get(state, state)
+
+
 def _status_words(target: str, budget: float | None) -> str:
     """What a status write leaves behind, for the log line.
 
@@ -618,10 +645,12 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                        budget: float | None = None, overwrites: dict | None = None,
                        applied: list | None = None,
                        outcome: dict | None = None,
-                       hold_reason: str | None = None) -> bool:
+                       hold_reason: str | None = None,
+                       not_automatable: str | None = None) -> bool:
     """Guardrailed campaign start/stop. Returns True if applied (or would-apply in dry-run).
 
-    `hold_reason` — see `status_transition_denied`.
+    `hold_reason` — see `status_transition_denied`. `not_automatable` — the caller's
+    `automation_refusal` for this campaign; set, the write is refused before anything else.
 
     The two directions are NOT symmetric, and HOW asymmetric depends on the
     marketplace — which is why the adapter declares it via `RESUME_RESUBMITS`
@@ -641,6 +670,12 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       what="status", old=current, new=target)
 
+    if not_automatable:
+        refused = f"campaign is not automatable — {not_automatable}"
+        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
+                             passed=False, reason=refused)
+        _refused(outcome, refused)
+        return False
     if current == target:
         already = f"the campaign is already {STATE_WORDS.get(target, target)}"
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
@@ -679,7 +714,7 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         logs.status_overwrites(run_id, dry_run=dry_run, campaign_id=campaign_id,
                                fields=overwrites)
 
-    was = STATE_WORDS.get(current, current)
+    was = state_words(current, hold_reason)
     if dry_run:
         # Same values the live branch reports. A dry run that says only "would
         # apply" tells a reviewer nothing about WHAT it would apply.

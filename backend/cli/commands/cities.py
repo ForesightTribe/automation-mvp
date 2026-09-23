@@ -73,6 +73,15 @@ async def _blinkit_directory(tenant: str) -> list[dict]:
     return out
 
 
+# Whose directory can seed the canonical list. Blinkit's `campaigns/config` is an
+# ACCOUNT-INDEPENDENT list of every q-commerce city it serves, with states — which is what
+# makes it a directory. Zepto has no equivalent: `targeting-options` is scoped to the brand
+# (9 cities for Brik Oven, not Zepto's 63), so seeding from it would shrink the registry to
+# one client's footprint. Zepto cities reach `cities` through the store catalog instead, and
+# its AD spellings through `city_aliases` (`zepto:ads`) — see ZC-C4.
+_DIRECTORIES = {"blinkit": "_blinkit_directory"}
+
+
 def _derive_prefixes(store_rows, name_by_slug: dict) -> dict:
     """{city_slug: [prefixes]} from our own stores.
 
@@ -112,6 +121,11 @@ def seed(
     from our own stores. Idempotent — re-running adds new cities and refreshes prefixes,
     and never deletes (a city that vanishes from the directory may still have stores)."""
     async def _run():
+        if mp not in _DIRECTORIES:
+            raise typer.BadParameter(
+                f"{mp} publishes no city directory to seed from — only "
+                f"{', '.join(sorted(_DIRECTORIES))} does. Its cities come from the store "
+                f"catalog (`cli sync`), and its ad spellings from config.xlsx's `city_map`.")
         tid = tenant or await _any_tenant_with_session(mp)
         if not tid:
             raise typer.BadParameter(

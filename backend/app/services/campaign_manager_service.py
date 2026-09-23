@@ -152,11 +152,14 @@ async def list_budget_schedules(tenant_id: uuid.UUID) -> list[BudgetScheduleOut]
 
 async def create_budget_schedule(session, tenant_id: uuid.UUID, body: BudgetScheduleIn) -> BudgetScheduleOut:
     await _require_marketplace(tenant_id, body.campaign_id)
-    s = await repo.create_budget_schedule(
-        tenant_id, PLATFORM, body.campaign_id,
-        body.campaign_name or f"campaign {body.campaign_id}", body.default_budget, body.name,
-        stop_after_window=body.stop_after_window,
-    )
+    try:
+        s = await repo.create_budget_schedule(
+            tenant_id, PLATFORM, body.campaign_id,
+            body.campaign_name or f"campaign {body.campaign_id}", body.default_budget, body.name,
+            stop_after_window=body.stop_after_window,
+        )
+    except repo.NotAutomatable as e:
+        raise EditError(str(e)) from e
     rules = [await repo.add_budget_rule(s.id, **body.rule.model_dump())] if body.rule else []
     await _reconcile(session, tenant_id)
     return _schedule_out(s, rules)
@@ -412,11 +415,14 @@ async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> Bid
             # Saved BY CITY → follows that city's frozen store from now on (resolved on every
             # run). Saved by an explicit store → pinned to it.
             d["city_id"] = None if location_id else store.city_id
-    r = await repo.create_bid_rule(
-        tenant_id, PLATFORM, d.pop("campaign_id"),
-        d.pop("campaign_name") or f"campaign {body.campaign_id}",
-        d.pop("keyword"), d.pop("target_position"), d.pop("min_bid"), d.pop("max_bid"), **d,
-    )
+    try:
+        r = await repo.create_bid_rule(
+            tenant_id, PLATFORM, d.pop("campaign_id"),
+            d.pop("campaign_name") or f"campaign {body.campaign_id}",
+            d.pop("keyword"), d.pop("target_position"), d.pop("min_bid"), d.pop("max_bid"), **d,
+        )
+    except repo.NotAutomatable as e:
+        raise EditError(str(e)) from e
     await _reconcile(session, tenant_id)
     return await _bid_out_async(r)
 

@@ -435,6 +435,24 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                    f"{writes.STATE_WORDS.get(current_state, current_state or 'in an unknown state')}")
                                   + f" · its budget is {writes.money(current)}")
 
+                # Not a campaign the automations may touch (ZC-C3: on Zepto, only product ads
+                # bid by keyword). Refused on the read in hand, before the budget OR a
+                # start/stop is decided — the adapter would refuse the budget write anyway,
+                # but a start/stop has no such backstop.
+                not_ours = writes.automation_refusal(adapter, detail)
+                if not_ours:
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, level="warning",
+                                 msg=f"campaign is not automatable — {not_ours}; nothing is "
+                                     f"written")
+                    skipped += 1
+                    log_rows.append(_row(tenant_id, platform, run_id, cid, cname, "skip",
+                                         current, target,
+                                         f"{why} — but the campaign is not automatable "
+                                         f"({not_ours}), so nothing was changed",
+                                         dry_run, False))
+                    landed = True              # nothing was written, so nothing to retry
+                    continue
+
                 # ── The activation branch (docs/campaign-manager.md §6) ──
                 # A stopped campaign that should be running is restarted, and the restart
                 # CARRIES the budget — so it replaces the budget write rather than preceding
@@ -463,7 +481,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # The STOP is not gated at all — see below.
                 can_write_budget = current_state in (None, "running", "held")
 
-                state_words = writes.STATE_WORDS.get(current_state, current_state)
+                state_words = writes.state_words(current_state, hold)
                 if not can_write_budget and want_state != "paused":
                     # Stopped (and not due to start), completed, draft… nothing useful to do,
                     # and nothing at risk in doing nothing. Recorded all the same: this is a

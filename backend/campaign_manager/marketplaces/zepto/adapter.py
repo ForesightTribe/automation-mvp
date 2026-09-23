@@ -41,6 +41,7 @@ import json
 
 from app.utils.logger import logger
 from campaign_manager.marketplaces.zepto import client as zc
+from campaign_manager.marketplaces.zepto import eligibility
 from campaign_manager.marketplaces.zepto import endpoints as ep
 from campaign_manager.marketplaces.zepto import payload as zpayload
 from campaign_manager.marketplaces.zepto import status as zstatus
@@ -112,6 +113,16 @@ def hold_reason(detail: dict) -> str | None:
     `held`, so without this every wallet-held campaign was told to raise its budget.
     """
     return zstatus.hold_reason((detail or {}).get("status"))
+
+
+def automation_refusal(detail: dict) -> str | None:
+    """Why automations must not touch this campaign, or None (ZC-C3 — `eligibility.py`).
+    Optional on the contract: the engines read it with `getattr`, so Blinkit needs none."""
+    return eligibility.refusal_from_detail(detail)
+
+
+# A Zepto bid rule must name a city or a store — see `eligibility.RULE_NEEDS_LOCATION`.
+REQUIRES_RULE_LOCATION = eligibility.RULE_NEEDS_LOCATION
 
 
 # ── reads (safe) ─────────────────────────────────────────────────────────────
@@ -446,6 +457,11 @@ async def _put_one_field(client, campaign_id: int, field_path: str,
     """
     if base is None or detail is None:
         base, detail = await _rebased_payload(client, campaign_id)
+    # 0 — only a campaign the automations are allowed to touch (ZC-C3), judged on this read.
+    refused = automation_refusal(detail)
+    if refused:
+        raise WriteRefused(f"campaign {campaign_id} is not automatable: {refused}. "
+                           "Nothing was sent.")
     new = json.loads(json.dumps(base))      # deep copy; payloads nest
     mutate(new)
 
