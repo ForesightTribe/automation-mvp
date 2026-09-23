@@ -149,8 +149,19 @@ async def get_wallet(client: ZeptoClient) -> dict:
     Ads spend from a wallet, so a campaign can stall with a perfectly good budget
     when it empties. We can read this; `ads-wallet-recharge` is not in our
     permissions, so it is a warning signal and never something we can fix.
+
+    ⚠️ The params are the dashboard's own (captured 2026-08-21) and required: without them
+    Zepto answers 400 "invalid filters" — found 2026-09-23 on the FIRST real call, because
+    nothing had ever called this. Same trap as `get_targeting_options` (ZC-A12). The date
+    window covers the transaction summary that rides along; the balance is current either way.
     """
-    return _unwrap(await client.get_json(ep.WALLET))
+    today = now_ist().date()
+    return _unwrap(await client.get_json(ep.WALLET, params={
+        "start_date": (today - timedelta(days=30)).isoformat(),
+        "end_date": today.isoformat(),
+        "all_brands": "false",
+        "brand_ids": client.brand_id,
+    }))
 
 
 async def update_campaign(client: ZeptoClient, campaign_id: int,

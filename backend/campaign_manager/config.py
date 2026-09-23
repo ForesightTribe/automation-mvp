@@ -123,6 +123,17 @@ BID_GIVE_UP_TICKS: int = int(os.getenv("CM_BID_GIVE_UP_TICKS", "2"))
 # quietly running on fewer stores. Warning, not error: it is not an outage.
 STORE_PROBLEM_WARN_TICKS: int = int(os.getenv("CM_STORE_PROBLEM_WARN_TICKS", "2"))
 
+# ── Prepaid ad wallet (wallet.py, ZC-C12) ───────────────────────────────────
+#
+# Zepto ads spend from a prepaid wallet; when it runs dry every campaign stops delivering
+# whatever its budget says, and topping it up is not in our permissions. Below this balance
+# (₹) each run warns; at zero it is an ERROR, which alerts. Default ≈ a day of Brik Oven's
+# spend (₹5–9k/day in Sept 2026). A marketplace without a wallet is never checked.
+WALLET_WARN_BELOW: float = float(os.getenv("CM_WALLET_WARN_BELOW", "5000"))
+# The engines run every 15–60 minutes; a History line on every run would bury the real
+# changes. Logs get it every run, History at most once per this many hours.
+WALLET_NOTE_EVERY_HOURS: float = float(os.getenv("CM_WALLET_NOTE_EVERY_HOURS", "6"))
+
 # ── Per-marketplace tuning ──────────────────────────────────────────────────
 #
 # Everything above is the DEFAULT, and Blinkit uses it unchanged. A marketplace whose

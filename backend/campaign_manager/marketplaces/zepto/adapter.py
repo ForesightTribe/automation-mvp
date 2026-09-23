@@ -66,6 +66,17 @@ MIN_BID = ep.MIN_BID
 # carry a budget; without it a Zepto resume is refused as "budget is None".
 RESUME_RESUBMITS = False
 
+# A PAUSED campaign's budget can be changed (ZC-C11). Blinkit refuses that — a stopped
+# campaign only offers RESTART — so the budget engine gates the write on status; Zepto does
+# not need the gate. Evidence, not assumption: both live budget writes on Tech Test 2427461
+# (2026-09-21, runs `ca8e7cd1` ₹551→552 and `44cbd672` ₹552→551) were made while it was
+# PAUSED, landed, and read back with the status unchanged.
+#
+# It also makes a start correct: `RESUME_RESUBMITS` is False, so activating restores the
+# campaign's OWN budget. The engine therefore writes the window's budget FIRST and then
+# activates, rather than assuming the start carries it (which on Zepto it silently does not).
+BUDGET_WHILE_PAUSED = True
+
 # Absence means "bid up", not "do nothing".
 #
 # If our ad is not in the results, that is the worst outcome a sponsored campaign can
@@ -95,6 +106,12 @@ RESUME_RESUBMITS = False
 # confirmed stocked and serviceable at the same store. Absent at ₹10 therefore means
 # outbid, which is precisely what a bid can fix.
 RAISE_WHEN_ABSENT = True
+
+# Our sponsored slot is recognised by the CAMPAIGN id Zepto stamps on it (`uclId`), not by
+# product — so a campaign whose product list failed to read can still be found in search
+# (ZC-C20). An adapter without this (Blinkit, which matches by product) has the bid engine
+# skip such a tick instead of reading "not showing" and raising the bid on no evidence.
+RECOGNISES_AD_BY_CAMPAIGN = True
 
 # Where position is measured when a rule carries no store of its own. Same Bengaluru
 # fallback the bid engine uses, kept here so the adapter is self-contained.
@@ -362,21 +379,13 @@ def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *
 
 
 async def read_wallet(client) -> dict:
-    """Prepaid balance, and a warning when it is low.
+    """The prepaid wallet as Zepto reports it (`current_balance`, …). A READ only.
 
-    Deliberately NOT a guardrail: an empty wallet does not make a budget change
-    wrong, and refusing to act would be worse than acting loudly. Campaigns simply
-    stop delivering, which is Zepto's decision to make, not ours.
+    What a low balance means — and the warning, which is deliberately NOT a guardrail —
+    lives in `campaign_manager/wallet.py`, which both engines call once per run (ZC-C12).
+    It used to log its own ERROR here, but nothing called it, so it never fired.
     """
-    wallet = await zc.get_wallet(client)
-    balance = wallet.get("current_balance")
-    if isinstance(balance, (int, float)) and balance <= 0:
-        logger.error(
-            f"Zepto wallet is empty (balance {balance}) — campaigns will not deliver "
-            "regardless of their budgets, and we cannot top it up (recharge is not in "
-            "our permissions). This needs a human."
-        )
-    return wallet
+    return await zc.get_wallet(client)
 
 
 # ── writes (guarded; only reached via writes.py) ─────────────────────────────

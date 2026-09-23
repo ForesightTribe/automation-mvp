@@ -456,7 +456,10 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
             fields["location_name"] = store.label
             fields["city_id"] = None if location_id else store.city_id
     if fields:
-        await repo.update_bid_rule(rule_id, fields)
+        try:
+            await repo.update_bid_rule(rule_id, fields)
+        except repo.NotAutomatable as e:
+            raise EditError(str(e)) from e
     await _reconcile(session, tenant_id)
     r = await repo.get_bid_rule(rule_id)
     if window.in_window(window.from_bid(r), now_ist()):   # editing a live window → apply now

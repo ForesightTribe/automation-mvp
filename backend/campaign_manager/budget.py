@@ -13,7 +13,7 @@ from datetime import datetime
 
 from app.core.config import settings
 from app.utils.time import now_ist
-from campaign_manager import config, lifecycle, logs, repo, window, writes
+from campaign_manager import config, lifecycle, logs, repo, wallet, window, writes
 from campaign_manager.marketplaces import get_adapter
 
 
@@ -319,6 +319,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     logs.session_ok(run_id, dry_run=dry_run, platform=platform)
+    # An empty prepaid wallet makes every budget below pointless — say so, never refuse (C12).
+    await wallet.check(adapter, client, tenant_id=tenant_id, platform=platform,
+                       run_id=run_id, dry_run=dry_run)
 
     # Live runs must pass the account guardrail (B3) before any write.
     if not dry_run:
@@ -454,22 +457,52 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     continue
 
                 # ── The activation branch (docs/campaign-manager.md §6) ──
-                # A stopped campaign that should be running is restarted, and the restart
-                # CARRIES the budget — so it replaces the budget write rather than preceding
-                # it. That is the whole reason activation lives in this engine.
+                # A stopped campaign that should be running is restarted. On Blinkit the
+                # restart CARRIES the budget (it re-submits the campaign), so it replaces the
+                # budget write rather than preceding it. On a marketplace whose resume does NOT
+                # re-submit (Zepto), a start restores the campaign's own old budget — so the
+                # window's budget is written FIRST, while it is still paused, and the campaign
+                # goes live at the right amount instead of one tick later (ZC-C11).
                 if want_state == "running" and current_state == "paused":
+                    carries = getattr(adapter, "RESUME_RESUBMITS", True)
+                    budget_first = True
+                    if not carries:
+                        b_out: dict = {}
+                        b_ok = await writes.apply_budget(
+                            adapter, client, run_id=run_id, campaign_id=cid, target=target,
+                            current=current, dry_run=dry_run, recent_writes=0,
+                            applied=patches, outcome=b_out)
+                        b_action, b_success, b_said = _verdict(
+                            b_ok, b_out, f"{why} — set while the campaign is still stopped, "
+                                         f"so it starts at that budget")
+                        if b_action != "no-op":
+                            log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
+                                                 b_action, current, target, b_said, dry_run,
+                                                 b_success))
+                        applied += int(b_ok)
+                        budget_first = b_ok or writes.not_needed(b_out)
+                        if not budget_first:
+                            # Started anyway: the window says the campaign should be running,
+                            # and the next tick — with it running — retries the budget.
+                            logs.decided(run_id, dry_run=dry_run, campaign_id=cid,
+                                         level="warning",
+                                         msg="the budget could not be set first — starting the "
+                                             "campaign anyway; the next run retries the budget")
                     outcome: dict = {}
                     ok = await _restart(adapter, client, run_id, cid, target, detail,
                                         dry_run, tenant_id, platform, patches, outcome)
                     applied += int(ok)
                     skipped += int(not ok)
-                    action, success, said = _verdict(
-                        ok, outcome, f"{why} — the campaign was stopped, so it is started "
-                                     f"again at that budget")
+                    # NOT `started` — that name is the run's start time, read by the summary.
+                    restarted = ("the campaign was stopped, so it is started again at that "
+                                 "budget" if carries or budget_first else
+                                 "the campaign was stopped, so it is started again — at its "
+                                 "previous budget for now, since the new one did not go through")
+                    action, success, said = _verdict(ok, outcome, f"{why} — {restarted}")
                     log_rows.append(_row(tenant_id, platform, run_id, cid, cname,
                                          action, None, target, said, dry_run, success,
                                          kind="activation"))
-                    landed = ok
+                    landed = ok and budget_first
                     continue
 
                 # Blinkit rejects a budget UPDATE on a STOPPED campaign (it reports
@@ -479,7 +512,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # and raising its budget is precisely what revives it. Skipping those was
                 # backwards — it withheld the one write that would have helped.
                 # The STOP is not gated at all — see below.
-                can_write_budget = current_state in (None, "running", "held")
+                # A marketplace that takes a budget on a PAUSED campaign says so (Zepto,
+                # ZC-C11): there the revert at a window end lands even on a campaign that is
+                # already stopped, so it rests at its default rather than the window's budget.
+                writable = ("running", "held") + (
+                    ("paused",) if getattr(adapter, "BUDGET_WHILE_PAUSED", False) else ())
+                can_write_budget = current_state is None or current_state in writable
 
                 state_words = writes.state_words(current_state, hold)
                 if not can_write_budget and want_state != "paused":

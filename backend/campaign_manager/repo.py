@@ -1693,12 +1693,30 @@ async def update_bid_rule(rule_id: str, fields: dict):
     sharply when `max_bid` is raised, where a stale relaxed target has the optimizer drift
     DOWN just after being handed more room to climb. `bid.stored_effective_target` guards
     the `max_bid` case on read too (self-healing for edits that bypass this function); the
-    `target_position` case has no such tell, so it is cleared here."""
+    `target_position` case has no such tell, so it is cleared here.
+
+    Checked against what the rule will BE after the edit, before anything is written:
+      * a marketplace that needs a location (Zepto, ZC-C14) keeps one — an edit must not
+        blank the city/coordinates that create was made to require → `NotAutomatable`;
+      * a live rule renamed onto a keyword another live rule already chases would start the
+        bid fight create refuses (ZC-C9) → `DuplicateBidRule`."""
     from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
+    from campaign_manager.marketplaces import rule_needs_location
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
         if not r:
             return None
+        after = {k: fields.get(k, getattr(r, k, None))
+                 for k in ("city_id", "lat", "lon", "keyword", "match_type")}
+        if (rule_needs_location(r.platform) and after["city_id"] is None
+                and (after["lat"] is None or after["lon"] is None)):
+            raise NotAutomatable(
+                f"a {r.platform.title()} bid rule must keep somewhere to measure — this edit "
+                f"would remove its city and store. Nothing was changed.")
+        if r.active and ("keyword" in fields or "match_type" in fields):
+            await require_no_live_bid_rule(r.tenant_id, r.platform, r.campaign_id,
+                                           after["keyword"], after["match_type"],
+                                           exclude_id=r.id)
         for k, v in fields.items():
             setattr(r, k, v)
         if "max_bid" in fields or "target_position" in fields:
@@ -1709,6 +1727,22 @@ async def update_bid_rule(rule_id: str, fields: dict):
         await db.commit()
         await db.refresh(r)
         return r
+
+
+async def last_run_log_at(tenant_id, platform: str, *, kind: str):
+    """When this tenant last got a History row of this `kind`, or None. Lets a run-level
+    notice (the wallet warning) be written at most every few hours instead of every run."""
+    from sqlalchemy import func
+    from app.models.campaign_manager_v2 import CmRunLog
+
+    async with AsyncSessionLocal() as db:
+        return (await db.execute(
+            select(func.max(CmRunLog.timestamp)).where(
+                CmRunLog.tenant_id == tenant_id,
+                CmRunLog.platform == platform,
+                CmRunLog.kind == kind,
+            )
+        )).scalar()
 
 
 # Actions that record a tick where NOTHING changed. Stored (a per-automation view is made

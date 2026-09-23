@@ -97,6 +97,30 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
                       reason=f"currently {current}" + (
                           f", budget ₹{target_budget:g}" if status == "running" and target_budget else ""))
 
+        # "Start at ₹X" on a marketplace whose start does NOT carry a budget (Zepto): the ₹X
+        # used to be dropped without a word, because `target_budget` above is None there. Set
+        # it FIRST — Zepto takes a budget on a paused campaign — so the start goes live at it.
+        # Only when the caller asked for one: a plain Start keeps the campaign's own (ZC-C11).
+        early_rows: list[dict] = []
+        early_applied = 0
+        if (status == "running" and not resubmits and budget is not None
+                and writes.automation_refusal(adapter, detail) is None):
+            b_out: dict = {}
+            b_ok = await writes.apply_budget(
+                adapter, client, run_id=run_id, campaign_id=campaign_id, target=budget,
+                current=current_budget, dry_run=dry_run, applied=patches, outcome=b_out,
+                recent_writes=0 if dry_run else await repo.recent_write_count(
+                    tenant_id, campaign_id,
+                    window_minutes=config.RATE_WINDOW_MINUTES, kind="budget"),
+            )
+            early_applied = int(b_ok)
+            b_action, b_success, b_reason = _verdict(
+                b_ok, b_out, f"the budget was set to ₹{budget:g} on request, before starting")
+            early_rows.append(_row(tenant_id, platform, run_id, campaign_id, name, b_action,
+                                   current, status, dry_run, success=b_success,
+                                   reason=b_reason, kind="budget",
+                                   old_value=current_budget, new_value=budget))
+
         ok = await writes.apply_status(
             adapter, client, run_id=run_id, campaign_id=campaign_id,
             target=status, current=current, dry_run=dry_run, allow_draft=True,
@@ -107,12 +131,13 @@ async def run(tenant_id: uuid.UUID, campaign_id: int, status: str, *,
                 tenant_id, campaign_id,
                 window_minutes=config.RATE_WINDOW_MINUTES, kind="activation"),
         )
-        applied, skipped = int(ok), int(not ok)
+        applied, skipped = int(ok) + early_applied, int(not ok)
         done = f"the campaign was {verb} on request" + (
             f" at ₹{target_budget:g}" if ok and status == "running" and target_budget else "")
         action, success, reason = _verdict(ok, outcome, done)
-        rows = [_row(tenant_id, platform, run_id, campaign_id, name,
-                     action, current, status, dry_run, success=success, reason=reason)]
+        rows = early_rows + [_row(tenant_id, platform, run_id, campaign_id, name,
+                                  action, current, status, dry_run, success=success,
+                                  reason=reason)]
 
         # "Start at ₹X" on a campaign that is ALREADY running must still honour the budget.
         # Normally the restart carries it — but there is no restart to make, so the status

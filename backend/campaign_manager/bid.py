@@ -25,7 +25,8 @@ from datetime import datetime, timedelta
 
 from app.core.config import settings
 from app.utils.time import now_ist
-from campaign_manager import config, coverage, lifecycle, logs, repo, stock, window, writes
+from campaign_manager import (config, coverage, lifecycle, logs, repo, stock, wallet, window,
+                              writes)
 from campaign_manager.marketplaces import get_adapter
 
 HOLD_MINUTES = 10                       # after a bid change, wait this long before nudging again
@@ -272,6 +273,27 @@ def _rule_dict(r) -> dict:
             "start_time": r.start_time, "stop_time": r.stop_time}
 
 
+def products_problem(products, campaign_read: bool, adapter,
+                     mp: str) -> tuple[str, bool] | None:
+    """Why this campaign's ad may not be recognisable in search, or None (ZC-C20). Pure.
+
+    Returns `(sentence, skip)`. With no products there is nothing to recognise our ad BY
+    where recognition is by product (Blinkit) — and searching anyway reads as "our product is
+    not in these results", which under RAISE_WHEN_ABSENT raises the bid on no evidence. So
+    `skip` is True there. A marketplace that stamps the winning CAMPAIGN on every sponsored
+    slot (`RECOGNISES_AD_BY_CAMPAIGN`, Zepto's `uclId`) can still find it: carry on, say why.
+    """
+    if products:
+        return None
+    why = (f"the campaign could not be read from {mp}" if not campaign_read
+           else "the campaign lists no products we can read")
+    if getattr(adapter, "RECOGNISES_AD_BY_CAMPAIGN", False):
+        return f"{why} — recognising our ad by its campaign id alone this tick", False
+    return (f"{why}, so our ad cannot be recognised in search — no bid change this tick "
+            f"(a search now would read as 'not showing' and raise the bid on no evidence)",
+            True)
+
+
 def measurement_stores(rule, city_stores: dict, saved_ids: dict | None = None) -> list:
     """Where this rule reads its position: `[repo.MeasurementStore, …]`, anchor first.
 
@@ -390,6 +412,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                          processed=0, applied=0, skipped=0, errors=1)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     logs.session_ok(run_id, dry_run=dry_run, platform=platform)
+    # An empty prepaid wallet makes every bid below pointless — say so, never refuse (C12).
+    await wallet.check(adapter, client, tenant_id=tenant_id, platform=platform,
+                       run_id=run_id, dry_run=dry_run)
 
     # Live runs must pass the account guardrail (B3) before any write.
     if not dry_run:
@@ -488,8 +513,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # plain lookup. It used to call `adapter._api_match(...)` — the MP-agnostic
             # engine reaching into a private function only Blinkit has, which raised
             # AttributeError on every Zepto run.
-            min_bid = effective_floor(rule.min_bid, floors_cache.get(cid, {}).get(
-                (kw, (rule.match_type or "EXACT").upper())))
+            kw_floor = floors_cache.get(cid, {}).get((kw, (rule.match_type or "EXACT").upper()))
+            min_bid = effective_floor(rule.min_bid, kw_floor)
             if min_bid != rule.min_bid:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning",
@@ -584,6 +609,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     new_cpm=min_bid, current_cpm=live_cpm, min_bid=min_bid,
                     max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                     recent_writes=0, applied=patches, outcome=outcome,
+                    keyword_floor=kw_floor,
                 )
                 applied += int(ok)
                 skipped += int(not ok and write_error is None)
@@ -638,6 +664,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                         new_cpm=bounded, current_cpm=live_cpm, min_bid=min_bid,
                         max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                         recent_writes=0, applied=patches, outcome=outcome,
+                        keyword_floor=kw_floor,
                     )
                     applied += int(ok)
                     skipped += int(not ok and write_error is None)
@@ -667,6 +694,24 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # reported "product not in results" forever, silently. The adapter owns the
             # shape now; `read_products` returns `{pid, name}` on both marketplaces.
             products = products_cache[cid]
+
+            # No products = nothing to recognise our ad BY (ZC-C20). Where recognition is by
+            # product (Blinkit), searching anyway finds "our product is not in these results"
+            # — and under RAISE_WHEN_ABSENT that raises the bid, so one failed product read
+            # spent money on a position we never measured. Skip the tick and say why.
+            # A marketplace that stamps the winning CAMPAIGN on each sponsored slot (Zepto's
+            # `uclId`) can still recognise it, so it carries on — with the reason logged.
+            unrecognisable = products_problem(products, status_cache.get(cid) is not None,
+                                              adapter, mp)
+            if unrecognisable:
+                said, skip = unrecognisable
+                if skip:
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                 level="warning", msg=said)
+                    skipped += 1
+                    continue
+                logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                              level="warning", msg=said)
 
             # On the tick that CONFIRMS the floor, Blinkit reads back min_bid but runtime
             # still holds yesterday's `last_cpm` — stepping from that would undo the open.
@@ -950,6 +995,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 new_cpm=new_cpm, current_cpm=current_cpm, min_bid=min_bid,
                 max_bid=ceiling, match_type=rule.match_type, dry_run=dry_run,
                 recent_writes=recent, applied=patches, outcome=outcome,
+                keyword_floor=kw_floor,
             )
             applied += int(ok)
             skipped += int(not ok and write_error is None)
@@ -1379,8 +1425,8 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             # The reset writes the bid back DOWN to the floor, so it has to respect the
             # marketplace's own minimum too — writing below it would be refused, leaving
             # the keyword parked at its high in-window bid overnight (V7.6).
-            min_bid = effective_floor(r.min_bid, floors_cache.get(cid, {}).get(
-                (kw, (r.match_type or "EXACT").upper())))
+            kw_floor = floors_cache.get(cid, {}).get((kw, (r.match_type or "EXACT").upper()))
+            min_bid = effective_floor(r.min_bid, kw_floor)
             status = status_cache[cid]
             # An UNREADABLE bid is not a bid at the floor. This used to fall back to
             # `min_bid`, which the check below then read as "already there, nothing to do"
@@ -1427,7 +1473,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     max_bid=resolve_ceiling(
                         r.max_bid, config.bid_tuning(platform, "BID_MAX_ABSOLUTE")),
                     match_type=r.match_type, dry_run=dry_run, recent_writes=0,
-                    applied=patches, outcome=outcome,
+                    applied=patches, outcome=outcome, keyword_floor=kw_floor,
                 )
                 err = None
             except Exception as e:

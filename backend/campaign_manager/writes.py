@@ -442,10 +442,17 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
                     current_cpm, min_bid, max_bid, match_type="EXACT",
                     dry_run: bool, recent_writes: int = 0,
                     applied: list | None = None,
-                    outcome: dict | None = None) -> bool:
+                    outcome: dict | None = None,
+                    keyword_floor: int | None = None) -> bool:
     """Guardrailed keyword-bid write. Clamps to [min_bid, max_bid] first.
 
-    `outcome` collects WHY a write did not land — see `_refused`."""
+    `outcome` collects WHY a write did not land — see `_refused`.
+
+    `keyword_floor` is the marketplace's PUBLISHED minimum for this very keyword, read live
+    (`adapter.read_bid_floors`). When known it is the marketplace's law for this write and
+    REPLACES the adapter's flat `MIN_BID`, which is only the observed default for a keyword
+    with no published floor (ZC-C1). Without this, Zepto's ₹10 default also blocked keywords
+    Zepto itself allows lower. Unknown (None) → the flat value still applies."""
     clamped = clamp_bid(new_cpm, min_bid, max_bid)
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id, keyword=keyword,
                       what="bid", old=current_cpm, new=clamped)
@@ -461,7 +468,8 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     # applies the RULE's range: a rule whose floor is below the platform's still needs
     # catching, and the platform gets the final say.
     reason = bid_out_of_bounds(clamped,
-                               min_bid=getattr(adapter, "MIN_BID", None),
+                               min_bid=(keyword_floor if keyword_floor is not None
+                                        else getattr(adapter, "MIN_BID", None)),
                                max_bid=getattr(adapter, "MAX_BID", None))
     if reason:
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,

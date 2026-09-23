@@ -128,6 +128,9 @@ async def create_bid_rule(client: ClientDep, session: SessionDep, body: BidRuleI
 async def update_bid_rule(client: ClientDep, session: SessionDep, rule_id: str, body: BidRuleUpdate):
     try:
         rule = await svc.update_bid_rule(session, client.id, rule_id, body)
+    except DuplicateBidRule as e:
+        # Renamed onto a keyword another live automation already chases (ZC-C9).
+        raise HTTPException(status.HTTP_409_CONFLICT, str(e))
     except EditError as e:
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
     if rule is None:

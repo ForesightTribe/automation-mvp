@@ -17,7 +17,9 @@ last_validated_at and consecutive_failures make expiry visible without launching
 a browser.
 """
 import json
+import os
 import uuid
+from datetime import datetime, timedelta
 
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -45,10 +47,76 @@ async def _row(db: AsyncSession, tenant_id: str, platform: str) -> PlatformSessi
     return result.scalars().first()
 
 
+# ── Login history (ZC-C22) ────────────────────────────────────────────────────
+#
+# Every full login on a one-session-per-user marketplace (Zepto) signs the CLIENT out of the
+# dashboard. Since 2026-09-21 the system logs in whenever it needs to (no 30-min floor), so a
+# job that keeps losing its session would evict the client over and over — and every one of
+# those logins SUCCEEDS, so the circuit breaker never sees it. The only defence is to count.
+#
+# `last_login_at` holds one timestamp; a count needs a history. It is kept INSIDE the
+# encrypted envelope under a reserved key, carried forward by `save()`, trimmed to a week —
+# no new column, so no migration. `AuthSession.from_envelope` ignores the key.
+LOGIN_HISTORY_KEY = "__logins"
+LOGIN_HISTORY_DAYS = 7
+# Above this many logins in 24 h the log says so (WARNING). A normal day is ~1 on Zepto (the
+# JWT dies at midnight) plus the occasional eviction by a person using the dashboard.
+LOGINS_PER_DAY_WARN = int(os.getenv("AUTH_LOGINS_PER_DAY_WARN", "4"))
+
+
+def carry_logins(previous, now) -> list[str]:
+    """The history after one more login at `now`: older than a week dropped. Pure."""
+    keep_after = now - timedelta(days=LOGIN_HISTORY_DAYS)
+    kept = []
+    for stamp in previous or []:
+        try:
+            if datetime.fromisoformat(stamp) >= keep_after:
+                kept.append(stamp)
+        except (TypeError, ValueError):
+            continue
+    return kept + [now.isoformat()]
+
+
+def logins_since(history, since) -> int:
+    """How many logins in `history` happened at or after `since`. Pure."""
+    n = 0
+    for stamp in history or []:
+        try:
+            n += datetime.fromisoformat(stamp) >= since
+        except (TypeError, ValueError):
+            continue
+    return n
+
+
+def _login_history(encrypted: str | None) -> list[str]:
+    """The history stored in an envelope, or [] — never raises (a legacy or unreadable
+    envelope just starts a fresh history)."""
+    if not encrypted:
+        return []
+    try:
+        data = json.loads(decrypt(encrypted))
+    except Exception:
+        return []
+    history = data.get(LOGIN_HISTORY_KEY) if isinstance(data, dict) else None
+    return history if isinstance(history, list) else []
+
+
 async def save(db: AsyncSession, tenant_id: str, session: AuthSession) -> None:
     """Upsert a freshly-obtained session and mark it active."""
     now = now_ist()
-    encrypted = encrypt(json.dumps(session.to_envelope()))
+    previous = await _row(db, tenant_id, session.platform)
+    history = carry_logins(_login_history(previous.encrypted_session if previous else None),
+                           now)
+    envelope = session.to_envelope()
+    envelope[LOGIN_HISTORY_KEY] = history
+    day = logins_since(history, now - timedelta(days=1))
+    if day > LOGINS_PER_DAY_WARN:
+        logger.warning(
+            f"{session.platform} has logged in {day} times in the last 24 h for tenant "
+            f"{tenant_id} — each login on a one-session marketplace signs the client out of "
+            f"the dashboard. Something may be losing its session repeatedly; check "
+            f"`cli auth status -t {tenant_id}`.")
+    encrypted = encrypt(json.dumps(envelope))
     stmt = (
         insert(PlatformSession)
         .values(
@@ -285,6 +353,7 @@ async def all_for_tenant(db: AsyncSession, tenant_id: str) -> list[dict]:
     )
     rows = result.scalars().all()
     creds = {c["platform"]: c for c in await credentials_for_tenant(db, tenant_id)}
+    day_ago = now_ist() - timedelta(days=1)
     return [
         {
             "platform": r.platform,
@@ -294,6 +363,9 @@ async def all_for_tenant(db: AsyncSession, tenant_id: str) -> list[dict]:
             "last_validated_at": r.last_validated_at,
             "consecutive_failures": r.consecutive_failures or 0,
             "last_error": r.last_error,
+            # Full logins in the last 24 h (ZC-C22). Counted only since the history began
+            # (2026-09-23), so an older session reads 0 until its next login.
+            "logins_24h": logins_since(_login_history(r.encrypted_session), day_ago),
         }
         for r in rows
     ]
