@@ -71,6 +71,31 @@ def rule_needs_location(slug: str | None) -> bool:
     return bool(getattr(import_module(path), "RULE_NEEDS_LOCATION", False))
 
 
+# Keyword match types each marketplace bids on, in OUR vocabulary (ZC-D8). Blinkit's BROAD
+# travels as SMART inside its adapter; PHRASE exists on Zepto only.
+_MATCH_TYPES: dict[str, tuple[str, ...]] = {
+    "blinkit": ("EXACT", "BROAD"),
+    "zepto": ("EXACT", "PHRASE", "BROAD"),
+}
+
+
+def match_types(slug: str | None) -> tuple[str, ...]:
+    """The match types a bid rule may use on this marketplace; () when unknown."""
+    return _MATCH_TYPES.get((slug or "").lower(), ())
+
+
+def min_daily_budget(slug: str | None) -> float | None:
+    """The marketplace's PUBLISHED minimum daily budget, or None when it publishes none.
+
+    Zepto publishes ₹500 (`campaigns/metadata`). Blinkit publishes no such field — its
+    dashboard derives one in the browser — so it has none here and stays the judge itself.
+    API-safe: Zepto's `endpoints` module is constants only."""
+    if (slug or "").lower() == "zepto":
+        from campaign_manager.marketplaces.zepto import endpoints as zep
+        return float(zep.MIN_DAILY_BUDGET)
+    return None
+
+
 def supported() -> list[str]:
     """Marketplaces the campaign manager can drive. Used by CLI help and errors."""
     return sorted(_ADAPTERS)

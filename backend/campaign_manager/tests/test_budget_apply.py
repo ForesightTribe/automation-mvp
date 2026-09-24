@@ -111,7 +111,9 @@ def _run(*, status: str, toggle: bool, now: datetime, current_budget: float = 50
     repo.bump_settle_attempts = _bump_attempts
     budget.now_ist = lambda: now
     try:
-        asyncio.run(budget.run(_TENANT, dry_run=False))
+        # The fake adapter stands in for whichever marketplace a test configures; the engine
+        # needs to be told one — there is no default (ZC-D1).
+        asyncio.run(budget.run(_TENANT, dry_run=False, platform="blinkit"))
     finally:
         (budget.get_adapter, repo.get_budget_schedules, repo.write_run_log,
          repo.get_advertiser, repo.recent_write_count, budget.now_ist,
@@ -206,7 +208,8 @@ def _run_activation(*, target: str, status: str, budget, current_budget: float =
     repo.write_run_log = _async_noop
     repo.get_tenant_name = _async_const("Test Tenant")
     try:
-        asyncio.run(sa.run(_TENANT, CAMPAIGN, target, budget=budget, dry_run=False))
+        asyncio.run(sa.run(_TENANT, CAMPAIGN, target, budget=budget, dry_run=False,
+                           platform="blinkit"))
     finally:
         (sa.get_adapter, repo.get_advertiser, repo.recent_write_count, repo.write_run_log,
          repo.get_tenant_name) = orig

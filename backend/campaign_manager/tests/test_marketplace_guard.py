@@ -1,18 +1,21 @@
-"""ZC-A1 — a campaign from another marketplace must never become an automation here.
+"""ZC-A1 / D1 — a campaign from another marketplace must never become an automation here.
 
-`/ads/campaigns` merges Blinkit and Zepto rows, and the automation API is pinned to one
-marketplace (`campaign_manager_service.PLATFORM`). Before the guard, a Zepto campaign picked
-from that list was saved as a Blinkit automation — and its id queued for Blinkit's ad
-account. These pin the rule, with the catalogue lookup stubbed (no DB):
+`/ads/campaigns` merges Blinkit and Zepto rows, and every automation call names ONE
+marketplace in its address (`/campaign-manager/<marketplace>/…`, no default — ZC-D1).
+Before the guard, a Zepto campaign picked from that list was saved as a Blinkit automation —
+and its id queued for Blinkit's ad account. These pin the rule, with the catalogue lookup
+stubbed (no DB):
 
-  * a campaign only ANOTHER marketplace knows is refused, with a 400-mapped error;
+  * a campaign only the OTHER marketplace knows is refused, with a 400-mapped error;
   * a campaign no catalogue has seen is allowed (one created since the last scrape);
-  * a campaign this marketplace knows is allowed.
+  * a campaign the address's marketplace knows is allowed — on either marketplace.
 
     python -m campaign_manager.tests.test_marketplace_guard
 """
 import asyncio
 import uuid
+
+import pydantic
 
 from app.schemas.ads import CampaignRow
 from app.services import campaign_manager_service as svc
@@ -20,7 +23,7 @@ from app.services import campaign_manager_service as svc
 TENANT = uuid.uuid4()
 
 
-def _guard(found: set[str]):
+def _guard(found: set[str], marketplace: str):
     orig = svc.repo.campaign_marketplaces
 
     async def fake(tenant_id, campaign_id):
@@ -28,18 +31,28 @@ def _guard(found: set[str]):
 
     svc.repo.campaign_marketplaces = fake
     try:
-        asyncio.run(svc._require_marketplace(TENANT, 2427461))
+        asyncio.run(svc._require_marketplace(TENANT, 2427461, marketplace))
     finally:
         svc.repo.campaign_marketplaces = orig
 
 
-def test_a_campaign_only_zepto_knows_is_refused():
+def _refused(found: set[str], marketplace: str) -> str:
     try:
-        _guard({"zepto"})
+        _guard(found, marketplace)
     except svc.WrongMarketplace as e:
-        assert "Zepto" in str(e) and "nothing was created" in str(e)
-    else:
-        raise AssertionError("a Zepto campaign must not become a Blinkit automation")
+        return str(e)
+    raise AssertionError(f"{found} campaign must be refused under {marketplace}")
+
+
+def test_a_zepto_campaign_is_refused_under_blinkit():
+    said = _refused({"zepto"}, "blinkit")
+    assert "Zepto" in said and "nothing was done" in said
+
+
+def test_a_blinkit_campaign_is_refused_under_zepto():
+    """The guard is symmetric now that Zepto has its own address."""
+    said = _refused({"blinkit"}, "zepto")
+    assert "Blinkit" in said and "not a Zepto one" in said
 
 
 def test_the_refusal_is_an_edit_error_so_routes_map_it_to_400():
@@ -48,17 +61,19 @@ def test_the_refusal_is_an_edit_error_so_routes_map_it_to_400():
 
 def test_an_uncatalogued_campaign_is_allowed():
     """Created since the last scrape — refusing would make it unautomatable until tomorrow."""
-    _guard(set())
+    _guard(set(), "blinkit")
+    _guard(set(), "zepto")
 
 
 def test_a_campaign_this_marketplace_knows_is_allowed():
-    _guard({svc.PLATFORM})
+    _guard({"blinkit"}, "blinkit")
+    _guard({"zepto"}, "zepto")
 
 
 def test_a_campaign_both_catalogues_know_is_allowed():
-    # The id spaces are separate so this should not happen; if it does, this API's own
+    # The id spaces are separate so this should not happen; if it does, the address's own
     # catalogue knowing it is enough.
-    _guard({svc.PLATFORM, "zepto"})
+    _guard({"blinkit", "zepto"}, "zepto")
 
 
 def test_every_write_entry_point_runs_the_guard():
@@ -70,11 +85,23 @@ def test_every_write_entry_point_runs_the_guard():
             f"{fn.__name__} must refuse a campaign from another marketplace")
 
 
-def test_campaign_rows_say_which_marketplace_they_belong_to():
-    row = CampaignRow(campaign_id=1, name="x", type=None, status=None, budget_consumed=0,
-                      impressions=0, atc=0, quantities_sold=0, ad_sales=0, roas=0)
-    assert row.platform == "blinkit"            # the default existing Blinkit rows get
-    assert CampaignRow(**{**row.model_dump(), "platform": "zepto"}).platform == "zepto"
+def test_campaign_rows_must_say_which_marketplace_they_belong_to():
+    """No default any more (ZC-D1): a row without `platform` is a bug to surface, not a
+    Blinkit row to assume."""
+    fields = dict(campaign_id=1, name="x", type=None, status=None, budget_consumed=0,
+                  impressions=0, atc=0, quantities_sold=0, ad_sales=0, roas=0)
+    try:
+        CampaignRow(**fields)
+    except pydantic.ValidationError:
+        pass
+    else:
+        raise AssertionError("a row without a marketplace must not validate")
+    assert CampaignRow(**fields, platform="zepto").platform == "zepto"
+
+
+def test_the_service_has_no_default_marketplace():
+    """The constant that made every automation a Blinkit one is gone for good."""
+    assert not hasattr(svc, "PLATFORM")
 
 
 def _run() -> int:

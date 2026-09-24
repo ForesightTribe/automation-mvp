@@ -102,7 +102,7 @@ def _schedule_in_calendar(rules, wanted: frozenset | None, now: datetime | None)
         [window.from_budget(r) for r in rules], now) in wanted
 
 
-async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit", *,
+async def get_budget_schedules(tenant_id: uuid.UUID, platform: str, *,
                                state: str | None, calendar, now: datetime | None = None):
     """Return [(schedule, [rules])] for a tenant — only the schedules asked for.
 
@@ -139,7 +139,7 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str = "blinkit", 
         return out
 
 
-async def get_bid_rules(tenant_id: uuid.UUID, platform: str = "blinkit", *,
+async def get_bid_rules(tenant_id: uuid.UUID, platform: str, *,
                         state: str | None, calendar, now: datetime | None = None):
     """Return [(rule, runtime_or_None)] for a tenant — only the rules asked for.
 
@@ -188,7 +188,7 @@ async def get_tenant_name(tenant_id: uuid.UUID) -> str | None:
 
 
 async def get_advertiser(tenant_id: uuid.UUID,
-                         platform: str = "blinkit") -> int | str | None:
+                         platform: str) -> int | str | None:
     """The stored ad-account identity for a tenant, or None if not configured.
 
     TWO columns, because marketplaces disagree about the shape of an ad account:
@@ -219,7 +219,7 @@ async def get_advertiser(tenant_id: uuid.UUID,
 
 
 async def set_advertiser(tenant_id: uuid.UUID, account: int | str,
-                         platform: str = "blinkit") -> None:
+                         platform: str) -> None:
     """Upsert the tenant's ad-account identity (set once at onboarding).
 
     The column follows the id's own shape rather than the marketplace name: an
@@ -246,7 +246,7 @@ async def set_advertiser(tenant_id: uuid.UUID, account: int | str,
         await db.commit()
 
 
-async def get_armed(tenant_id: uuid.UUID, platform: str = "blinkit") -> bool:
+async def get_armed(tenant_id: uuid.UUID, platform: str) -> bool:
     """Is this tenant armed for LIVE writes (the V5 cutover switch)? False if unset."""
     from app.models.campaign_manager_v2 import CmPlatformAccount
     async with AsyncSessionLocal() as db:
@@ -259,7 +259,7 @@ async def get_armed(tenant_id: uuid.UUID, platform: str = "blinkit") -> bool:
         return bool(row and row.live_armed)
 
 
-async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str = "blinkit") -> bool:
+async def set_armed(tenant_id: uuid.UUID, armed: bool, platform: str) -> bool:
     """Arm/disarm a tenant for LIVE writes. Returns False (no-op) if the tenant has no
     account row — arming without one is meaningless (live writes would refuse), so the
     caller should set the account first."""
@@ -848,6 +848,23 @@ def best_measurement_city(cities: dict, store_counts: dict):
                                -store_counts.get(kv[0], 0), (kv[1][0] or "").lower()))
 
 
+def targeted_cities(campaign, platform: str) -> list[dict] | None:
+    """The cities a catalogue row targets, as `[{id, name}]` in the MARKETPLACE's spelling,
+    or None when it runs everywhere (or the row is missing). Pure.
+
+    One reading for both marketplaces: Blinkit says `region_type == "CITY"`, Zepto
+    `city_targeting == "MANUAL"` — `_Catalog.city_mode` names which. Zepto lists EXCLUDED
+    cities beside the included ones, so they are dropped here."""
+    if campaign is None:
+        return None
+    mode_col, mode_val = _catalog(platform).city_mode
+    if str(getattr(campaign, mode_col, None) or "").strip().upper() != mode_val:
+        return None
+    return [{"id": c.get("id"), "name": str(c["name"]).strip()}
+            for c in (getattr(campaign, "cities", None) or [])
+            if isinstance(c, dict) and c.get("name") and c.get("included", True)]
+
+
 async def campaign_target_cities(tenant_id: uuid.UUID, platform: str,
                                  campaign_id: int) -> tuple[bool, list[str]]:
     """`(targets chosen cities?, the marketplace's own city names)` from the catalogue.
@@ -1395,16 +1412,67 @@ class _Catalog:
     # in that column means it runs everywhere. The cities themselves are `cities`, a list of
     # {id, name} in the MARKETPLACE's spelling (ZC-C4 resolves them to `cities.id`).
     city_mode: tuple[str, str] = ("region_type", "CITY")
+    # A second place a campaign's TYPE is recorded, for campaigns the catalogue never holds:
+    # (model, campaign-type column). Zepto's catalogue is PLA-only (its campaign list returns
+    # nothing else), so its Display campaigns exist only in the daily metrics table — and
+    # without this they read as "uncatalogued, allowed" (found 2026-09-24).
+    type_fallback: tuple[object, str] | None = None
 
 
 def _catalog(platform: str) -> _Catalog:
     if platform == "zepto":
-        from app.models.zepto_seller import ZeptoAdCampaign, ZeptoAdCampaignKeyword
+        from app.models.zepto_seller import (ZeptoAdCampaign, ZeptoAdCampaignDaily,
+                                             ZeptoAdCampaignKeyword)
         return _Catalog(ZeptoAdCampaign, ZeptoAdCampaignKeyword, "campaign_name", "min_bid",
                         ("campaign_type", "bid_targeting_type"),
-                        city_mode=("city_targeting", "MANUAL"))
+                        city_mode=("city_targeting", "MANUAL"),
+                        type_fallback=(ZeptoAdCampaignDaily, "campaign_type"))
     from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignKeyword
     return _Catalog(BlinkitAdCampaign, BlinkitAdCampaignKeyword, "name", "min_bid")
+
+
+async def automation_refusals(tenant_id: uuid.UUID, platform: str,
+                              campaign_ids) -> dict[int, str]:
+    """`{campaign_id: why it cannot be automated}` for every catalogued campaign that
+    cannot be, in ONE query (ZC-D3 — the pickers grey these out instead of failing on save).
+    Absent = automatable, or not catalogued (allowed, as everywhere). {} on a marketplace
+    that puts no limit on it."""
+    from campaign_manager.marketplaces import automation_refusal
+
+    cat = _catalog(platform)
+    ids = [int(c) for c in campaign_ids or [] if c is not None]
+    if cat.type_cols is None or not ids:
+        return {}
+    model = cat.campaigns
+    type_col, bidding_col = cat.type_cols
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(model.campaign_id, getattr(model, type_col), getattr(model, bidding_col))
+            .where(model.tenant_id == tenant_id, model.campaign_id.in_(ids))
+        )).all()
+        known = {cid for cid, _t, _b in rows}
+        extra = await _fallback_types(db, cat, tenant_id, [c for c in ids if c not in known])
+    out = {}
+    for cid, ctype, bidding in list(rows) + [(c, t, None) for c, t in extra.items()]:
+        why = automation_refusal(platform, ctype, bidding)
+        if why:
+            out[cid] = why
+    return out
+
+
+async def _fallback_types(db, cat: _Catalog, tenant_id, campaign_ids) -> dict[int, str]:
+    """`{campaign_id: campaign_type}` from the catalogue's fallback source, for campaigns the
+    catalogue does not hold (Zepto's Display campaigns — see `_Catalog.type_fallback`)."""
+    if cat.type_fallback is None or not campaign_ids:
+        return {}
+    model, col = cat.type_fallback
+    rows = (await db.execute(
+        select(model.campaign_id, getattr(model, col))
+        .where(model.tenant_id == tenant_id, model.campaign_id.in_(list(campaign_ids)),
+               getattr(model, col).is_not(None))
+        .distinct()
+    )).all()
+    return {cid: ctype for cid, ctype in rows}
 
 
 async def require_automatable(tenant_id: uuid.UUID, platform: str, campaign_id: int) -> None:
@@ -1426,6 +1494,11 @@ async def require_automatable(tenant_id: uuid.UUID, platform: str, campaign_id: 
                 model.campaign_id == campaign_id,
             ).limit(1)
         )).first()
+        if row is None:
+            # Not in the catalogue — but a Zepto Display campaign never is. Its type from
+            # the daily metrics table still refuses it; only a truly unseen id is allowed.
+            ctype = (await _fallback_types(db, cat, tenant_id, [campaign_id])).get(campaign_id)
+            row = (ctype, None) if ctype else None
     if row is None:
         return
     refused = automation_refusal(platform, row[0], row[1])
@@ -1434,7 +1507,7 @@ async def require_automatable(tenant_id: uuid.UUID, platform: str, campaign_id: 
                              "Nothing was created.")
 
 
-async def catalog_cutoff(tenant_id: uuid.UUID, platform: str = "blinkit"):
+async def catalog_cutoff(tenant_id: uuid.UUID, platform: str):
     """`scraped_at` a campaign must reach to count as part of the CURRENT account (ZC-B8).
 
     Every catalogue write upserts what the marketplace returned, so a campaign that stops
@@ -1487,7 +1560,7 @@ async def campaign_marketplaces(tenant_id: uuid.UUID, campaign_id: int) -> set[s
 
 
 async def campaign_name(tenant_id: uuid.UUID, campaign_id: int,
-                        platform: str = "blinkit") -> str | None:
+                        platform: str) -> str | None:
     """A campaign's name from the catalogue, for a History row whose writer never read it.
 
     `set_budget` reads only the budget, so its rows went into `cm_run_log` nameless and the
@@ -1509,7 +1582,7 @@ async def campaign_name(tenant_id: uuid.UUID, campaign_id: int,
         return None
 
 
-async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str = "blinkit"):
+async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str):
     """What the bid-rule form needs to know about a campaign, from the DAILY SCRAPE (V7.4).
 
     Returns (campaign_row, keyword_rows) or (None, []) when the campaign has never been
@@ -1545,8 +1618,9 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str 
 
 
 async def get_keyword_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
-                            match_type: str = "EXACT", platform: str = "blinkit") -> int | None:
-    """Blinkit's published minimum bid for one keyword, or None when we have not scraped it.
+                            match_type: str = "EXACT", *, platform: str) -> int | None:
+    """The marketplace's published minimum bid for one keyword, or None when we have not
+    scraped it. `platform` is keyword-only and required — there is no default marketplace.
 
     None means "no opinion", never "no floor": a keyword the campaign does not carry yet has
     no scraped row, and refusing to save a rule for it would block the exact case someone
@@ -1751,7 +1825,7 @@ async def last_run_log_at(tenant_id, platform: str, *, kind: str):
 NO_CHANGE_ACTIONS = ("hold", "no-op")
 
 
-async def list_run_log(tenant_id: uuid.UUID, platform: str = "blinkit", *,
+async def list_run_log(tenant_id: uuid.UUID, platform: str, *,
                        kind: str | None = None, limit: int = 50, offset: int = 0,
                        campaign_id: int | None = None, rule_id: str | None = None,
                        run_id: str | None = None, include_unchanged: bool = False,
@@ -1886,7 +1960,7 @@ async def write_bid_runtime(rows: list[dict]) -> None:
 
 
 async def upsert_campaign_catalog(tenant_id: uuid.UUID, campaigns: list[dict],
-                                  platform: str = "blinkit") -> int:
+                                  platform: str) -> int:
     """Refresh the campaign catalogue from a live account listing. Returns rows written.
 
     This is the one place the campaign manager writes OUTSIDE its own cm_* tables: the

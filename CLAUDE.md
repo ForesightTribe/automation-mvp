@@ -415,7 +415,12 @@ python -m cli auth probe   blinkit -t <uuid>                  # is the session A
 python -m cli auth refresh blinkit -t <uuid>                  # extend, no email
 python -m cli auth refresh-all -t <uuid>                      # what the auth.refresh job runs
 python -m cli auth reset   blinkit -t <uuid>                  # clear the circuit breaker
-python -m cli auth status  --tenant <uuid>
+python -m cli auth status  --tenant <uuid>                    # + "logins 24h" (Zepto logins evict the client)
+
+# Campaign manager — -m blinkit|zepto is REQUIRED everywhere; there is no default marketplace
+# (CLI flag, API path /campaign-manager/<mp>/…, cm.* job param — a job without it fails). See docs/CLI.md.
+python -m cli cm rules list -t <uuid> -m blinkit
+python -m cli cm reconcile -t <uuid> -m zepto [--live]
 
 python -m cli scrape blinkit --tenant <uuid>
 python -m cli scrape blinkit-seller --tenant <uuid> [--sales] [--po] [--soh]

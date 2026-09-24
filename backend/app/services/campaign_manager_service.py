@@ -21,9 +21,13 @@ from app.utils.time import now_ist
 # `window` is the same pure module the engines decide with, so the status the UI shows is
 # the logic the engines act on — and it pulls in no Playwright (the app-layer rule holds).
 from campaign_manager import repo, window
+from campaign_manager.marketplaces import match_types, min_daily_budget
 from jobs.queue import enqueue
 
-PLATFORM = "blinkit"
+# ⚠️ There is deliberately NO default marketplace (ZC-D1, Deepansh 2026-09-24: "only the
+# intended MP performs ops"). Every function below takes `marketplace` from the caller —
+# the route reads it from the URL — and never falls back to Blinkit. This used to be a
+# module constant `PLATFORM = "blinkit"`, which made every automation a Blinkit one.
 
 
 class EditError(ValueError):
@@ -44,46 +48,109 @@ class StateError(ValueError):
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
-async def _reconcile(session, tenant_id: uuid.UUID) -> None:
-    """Enqueue a live reconcile so the VM rewrites this tenant's job_schedules. A queued
-    reconcile already covers later edits (it reads current rules at run time)."""
+async def _enqueue(session, marketplace: str, **kw):
+    """Every job this API queues NAMES its marketplace. The job builders no longer fill one
+    in (they used to default to Blinkit), so a job without it fails instead of running on
+    the wrong account."""
+    params = {**(kw.pop("params", None) or {}), "marketplace": marketplace}
+    return await enqueue(session, params=params, **kw)
+
+
+async def _reconcile(session, tenant_id: uuid.UUID, marketplace: str) -> None:
+    """Enqueue a live reconcile so the VM rewrites this tenant's job_schedules for THIS
+    marketplace. A queued reconcile already covers later edits (it reads current rules at
+    run time); the queue's duplicate guard is per marketplace, so a Blinkit and a Zepto
+    reconcile never swallow each other."""
     from jobs.queue import DuplicateActiveJob
     try:
-        await enqueue(session, job_type="cm.reconcile", tenant_id=tenant_id, params={"live": "true"})
+        await _enqueue(session, marketplace, job_type="cm.reconcile", tenant_id=tenant_id,
+                       params={"live": "true"})
     except DuplicateActiveJob:
         pass
 
 
-async def _require_marketplace(tenant_id: uuid.UUID, campaign_id: int) -> None:
+async def _require_marketplace(tenant_id: uuid.UUID, campaign_id: int,
+                               marketplace: str) -> None:
     """Refuse a campaign that only another marketplace's catalogue knows.
 
     Every path that takes a campaign id from the caller and turns it into an automation or
     a job goes through this. Without it, a Zepto campaign picked from the merged
-    `/ads/campaigns` list was saved as a `PLATFORM` automation and its id sent to that
-    marketplace's ad account.
+    `/ads/campaigns` list was saved as a Blinkit automation and its id sent to Blinkit's
+    ad account.
 
     A campaign no catalogue has seen is allowed — one created since the last scrape is a
     normal state, and refusing it would make it unautomatable until tomorrow.
     """
     found = await repo.campaign_marketplaces(tenant_id, campaign_id)
-    if found and PLATFORM not in found:
+    if found and marketplace not in found:
         other = ", ".join(sorted(p.title() for p in found))
         raise WrongMarketplace(
-            f"Campaign {campaign_id} is a {other} campaign. Automations here run on "
-            f"{PLATFORM.title()} only, so nothing was created.")
+            f"Campaign {campaign_id} is a {other} campaign, not a {marketplace.title()} one, "
+            f"so nothing was done. Use the {other} address for it.")
 
 
-async def _reapply(session, tenant_id: uuid.UUID, job_type: str) -> None:
-    """After an edit, land the change on Blinkit NOW (not at the next scheduled fire) by
-    enqueuing an engine run. Only when armed — a dry run writes nothing, so there'd be
-    nothing to apply immediately."""
-    if not await repo.get_armed(tenant_id, PLATFORM):
+async def _reapply(session, tenant_id: uuid.UUID, marketplace: str, job_type: str) -> None:
+    """After an edit, land the change on the marketplace NOW (not at the next scheduled
+    fire) by enqueuing an engine run. Only when armed — a dry run writes nothing, so there'd
+    be nothing to apply immediately."""
+    if not await repo.get_armed(tenant_id, marketplace):
         return
     from jobs.queue import DuplicateActiveJob
     try:
-        await enqueue(session, job_type=job_type, tenant_id=tenant_id, params={"live": "true"})
+        await _enqueue(session, marketplace, job_type=job_type, tenant_id=tenant_id,
+                       params={"live": "true"})
     except DuplicateActiveJob:
         pass
+
+
+# ── Ownership: an id in the URL must belong to the tenant AND the URL's marketplace ──
+#
+# Rule and schedule ids are global, so `…/zepto/bid-rules/<id of a Blinkit rule>` used to
+# find the row and act on it. These return None (→ 404) unless both match, which is what
+# makes the marketplace in the address binding rather than decorative.
+
+async def _schedule_of(tenant_id: uuid.UUID, marketplace: str, schedule_id: int):
+    s = await repo.get_budget_schedule(schedule_id)
+    if not s or s.tenant_id != tenant_id or s.platform != marketplace:
+        return None
+    return s
+
+
+async def _bid_rule_of(tenant_id: uuid.UUID, marketplace: str, rule_id: str):
+    r = await repo.get_bid_rule(rule_id)
+    if not r or r.tenant_id != tenant_id or r.platform != marketplace:
+        return None
+    return r
+
+
+async def _budget_rule_of(tenant_id: uuid.UUID, marketplace: str, rule_id: int):
+    """(rule, its schedule), or None — a budget rule's marketplace is its schedule's."""
+    r = await repo.get_budget_rule(rule_id)
+    if not r:
+        return None
+    s = await _schedule_of(tenant_id, marketplace, r.schedule_id)
+    return (r, s) if s else None
+
+
+def _check_budget(marketplace: str, *amounts) -> None:
+    """Refuse a budget below the marketplace's PUBLISHED minimum at save (ZC-D8), rather
+    than letting every write be refused later. Blinkit publishes none (its dashboard derives
+    one in the browser), so it is never checked here — the marketplace stays the judge."""
+    floor = min_daily_budget(marketplace)
+    if floor is None:
+        return
+    for amount in amounts:
+        if amount is not None and float(amount) < floor:
+            raise EditError(f"{marketplace.title()}'s minimum daily budget is ₹{floor:g} — "
+                            f"₹{float(amount):g} would be refused. Set ₹{floor:g} or more.")
+
+
+def _check_match_type(marketplace: str, match_type: str | None) -> None:
+    """Only the match types this marketplace bids on (ZC-D8): PHRASE exists on Zepto only."""
+    allowed = match_types(marketplace)
+    if match_type is not None and allowed and (match_type or "").upper() not in allowed:
+        raise EditError(f"{marketplace.title()} bids on {', '.join(allowed)} keywords — "
+                        f"not {match_type!r}.")
 
 
 # ── Status (computed, so the UI shows Running / Scheduled / Ended, not raw state) ──
@@ -136,85 +203,90 @@ def _bid_out(r, now=None, city_name=None) -> BidRuleOut:
 
 async def _bid_out_async(r, now=None) -> BidRuleOut:
     """`_bid_out` for the single-rule paths, which have no batch to resolve cities with.
-    Lists must NOT use this — see `list_bid_rules`, which resolves the whole page at once."""
-    names = await repo.city_names_for(PLATFORM, [r])
+    Lists must NOT use this — see `list_bid_rules`, which resolves the whole page at once.
+    Resolved in the RULE's own marketplace, which the ownership checks have already made
+    the URL's."""
+    names = await repo.city_names_for(r.platform, [r])
     return _bid_out(r, now, names.get(r.id))
 
 
 # ── Budget schedules + rules ────────────────────────────────────────────────
 
-async def list_budget_schedules(tenant_id: uuid.UUID) -> list[BudgetScheduleOut]:
+async def list_budget_schedules(tenant_id: uuid.UUID, marketplace: str) -> list[BudgetScheduleOut]:
     # The UI lists every automation — stopped and ended included.
-    pairs = await repo.get_budget_schedules(tenant_id, PLATFORM, state=repo.ANY_STATE,
+    pairs = await repo.get_budget_schedules(tenant_id, marketplace, state=repo.ANY_STATE,
                                             calendar=repo.ANY_CALENDAR)
     return [_schedule_out(s, rules) for s, rules in pairs]
 
 
-async def create_budget_schedule(session, tenant_id: uuid.UUID, body: BudgetScheduleIn) -> BudgetScheduleOut:
-    await _require_marketplace(tenant_id, body.campaign_id)
+async def create_budget_schedule(session, tenant_id: uuid.UUID, marketplace: str,
+                                 body: BudgetScheduleIn) -> BudgetScheduleOut:
+    await _require_marketplace(tenant_id, body.campaign_id, marketplace)
+    _check_budget(marketplace, body.default_budget, body.rule.budget if body.rule else None)
     try:
         s = await repo.create_budget_schedule(
-            tenant_id, PLATFORM, body.campaign_id,
+            tenant_id, marketplace, body.campaign_id,
             body.campaign_name or f"campaign {body.campaign_id}", body.default_budget, body.name,
             stop_after_window=body.stop_after_window,
         )
     except repo.NotAutomatable as e:
         raise EditError(str(e)) from e
     rules = [await repo.add_budget_rule(s.id, **body.rule.model_dump())] if body.rule else []
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return _schedule_out(s, rules)
 
 
-async def delete_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int) -> bool:
-    s = await repo.get_budget_schedule(schedule_id)
-    if not s or s.tenant_id != tenant_id:
+async def delete_budget_schedule(session, tenant_id: uuid.UUID, marketplace: str,
+                                 schedule_id: int) -> bool:
+    if not await _schedule_of(tenant_id, marketplace, schedule_id):
         return False
     await repo.delete_budget_schedule(schedule_id)
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return True
 
 
-async def add_budget_rule(session, tenant_id: uuid.UUID, schedule_id: int,
+async def add_budget_rule(session, tenant_id: uuid.UUID, marketplace: str, schedule_id: int,
                           body: BudgetRuleIn) -> BudgetRuleOut | None:
-    s = await repo.get_budget_schedule(schedule_id)
-    if not s or s.tenant_id != tenant_id:
+    if not await _schedule_of(tenant_id, marketplace, schedule_id):
         return None
+    _check_budget(marketplace, body.budget)
     r = await repo.add_budget_rule(schedule_id, **body.model_dump())
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return BudgetRuleOut.model_validate(r)
 
 
-async def _fresh_schedule(tenant_id: uuid.UUID, schedule_id: int) -> BudgetScheduleOut | None:
+async def _fresh_schedule(tenant_id: uuid.UUID, marketplace: str,
+                          schedule_id: int) -> BudgetScheduleOut | None:
     now = now_ist()
-    for s, rules in await repo.get_budget_schedules(tenant_id, PLATFORM, state=repo.ANY_STATE,
+    for s, rules in await repo.get_budget_schedules(tenant_id, marketplace, state=repo.ANY_STATE,
                                                     calendar=repo.ANY_CALENDAR):
         if s.id == schedule_id:
             return _schedule_out(s, rules, now)
     return None
 
 
-async def update_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int,
+async def update_budget_schedule(session, tenant_id: uuid.UUID, marketplace: str,
+                                 schedule_id: int,
                                  body: BudgetScheduleUpdate) -> BudgetScheduleOut | None:
-    s = await repo.get_budget_schedule(schedule_id)
-    if not s or s.tenant_id != tenant_id:
+    if not await _schedule_of(tenant_id, marketplace, schedule_id):
         return None
     fields = body.model_dump(exclude_unset=True)
+    _check_budget(marketplace, fields.get("default_budget"))
     if fields:
         await repo.update_budget_schedule(schedule_id, fields)
-    await _reconcile(session, tenant_id)
-    await _reapply(session, tenant_id, "cm.budget_scheduler")     # new default/amount applies now
-    return await _fresh_schedule(tenant_id, schedule_id)
+    await _reconcile(session, tenant_id, marketplace)
+    await _reapply(session, tenant_id, marketplace, "cm.budget_scheduler")  # applies now
+    return await _fresh_schedule(tenant_id, marketplace, schedule_id)
 
 
-async def update_budget_rule(session, tenant_id: uuid.UUID, rule_id: int,
+async def update_budget_rule(session, tenant_id: uuid.UUID, marketplace: str, rule_id: int,
                              body: BudgetRuleUpdate) -> BudgetScheduleOut | None:
-    r = await repo.get_budget_rule(rule_id)
-    if not r:
+    owned = await _budget_rule_of(tenant_id, marketplace, rule_id)
+    if not owned:
         return None
-    s = await repo.get_budget_schedule(r.schedule_id)
-    if not s or s.tenant_id != tenant_id:
-        return None
+    r, s = owned
     fields = body.model_dump(exclude_unset=True)
+    _check_budget(marketplace, fields.get("budget"))
     # The DATE, deliberately — not whether the window has closed. Rescheduling a spent
     # one-time rule to later the SAME day is the most natural correction to make, and a
     # window-closed check would refuse it.
@@ -225,30 +297,34 @@ async def update_budget_rule(session, tenant_id: uuid.UUID, rule_id: int,
         raise EditError("This automation has already ended — move its dates forward to run it again.")
     if fields:
         await repo.update_budget_rule(rule_id, fields)
-    await _reconcile(session, tenant_id)
-    await _reapply(session, tenant_id, "cm.budget_scheduler")
-    return await _fresh_schedule(tenant_id, s.id)
+    await _reconcile(session, tenant_id, marketplace)
+    await _reapply(session, tenant_id, marketplace, "cm.budget_scheduler")
+    return await _fresh_schedule(tenant_id, marketplace, s.id)
 
 
-async def delete_budget_rule(session, tenant_id: uuid.UUID, rule_id: int) -> bool:
-    r = await repo.get_budget_rule(rule_id)
-    if r:
-        s = await repo.get_budget_schedule(r.schedule_id)
-        if not s or s.tenant_id != tenant_id:
-            return False
+async def delete_budget_rule(session, tenant_id: uuid.UUID, marketplace: str,
+                             rule_id: int) -> bool:
+    """Idempotent, as it always was: an id that no longer exists answers True (a double-click
+    must not error). One that exists but belongs to another tenant or marketplace → False
+    (404) — the marketplace in the URL is binding."""
+    if await repo.get_budget_rule(rule_id) is None:
+        return True
+    if not await _budget_rule_of(tenant_id, marketplace, rule_id):
+        return False
     await repo.delete_budget_rule(rule_id)
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return True
 
 
-async def reset_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int) -> uuid.UUID | None:
+async def reset_budget_schedule(session, tenant_id: uuid.UUID, marketplace: str,
+                                schedule_id: int) -> uuid.UUID | None:
     """D19 Budget Reset: stop + set the campaign back to its default budget. Returns the
     reset job's id, or None if the schedule isn't the caller's."""
-    s = await repo.get_budget_schedule(schedule_id)
-    if not s or s.tenant_id != tenant_id:
+    s = await _schedule_of(tenant_id, marketplace, schedule_id)
+    if not s:
         return None
     await repo.set_budget_state(schedule_id, "stopped")
-    armed = await repo.get_armed(tenant_id, PLATFORM)      # cutover: write live when armed
+    armed = await repo.get_armed(tenant_id, marketplace)   # cutover: write live when armed
 
     # AD10 — on a stop-after-window schedule, Reset must also bring the campaign BACK.
     # We may have stopped it at the last window end, and "undo the automation" that
@@ -260,27 +336,28 @@ async def reset_budget_schedule(session, tenant_id: uuid.UUID, schedule_id: int)
                   "budget": str(s.default_budget)}
         if armed:
             params["live"] = "true"
-        job = await enqueue(session, job_type="cm.set_activation",
-                            tenant_id=tenant_id, params=params)
+        job = await _enqueue(session, marketplace, job_type="cm.set_activation",
+                             tenant_id=tenant_id, params=params)
     else:
         params = {"campaign": str(s.campaign_id), "budget": str(s.default_budget)}
         if armed:
             params["live"] = "true"
-        job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
-    await _reconcile(session, tenant_id)
+        job = await _enqueue(session, marketplace, job_type="cm.set_budget",
+                             tenant_id=tenant_id, params=params)
+    await _reconcile(session, tenant_id, marketplace)
     return job.id
 
 
 # ── Bid rules + D19 lifecycle ───────────────────────────────────────────────
 
-async def list_bid_rules(tenant_id: uuid.UUID) -> list[BidRuleOut]:
+async def list_bid_rules(tenant_id: uuid.UUID, marketplace: str) -> list[BidRuleOut]:
     now = now_ist()
     # The UI lists every automation — paused and ended included.
-    pairs = await repo.get_bid_rules(tenant_id, PLATFORM, state=repo.ANY_STATE,
+    pairs = await repo.get_bid_rules(tenant_id, marketplace, state=repo.ANY_STATE,
                                      calendar=repo.ANY_CALENDAR)
     rules = [r for r, _rt in pairs]
     # One resolve for the whole page — a per-row lookup would be a session per rule.
-    names = await repo.city_names_for(PLATFORM, rules)
+    names = await repo.city_names_for(marketplace, rules)
     return [_bid_out(r, now, names.get(r.id)) for r in rules]
 
 
@@ -295,7 +372,8 @@ def _sorted(cities: list[TargetedCity]) -> list[TargetedCity]:
     return sorted(cities, key=lambda c: (c.lat is None, c.name.lower()))
 
 
-async def _measurement_cities(tenant_id: uuid.UUID, campaign) -> list[TargetedCity]:
+async def _measurement_cities(tenant_id: uuid.UUID, campaign,
+                              marketplace: str) -> list[TargetedCity]:
     """Where a bid rule for this campaign may measure position — ONE list, always populated.
 
     Two branches, one shape, because the form should render a picker rather than choose
@@ -311,23 +389,28 @@ async def _measurement_cities(tenant_id: uuid.UUID, campaign) -> list[TargetedCi
       is narrow — and `region_type` stays None so the form can word that differently.
 
     Names come back canonical (`cities.name`) wherever they resolve, which is what stops the
-    picker mixing Blinkit's spelling with our catalog's.
+    picker mixing a marketplace's spelling with our catalog's (Zepto's `Mysuru` → `Mysore`).
+
+    Which rows mean "chosen cities" differs per marketplace; `repo.targeted_cities` reads
+    either (Blinkit `region_type=CITY`, Zepto `city_targeting=MANUAL`, excluded cities out).
+    ⚠️ A Zepto campaign on ALL cities means the BRAND's cities (9 for Brik Oven), which the
+    catalogue does not store — so it is offered every measurable city, like PAN_INDIA.
     """
-    targeted = (campaign.cities or []) if campaign and campaign.region_type == "CITY" else None
+    targeted = repo.targeted_cities(campaign, marketplace)
 
     if targeted is None:
-        catalog = await repo.measurable_cities(PLATFORM, tenant_id=tenant_id)
+        catalog = await repo.measurable_cities(marketplace, tenant_id=tenant_id)
         return _sorted([
             TargetedCity(id=key if isinstance(key, int) else None, name=name, state=state,
                          location_name=store.label, lat=store.lat, lon=store.lon)
             for key, (name, state, store) in catalog.items()
         ])
 
-    named = [(c.get("id"), c["name"]) for c in targeted
-             if isinstance(c, dict) and c.get("name")]
-    resolved = await repo.resolve_city_ids(PLATFORM, [n for _rid, n in named])
+    # Zepto's region ids are UUID strings, not ints — only an int is a usable render key.
+    named = [(c["id"] if isinstance(c.get("id"), int) else None, c["name"]) for c in targeted]
+    resolved = await repo.resolve_city_ids(marketplace, [n for _rid, n in named])
     catalog = await repo.measurable_cities(
-        PLATFORM, tenant_id=tenant_id, city_ids=set(resolved.values()))
+        marketplace, tenant_id=tenant_id, city_ids=set(resolved.values()))
 
     cities: list[TargetedCity] = []
     for region_id, name in named:
@@ -339,7 +422,7 @@ async def _measurement_cities(tenant_id: uuid.UUID, campaign) -> list[TargetedCi
             # `cities` row yet. Normally this loop runs zero times (the canonical registry
             # covers the catalog); it exists so seeding lag cannot make a city we can
             # genuinely measure in look unmeasurable.
-            store = await repo.resolve_store(PLATFORM, city=name, tenant_id=tenant_id)
+            store = await repo.resolve_store(marketplace, city=name, tenant_id=tenant_id)
             cities.append(TargetedCity(
                 id=city_id or region_id, name=name.title(),
                 location_name=store.label if store else None,
@@ -352,7 +435,8 @@ async def _measurement_cities(tenant_id: uuid.UUID, campaign) -> list[TargetedCi
     return _sorted(cities)
 
 
-async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextOut:
+async def get_bid_context(tenant_id: uuid.UUID, marketplace: str,
+                          campaign_id: int) -> BidContextOut:
     """Everything the bid-rule form needs about one campaign (V7.4) — DB only, no Blinkit.
 
     An unscraped campaign returns `scraped_at=None` and no bid prefill rather than a 404 —
@@ -360,10 +444,13 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextO
     it unautomatable for a day. It still gets a full city list: not knowing a campaign's
     targeting is a reason to offer every measurable city, not to offer none.
     """
-    campaign, keywords = await repo.get_bid_context(tenant_id, campaign_id, PLATFORM)
-    cities = await _measurement_cities(tenant_id, campaign)
+    campaign, keywords = await repo.get_bid_context(tenant_id, campaign_id, marketplace)
+    cities = await _measurement_cities(tenant_id, campaign, marketplace)
+    unit = _BID_UNIT[marketplace]
     if campaign is None:
-        return BidContextOut(campaign_id=campaign_id, cities=cities)
+        return BidContextOut(campaign_id=campaign_id, cities=cities, unit=unit)
+    if marketplace == "zepto":
+        return _zepto_bid_context(campaign_id, campaign, keywords, cities)
 
     return BidContextOut(
         campaign_id=campaign_id,
@@ -375,12 +462,42 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int) -> BidContextO
         daily_budget=campaign.daily_budget,
         pacing_type=campaign.pacing_type,
         billed_amount=campaign.billed_amount,
+        unit=unit,
     )
 
 
-async def _check_bid_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
-                           match_type: str, min_bid: int | None) -> None:
-    """Refuse a rule whose `min_bid` sits below the floor Blinkit publishes (V7.5).
+# What a bid on each marketplace buys (ZC-D4): Blinkit prices per 1,000 impressions, Zepto
+# per click. The same number means very different money, so the form must say which.
+_BID_UNIT = {"blinkit": "CPM", "zepto": "CPC"}
+
+
+def _zepto_bid_context(campaign_id: int, campaign, keywords, cities) -> BidContextOut:
+    """Zepto's catalogue rows in the form's shape (ZC-D4).
+
+    Zepto's columns differ from Blinkit's (`campaign_type`, `city_targeting`, `bid_value`,
+    `is_negative`) and it has no pacing/billing fields. NEGATIVE keywords are left out —
+    they are exclusions, never bid targets, and offering one would let a rule try to bid on
+    it (the adapter refuses that at write time anyway). `current_cpm` carries Zepto's bid
+    under the contract's old name; `unit` says it is per click.
+    """
+    return BidContextOut(
+        campaign_id=campaign_id,
+        campaign_type=campaign.campaign_type,
+        scraped_at=campaign.scraped_at,
+        # Zepto spells it MANUAL / ALL; the form's copy reads CITY / everywhere.
+        region_type="CITY" if (campaign.city_targeting or "").upper() == "MANUAL" else "ALL",
+        cities=cities,
+        keywords=[KeywordBidRange(keyword=k.keyword, match_type=k.match_type,
+                                  current_cpm=k.bid_value, min_bid=k.min_bid)
+                  for k in keywords if not k.is_negative],
+        daily_budget=campaign.daily_budget,
+        unit="CPC",
+    )
+
+
+async def _check_bid_floor(tenant_id: uuid.UUID, marketplace: str, campaign_id: int,
+                           keyword: str, match_type: str, min_bid: int | None) -> None:
+    """Refuse a rule whose `min_bid` sits below the floor the marketplace publishes (V7.5).
 
     This is the SAVE-time check and it reads the last scrape, so it is a convenience, not
     the authority — the engine re-checks live at write time, where the number cannot be
@@ -391,23 +508,26 @@ async def _check_bid_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
     """
     if min_bid is None:
         return
-    floor = await repo.get_keyword_floor(tenant_id, campaign_id, keyword, match_type, PLATFORM)
+    floor = await repo.get_keyword_floor(tenant_id, campaign_id, keyword, match_type,
+                                         platform=marketplace)
     if floor is not None and min_bid < floor:
         raise EditError(
-            f"Blinkit's minimum bid for “{keyword}” is ₹{floor} — a min bid of ₹{min_bid} "
-            f"would be raised to ₹{floor} on the first write. Set ₹{floor} or more."
+            f"{marketplace.title()}'s minimum bid for “{keyword}” is ₹{floor} — a min bid of "
+            f"₹{min_bid} would be raised to ₹{floor} on the first write. Set ₹{floor} or more."
         )
 
 
-async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> BidRuleOut:
+async def create_bid_rule(session, tenant_id: uuid.UUID, marketplace: str,
+                          body: BidRuleIn) -> BidRuleOut:
     d = body.model_dump()
-    await _require_marketplace(tenant_id, body.campaign_id)
-    await _check_bid_floor(tenant_id, body.campaign_id, body.keyword,
+    await _require_marketplace(tenant_id, body.campaign_id, marketplace)
+    _check_match_type(marketplace, body.match_type)
+    await _check_bid_floor(tenant_id, marketplace, body.campaign_id, body.keyword,
                            body.match_type, body.min_bid)
     # Resolve the measurement store from a city / store id when lat/lon weren't given.
     city, location_id = d.pop("city", None), d.pop("location_id", None)
     if (d.get("lat") is None or d.get("lon") is None) and (city or location_id):
-        store = await repo.resolve_store(PLATFORM, city=city, location_id=location_id,
+        store = await repo.resolve_store(marketplace, city=city, location_id=location_id,
                                          tenant_id=tenant_id)
         if store:
             d["lat"], d["lon"] = store.lat, store.lon
@@ -417,22 +537,23 @@ async def create_bid_rule(session, tenant_id: uuid.UUID, body: BidRuleIn) -> Bid
             d["city_id"] = None if location_id else store.city_id
     try:
         r = await repo.create_bid_rule(
-            tenant_id, PLATFORM, d.pop("campaign_id"),
+            tenant_id, marketplace, d.pop("campaign_id"),
             d.pop("campaign_name") or f"campaign {body.campaign_id}",
             d.pop("keyword"), d.pop("target_position"), d.pop("min_bid"), d.pop("max_bid"), **d,
         )
     except repo.NotAutomatable as e:
         raise EditError(str(e)) from e
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return await _bid_out_async(r)
 
 
-async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
+async def update_bid_rule(session, tenant_id: uuid.UUID, marketplace: str, rule_id: str,
                           body: BidRuleUpdate) -> BidRuleOut | None:
-    r = await repo.get_bid_rule(rule_id)
-    if not r or r.tenant_id != tenant_id:
+    r = await _bid_rule_of(tenant_id, marketplace, rule_id)
+    if not r:
         return None
     fields = body.model_dump(exclude_unset=True)
+    _check_match_type(marketplace, fields.get("match_type"))
     # Reject editing a spent one-time rule unless the edit moves its date into the future.
     # The DATE on purpose — see the note in update_budget_rule.
     if window.date_passed(window.Window(type=fields.get("type", r.type),
@@ -442,14 +563,14 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
         raise EditError("This automation has already ended — move its dates forward to run it again.")
     # The floor applies to whatever the rule will BE after the edit, not to what was
     # sent — changing the keyword alone can drop an unchanged min_bid below its new floor.
-    await _check_bid_floor(tenant_id, r.campaign_id,
+    await _check_bid_floor(tenant_id, marketplace, r.campaign_id,
                            fields.get("keyword", r.keyword),
                            fields.get("match_type", r.match_type),
                            fields.get("min_bid", r.min_bid))
     # `city`/`location_id` re-resolve the measurement store (same as create).
     city, location_id = fields.pop("city", None), fields.pop("location_id", None)
     if city or location_id:
-        store = await repo.resolve_store(PLATFORM, city=city, location_id=location_id,
+        store = await repo.resolve_store(marketplace, city=city, location_id=location_id,
                                          tenant_id=tenant_id)
         if store:
             fields["lat"], fields["lon"] = store.lat, store.lon
@@ -460,14 +581,14 @@ async def update_bid_rule(session, tenant_id: uuid.UUID, rule_id: str,
             await repo.update_bid_rule(rule_id, fields)
         except repo.NotAutomatable as e:
             raise EditError(str(e)) from e
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     r = await repo.get_bid_rule(rule_id)
     if window.in_window(window.from_bid(r), now_ist()):   # editing a live window → apply now
-        await _reapply(session, tenant_id, "cm.bid_optimizer")
+        await _reapply(session, tenant_id, marketplace, "cm.bid_optimizer")
     return await _bid_out_async(r)
 
 
-async def delete_bid_rule(session, tenant_id: uuid.UUID, rule_id: str, *,
+async def delete_bid_rule(session, tenant_id: uuid.UUID, marketplace: str, rule_id: str, *,
                           reset: bool = False) -> bool:
     """Delete an automation, optionally putting its bid back to the floor first.
 
@@ -476,13 +597,13 @@ async def delete_bid_rule(session, tenant_id: uuid.UUID, rule_id: str, *,
     automation left to bring it down. The job itself carries plain values, so it does not
     care that the rule is gone by the time it runs.
     """
-    r = await repo.get_bid_rule(rule_id)
-    if not r or r.tenant_id != tenant_id:
+    r = await _bid_rule_of(tenant_id, marketplace, rule_id)
+    if not r:
         return False
     if reset:
         await _enqueue_bid_reset(session, tenant_id, r)
     await repo.delete_bid_rule(rule_id)
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return True
 
 
@@ -500,7 +621,8 @@ def _bid_ended(r) -> bool:
     return window.is_expired(window.from_bid(r), now_ist())
 
 
-async def pause_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
+async def pause_bid_rule(session, tenant_id: uuid.UUID, marketplace: str,
+                         rule_id: str) -> BidRuleOut | None:
     """Freeze the automation: no optimizer ticks, no end-of-window reset, no writes at all.
 
     The bid is deliberately left where it is — pausing is not a decision about price. Use
@@ -510,19 +632,20 @@ async def pause_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRule
     and Resume needs it intact; everything stale is cleared then, when we know what we are
     resuming into.
     """
-    r = await repo.get_bid_rule(rule_id)
-    if not r or r.tenant_id != tenant_id:
+    r = await _bid_rule_of(tenant_id, marketplace, rule_id)
+    if not r:
         return None
     if r.state == "paused":
         raise StateError("This automation is already paused.")
     if _bid_ended(r):
         raise StateError("This automation has already ended, so there is nothing to pause.")
     r = await repo.set_bid_state(rule_id, "paused")
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     return await _bid_out_async(r)
 
 
-async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRuleOut | None:
+async def resume_bid_rule(session, tenant_id: uuid.UUID, marketplace: str,
+                          rule_id: str) -> BidRuleOut | None:
     """Un-freeze, and make the engine decide from CURRENT facts rather than pre-pause ones.
 
     Two things happen:
@@ -538,22 +661,25 @@ async def resume_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> BidRul
        end-of-window reset, so if the window has since closed the bid is still at whatever
        the optimizer climbed to. Resume enqueues that reset itself.
     """
-    r = await repo.get_bid_rule(rule_id)
-    if not r or r.tenant_id != tenant_id:
+    r = await _bid_rule_of(tenant_id, marketplace, rule_id)
+    if not r:
         return None
     if r.state == "active":
         raise StateError("This automation is already running.")
     if _bid_ended(r):
         raise StateError("This automation has already ended — change its dates to run it again.")
+    # If `set_bid_state` then refuses (a duplicate live rule, ZC-C9), the runtime has
+    # already been cleared — harmless: a paused rule's learned state is stale anyway.
     await repo.clear_bid_runtime(rule_id)
     r = await repo.set_bid_state(rule_id, "active")
-    await _reconcile(session, tenant_id)
+    await _reconcile(session, tenant_id, marketplace)
     if not window.in_window(window.from_bid(r), now_ist()):
         await _enqueue_bid_reset(session, tenant_id, r)
     return await _bid_out_async(r)
 
 
-async def reset_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> uuid.UUID | None:
+async def reset_bid_rule(session, tenant_id: uuid.UUID, marketplace: str,
+                         rule_id: str) -> uuid.UUID | None:
     """Put this automation's keyword back to its floor now. Returns the job id to poll.
 
     Refused only while the rule is RUNNING (active and inside its window) — there the next
@@ -562,8 +688,8 @@ async def reset_bid_rule(session, tenant_id: uuid.UUID, rule_id: str) -> uuid.UU
     ended: that last case is the one that matters, because a rule paused across its window
     end never got its de-escalation and Resume is not available to repair it.
     """
-    r = await repo.get_bid_rule(rule_id)
-    if not r or r.tenant_id != tenant_id:
+    r = await _bid_rule_of(tenant_id, marketplace, rule_id)
+    if not r:
         return None
     if r.state == "active" and window.in_window(window.from_bid(r), now_ist()):
         raise StateError(
@@ -581,20 +707,17 @@ async def _enqueue_bid_reset(session, tenant_id: uuid.UUID, rule) -> uuid.UUID:
     see the job registry.
     """
     from jobs.queue import DuplicateActiveJob
-    # The rule's OWN marketplace, not this service's `PLATFORM` default. The rest of the
-    # CM API is Blinkit-only, but `get_bid_rule` looks up by id and does not filter — so a
-    # Zepto rule reaching here would otherwise be enqueued as a Blinkit job (the argv
-    # builder defaults `marketplace` to blinkit) and armed against Blinkit's `live_armed`.
-    # That means a Zepto campaign id, sent to the wrong ad account, with real writes on.
-    marketplace = getattr(rule, "platform", None) or PLATFORM
-    params = {"marketplace": marketplace,
-              "campaign": str(rule.campaign_id), "keyword": rule.keyword,
+    # The rule's OWN marketplace — which every caller has already checked equals the URL's
+    # (`_bid_rule_of`). Never a fallback: a rule with no platform is a data error, and
+    # guessing Blinkit would send its campaign id to Blinkit's ad account with writes on.
+    marketplace = rule.platform
+    params = {"campaign": str(rule.campaign_id), "keyword": rule.keyword,
               "cpm": str(rule.min_bid), "match_type": rule.match_type or "EXACT"}
     if await repo.get_armed(tenant_id, marketplace):
         params["live"] = "true"
     try:
-        job = await enqueue(session, job_type="cm.set_bid", tenant_id=tenant_id,
-                            params=params, priority=10)
+        job = await _enqueue(session, marketplace, job_type="cm.set_bid",
+                             tenant_id=tenant_id, params=params, priority=10)
     except DuplicateActiveJob:
         # One bid reset per client at a time (`uq_jobs_active`). It is a single write and
         # takes about a minute, so saying "wait" beats silently dropping the second one.
@@ -605,16 +728,20 @@ async def _enqueue_bid_reset(session, tenant_id: uuid.UUID, rule) -> uuid.UUID:
 
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
-async def set_budget_now(session, tenant_id: uuid.UUID, campaign_id: int, budget: float) -> uuid.UUID:
-    await _require_marketplace(tenant_id, campaign_id)
+async def set_budget_now(session, tenant_id: uuid.UUID, marketplace: str, campaign_id: int,
+                         budget: float) -> uuid.UUID:
+    await _require_marketplace(tenant_id, campaign_id, marketplace)
+    _check_budget(marketplace, budget)
     params = {"campaign": str(campaign_id), "budget": str(budget)}
-    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
+    if await repo.get_armed(tenant_id, marketplace):  # cutover: write live when armed
         params["live"] = "true"
-    job = await enqueue(session, job_type="cm.set_budget", tenant_id=tenant_id, params=params)
+    job = await _enqueue(session, marketplace, job_type="cm.set_budget", tenant_id=tenant_id,
+                         params=params)
     return job.id
 
 
-async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, status: str,
+async def set_activation_now(session, tenant_id: uuid.UUID, marketplace: str,
+                             campaign_id: int, status: str,
                              budget: float | None = None) -> uuid.UUID:
     """Enqueue a start/stop of one campaign. Like set_budget_now, the API only queues —
     the VM opens the browser, reads the campaign's real state and runs the guardrails.
@@ -623,27 +750,30 @@ async def set_activation_now(session, tenant_id: uuid.UUID, campaign_id: int, st
     campaign's current budget from a fresh read, which is better than anything the API
     could guess from stale scraped data.
     """
-    await _require_marketplace(tenant_id, campaign_id)
+    await _require_marketplace(tenant_id, campaign_id, marketplace)
     params = {"campaign": str(campaign_id), "status": status}
     if status == "running" and budget is not None:
+        _check_budget(marketplace, budget)
         params["budget"] = str(budget)
-    if await repo.get_armed(tenant_id, PLATFORM):     # cutover: write live when armed
+    if await repo.get_armed(tenant_id, marketplace):  # cutover: write live when armed
         params["live"] = "true"
-    job = await enqueue(session, job_type="cm.set_activation", tenant_id=tenant_id, params=params)
+    job = await _enqueue(session, marketplace, job_type="cm.set_activation",
+                         tenant_id=tenant_id, params=params)
     return job.id
 
 
-async def refresh_campaigns(session, tenant_id: uuid.UUID) -> uuid.UUID:
+async def refresh_campaigns(session, tenant_id: uuid.UUID, marketplace: str) -> uuid.UUID:
     """Enqueue a catalogue refresh from the live account. No `live` param — it is a read,
     so it runs the same whether or not the tenant is armed."""
-    job = await enqueue(session, job_type="cm.sync_campaigns", tenant_id=tenant_id)
+    job = await _enqueue(session, marketplace, job_type="cm.sync_campaigns", tenant_id=tenant_id)
     return job.id
 
 
-async def run_engine(session, tenant_id: uuid.UUID, job_type: str) -> uuid.UUID:
+async def run_engine(session, tenant_id: uuid.UUID, marketplace: str,
+                     job_type: str) -> uuid.UUID:
     """Enqueue a run-now of cm.budget_scheduler / cm.bid_optimizer (dry). Raises
     DuplicateActiveJob if one is already active."""
-    job = await enqueue(session, job_type=job_type, tenant_id=tenant_id)
+    job = await _enqueue(session, marketplace, job_type=job_type, tenant_id=tenant_id)
     return job.id
 
 
@@ -656,7 +786,8 @@ _ACTIONS_LIMIT = 10
 _ACTIONS_WINDOW_HOURS = 6
 
 
-async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LIMIT):
+async def recent_actions(session, tenant_id: uuid.UUID, marketplace: str,
+                         limit: int = _ACTIONS_LIMIT):
     """This client's recent PERSON-TRIGGERED campaign jobs, newest first.
 
     Two conditions, and both are needed:
@@ -690,6 +821,8 @@ async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LI
             Job.job_type.in_(actionable),
             Job.schedule_id.is_(None),
             Job.created_at >= since,
+            # This marketplace's actions only (ZC-D6). `params` is JSON, not JSONB — `->>`.
+            Job.params.op("->>")("marketplace") == marketplace,
         ).order_by(Job.created_at.desc()).limit(limit)
     )).scalars().all()
 
@@ -710,9 +843,16 @@ async def recent_actions(session, tenant_id: uuid.UUID, limit: int = _ACTIONS_LI
 
 # ── Status + history ────────────────────────────────────────────────────────
 
-async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID) -> CmJobOut | None:
+async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID, *,
+                  marketplace: str | None) -> CmJobOut | None:
+    """A job's status. `marketplace` is the URL's when polled under one, and must then match
+    the job's; None only for the marketplace-free `/jobs/{id}` poll, which reads status and
+    changes nothing (Settings uses it for jobs that belong to no marketplace). Keyword-only
+    with no default, so a caller has to say which it is."""
     job = await session.get(Job, job_id)
     if not job or job.tenant_id != tenant_id or not job.job_type.startswith("cm."):
+        return None
+    if marketplace is not None and (job.params or {}).get("marketplace") != marketplace:
         return None
     out = CmJobOut.model_validate(job)
     # Lifted out of `params` so callers never have to know where it is stored. It is a
@@ -723,7 +863,8 @@ async def get_job(session, tenant_id: uuid.UUID, job_id: uuid.UUID) -> CmJobOut 
     return out
 
 
-async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset: int,
+async def history(tenant_id: uuid.UUID, marketplace: str, *, kind: str | None, limit: int,
+                  offset: int,
                   campaign_id: int | None = None, rule_id: str | None = None,
                   run_id: str | None = None, include_unchanged: bool = False,
                   keyword: str | None = None, success: bool | None = None):
@@ -733,17 +874,30 @@ async def history(tenant_id: uuid.UUID, *, kind: str | None, limit: int, offset:
     `run_id` is the one-run view — what a single job did, and the only exact answer to
     "did my change happen" (see the note on `repo.list_run_log`)."""
     rows, total = await repo.list_run_log(
-        tenant_id, PLATFORM, kind=kind, limit=limit, offset=offset,
+        tenant_id, marketplace, kind=kind, limit=limit, offset=offset,
         campaign_id=campaign_id, rule_id=rule_id, run_id=run_id,
         include_unchanged=include_unchanged, keyword=keyword, success=success)
     return [RunLogOut.model_validate(r) for r in rows], total
 
 
-# ── Advertiser account (B3) ─────────────────────────────────────────────────
+# ── Advertiser account (B3) + live switch ───────────────────────────────────
 
-async def get_advertiser(tenant_id: uuid.UUID) -> int | None:
-    return await repo.get_advertiser(tenant_id, PLATFORM)
+async def get_advertiser(tenant_id: uuid.UUID, marketplace: str) -> int | str | None:
+    """Blinkit: the integer advertiser id writes SEND. Zepto: the brand UUID writes CHECK
+    against the session (ZC-D5) — a string, which the old `int`-only schema refused."""
+    return await repo.get_advertiser(tenant_id, marketplace)
 
 
-async def set_advertiser(tenant_id: uuid.UUID, advertiser_id: int) -> None:
-    await repo.set_advertiser(tenant_id, advertiser_id, PLATFORM)
+async def set_advertiser(tenant_id: uuid.UUID, marketplace: str,
+                         advertiser_id: int | str) -> None:
+    if marketplace == "blinkit" and not str(advertiser_id).strip().isdigit():
+        raise EditError("Blinkit's advertiser id is a number (from a dashboard budget/bid "
+                        "request) — this does not look like one.")
+    await repo.set_advertiser(tenant_id, advertiser_id, marketplace)
+
+
+async def get_live(tenant_id: uuid.UUID, marketplace: str) -> bool:
+    """Whether automations on this marketplace write for real (ZC-D9). Read-only here on
+    purpose: arming is the switch that spends real money, so it stays a deliberate CLI step
+    (`cm arm`), not a button."""
+    return await repo.get_armed(tenant_id, marketplace)

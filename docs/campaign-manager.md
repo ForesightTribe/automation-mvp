@@ -168,14 +168,18 @@ Cloud Logging, not the DB.
 
 ### Tables it READS but does not own
 
-The campaign manager owns the `cm_*` tables above. It also reads three things filled by the daily
-Blinkit scrape and by `cli sync` — deliberately not copied into a `cm_*` table, because a second
-copy would drift from the one the scraper maintains.
+The campaign manager owns the `cm_*` tables above. It also reads things filled by the daily
+marketplace scrapes and by `cli sync` — deliberately not copied into a `cm_*` table, because a second
+copy would drift from the one the scraper maintains. Each marketplace has its own catalogue pair,
+picked by ONE mapping (`repo._catalog(platform)`), never an `if platform ==` at a call site.
 
 | Table                                                       | Holds                                                                                                                               | Filled by                      |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `blinkit_ad_campaigns`                                      | The campaign catalogue, plus its city targeting (`region_type`, `cities`), budget, `pacing_type` and spend-to-date                  | daily marketing scrape         |
-| `blinkit_ad_campaign_keywords`                              | The marketplace's published bid range per (campaign, keyword, match type) — `min_bid`, `max_bid`, `suggested_*`, `keyword_searches` | daily marketing scrape         |
+| `blinkit_ad_campaigns`                                      | Blinkit's campaign catalogue, plus its city targeting (`region_type`, `cities`), budget, `pacing_type` and spend-to-date            | daily marketing scrape         |
+| `blinkit_ad_campaign_keywords`                              | Blinkit's published bid range per (campaign, keyword, match type) — `min_bid`, `max_bid`, `suggested_*`, `keyword_searches`         | daily marketing scrape         |
+| `zepto_ad_campaigns`                                        | Zepto's campaign catalogue (**product ads only** — Zepto's list returns nothing else): type + bidding mode, budget, dates, city targeting (`city_targeting` ALL/MANUAL + `cities`), products | daily `scrape zepto --ads`; list fields also by `cm sync-campaigns -m zepto` |
+| `zepto_ad_campaign_keywords`                                | Zepto's keywords per (campaign, keyword, match type): live bid, published `min_bid`, `is_negative`                                  | daily `scrape zepto --ads`     |
+| `zepto_ad_campaign_daily`                                   | Zepto's daily metrics — read by the CM only for the TYPE of campaigns the catalogue lacks (Display), so they are refused, not "unseen" | daily `scrape zepto --ads`     |
 | `cities` · `city_aliases` · `marketplace_locations.city_id` | The canonical city registry — what turns a campaign's city targeting into a real store to measure at                                | `cli cities seed` + `cli sync` |
 
 ⚠️ These are for the **UI**. The engine re-reads the bid floor live at write time (§7.6) — the
@@ -655,6 +659,14 @@ digits, because `201xxx` alone cannot separate them.
 Maintenance is the ~14 exceptions in `config.xlsx`'s `city_map` sheet; the other 228 cities match by
 name. `cli cities seed` builds the list, `cli sync` applies the sheet and tags stores, `cli cities
 status` reports what still resolves to nothing.
+
+**Zepto's ad spellings** reach the registry the same way. A Zepto campaign's cities come in Zepto's
+ADS spelling, which can differ from both our canonical name and Zepto's own store catalogue: city 498
+is `Belgaum` to us, `belagavi` in Zepto's store catalogue (`zepto:catalog` alias) and **`Belgavi`**
+in its ads (`zepto:ads` alias, added 2026-09-23 — the first `:ads` row of any marketplace; Blinkit's ad
+names all match canonical ones). All 9 of Brik Oven's Zepto cities resolve. `cli cities seed` reads
+**Blinkit's** directory only and refuses `--mp zepto`: Zepto publishes no account-independent city
+list (its `targeting-options` is scoped to one brand), so seeding from it would shrink the registry.
 
 #### The stores inside the city — a frozen set, and stock
 
@@ -1614,24 +1626,45 @@ Reversible — disarm, reconcile, back to dry.
 ### CLI
 
 ```bash
-python -m cli cm budget-scheduler --tenant <uuid> [--live]
-python -m cli cm bid-optimizer    --tenant <uuid> [--live] [--reset]
-python -m cli cm reconcile        --tenant <uuid> [--marketplace blinkit|zepto] [--live]
-python -m cli cm set-budget       --tenant <uuid> --campaign <id> --budget <n> [--live]
-python -m cli cm show             --tenant <uuid> --campaign <id>     # READ ONLY
-python -m cli cm set-advertiser   --tenant <uuid> --id <n>
-python -m cli cm arm|disarm       --tenant <uuid>
-python -m cli cm rules add-bid|add-budget|list|remove-bid|remove-budget
+python -m cli cm budget-scheduler --tenant <uuid> -m blinkit|zepto [--live]
+python -m cli cm bid-optimizer    --tenant <uuid> -m blinkit|zepto [--live] [--reset]
+python -m cli cm reconcile        --tenant <uuid> -m blinkit|zepto [--live]
+python -m cli cm set-budget       --tenant <uuid> -m blinkit|zepto --campaign <id> --budget <n> [--live]
+python -m cli cm status           --tenant <uuid> -m blinkit|zepto --campaign <id>     # READ ONLY
+python -m cli cm set-advertiser   --tenant <uuid> -m blinkit|zepto --id <n|brand-uuid>
+python -m cli cm arm|disarm       --tenant <uuid> -m blinkit|zepto
+python -m cli cm rules add-bid|add-budget-schedule|list -m blinkit|zepto …
+python -m cli cm rules remove-bid|remove-budget|add-budget-rule …     # by id — no -m needed
 ```
 
-Everything defaults to dry-run. `--live` is always explicit.
+Everything defaults to dry-run. `--live` is always explicit. Full reference: [CLI.md](CLI.md#campaign-manager-cm).
+
+### The marketplace is never assumed (2026-09-24)
+
+Every layer names the marketplace it acts on, and **none has a default** — a forgotten one fails
+rather than driving Blinkit's account by accident:
+
+| Layer | How the marketplace is chosen | Without one |
+|---|---|---|
+| CLI | `-m blinkit\|zepto` (required) | usage error |
+| API | `/campaign-manager/<marketplace>/…` ([api-reference.md](api-reference.md)) | old address → 400 saying the new form; unknown → 404 |
+| API ids | a rule/schedule/job id must belong to the address's marketplace | 404 — `…/zepto/…` can never act on a Blinkit rule |
+| Job queue | `marketplace` param on every `cm.*` job (API and reconciler stamp it) | the runner fails the job before it starts (`MissingMarketplace`) |
+| Engines · repo | `platform` argument, required | `TypeError` at the call — caught by tests, never guessed |
+
+Two deliberate exceptions: public-scrape jobs (reads, not operations) keep a Blinkit fallback, and the
+queue's `uq_jobs_active` index still COALESCEs a missing marketplace to 'blinkit' — harmless now that
+no `cm.*` job lacks one; changing it needs a migration.
 
 ### Rolling out a change
 
 1. Apply any migration (shown and confirmed first — shared DB).
 2. Merge to `main` and pull on the VM. **The VM runs `main`; nothing on a feature branch exists there.**
-   Then run one live reconcile per tenant (`cm reconcile --tenant <uuid> --live`), so its schedules and
-   lifecycle markers match the new code now rather than at the 04:00 cleanup.
+   A change to the API's addresses (like 2026-09-24's marketplace-in-the-path) must ship the
+   **frontend, API (Render) and VM together** — API → VM → website — or the dashboard's automation
+   buttons fail in the gap. Then run one live reconcile per tenant and marketplace
+   (`cm reconcile --tenant <uuid> -m <marketplace> --live`), so its schedules and lifecycle markers
+   match the new code now rather than at the 04:00 cleanup.
 3. Create one bid rule on a **low-stakes campaign**, with drift off — which now takes an
    explicit `CM_BID_DRIFT_PCT=0`, because the default is `7` (armed).
 4. Watch a day of `cm_run_log` + Cloud Logging: does the window-open floor land, does the end reset

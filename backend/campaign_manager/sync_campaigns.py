@@ -36,7 +36,7 @@ MIN_DAYS = 30
 
 
 async def run(tenant_id: uuid.UUID, *, days: int = DEFAULT_DAYS,
-              platform: str = "blinkit") -> dict:
+              platform: str) -> dict:
     """Pull the account's campaigns and upsert them into the shared catalogue."""
     days = max(days, MIN_DAYS)
     run_id = logs.new_run_id()

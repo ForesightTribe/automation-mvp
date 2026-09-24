@@ -268,6 +268,11 @@ cli monitor heartbeat --disk-pct 90   # only complain about disk at 90%+
 | `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaigns` | latency-tolerant CM writes + the catalogue refresh |
 | `cm_bid`      | `cm.bid_optimizer`                                              | latency **is** the product |
 
+Every `cm.*` job must carry `marketplace=blinkit|zepto` — there is no default, and one without it
+fails to start (2026-09-24). Because `cm_ops` and `cm_bid` run in parallel, Zepto's budget and bid
+writes (both whole-campaign saves) are serialised per campaign by a Postgres advisory lock inside the
+adapter, so one cannot overwrite the other.
+
 Lanes run **in parallel**; each is sequential inside itself. So a 5-hour public scrape
 delays the _next public scrape_, but never the dashboard scrapes or the heartbeat.
 
@@ -587,5 +592,6 @@ by the small pool — public scrapes stage to SQLite, and the loader uses a sing
 | Logs written to `/logs/...` or vanish   | `WorkingDirectory` unset, or `LOG_DIR` not absolute                                             |
 | Everything `failed` with `auth_expired` | Auto-recovery failed → `cli auth status -t <id>` (see #3)                                                                 |
 | Schedule never fires                    | It's `disabled`, or `SCHEDULER_ENABLED=false`, or `next_run_at` is NULL (re-`enable` to re-arm) |
-| `DuplicateActiveJob` on `jobs run`      | A job of that (type, tenant) is already pending/running — check `cli jobs list`                 |
+| `DuplicateActiveJob` on `jobs run`      | A job of that (type, tenant, marketplace) is already pending/running — check `cli jobs list`    |
+| `cm.*` job `failed`: `unresolvable: campaign-manager job has no marketplace` | It was queued without `marketplace=blinkit\|zepto`. Since 2026-09-24 there is no default — the runner refuses rather than guess an ad account. Re-queue with the param (`cli jobs run cm.set_budget -t <id> marketplace=blinkit …`); the API and the reconciler always add it |
 | Jobs run but from the wrong IP          | A local runner is stealing from the queue (see #1)                                              |

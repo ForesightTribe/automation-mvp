@@ -349,8 +349,15 @@ python -m cli auth platforms                              # registry + wiring st
 python -m cli auth login blinkit -t <uuid> [--email x] [--manual]
 python -m cli auth refresh blinkit -t <uuid>              # no email needed
 python -m cli auth probe blinkit -t <uuid>                # is it actually alive?
-python -m cli auth status -t <uuid>                       # all platforms + health
+python -m cli auth status -t <uuid>                       # all platforms + health + logins in the last 24 h
 ```
+
+`logins 24h` (2026-09-23) counts full logins in the last day, from a 7-day history kept inside
+the encrypted session envelope (`__logins`, carried forward by `store.save()` — no column, no
+migration). On Zepto each login evicts the client's dashboard, and since the 30-minute re-login
+floor was removed a job that keeps losing its session would do so repeatedly while every login
+SUCCEEDS, so the circuit breaker never trips. Above `AUTH_LOGINS_PER_DAY_WARN` (4) `save()` logs a
+warning and `status` shows the count in red.
 
 `auth blinkit` / `auth blinkit-seller` still work as aliases. **First login for a tenant
 should be `--manual`** — it captures the address and is where anything unexpected

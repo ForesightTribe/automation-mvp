@@ -19,7 +19,9 @@ import { api } from "../../lib/axios";
  *
  * Both ENQUEUE a job and return its id; nothing has happened when the promise resolves.
  */
-const cm = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1). These actions drive Blinkit only until the UI phase adds a choice.
+const cm = (clientId) => `/clients/${clientId}/campaign-manager/blinkit`;
 
 /**
  * One page of keyword rows for CURRENT campaigns only (`recent_only`).

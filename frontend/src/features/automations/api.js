@@ -9,7 +9,9 @@ import { api } from "../../lib/axios";
  * other. No backend changes — every call below hits an endpoint that already
  * exists and is already used by the Campaign Manager page.
  */
-const base = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1). This page drives Blinkit only until the UI phase adds a marketplace choice.
+const base = (clientId) => `/clients/${clientId}/campaign-manager/blinkit`;
 
 // ── Reads ────────────────────────────────────────────────────────────────────
 export const getBudgetSchedules = (clientId) =>

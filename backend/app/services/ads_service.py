@@ -37,6 +37,7 @@ from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
 from app.services import reference_service, zepto_ads
 # The pure status vocabularies — NOT the adapters, which pull in Playwright.
+from campaign_manager import repo as cm_repo
 from campaign_manager.marketplaces import canonical_status
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
@@ -261,11 +262,21 @@ async def get_campaigns(
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
     total = len(rows)
     page = rows[pagination.offset : pagination.offset + pagination.limit]
+    # Which of this page's campaigns the automations may not touch (ZC-D3) — one catalogue
+    # query per marketplace on the page, never per row.
+    refused: dict[tuple[str, int], str] = {}
+    for mp in {r["platform"] for r in page}:
+        for cid, why in (await cm_repo.automation_refusals(
+                tenant_id, mp, [r["campaign_id"] for r in page if r["platform"] == mp])).items():
+            refused[(mp, cid)] = why
     # The canonical state beside the raw status — see `CampaignRow.state`. Computed by the
     # same pure vocabulary the engines use, so the button the UI offers is the transition
     # the engine will accept.
-    items = [CampaignRow.model_validate(
-        {**r, "state": canonical_status(r["platform"], r.get("status"))}) for r in page]
+    items = [CampaignRow.model_validate({
+        **r, "state": canonical_status(r["platform"], r.get("status")),
+        "automatable": (r["platform"], r["campaign_id"]) not in refused,
+        "not_automatable_reason": refused.get((r["platform"], r["campaign_id"])),
+    }) for r in page]
     return Page.build(items, total, pagination)
 
 

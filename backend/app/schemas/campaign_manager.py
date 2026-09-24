@@ -249,6 +249,10 @@ class BidContextOut(BaseModel):
     daily_budget: int | None = None
     pacing_type: str | None = None
     billed_amount: float | None = None
+    # What a bid buys on this marketplace — CPM (Blinkit, per 1,000 impressions) or CPC
+    # (Zepto, per click). The same ₹ figure is very different money, so the form must say.
+    # `keywords[].current_cpm` keeps its old name on both; this field is its unit.
+    unit: Literal["CPM", "CPC"] | None = None
 
 
 # ── Actions ─────────────────────────────────────────────────────────────────
@@ -270,11 +274,20 @@ class SetActivationIn(BaseModel):
 
 
 class AdvertiserIn(BaseModel):
-    advertiser_id: int
+    # Blinkit: an integer advertiser id. Zepto: the brand UUID (ZC-D5) — the old `int`
+    # refused it, so a Zepto account could never be stored through the API.
+    advertiser_id: int | str
 
 
 class AdvertiserOut(BaseModel):
-    advertiser_id: int | None = None
+    advertiser_id: int | str | None = None
+
+
+class LiveOut(BaseModel):
+    """Whether automations on this marketplace write for real (ZC-D9). Armed from the CLI
+    only (`cm arm -m <marketplace>`) — the switch that spends money is not a button."""
+    marketplace: str
+    live: bool
 
 
 class EnqueuedOut(BaseModel):

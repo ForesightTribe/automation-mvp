@@ -7,7 +7,9 @@ import { api } from "../../lib/axios";
  *
  * No backend changes. Every call here already existed and is already used elsewhere.
  */
-const cm = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1). These actions drive Blinkit only until the UI phase adds a choice.
+const cm = (clientId) => `/clients/${clientId}/campaign-manager/blinkit`;
 
 /**
  * Every campaign on the account, not just the recent ones.

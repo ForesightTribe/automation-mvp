@@ -36,9 +36,9 @@ _LIVE = typer.Option(
 # commands move real budget. Being made to say `-m blinkit` is cheap; discovering
 # you paused Zepto campaigns when you meant Blinkit is not.
 #
-# Existing SCHEDULES are unaffected: jobs/types.py fills in `blinkit` when a stored
-# schedule has no marketplace param, so nothing already in job_schedules has to be
-# rewritten. The requirement binds humans typing commands, not rows in the DB.
+# The same rule binds the job layer (ZC-D1, 2026-09-24): jobs/types.py no longer fills in
+# `blinkit` for a cm.* job without a marketplace — it refuses to build it. Every stored
+# schedule already names one (the reconciler stamps it), and so does every job the API queues.
 #
 # `--platform` stays accepted as an alias so older scripts and muscle memory keep
 # working; `--marketplace` matches the public scrape commands and is the name to use.
@@ -423,7 +423,7 @@ def _days(csv: str | None) -> list:
 @rules_app.command("add-budget-schedule")
 def add_budget_schedule(
     tenant: str = _TENANT,
-    campaign: int = typer.Option(..., "--campaign", help="Blinkit campaign id"),
+    campaign: int = typer.Option(..., "--campaign", help="Campaign id on the --marketplace given"),
     default_budget: float = typer.Option(..., "--default-budget", help="Fallback budget when no rule matches (₹)"),
     name: str = typer.Option(None, "--name", help="Human label"),
     campaign_name: str = typer.Option("", "--campaign-name", help="Campaign name (for logs/UI)"),
@@ -509,7 +509,7 @@ def add_budget_rule(
 @rules_app.command("add-bid")
 def add_bid(
     tenant: str = _TENANT,
-    campaign: int = typer.Option(..., "--campaign", help="Blinkit campaign id"),
+    campaign: int = typer.Option(..., "--campaign", help="Campaign id on the --marketplace given"),
     keyword: str = typer.Option(..., "--keyword", help="Search keyword to chase"),
     target: int = typer.Option(..., "--target", help="Target sponsored position (e.g. 3)"),
     min_bid: int = typer.Option(..., "--min-bid", help="Floor CPM (₹)"),

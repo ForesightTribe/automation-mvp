@@ -160,19 +160,35 @@ the marketplace filter is a no-op until more platforms connect.
 | GET | `/summary` | KPI strip: ad_spend, ad_sales, RoAS, ACoS, impressions, atc, units_sold, active_campaigns — each a `Metric` (value + prev window + delta). RoAS = ad_sales÷spend; ACoS = spend÷ad_sales. |
 | GET | `/performance` | Daily spend / impressions / ad_sales / RoAS **time-series** (summed from `blinkit_ad_campaign_daily`). |
 | GET | `/budget-split` | Spend + recomputed RoAS per `campaign_type` (donut + by-type table). |
-| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`; `?sort=spend\|roas\|sales\|impressions` + `?order=asc\|desc` (sort `roas` = RoAS leaderboard / worst spenders). |
+| GET | `/campaigns` | Paginated campaigns: metadata (`blinkit_ad_campaigns`) + per-window rollup from `blinkit_ad_campaign_daily` (budget, impressions, atc, qty, ad_sales, RoAS). Filter `?status=`; `?sort=spend\|roas\|sales\|impressions` + `?order=asc\|desc` (sort `roas` = RoAS leaderboard / worst spenders). Every row carries `platform` (required — Blinkit and Zepto rows are merged and their ids are separate spaces), `state` (the canonical running/paused/held/ended), and `automatable` + `not_automatable_reason` — false for Zepto Display and automatic-bidding campaigns, so an automation picker can grey them out (2026-09-24). |
 | GET | `/keywords` | Paginated keyword/asset performance from the latest `blinkit_ad_campaign_detail` snapshot per campaign (target, match_type, cpm, direct/indirect sales, direct/total RoAS, position, new users). Filter `?campaign_id=`, `?target_type=keyword\|recommendation`; same `?sort`/`?order`. |
 | GET | `/sov` | Sponsored share-of-voice, latest per keyword in the window. |
 | GET | `/marketplaces` | Per-marketplace ad slice (spend, ad_sales, RoAS, impressions as `Metric`); unconnected MPs returned bare (`connected=false`) for "Not connected" cards. |
 | GET | `/visibility-plans` | Visibility/placement plans + budgets. |
 | GET | `/collections` | Curated brand collections. |
 
-### `campaign-manager` — `/api/clients/{id}/campaign-manager` *(private, write)*
-Campaign Manager — automate Blinkit budgets + keyword bids. Thin routes → a service
-that only **writes DB rows and enqueues jobs** (no Playwright; browser work runs on the VM).
-Every rule mutation enqueues `cm.reconcile` (the VM compiles rules → `job_schedules`).
-The whole loop is **dry** until the tenant is **armed** (`live_armed` on `cm_platform_accounts`,
-flipped by the `cm arm` CLI — see [cli.md](CLI.md)); nothing here touches Blinkit on its own.
+### `campaign-manager` — `/api/clients/{id}/campaign-manager/{marketplace}` *(private, write)*
+Campaign Manager — automate **Blinkit and Zepto** budgets + keyword bids. Thin routes → a
+service that only **writes DB rows and enqueues jobs** (no Playwright; browser work runs on the
+VM). Every rule mutation enqueues `cm.reconcile` for that marketplace (the VM compiles rules →
+`job_schedules`). The whole loop is **dry** until the tenant is **armed** for that marketplace
+(`live_armed` on `cm_platform_accounts`, flipped by the `cm arm -m <marketplace>` CLI — see
+[cli.md](CLI.md)); nothing here touches a marketplace on its own.
+
+**`{marketplace}` is required in every path — `blinkit` or `zepto` — and there is no default**
+(2026-09-24, ZC-D1). All paths in the table below sit under it. It binds, too: an automation,
+schedule or job id belonging to the other marketplace is **404** under this one, so a Zepto
+address can never act on a Blinkit rule. An unknown marketplace is **404** naming the valid
+ones; an old un-prefixed address is **400** saying the new form. Every job the API queues
+carries the marketplace, and the job runner refuses a `cm.*` job without one rather than
+guessing. The only marketplace-free route is `GET /jobs/{job_id}` (a status read for Settings).
+
+**What differs on Zepto** (enforced at save, **400** with the reason): budgets below Zepto's
+published **₹500** minimum (Blinkit publishes none, so none is enforced there); match type
+`PHRASE` is Zepto-only (Blinkit: `EXACT` · `BROAD`); only **product ads bid by keyword** can be
+automated — Display and automatic-bidding campaigns are refused, and `/ads/campaigns` flags
+them (`automatable: false` + `not_automatable_reason`); a Zepto bid rule with no city/store is
+placed in a city the campaign targets. Zepto bids are **per click** — see `unit` below.
 
 Budget/bid outputs carry a computed **`status`**: `running` (window open now) · `scheduled`
 (a window still to come) · `ended` (its **last** window has closed — minute-precise) · `paused` ·
@@ -202,12 +218,14 @@ Rule times must be zero-padded 24-hour `HH:MM` and dates a real `YYYY-MM-DD`; an
 | POST | `/bid-rules/{id}/reset` | Put the keyword's bid back to the automation's `min_bid` → enqueues `cm.set_bid` (priority 10, `cm_ops` lane), returns `{job_id}` to poll. **409 while the automation is running** — the next check would bid it straight back up. Allowed while paused, before a window opens, and **on an ended automation**, which is the case Resume cannot reach. |
 | POST | `/set-budget` | One-off "set this campaign's budget now" → enqueues `cm.set_budget`, returns `{job_id}`. 409 if one's active. |
 | POST | `/campaigns/{campaign_id}/activation` | One-off **start/stop** a campaign → enqueues `cm.set_activation`, returns `{job_id}`. Body `{status: running\|paused, budget?}`; `budget` is resume-only (a Blinkit restart re-submits the campaign and sets its budget) and defaults to the campaign's current one. Guardrails run on the VM against a live read, so a refusal comes back on the job, not as a 4xx. 409 if one's active. |
-| GET | `/campaigns/{campaign_id}/bid-context` | What the bid-rule form needs about a campaign: Blinkit's published **minimum bid per keyword** and **where a rule may measure**. Served from the daily scrape, never Blinkit. `cities` is the WHOLE answer and is always populated — the campaign's own cities when `region_type` is `CITY`, every measurable city otherwise (pan-India, or targeting we haven't scraped) — so the form renders one picker and never merges a second city source (2026-09-15). Sorted, canonical `cities.name` spellings, with cities we have no dark store in last and carrying `lat: null`. `region_type` is for the copy under the field, **not** for choosing a widget: `null` means unscraped, which is not the same claim as `PAN_INDIA`. **Never 404s** — an unscraped campaign returns `scraped_at: null` with no bid prefill, but still gets the full city list. Also the source of the keyword autocomplete, since 2026-09-03. |
-| POST | `/campaigns/refresh` | Re-read the account's campaigns + statuses from Blinkit into the catalogue → enqueues `cm.sync_campaigns`, returns `{job_id}`. A READ job (one list call), so it needs no arming. This is how a campaign created since last night's scrape becomes selectable in the pickers. |
-| POST | `/run/budget-scheduler` · `/run/bid-optimizer` | Run an engine now → enqueues the job, returns `{job_id}` to poll. Dry unless the tenant is armed. |
-| GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. |
-| GET | `/history` | Paginated `cm_run_log`. **Changes only by default** — since 2026-09-04 the engine records EVERY tick, including the ones where it deliberately did nothing, and a "held at ₹201" row every 15 minutes would bury the real changes. `?include_unchanged=true` returns the full per-tick record (the per-automation drill-down, where "why has my bid not moved for six hours" is the question and the held ticks carry the answer). Narrow with `?campaign_id=` (int) / `?rule_id=` (**string** — a bid rule's id is a uuid hex); filter by `?kind=budget\|bid\|activation`. Rows carry `position` + `target` so a decision explains itself without parsing `reason`. Lifecycle rows — `ended` · `reopened` · `settled` · `settle-failed` — record when an automation ended or was reopened, and whether its final teardown landed. |
-| GET · PUT | `/advertiser` | Get / set the Blinkit ad-account id (B3) live writes send. Captured once from a dashboard PUT. |
+| GET | `/campaigns/{campaign_id}/bid-context` | What the bid-rule form needs about a campaign: the marketplace's published **minimum bid per keyword**, **where a rule may measure**, and **`unit`** — `CPM` (Blinkit, per 1,000 impressions) or `CPC` (Zepto, per click); `keywords[].current_cpm` keeps its name on both and is in that unit. On Zepto, negative keywords are left out (never bid targets), `region_type` is `CITY` or `ALL`, and `pacing_type`/`billed_amount` are null. Served from the daily scrape, never Blinkit. `cities` is the WHOLE answer and is always populated — the campaign's own cities when `region_type` is `CITY`, every measurable city otherwise (pan-India, or targeting we haven't scraped) — so the form renders one picker and never merges a second city source (2026-09-15). Sorted, canonical `cities.name` spellings, with cities we have no dark store in last and carrying `lat: null`. `region_type` is for the copy under the field, **not** for choosing a widget: `null` means unscraped, which is not the same claim as `PAN_INDIA`. **Never 404s** — an unscraped campaign returns `scraped_at: null` with no bid prefill, but still gets the full city list. Also the source of the keyword autocomplete, since 2026-09-03. |
+| POST | `/campaigns/refresh` | Re-read the account's campaigns + statuses from the marketplace into its catalogue → enqueues `cm.sync_campaigns`, returns `{job_id}`. A READ job (the campaign list), so it needs no arming. This is how a campaign created since last night's scrape becomes selectable in the pickers. |
+| POST | `/run/budget-scheduler` · `/run/bid-optimizer` | Run an engine now → enqueues the job, returns `{job_id}` to poll. Dry unless the tenant is armed for this marketplace. |
+| GET | `/actions` | This marketplace's recent person-triggered jobs (the activity list), queued/running/finished. |
+| GET | `/jobs/{job_id}` | Poll an enqueued cm job (the enqueue→poll UX): status / error / timing. 404 for another marketplace's job. Also served un-prefixed as `/campaign-manager/jobs/{job_id}` — a marketplace-free status read. |
+| GET | `/history` | Paginated `cm_run_log`. **Changes only by default** — since 2026-09-04 the engine records EVERY tick, including the ones where it deliberately did nothing, and a "held at ₹201" row every 15 minutes would bury the real changes. `?include_unchanged=true` returns the full per-tick record (the per-automation drill-down, where "why has my bid not moved for six hours" is the question and the held ticks carry the answer). Narrow with `?campaign_id=` (int) / `?rule_id=` (**string** — a bid rule's id is a uuid hex); filter by `?kind=budget\|bid\|activation\|wallet` (`wallet` = Zepto's low/empty ad-wallet warning, at most one row per 6 h). Rows carry `position` + `target` so a decision explains itself without parsing `reason`. Lifecycle rows — `ended` · `reopened` · `settled` · `settle-failed` — record when an automation ended or was reopened, and whether its final teardown landed. |
+| GET · PUT | `/advertiser` | Get / set the ad account (B3). Blinkit: the **integer** advertiser id live writes send, captured once from a dashboard PUT (a non-number is 400). Zepto: the **brand UUID** writes check the session against (`cm advertiser -m zepto` reads it). |
+| GET | `/live` | `{marketplace, live}` — whether this marketplace's automations write for real. **Read-only**: arming spends real money, so it stays the `cm arm -m <marketplace>` CLI step. |
 
 Timing shapes on budget/bid rules match the CLI ([cli.md](CLI.md)): recurring daily window
 (± `days`, date range) or a `once` single-date span; end ≤ start = overnight.

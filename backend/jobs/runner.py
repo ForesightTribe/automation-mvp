@@ -263,12 +263,15 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     except Exception as e:
         async with AsyncSessionLocal() as db:
             await job_queue.complete(db, job.id, JobStatus.failed, error=f"unresolvable: {e}")
+        from jobs.types import MissingMarketplace
+        why = (f"it names no marketplace, and campaign-manager jobs never guess one ({e})"
+               if isinstance(e, MissingMarketplace) else
+               f"this runner has no code for job type '{job.job_type}'. Something newer "
+               f"enqueued it, so this box is probably behind main")
         logger.bind(job_id=str(job.id), job_type=job.job_type,
                     tenant_id=str(job.tenant_id) if job.tenant_id else None,
                     lane=job.lane.value, error=f"unresolvable: {e}").error(
-            f"{desc} · COULD NOT START — this runner has no code for job type "
-            f"'{job.job_type}'. Something newer enqueued it, so this box is probably "
-            f"behind main. Nothing ran. · job {short}")
+            f"{desc} · COULD NOT START — {why}. Nothing ran. · job {short}")
         return
     # shlex.join so a value containing spaces (e.g. --city "delhi ncr") is recorded
     # unambiguously and stays copy-pasteable. The subprocess itself gets an argv

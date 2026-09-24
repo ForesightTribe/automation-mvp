@@ -329,7 +329,7 @@ def measurement_point(rule, city_stores: dict) -> tuple[float, float, str | None
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
-              reset: bool = False, platform: str = "blinkit",
+              reset: bool = False, platform: str,
               run_id: str | None = None) -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = run_id or logs.new_run_id()
@@ -1281,7 +1281,7 @@ def _target_of(rule) -> _Target:
 
 
 async def set_bid(tenant_id: uuid.UUID, *, campaign_id: int, keyword: str, cpm: int,
-                  match_type: str = "EXACT", platform: str = "blinkit",
+                  match_type: str = "EXACT", platform: str,
                   dry_run: bool | None = None, run_id: str | None = None) -> dict:
     """Write ONE keyword's bid, now. The mechanism behind Reset (and Delete + reset).
 

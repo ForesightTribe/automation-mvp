@@ -12,7 +12,7 @@ from campaign_manager.marketplaces import get_adapter
 
 
 async def run(tenant_id: uuid.UUID, campaign_id: int, budget: float, *,
-              dry_run: bool | None = None, platform: str = "blinkit",
+              dry_run: bool | None = None, platform: str,
               run_id: str | None = None) -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = run_id or logs.new_run_id()
