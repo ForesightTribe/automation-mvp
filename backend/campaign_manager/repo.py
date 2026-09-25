@@ -102,8 +102,24 @@ def _schedule_in_calendar(rules, wanted: frozenset | None, now: datetime | None)
         [window.from_budget(r) for r in rules], now) in wanted
 
 
+@asynccontextmanager
+async def _session(db=None):
+    """The caller's session when it passes one, else a short-lived one of our own.
+
+    Lets a list endpoint run several repo reads on ONE pooled connection (open a session,
+    pass it as `db=`) instead of checking one out per call — each checkout also costs a
+    liveness ping, a full round trip to the pooler (2026-09-25). Callers that pass nothing
+    keep the old behaviour exactly."""
+    if db is not None:
+        yield db
+    else:
+        async with AsyncSessionLocal() as own:
+            yield own
+
+
 async def get_budget_schedules(tenant_id: uuid.UUID, platform: str, *,
-                               state: str | None, calendar, now: datetime | None = None):
+                               state: str | None, calendar, now: datetime | None = None,
+                               db=None):
     """Return [(schedule, [rules])] for a tenant — only the schedules asked for.
 
     `state`: the schedule's user state (`"active"` / `"stopped"`), or `ANY_STATE`.
@@ -113,7 +129,7 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str, *,
     from app.models.campaign_manager_v2 import CmBudgetSchedule, CmBudgetRule
     wanted = _calendar_filter(calendar, now)
 
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         query = select(CmBudgetSchedule).where(
             CmBudgetSchedule.tenant_id == tenant_id,
             CmBudgetSchedule.platform == platform,
@@ -121,26 +137,32 @@ async def get_budget_schedules(tenant_id: uuid.UUID, platform: str, *,
         if state is not ANY_STATE:
             query = query.where(CmBudgetSchedule.state == state)
         schedules = (await db.execute(query)).scalars().all()
+        # Every schedule's rules in ONE query (it was one query per schedule — each a round
+        # trip holding the connection). ORDER BY id is load-bearing, not cosmetic:
+        # `budget.target_for_now` takes the FIRST matching rule, so with two overlapping
+        # windows the winner is decided here. Without an explicit order Postgres may return
+        # them differently between runs, and the same campaign would flip between two
+        # budgets for no visible reason. Oldest rule wins — stable, and explainable to a
+        # user ("the one you made first takes precedence"). Grouping below keeps that order.
+        by_schedule: dict[int, list] = {s.id: [] for s in schedules}
+        if by_schedule:
+            for r in (await db.execute(
+                select(CmBudgetRule).where(CmBudgetRule.schedule_id.in_(list(by_schedule)))
+                .order_by(CmBudgetRule.id)
+            )).scalars().all():
+                by_schedule[r.schedule_id].append(r)
         out = []
         for s in schedules:
-            # ORDER BY id is load-bearing, not cosmetic: `budget.target_for_now` takes the
-            # FIRST matching rule, so with two overlapping windows the winner is decided
-            # here. Without an explicit order Postgres may return them differently between
-            # runs, and the same campaign would flip between two budgets for no visible
-            # reason. Oldest rule wins — stable, and explainable to a user ("the one you
-            # made first takes precedence").
-            rules = (await db.execute(
-                select(CmBudgetRule).where(CmBudgetRule.schedule_id == s.id)
-                .order_by(CmBudgetRule.id)
-            )).scalars().all()
+            rules = by_schedule[s.id]
             if not _schedule_in_calendar(rules, wanted, now):
                 continue
-            out.append((s, list(rules)))
+            out.append((s, rules))
         return out
 
 
 async def get_bid_rules(tenant_id: uuid.UUID, platform: str, *,
-                        state: str | None, calendar, now: datetime | None = None):
+                        state: str | None, calendar, now: datetime | None = None,
+                        db=None):
     """Return [(rule, runtime_or_None)] for a tenant — only the rules asked for.
 
     `state`: the rule's user state (`"active"` / `"paused"`), or `ANY_STATE`.
@@ -150,23 +172,23 @@ async def get_bid_rules(tenant_id: uuid.UUID, platform: str, *,
     from app.models.campaign_manager_v2 import CmBidRule, CmBidRuntime
     wanted = _calendar_filter(calendar, now)
 
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         query = select(CmBidRule).where(
             CmBidRule.tenant_id == tenant_id,
             CmBidRule.platform == platform,
         )
         if state is not ANY_STATE:
             query = query.where(CmBidRule.state == state)
-        rules = (await db.execute(query)).scalars().all()
-        out = []
-        for r in rules:
-            if not _bid_rule_in_calendar(r, wanted, now):
-                continue
-            runtime = (await db.execute(
-                select(CmBidRuntime).where(CmBidRuntime.rule_id == r.id)
-            )).scalars().first()
-            out.append((r, runtime))
-        return out
+        rules = [r for r in (await db.execute(query)).scalars().all()
+                 if _bid_rule_in_calendar(r, wanted, now)]
+        # Every kept rule's runtime in ONE query (it was one query per rule).
+        runtimes: dict = {}
+        if rules:
+            for rt in (await db.execute(
+                select(CmBidRuntime).where(CmBidRuntime.rule_id.in_([r.id for r in rules]))
+            )).scalars().all():
+                runtimes.setdefault(rt.rule_id, rt)
+        return [(r, runtimes.get(r.id)) for r in rules]
 
 
 # ── Platform account (advertiser id) — per (tenant, platform), B3 ───────────
@@ -246,10 +268,10 @@ async def set_advertiser(tenant_id: uuid.UUID, account: int | str,
         await db.commit()
 
 
-async def get_armed(tenant_id: uuid.UUID, platform: str) -> bool:
+async def get_armed(tenant_id: uuid.UUID, platform: str, *, db=None) -> bool:
     """Is this tenant armed for LIVE writes (the V5 cutover switch)? False if unset."""
     from app.models.campaign_manager_v2 import CmPlatformAccount
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         row = (await db.execute(
             select(CmPlatformAccount).where(
                 CmPlatformAccount.tenant_id == tenant_id,
@@ -1024,7 +1046,7 @@ async def city_stores_for(platform: str, tenant_id: uuid.UUID | None, city_ids, 
     return out
 
 
-async def city_names_for(platform: str, rules) -> dict:
+async def city_names_for(platform: str, rules, *, db=None) -> dict:
     """`{rule.id: city name | None}` for a batch of bid rules, in ONE session.
 
     "Measured at Block C" does not say where Block C is, and store labels are sub-city names
@@ -1047,7 +1069,7 @@ async def city_names_for(platform: str, rules) -> dict:
         return {}
 
     by_id, by_coord = {}, {}
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         if ids:
             by_id = dict((await db.execute(
                 select(City.id, City.name).where(City.id.in_(ids))
@@ -1432,11 +1454,16 @@ def _catalog(platform: str) -> _Catalog:
 
 
 async def automation_refusals(tenant_id: uuid.UUID, platform: str,
-                              campaign_ids) -> dict[int, str]:
+                              campaign_ids, *, db=None) -> dict[int, str]:
     """`{campaign_id: why it cannot be automated}` for every catalogued campaign that
     cannot be, in ONE query (ZC-D3 — the pickers grey these out instead of failing on save).
     Absent = automatable, or not catalogued (allowed, as everywhere). {} on a marketplace
-    that puts no limit on it."""
+    that puts no limit on it.
+
+    `db`: pass the caller's session when it already holds one — an API request mid-way
+    through its own reads (`ads_service.get_campaigns`). Opening a second session there
+    held TWO pooled connections for one request, which is how bursts deadlocked the pool
+    (2026-09-25)."""
     from campaign_manager.marketplaces import automation_refusal
 
     cat = _catalog(platform)
@@ -1445,13 +1472,21 @@ async def automation_refusals(tenant_id: uuid.UUID, platform: str,
         return {}
     model = cat.campaigns
     type_col, bidding_col = cat.type_cols
-    async with AsyncSessionLocal() as db:
-        rows = (await db.execute(
+
+    async def _read(s):
+        rows = (await s.execute(
             select(model.campaign_id, getattr(model, type_col), getattr(model, bidding_col))
             .where(model.tenant_id == tenant_id, model.campaign_id.in_(ids))
         )).all()
         known = {cid for cid, _t, _b in rows}
-        extra = await _fallback_types(db, cat, tenant_id, [c for c in ids if c not in known])
+        return rows, await _fallback_types(s, cat, tenant_id,
+                                           [c for c in ids if c not in known])
+
+    if db is not None:
+        rows, extra = await _read(db)
+    else:
+        async with AsyncSessionLocal() as own:
+            rows, extra = await _read(own)
     out = {}
     for cid, ctype, bidding in list(rows) + [(c, t, None) for c, t in extra.items()]:
         why = automation_refusal(platform, ctype, bidding)
@@ -1617,7 +1652,7 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str)
     return campaign, list(keywords)
 
 
-async def list_catalog_keywords(tenant_id: uuid.UUID, platform: str):
+async def list_catalog_keywords(tenant_id: uuid.UUID, platform: str, *, db=None):
     """Every catalogued (campaign, keyword, match_type) the tenant has on one marketplace,
     each with its campaign row — the keyword picker's list (ZC-E3).
 
@@ -1631,7 +1666,7 @@ async def list_catalog_keywords(tenant_id: uuid.UUID, platform: str):
     """
     cat = _catalog(platform)
     cm, km = cat.campaigns, cat.keywords
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         rows = (await db.execute(
             select(km, cm)
             .outerjoin(cm, (cm.tenant_id == km.tenant_id)
@@ -1855,7 +1890,8 @@ async def list_run_log(tenant_id: uuid.UUID, platform: str, *,
                        kind: str | None = None, limit: int = 50, offset: int = 0,
                        campaign_id: int | None = None, rule_id: str | None = None,
                        run_id: str | None = None, include_unchanged: bool = False,
-                       keyword: str | None = None, success: bool | None = None):
+                       keyword: str | None = None, success: bool | None = None,
+                       db=None):
     """Recent cm_run_log rows for a tenant (newest first) + total count.
 
     Defaults to CHANGES ONLY. Pass `include_unchanged=True` for the full per-tick record —
@@ -1883,7 +1919,7 @@ async def list_run_log(tenant_id: uuid.UUID, platform: str, *,
     from sqlalchemy import func
     from app.models.campaign_manager_v2 import CmRunLog
 
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         base = select(CmRunLog).where(CmRunLog.tenant_id == tenant_id,
                                       CmRunLog.platform == platform)
         kinds = [k.strip() for k in (kind or "").split(",") if k.strip()]

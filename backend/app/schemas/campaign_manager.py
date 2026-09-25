@@ -391,3 +391,24 @@ class RunLogOut(BaseModel):
     dry_run: bool
     success: bool
     timestamp: datetime
+
+
+class OverviewOut(BaseModel):
+    """What the Automations page needs the moment it opens, in ONE request (2026-09-25).
+
+    It used to be five requests fired together — schedules, bid rules, the header's history,
+    the wallet note, the live switch — each holding a pooled API connection, which is how
+    the page could exhaust the pool. Every field is exactly what its own address returns;
+    those addresses remain for the calls that refresh one thing (and for the CLI).
+
+    The activity list is NOT here: it polls every 2 s while a job runs, and folding it in
+    would re-read everything else on every poll.
+    """
+    budget_schedules: list[BudgetScheduleOut]
+    bid_rules: list[BidRuleOut]
+    # Page 1 of History, changes only — what the header's status line reads.
+    history: list[RunLogOut]
+    history_total: int
+    # The newest ad-wallet note (`kind=wallet`), or None — the page's wallet banner.
+    wallet: RunLogOut | None = None
+    live: bool

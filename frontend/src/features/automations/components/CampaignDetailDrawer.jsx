@@ -42,7 +42,8 @@ export const CampaignDetailDrawer = ({
 	schedules = [],
 	bidRules = [],
 }) => {
-	const { data: campaigns } = useCampaignsForRange();
+	// Only while open — the drawer is mounted closed on the page.
+	const { data: campaigns } = useCampaignsForRange({ enabled: open });
 	const { range, days } = useDateRange();
 	const { marketplace } = useAutomationMarketplace();
 	const unit = bidUnit(marketplace);

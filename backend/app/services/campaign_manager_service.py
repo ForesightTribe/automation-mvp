@@ -10,12 +10,13 @@ route maps to 404); a `DuplicateActiveJob` from the queue propagates for the rou
 import uuid
 from datetime import timedelta
 
+from app.core.database import AsyncSessionLocal
 from app.models.job import Job
 from app.schemas.campaign_manager import (
     BidContextOut, CatalogKeywordOut, KeywordBidRange, TargetedCity,
     BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn, BudgetRuleOut, BudgetRuleUpdate,
     BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmActionOut, CmJobOut,
-    RunLogOut,
+    OverviewOut, RunLogOut,
 )
 from app.utils.time import now_ist
 # `window` is the same pure module the engines decide with, so the status the UI shows is
@@ -353,11 +354,14 @@ async def reset_budget_schedule(session, tenant_id: uuid.UUID, marketplace: str,
 async def list_bid_rules(tenant_id: uuid.UUID, marketplace: str) -> list[BidRuleOut]:
     now = now_ist()
     # The UI lists every automation — paused and ended included.
-    pairs = await repo.get_bid_rules(tenant_id, marketplace, state=repo.ANY_STATE,
-                                     calendar=repo.ANY_CALENDAR)
-    rules = [r for r, _rt in pairs]
-    # One resolve for the whole page — a per-row lookup would be a session per rule.
-    names = await repo.city_names_for(marketplace, rules)
+    # Both reads on ONE pooled connection (2026-09-25: a checkout per repo call cost a
+    # liveness round trip each, and the page fires this beside ~5 other requests).
+    async with AsyncSessionLocal() as db:
+        pairs = await repo.get_bid_rules(tenant_id, marketplace, state=repo.ANY_STATE,
+                                         calendar=repo.ANY_CALENDAR, db=db)
+        rules = [r for r, _rt in pairs]
+        # One resolve for the whole page — a per-row lookup would be a session per rule.
+        names = await repo.city_names_for(marketplace, rules, db=db)
     return [_bid_out(r, now, names.get(r.id)) for r in rules]
 
 
@@ -486,10 +490,12 @@ async def list_catalog_keywords(tenant_id: uuid.UUID,
     """
     from campaign_manager.marketplaces import canonical_status
 
-    rows = [(k, c) for k, c in await repo.list_catalog_keywords(tenant_id, marketplace)
-            if not getattr(k, "is_negative", False)]
-    refused = await repo.automation_refusals(
-        tenant_id, marketplace, {k.campaign_id for k, _c in rows})
+    async with AsyncSessionLocal() as db:        # both reads on one connection
+        rows = [(k, c) for k, c in await repo.list_catalog_keywords(tenant_id, marketplace,
+                                                                   db=db)
+                if not getattr(k, "is_negative", False)]
+        refused = await repo.automation_refusals(
+            tenant_id, marketplace, {k.campaign_id for k, _c in rows}, db=db)
     name_col = "campaign_name" if marketplace == "zepto" else "name"
     bid_col = _BID_COL[marketplace]
     unit = _BID_UNIT[marketplace]
@@ -920,6 +926,38 @@ async def history(tenant_id: uuid.UUID, marketplace: str, *, kind: str | None, l
         campaign_id=campaign_id, rule_id=rule_id, run_id=run_id,
         include_unchanged=include_unchanged, keyword=keyword, success=success)
     return [RunLogOut.model_validate(r) for r in rows], total
+
+
+async def overview(tenant_id: uuid.UUID, marketplace: str, *,
+                   history_limit: int = 20) -> OverviewOut:
+    """Everything the Automations page reads on open, on ONE pooled connection.
+
+    Exactly what `list_budget_schedules`, `list_bid_rules`, `history` (page 1, changes
+    only), `history(kind="wallet", limit=1, include_unchanged=True)` and `get_live` return —
+    the same repo reads and shaping, run in sequence on one session instead of as five
+    concurrent requests with a connection each (2026-09-25)."""
+    now = now_ist()
+    async with AsyncSessionLocal() as db:
+        schedules = await repo.get_budget_schedules(
+            tenant_id, marketplace, state=repo.ANY_STATE, calendar=repo.ANY_CALENDAR, db=db)
+        pairs = await repo.get_bid_rules(
+            tenant_id, marketplace, state=repo.ANY_STATE, calendar=repo.ANY_CALENDAR, db=db)
+        rules = [r for r, _rt in pairs]
+        names = await repo.city_names_for(marketplace, rules, db=db)
+        hist, total = await repo.list_run_log(
+            tenant_id, marketplace, limit=history_limit, offset=0, db=db)
+        wallet, _ = await repo.list_run_log(
+            tenant_id, marketplace, kind="wallet", limit=1, offset=0,
+            include_unchanged=True, db=db)
+        live = await repo.get_armed(tenant_id, marketplace, db=db)
+    return OverviewOut(
+        budget_schedules=[_schedule_out(s, rs) for s, rs in schedules],
+        bid_rules=[_bid_out(r, now, names.get(r.id)) for r in rules],
+        history=[RunLogOut.model_validate(r) for r in hist],
+        history_total=total,
+        wallet=RunLogOut.model_validate(wallet[0]) if wallet else None,
+        live=live,
+    )
 
 
 # ── Advertiser account (B3) + live switch ───────────────────────────────────

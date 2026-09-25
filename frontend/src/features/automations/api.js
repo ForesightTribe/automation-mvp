@@ -14,6 +14,16 @@ import { api } from "../../lib/axios";
 const base = (clientId, mp) => `/clients/${clientId}/campaign-manager/${mp}`;
 
 // ── Reads ────────────────────────────────────────────────────────────────────
+
+/**
+ * Everything the page reads on open, in ONE request: budget schedules, bid rules, page 1 of
+ * History (the header's status line), the newest wallet note and the live switch. It used
+ * to be five requests fired together, each holding a pooled API connection (2026-09-25).
+ * The single-purpose reads below stay for the CLI and anything that refreshes one part.
+ */
+export const getOverview = (clientId, mp) =>
+	api.get(`${base(clientId, mp)}/overview`);
+
 export const getBudgetSchedules = (clientId, mp) =>
 	api.get(`${base(clientId, mp)}/budget-schedules`);
 

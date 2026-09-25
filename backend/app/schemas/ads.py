@@ -60,6 +60,25 @@ class CampaignRow(BaseModel):
     roas: float
 
 
+class CampaignDayRow(BaseModel):
+    """One campaign's spend on one day — the budget-utilisation views' grain.
+
+    Exactly the fields those views read off a one-day `/ads/campaigns` call, for a whole
+    window in ONE request: they used to make one call per day (up to 31, four at a time), and
+    every one held a pooled connection (2026-09-25). Only days a campaign SPENT on are
+    returned — a day it did not run is absent, which the views read as "did not run".
+    `daily_budget` is the campaign's current setting, as on `/ads/campaigns`."""
+
+    date: date
+    campaign_id: int
+    platform: str
+    name: str | None
+    type: str | None
+    budget_consumed: float
+    daily_budget: int | None = None
+    ad_sales: float
+
+
 class AdPerformancePoint(BaseModel):
     """One day on the spend/revenue trend. `roas` is the day's ad_sales / spend
     (0.0 when there was no spend that day)."""

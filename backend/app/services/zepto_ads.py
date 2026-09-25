@@ -312,6 +312,59 @@ async def campaigns(
     return out
 
 
+async def campaigns_daily(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> list[dict]:
+    """`campaigns()` at campaign × DAY grain, for the days a campaign spent on — the same
+    figures a one-day `campaigns(start=d, end=d)` call returns for each day, in one query.
+
+    Settings follow `campaigns()`: the catalogue's name / daily budget where it holds the
+    campaign, else what that day's own row carried.
+    """
+    rows = (
+        await session.execute(
+            select(
+                Ad.date,
+                Ad.campaign_id,
+                func.max(Ad.campaign_name),
+                func.max(Ad.campaign_type),
+                func.coalesce(func.sum(Ad.spend), 0.0),
+                _AD_SALES,
+                func.max(Ad.daily_budget),
+            )
+            .where(*_conds(tenant_id, start, end))
+            .group_by(Ad.date, Ad.campaign_id)
+            .having(func.coalesce(func.sum(Ad.spend), 0.0) > 0)
+        )
+    ).all()
+    catalogue = {
+        c.campaign_id: c
+        for c in (
+            await session.execute(
+                select(ZeptoAdCampaign).where(ZeptoAdCampaign.tenant_id == tenant_id)
+            )
+        ).scalars().all()
+    }
+    out = []
+    for day, cid, name, ctype, spend, sales, budget in rows:
+        cat = catalogue.get(cid)
+        out.append(
+            {
+                "date": day,
+                "campaign_id": cid,
+                "platform": SLUG,
+                "name": cat.campaign_name if cat and cat.campaign_name else name,
+                "type": ctype,
+                "budget_consumed": round(float(spend), 2),
+                "daily_budget": (
+                    cat.daily_budget if cat and cat.daily_budget is not None else budget
+                ),
+                "ad_sales": round(float(sales), 2),
+            }
+        )
+    return out
+
+
 async def budget_split(
     session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
 ) -> list[dict]:

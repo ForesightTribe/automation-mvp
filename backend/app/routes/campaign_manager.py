@@ -22,8 +22,8 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionOut, CmJobOut, EnqueuedOut, LiveOut,
-    RunLogOut, SetActivationIn, SetBudgetIn,
+    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionOut, CmJobOut,
+    EnqueuedOut, LiveOut, OverviewOut, RunLogOut, SetActivationIn, SetBudgetIn,
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
@@ -143,6 +143,14 @@ async def reset_budget_schedule(client: ClientDep, session: SessionDep,
 
 
 # ── Bid rules + D19 buttons ─────────────────────────────────────────────────
+
+@router.get("/{marketplace}/overview", response_model=OverviewOut)
+async def overview(client: ClientDep, marketplace: Marketplace):
+    """Everything the Automations page reads on open — schedules, bid rules, page 1 of
+    History, the newest wallet note and the live switch — in one request on one pooled
+    connection (2026-09-25). Each part is exactly what its own address returns."""
+    return await svc.overview(client.id, marketplace)
+
 
 @router.get("/{marketplace}/bid-rules", response_model=list[BidRuleOut])
 async def list_bid_rules(client: ClientDep, marketplace: Marketplace):

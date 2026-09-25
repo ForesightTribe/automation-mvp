@@ -210,10 +210,10 @@ def _catalog_rows(rows, refused=None):
     """Run `list_catalog_keywords` over stubbed repo reads."""
     orig = (repo.list_catalog_keywords, repo.automation_refusals)
 
-    async def _rows(tenant_id, platform):
+    async def _rows(tenant_id, platform, **_kw):
         return rows
 
-    async def _refused(tenant_id, platform, ids):
+    async def _refused(tenant_id, platform, ids, **_kw):
         return {c: why for c, why in (refused or {}).items() if c in set(ids)}
 
     repo.list_catalog_keywords, repo.automation_refusals = _rows, _refused

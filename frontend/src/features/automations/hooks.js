@@ -16,11 +16,9 @@ import {
 	deleteBudgetSchedule,
 	getAdvertiser,
 	getBidContext,
-	getBidRules,
-	getBudgetSchedules,
+	getOverview,
 	getKeywordMetricsPage,
 	getCatalogKeywords,
-	getLive,
 	getKeywordMetricsRest,
 	getCampaignNames,
 	getCampaignsForRange,
@@ -43,8 +41,10 @@ import {
 // Own cache namespace ("auto-*"), separate from Campaign Manager v2's ("cm2-*")
 // — same backend rows, two independent caches, so neither page's query
 // lifecycle can affect the other's.
-const SCHEDULES = "auto-budget-schedules";
-const BID_RULES = "auto-bid-rules";
+// Schedules, bid rules, the header's history, the wallet note and the live switch all live
+// in ONE cached response (`/overview`); the hooks below each select their part of it, so the
+// page opens with one request instead of five.
+const OVERVIEW = "auto-overview";
 const HISTORY = "auto-history";
 const CAMPAIGNS = "auto-campaigns";
 const ADVERTISER = "auto-advertiser";
@@ -63,23 +63,35 @@ const useScope = () => {
 
 // ── Queries ──────────────────────────────────────────────────────────────────
 
-export const useBudgetSchedules = () => {
+/**
+ * The page's opening data, one request. Every consumer passes a `select`, so each re-renders
+ * only when its own part changes, and React Query shares the single fetch between them.
+ */
+const useOverview = (select, { enabled = true } = {}) => {
 	const { activeClientId, mp, ready } = useScope();
 	return useQuery({
-		queryKey: [SCHEDULES, activeClientId, mp],
-		queryFn: () => getBudgetSchedules(activeClientId, mp),
-		enabled: ready,
+		queryKey: [OVERVIEW, activeClientId, mp],
+		queryFn: () => getOverview(activeClientId, mp),
+		enabled: ready && enabled,
+		select,
 	});
 };
 
-export const useBidRules = () => {
-	const { activeClientId, mp, ready } = useScope();
-	return useQuery({
-		queryKey: [BID_RULES, activeClientId, mp],
-		queryFn: () => getBidRules(activeClientId, mp),
-		enabled: ready,
-	});
-};
+const pickSchedules = (d) => d.budget_schedules;
+const pickBidRules = (d) => d.bid_rules;
+const pickHistory = (d) => ({ items: d.history, total: d.history_total });
+const pickWallet = (d) => d.wallet;
+const pickLive = (d) => d.live;
+
+export const useBudgetSchedules = () => useOverview(pickSchedules);
+
+export const useBidRules = () => useOverview(pickBidRules);
+
+/** Page 1 of History, changes only — the header's status line. From the overview. */
+export const useLatestHistory = () => useOverview(pickHistory);
+
+/** The newest ad-wallet note, or null — the wallet banner. From the overview. */
+export const useWalletNote = () => useOverview(pickWallet);
 
 export const useHistory = (page = 1, kind, opts = {}) => {
 	const { activeClientId, mp, ready } = useScope();
@@ -121,12 +133,12 @@ export const useHistory = (page = 1, kind, opts = {}) => {
 	});
 };
 
-export const useCampaigns = () => {
+export const useCampaigns = ({ enabled = true } = {}) => {
 	const { activeClientId, mp, ready } = useScope();
 	return useQuery({
 		queryKey: [CAMPAIGNS, activeClientId, mp],
 		queryFn: () => getCampaigns(activeClientId, mp),
-		enabled: ready,
+		enabled: ready && enabled,
 		staleTime: 5 * 60 * 1000,
 		select: (page) => page?.items ?? [],
 	});
@@ -144,13 +156,13 @@ export const useCampaigns = () => {
  * queries on purpose: those want a stable list regardless of the picker, this wants numbers
  * that match what the navbar says.
  */
-export const useCampaignsForRange = () => {
+export const useCampaignsForRange = ({ enabled = true } = {}) => {
 	const { activeClientId, mp, ready } = useScope();
 	const { days } = useDateRange();
 	return useQuery({
 		queryKey: [CAMPAIGNS, activeClientId, mp, "range", days],
 		queryFn: () => getCampaignsForRange(activeClientId, mp, days),
-		enabled: ready,
+		enabled: ready && enabled,
 		staleTime: 5 * 60 * 1000,
 		select: (page) => page?.items ?? [],
 	});
@@ -173,8 +185,10 @@ export const useCampaignNames = () => {
  * arrived so far and `isComplete` says whether the tail is still coming, so the picker can
  * render the top spenders immediately instead of holding a blank screen for ~27s.
  */
-export const useAllKeywordMetrics = () => {
-	const { activeClientId, mp, ready } = useScope();
+export const useAllKeywordMetrics = ({ enabled = true } = {}) => {
+	const { activeClientId, mp, ready: scoped } = useScope();
+	// Off until something that shows keywords is on screen — the wizard is mounted closed.
+	const ready = scoped && enabled;
 	// Keyword PERFORMANCE (/ads/keywords) exists on Blinkit only. Every other marketplace's
 	// picker reads the campaign catalogue (`useCatalogKeywords`), so these queries stay off
 	// there rather than returning an empty list that reads as "no keywords".
@@ -287,6 +301,7 @@ export const useJob = (jobId) => {
 			if (job.status === "success" || job.status === "failed") {
 				invalidateCampaignData(qc, activeClientId);
 				qc.invalidateQueries({ queryKey: [HISTORY, activeClientId] });
+				qc.invalidateQueries({ queryKey: [OVERVIEW, activeClientId] });
 			}
 			return job;
 		},
@@ -329,6 +344,7 @@ export const useRecentActions = () => {
 			if (fresh.length) {
 				invalidateCampaignData(qc, activeClientId);
 				qc.invalidateQueries({ queryKey: [HISTORY, activeClientId] });
+				qc.invalidateQueries({ queryKey: [OVERVIEW, activeClientId] });
 			}
 			return actions;
 		},
@@ -416,7 +432,7 @@ const useInvalidate = (key) => {
 
 export const useCreateBudgetSchedule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: (body) => createBudgetSchedule(activeClientId, mp, body),
 		onSuccess: invalidate,
@@ -425,7 +441,7 @@ export const useCreateBudgetSchedule = () => {
 
 export const useUpdateBudgetSchedule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: ({ scheduleId, body }) =>
 			updateBudgetSchedule(activeClientId, mp, scheduleId, body),
@@ -435,7 +451,7 @@ export const useUpdateBudgetSchedule = () => {
 
 export const useDeleteBudgetSchedule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: (scheduleId) =>
 			deleteBudgetSchedule(activeClientId, mp, scheduleId),
@@ -445,7 +461,7 @@ export const useDeleteBudgetSchedule = () => {
 
 export const useAddBudgetRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: ({ scheduleId, body }) =>
 			addBudgetRule(activeClientId, mp, scheduleId, body),
@@ -455,7 +471,7 @@ export const useAddBudgetRule = () => {
 
 export const useUpdateBudgetRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: ({ ruleId, body }) =>
 			updateBudgetRule(activeClientId, mp, ruleId, body),
@@ -465,7 +481,7 @@ export const useUpdateBudgetRule = () => {
 
 export const useDeleteBudgetRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: (ruleId) => deleteBudgetRule(activeClientId, mp, ruleId),
 		onSuccess: invalidate,
@@ -474,7 +490,7 @@ export const useDeleteBudgetRule = () => {
 
 export const useResetBudgetSchedule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(SCHEDULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: (scheduleId) =>
 			resetBudgetSchedule(activeClientId, mp, scheduleId),
@@ -484,7 +500,7 @@ export const useResetBudgetSchedule = () => {
 
 export const useCreateBidRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(BID_RULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: (body) => createBidRule(activeClientId, mp, body),
 		onSuccess: invalidate,
@@ -493,7 +509,7 @@ export const useCreateBidRule = () => {
 
 export const useUpdateBidRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(BID_RULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: ({ ruleId, body }) =>
 			updateBidRule(activeClientId, mp, ruleId, body),
@@ -503,7 +519,7 @@ export const useUpdateBidRule = () => {
 
 export const useDeleteBidRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(BID_RULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: ({ ruleId, reset = false }) =>
 			deleteBidRule(activeClientId, mp, ruleId, { reset }),
@@ -513,7 +529,7 @@ export const useDeleteBidRule = () => {
 
 export const useResetBidRule = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(BID_RULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: (ruleId) => resetBidRule(activeClientId, mp, ruleId),
 		onSuccess: invalidate,
@@ -522,7 +538,7 @@ export const useResetBidRule = () => {
 
 export const useSetBidState = () => {
 	const { activeClientId, mp } = useScope();
-	const invalidate = useInvalidate(BID_RULES);
+	const invalidate = useInvalidate(OVERVIEW);
 	return useMutation({
 		mutationFn: ({ ruleId, action }) =>
 			setBidState(activeClientId, mp, ruleId, action),
@@ -557,7 +573,7 @@ export const useUpdateAdvertiser = () => {
 
 /**
  * Whether this marketplace's automations actually write, or only simulate — the engine's
- * own switch (`live_armed`), read from `GET …/{marketplace}/live`.
+ * own switch (`live_armed`), carried on the page's overview (no request of its own).
  *
  * This used to be INFERRED from the last run's `dry_run`, which was wrong for an account
  * armed since its last run and said nothing at all before a first run. The switch itself
@@ -565,16 +581,10 @@ export const useUpdateAdvertiser = () => {
  *
  * Returns "live" | "dry" | "unknown".
  */
-export const useWriteMode = () => {
-	const { activeClientId, mp, ready } = useScope();
-	const { data, isLoading, isError } = useQuery({
-		queryKey: ["auto-live", activeClientId, mp],
-		queryFn: () => getLive(activeClientId, mp),
-		enabled: ready,
-		staleTime: 5 * 60 * 1000,
-	});
+export const useWriteMode = ({ enabled = true } = {}) => {
+	const { data, isLoading, isError } = useOverview(pickLive, { enabled });
 	return {
-		mode: isError || !data ? "unknown" : data.live ? "live" : "dry",
+		mode: isError || data == null ? "unknown" : data ? "live" : "dry",
 		isLoading,
 	};
 };

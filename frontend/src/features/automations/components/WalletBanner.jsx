@@ -1,7 +1,7 @@
 import { AlertTriangle, Wallet } from "lucide-react";
 import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
 import { formatCurrency } from "../../../lib/format";
-import { useHistory } from "../hooks";
+import { useWalletNote } from "../hooks";
 
 // A wallet note older than this is history, not news: the engine writes one at most every
 // six hours while the balance stays low, so a day without one means it has recovered (or
@@ -21,11 +21,7 @@ const FRESH_MS = 24 * 60 * 60 * 1000;
  */
 export const WalletBanner = () => {
 	const { name } = useAutomationMarketplace();
-	const { data } = useHistory(1, "wallet", {
-		limit: 1,
-		includeUnchanged: true,
-	});
-	const row = data?.items?.[0];
+	const { data: row } = useWalletNote();
 	if (!row) return null;
 	if (Date.now() - new Date(row.timestamp).getTime() > FRESH_MS) return null;
 

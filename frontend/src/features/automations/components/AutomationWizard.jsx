@@ -92,8 +92,13 @@ export const AutomationWizard = ({
 	// fill them in and then have the step reflow underneath them when the list lands. Each
 	// path waits on its OWN list: the campaign path on campaigns, the keyword path on the
 	// keyword metrics its picker reads.
-	const { isLoading: loadingCampaigns } = useCampaigns();
-	const { isLoading: loadingKeywords } = useAllKeywordMetrics();
+	// Only while open: the wizard is mounted closed on the page, and these used to load
+	// the campaign list and every keyword page on page open for a dialog nobody had opened
+	// (2026-09-25 — part of the burst that exhausted the API's connection pool).
+	const { isLoading: loadingCampaigns } = useCampaigns({ enabled: open });
+	const { isLoading: loadingKeywords } = useAllKeywordMetrics({
+		enabled: open,
+	});
 	const [kind, setKind] = useState(isEdit ? editRow.kind : initialKind);
 	// Declared after `kind`, which it reads: a const is in its temporal dead zone until its
 	// own line, so ordering here is correctness rather than tidiness.
@@ -265,7 +270,7 @@ export const AutomationWizard = ({
 		setSaveError(null);
 	}, [open, isEdit, editRow, initialKind]);
 
-	const { mode: writeMode } = useWriteMode();
+	const { mode: writeMode } = useWriteMode({ enabled: open });
 	// What the campaign runs at TODAY, which is what any baseline change is measured against.
 	// The marketplace reports it for only some campaigns, so it is often unknown and never
 	// guessed.

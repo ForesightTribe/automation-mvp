@@ -151,6 +151,17 @@ def test_the_keyword_list_is_per_marketplace(client, calls):
     assert client.get(f"{BASE}/nowhere/keywords").status_code == 404
 
 
+# ── the page-load overview (2026-09-25) ─────────────────────────────────────
+
+@_with({"overview": {"budget_schedules": [], "bid_rules": [], "history": [],
+                     "history_total": 0, "wallet": None, "live": False}})
+def test_the_overview_is_per_marketplace(client, calls):
+    r = client.get(f"{BASE}/zepto/overview")
+    assert r.status_code == 200, r.text
+    assert calls[0][1][1] == "zepto"
+    assert r.json()["live"] is False
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

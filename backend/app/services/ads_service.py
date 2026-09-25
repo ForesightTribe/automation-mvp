@@ -267,8 +267,11 @@ async def get_campaigns(
     # query per marketplace on the page, never per row.
     refused: dict[tuple[str, int], str] = {}
     for mp in {r["platform"] for r in page}:
+        # On THIS request's session — a second session here held two pooled connections
+        # per request and let bursts (Insights' per-day lists) deadlock the pool.
         for cid, why in (await cm_repo.automation_refusals(
-                tenant_id, mp, [r["campaign_id"] for r in page if r["platform"] == mp])).items():
+                tenant_id, mp, [r["campaign_id"] for r in page if r["platform"] == mp],
+                db=session)).items():
             refused[(mp, cid)] = why
     # The canonical state beside the raw status — see `CampaignRow.state`. Computed by the
     # same pure vocabulary the engines use, so the button the UI offers is the transition
@@ -279,6 +282,67 @@ async def get_campaigns(
         "not_automatable_reason": refused.get((r["platform"], r["campaign_id"])),
     }) for r in page]
     return Page.build(items, total, pagination)
+
+
+async def get_campaigns_daily(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+) -> list[dict]:
+    """Every campaign's spend per DAY over the window — what `get_campaigns` returns for a
+    one-day window, for every day at once (2026-09-25). The budget-utilisation views asked
+    `/ads/campaigns` once per day, up to 31 requests; this is one request and two queries
+    per marketplace.
+
+    Same rules as `get_campaigns`, so the two agree row for row: a Blinkit campaign needs a
+    catalogue row (its metadata) to be listed, and its `daily_budget` is the current one.
+    Only days with spend come back.
+    """
+    rollups = (
+        await session.execute(
+            select(
+                AdDaily.date,
+                AdDaily.campaign_id,
+                func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
+                func.coalesce(func.sum(AdDaily.ad_sales), 0.0),
+            )
+            .where(*_ad_conds(tenant_id, start, end, marketplaces))
+            .group_by(AdDaily.date, AdDaily.campaign_id)
+            .having(func.coalesce(func.sum(AdDaily.budget_consumed), 0.0) > 0)
+        )
+    ).all()
+    conds = [BlinkitAdCampaign.tenant_id == tenant_id]
+    if marketplaces is not None:
+        conds.append(BlinkitAdCampaign.platform.in_(marketplaces))
+    meta = {
+        c.campaign_id: c
+        for c in (await session.execute(select(BlinkitAdCampaign).where(*conds)))
+        .scalars()
+        .all()
+    }
+    out = [
+        {
+            "date": day,
+            "campaign_id": cid,
+            "platform": meta[cid].platform,
+            "name": meta[cid].name,
+            "type": meta[cid].type,
+            "budget_consumed": round(float(spend), 2),
+            "daily_budget": meta[cid].daily_budget,
+            "ad_sales": round(float(sales), 2),
+        }
+        for day, cid, spend, sales in rollups
+        if cid in meta
+    ]
+    if zepto_ads.wants_zepto(marketplaces):
+        out.extend(
+            await zepto_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
+        )
+    out.sort(key=lambda r: (r["date"], -r["budget_consumed"]))
+    return out
 
 
 async def get_performance(

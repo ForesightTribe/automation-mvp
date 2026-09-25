@@ -72,3 +72,19 @@ export const setCampaignBudget = (clientId, marketplace, campaignId, budget) =>
 		campaign_id: campaignId,
 		budget,
 	});
+
+/**
+ * Every campaign's spend per day over [start, end], for the days it spent — the
+ * budget-utilisation views' data in ONE request. They used to call `/ads/campaigns` once
+ * per day (up to 31), each holding a pooled API connection (2026-09-25).
+ */
+export const getCampaignsDaily = (clientId, { start, end, marketplaces }) =>
+	api.get(`/clients/${clientId}/ads/campaigns/daily`, {
+		params: {
+			start,
+			end,
+			marketplaces: marketplaces?.length
+				? marketplaces.join(",")
+				: undefined,
+		},
+	});
