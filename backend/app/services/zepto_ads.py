@@ -25,6 +25,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import ZeptoAdCampaignDaily as Ad
 from app.models.zepto_seller import ZeptoAdBreakdownDaily as Bd
+from app.models.zepto_seller import ZeptoAdCampaign
 from app.models.zepto_seller import ZeptoAdKeywordDaily as Kw
 from app.models.zepto_seller import ZeptoAdProductDaily as Prod
 
@@ -205,11 +206,18 @@ async def campaigns(
 ) -> list[dict]:
     """Per-campaign rollup over the window.
 
-    Zepto also reports clicks, CPC, eCPM, share-of-voice, ad position, unique
-    reach and new-to-brand share, which are stored on the table but not returned
-    here: `CampaignRow` has no fields for them, because Blinkit — the schema's
-    original and only source until now — does not report them. Surfacing them
-    means widening a schema shared with Blinkit, where they would always be null.
+    `clicks` is returned (ZC-E12: the automation pickers show Avg CPC, what a Zepto bid
+    buys); `CampaignRow.clicks` is None on Blinkit, which does not report it. Zepto's
+    eCPM, share-of-voice, ad position, unique reach and new-to-brand share are stored on
+    the table but still not returned — nothing on the list shows them.
+
+    `status` and `daily_budget` come from the campaign CATALOGUE (`zepto_ad_campaigns`)
+    where it holds the campaign, and from the latest daily row otherwise (Display
+    campaigns, which the catalogue never holds). The daily row's settings are stamped at
+    scrape time the next morning (ZC-P24), so after a Start/Stop or a Refresh they lag by up
+    to a day; the catalogue is what Refresh and every write-back update. A catalogued
+    campaign with no metrics in the window is listed too, at zero — as Blinkit's are — so a
+    campaign created today can be picked.
     """
     rows = (
         await session.execute(
@@ -222,6 +230,7 @@ async def campaigns(
                 _AD_ATC,
                 _AD_UNITS,
                 func.max(Ad.campaign_type),
+                func.coalesce(func.sum(Ad.clicks), 0),
             )
             .where(*_conds(tenant_id, start, end))
             .group_by(Ad.campaign_id)
@@ -248,23 +257,59 @@ async def campaigns(
     }
     latest_budget = {cid: b for cid, (b, _) in latest.items()}
     latest_status = {cid: st for cid, (_, st) in latest.items()}
-    return [
-        {
-            # CampaignRow types this as int, and Zepto's ids are numeric.
-            "campaign_id": cid,
-            "name": name,
-            "spend": round(float(spend), 2),
-            "impressions": int(impr),
-            "sales": round(float(sales), 2),
-            "atc": int(atc),
-            "units_sold": int(units),
-            "roas": round(float(sales) / float(spend), 4) if spend else None,
-            "status": latest_status.get(cid),
-            "campaign_type": ctype,
-            "daily_budget": latest_budget.get(cid),
-        }
-        for cid, name, spend, impr, sales, atc, units, ctype in rows
-    ]
+    catalogue = {
+        c.campaign_id: c
+        for c in (
+            await session.execute(
+                select(ZeptoAdCampaign).where(ZeptoAdCampaign.tenant_id == tenant_id)
+            )
+        ).scalars().all()
+    }
+    out = []
+    for cid, name, spend, impr, sales, atc, units, ctype, clicks in rows:
+        cat = catalogue.get(cid)
+        out.append(
+            {
+                # CampaignRow types this as int, and Zepto's ids are numeric.
+                "campaign_id": cid,
+                "name": (cat.campaign_name if cat and cat.campaign_name else name),
+                "spend": round(float(spend), 2),
+                "impressions": int(impr),
+                "clicks": int(clicks),
+                "sales": round(float(sales), 2),
+                "atc": int(atc),
+                "units_sold": int(units),
+                "roas": round(float(sales) / float(spend), 4) if spend else None,
+                "status": cat.status if cat and cat.status else latest_status.get(cid),
+                "campaign_type": ctype,
+                "daily_budget": (
+                    cat.daily_budget
+                    if cat and cat.daily_budget is not None
+                    else latest_budget.get(cid)
+                ),
+            }
+        )
+    seen = {r["campaign_id"] for r in out}
+    for cid, cat in catalogue.items():
+        if cid in seen:
+            continue
+        out.append(
+            {
+                "campaign_id": cid,
+                "name": cat.campaign_name,
+                "spend": 0.0,
+                "impressions": 0,
+                "clicks": 0,
+                "sales": 0.0,
+                "atc": 0,
+                "units_sold": 0,
+                "roas": None,
+                "status": cat.status,
+                "campaign_type": cat.campaign_type,
+                "daily_budget": cat.daily_budget,
+            }
+        )
+    return out
 
 
 async def budget_split(

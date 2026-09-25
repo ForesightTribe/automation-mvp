@@ -20,8 +20,16 @@ import { api } from "../../lib/axios";
  * Both ENQUEUE a job and return its id; nothing has happened when the promise resolves.
  */
 // The marketplace is part of every campaign-manager address, with no default on the
-// server (ZC-D1). These actions drive Blinkit only until the UI phase adds a choice.
-const cm = (clientId) => `/clients/${clientId}/campaign-manager/blinkit`;
+// server (ZC-D1) — and none here. This page can show several marketplaces at once, so an
+// action names the ROW's marketplace (`CampaignRow.platform`); without one it throws
+// rather than guessing, because a guess is how a Zepto id once reached Blinkit's account.
+const cm = (clientId, marketplace) => {
+	if (!marketplace)
+		throw new Error(
+			"No marketplace on this campaign row, so the action was not sent.",
+		);
+	return `/clients/${clientId}/campaign-manager/${marketplace}`;
+};
 
 /**
  * One page of keyword rows for CURRENT campaigns only (`recent_only`).
@@ -46,8 +54,21 @@ export const getKeywordRowsPage = (clientId, { marketplaces, page, limit }) =>
 		},
 	});
 
-export const setCampaignActivation = (clientId, campaignId, status) =>
-	api.post(`${cm(clientId)}/campaigns/${campaignId}/activation`, { status });
+export const setCampaignActivation = (
+	clientId,
+	marketplace,
+	campaignId,
+	status,
+) =>
+	api.post(
+		`${cm(clientId, marketplace)}/campaigns/${campaignId}/activation`,
+		{
+			status,
+		},
+	);
 
-export const setCampaignBudget = (clientId, campaignId, budget) =>
-	api.post(`${cm(clientId)}/set-budget`, { campaign_id: campaignId, budget });
+export const setCampaignBudget = (clientId, marketplace, campaignId, budget) =>
+	api.post(`${cm(clientId, marketplace)}/set-budget`, {
+		campaign_id: campaignId,
+		budget,
+	});

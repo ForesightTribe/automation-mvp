@@ -20,6 +20,11 @@ import { useAuth } from "./AuthContext";
  * Only `connected` marketplaces can be selected — the rest show in the picker but
  * are disabled ("coming soon") until their scrapers land. The default selection
  * is every connected marketplace ("All").
+ *
+ * A SECOND selection lives here too: the one marketplace the automation pages act on
+ * (`automation`). Those pages cannot show "All" — every campaign-manager address names
+ * one marketplace — so they keep their own single choice, remembered separately. Picking
+ * Zepto on the Automations page never narrows what Overview shows, and vice versa.
  */
 const MarketplaceContext = createContext(null);
 
@@ -35,9 +40,18 @@ const loadSelection = () => {
 	return null; // null = "not chosen yet" -> default to all connected once loaded
 };
 
+const loadAutomation = () => {
+	try {
+		return localStorage.getItem(STORAGE_KEYS.automationMarketplace);
+	} catch {
+		return null;
+	}
+};
+
 export const MarketplaceProvider = ({ children }) => {
 	const { isAuthenticated } = useAuth();
 	const [selected, setSelected] = useState(loadSelection);
+	const [automationChoice, setAutomationChoice] = useState(loadAutomation);
 
 	const { data: marketplaces = [], isLoading } = useQuery({
 		queryKey: ["marketplaces"],
@@ -99,6 +113,52 @@ export const MarketplaceProvider = ({ children }) => {
 		[connected, persist],
 	);
 
+	// ── The automation pages' single marketplace ────────────────────────────────
+	//
+	// Selectable = connected AND driven by the campaign manager (`automations`, from the
+	// adapter registry — so a marketplace gains its pill the day it gains an adapter).
+	const automatable = useMemo(
+		() =>
+			marketplaces
+				.filter((m) => m.connected && m.automations)
+				.map((m) => m.slug),
+		[marketplaces],
+	);
+
+	const selectAutomation = useCallback(
+		(slug) => {
+			if (!automatable.includes(slug)) return;
+			setAutomationChoice(slug);
+			try {
+				localStorage.setItem(STORAGE_KEYS.automationMarketplace, slug);
+			} catch {
+				// a remembered choice is a convenience; the page works without it
+			}
+		},
+		[automatable],
+	);
+
+	// Entering an automation page while the navbar shows exactly ONE marketplace means that
+	// marketplace was being looked at, so the page opens on it. Otherwise the page keeps the
+	// last one used there. Called by the navbar on ENTRY only (this provider sits outside the
+	// router, so it cannot see the route itself) — once on the page, its own pills decide.
+	const enterAutomationPage = useCallback(() => {
+		if (
+			effectiveSelected.length === 1 &&
+			automatable.includes(effectiveSelected[0])
+		) {
+			selectAutomation(effectiveSelected[0]);
+		}
+	}, [effectiveSelected, automatable, selectAutomation]);
+
+	// The choice actually in force: the remembered one while it is still selectable, else
+	// the first selectable marketplace. It is shown lit on the navbar, so it is never a
+	// silent default — the page says which marketplace it is acting on.
+	const automation = automatable.includes(automationChoice)
+		? automationChoice
+		: (automatable[0] ?? null);
+	const automationInfo = marketplaces.find((m) => m.slug === automation);
+
 	const value = {
 		marketplaces, // full list incl. unconnected, for the picker
 		selected: effectiveSelected, // connected + selected slugs (for queryKeys)
@@ -107,6 +167,11 @@ export const MarketplaceProvider = ({ children }) => {
 		toggle,
 		selectOnly,
 		selectAll,
+		automatable,
+		enterAutomationPage,
+		automation,
+		automationInfo,
+		selectAutomation,
 	};
 
 	return (
@@ -123,4 +188,21 @@ export const useMarketplaces = () => {
 			"useMarketplaces must be used within <MarketplaceProvider>",
 		);
 	return ctx;
+};
+
+/**
+ * The ONE marketplace the automation pages act on, with what those pages need to know
+ * about it: its slug (part of every campaign-manager address), its display name for copy,
+ * and its published minimum daily budget (Zepto ₹500, Blinkit none).
+ *
+ * `marketplace` is null until the reference list loads; callers keep their queries
+ * disabled until then rather than guessing one.
+ */
+export const useAutomationMarketplace = () => {
+	const { automation, automationInfo } = useMarketplaces();
+	return {
+		marketplace: automation,
+		name: automationInfo?.name ?? "the marketplace",
+		minDailyBudget: automationInfo?.min_daily_budget ?? null,
+	};
 };

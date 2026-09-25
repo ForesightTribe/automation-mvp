@@ -22,7 +22,7 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, BidContextOut, CmActionOut, CmJobOut, EnqueuedOut, LiveOut,
+    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionOut, CmJobOut, EnqueuedOut, LiveOut,
     RunLogOut, SetActivationIn, SetBudgetIn,
 )
 from app.schemas.common import Page
@@ -156,6 +156,15 @@ async def get_bid_context(client: ClientDep, marketplace: Marketplace, campaign_
     Served from the daily scrape — never 404s, since a campaign scraped after its creation
     is a normal state, not an error."""
     return await svc.get_bid_context(client.id, marketplace, campaign_id)
+
+
+@router.get("/{marketplace}/keywords", response_model=list[CatalogKeywordOut])
+async def list_catalog_keywords(client: ClientDep, marketplace: Marketplace):
+    """Every keyword the marketplace's campaign catalogue holds, with its live bid and floor
+    — the keyword picker's list on a marketplace with no per-campaign keyword metrics (Zepto,
+    ZC-E3). Negatives excluded; campaigns automations may not touch are flagged, not hidden.
+    Served from the scrape, never the marketplace."""
+    return await svc.list_catalog_keywords(client.id, marketplace)
 
 
 @router.post("/{marketplace}/bid-rules", response_model=BidRuleOut, status_code=201)

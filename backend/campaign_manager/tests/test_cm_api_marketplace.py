@@ -141,6 +141,16 @@ def test_a_job_polled_under_a_marketplace_is_checked_against_it(client, calls):
     assert calls[0][2] == {"marketplace": "zepto"}
 
 
+# ── E3: the keyword picker's address ────────────────────────────────────────
+
+@_with({"list_catalog_keywords": []})
+def test_the_keyword_list_is_per_marketplace(client, calls):
+    r = client.get(f"{BASE}/zepto/keywords")
+    assert r.status_code == 200, r.text
+    assert calls[0][1][1] == "zepto"
+    assert client.get(f"{BASE}/nowhere/keywords").status_code == 404
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

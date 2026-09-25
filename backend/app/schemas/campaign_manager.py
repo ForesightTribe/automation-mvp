@@ -255,6 +255,27 @@ class BidContextOut(BaseModel):
     unit: Literal["CPM", "CPC"] | None = None
 
 
+class CatalogKeywordOut(BaseModel):
+    """One (campaign, keyword, match_type) the marketplace's catalogue holds — a row of the
+    keyword picker (ZC-E3). No performance numbers: on Zepto there are none per campaign
+    (its keyword metrics are brand grain), so the picker shows the bid and the floor instead.
+    """
+    campaign_id: int
+    campaign_name: str | None = None
+    # Raw status and its meaning, same pair as `CampaignRow` — sort and badge by `state`.
+    status: str | None = None
+    state: str | None = None
+    keyword: str
+    match_type: str
+    # The live bid, in `unit` (CPC on Zepto, CPM on Blinkit), and the marketplace's floor.
+    bid: int | None = None
+    min_bid: int | None = None
+    unit: Literal["CPM", "CPC"] | None = None
+    automatable: bool = True
+    not_automatable_reason: str | None = None
+    scraped_at: datetime | None = None
+
+
 # ── Actions ─────────────────────────────────────────────────────────────────
 
 class SetBudgetIn(BaseModel):

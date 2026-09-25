@@ -1651,10 +1651,36 @@ rather than driving Blinkit's account by accident:
 | API ids | a rule/schedule/job id must belong to the address's marketplace | 404 — `…/zepto/…` can never act on a Blinkit rule |
 | Job queue | `marketplace` param on every `cm.*` job (API and reconciler stamp it) | the runner fails the job before it starts (`MissingMarketplace`) |
 | Engines · repo | `platform` argument, required | `TypeError` at the call — caught by tests, never guessed |
+| Dashboard — Ad Automation, One-time ops | the navbar pills, **one marketplace at a time** (no "All" on these pages) | nothing loads until the marketplace list has — no page-side default |
+| Dashboard — Ads Insights actions | the row's own `platform` (the page can show several marketplaces) | the action throws before sending |
 
 Two deliberate exceptions: public-scrape jobs (reads, not operations) keep a Blinkit fallback, and the
 queue's `uq_jobs_active` index still COALESCEs a missing marketplace to 'blinkit' — harmless now that
 no `cm.*` job lacks one; changing it needs a migration.
+
+### The dashboard on Zepto (2026-09-24)
+
+On **Ad Automation** and **One-time ops** the navbar's marketplace pills lose "All" and pick
+ONE marketplace; a marketplace the campaign manager cannot drive (`/reference/marketplaces`
+→ `automations: false`, e.g. Instamart) is greyed out. That choice is remembered apart from
+the global one, so visiting these pages never changes what Overview shows. Entering them
+while the navbar shows a single automatable marketplace opens on it. Everything on the page —
+lists, wizard, logs, activity, Refresh — then talks to that marketplace's address.
+
+What changes on Zepto:
+
+| Surface | Blinkit | Zepto |
+|---|---|---|
+| Campaign picker | every campaign; Avg CPM | Display / auto-bid campaigns greyed with the reason (`automatable: false`); Avg **CPC** |
+| Keyword picker | `/ads/keywords` performance | the catalogue (`GET …/zepto/keywords`): match type, current bid, floor — each match type its own row, since a rule binds one |
+| Bid form | min/max in CPM; floor for EXACT | CPC; floor for the chosen match type; **city optional** — empty = the campaign's best city (`pick_rule_location`) |
+| Budget fields | no minimum | **₹500 minimum**, checked before the save |
+| Start/Stop switch | on `state` — a held (ON_HOLD) campaign shows ON with Stop | on `state` — out of budget / wallet shows ON with Stop, with the reason |
+| One-time budget | running or held only | also on a **paused** campaign (C11) |
+| Wallet | — | a banner from the engine's latest `kind=wallet` History row (< 24h) |
+| "Live or simulating" | `GET …/live` — the engine's real switch, not inferred | same |
+
+The old, deprecated Campaign Manager page stays Blinkit-only.
 
 ### Rolling out a change
 
@@ -1729,7 +1755,7 @@ With v1 gone, the surviving manager took its plain name back: the UI route is
 | Bid window scheduling is hour-granular                                  | A 09:30 start rounds to the 09:00 hour; `_in_window` filters the early ticks, so it's cosmetic                                                                                                                                                                                                                                                                                                                                                                                           |
 | ~~Stale boundary crons after expiry~~                                   | **FIXED 2026-09-10** — an ended rule produces no crons, so the cleanup prunes them (it used to derive them again). The expiry one-shot is gone (§5b) |
 | `cm_run_log` has no retention policy                                    | Grows unbounded against a 500 MB quota                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **Zepto automations get no schedules from the API**                    | The API service always reconciles Blinkit (`_reconcile` sends no marketplace), so a Zepto rule created in the UI gets no crons until someone runs `cm reconcile --marketplace zepto` |
+| ~~Zepto automations get no schedules from the API~~                    | **FIXED 2026-09-24** — every API edit reconciles the marketplace in its address (`_reconcile(session, tenant, marketplace)`) |
 | Unarmed tenants' settle passes sign in                                  | While an ended automation's teardown is unlanded, its hourly pass runs dry, never latches (a dry run lands nothing) and signs in each hour until `CM_SETTLE_MAX_AGE_HOURS` |
 | A settle pass and a reset in the same minute                            | `uq_jobs_active` refuses the second `cm.bid_optimizer --reset` for the client. Rare — the settle cron sits at :37, away from the usual reset minutes |
 | Bid rules with no stop time                                             | Other rules' reset runs treat them as closing at midnight, but they are never scheduled a reset of their own. Predates the lifecycle work; half-defined |

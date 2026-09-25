@@ -51,6 +51,9 @@ class CampaignRow(BaseModel):
     daily_budget: int | None = None
     budget_consumed: float
     impressions: int
+    # Zepto only — it bills per click, so the pickers show Avg CPC from this (ZC-E12).
+    # None on Blinkit, which reports no clicks; never 0 there, which would read as "none".
+    clicks: int | None = None
     atc: int
     quantities_sold: int
     ad_sales: float

@@ -12,7 +12,7 @@ from datetime import timedelta
 
 from app.models.job import Job
 from app.schemas.campaign_manager import (
-    BidContextOut, KeywordBidRange, TargetedCity,
+    BidContextOut, CatalogKeywordOut, KeywordBidRange, TargetedCity,
     BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn, BudgetRuleOut, BudgetRuleUpdate,
     BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmActionOut, CmJobOut,
     RunLogOut,
@@ -469,6 +469,48 @@ async def get_bid_context(tenant_id: uuid.UUID, marketplace: str,
 # What a bid on each marketplace buys (ZC-D4): Blinkit prices per 1,000 impressions, Zepto
 # per click. The same number means very different money, so the form must say which.
 _BID_UNIT = {"blinkit": "CPM", "zepto": "CPC"}
+
+# Each catalogue's column for the keyword's LIVE bid — the models name it differently.
+_BID_COL = {"blinkit": "current_cpm", "zepto": "bid_value"}
+
+
+async def list_catalog_keywords(tenant_id: uuid.UUID,
+                                marketplace: str) -> list[CatalogKeywordOut]:
+    """Every keyword the marketplace's catalogue holds for this tenant — the keyword
+    picker's list (ZC-E3). DB only.
+
+    NEGATIVE keywords are left out: they are exclusions, never bid targets (same rule as
+    `_zepto_bid_context`). Campaigns the automations may not touch keep their rows but carry
+    `automatable=False` and the reason, so the picker greys them out rather than hiding a
+    campaign someone is looking for.
+    """
+    from campaign_manager.marketplaces import canonical_status
+
+    rows = [(k, c) for k, c in await repo.list_catalog_keywords(tenant_id, marketplace)
+            if not getattr(k, "is_negative", False)]
+    refused = await repo.automation_refusals(
+        tenant_id, marketplace, {k.campaign_id for k, _c in rows})
+    name_col = "campaign_name" if marketplace == "zepto" else "name"
+    bid_col = _BID_COL[marketplace]
+    unit = _BID_UNIT[marketplace]
+    out = []
+    for k, c in rows:
+        raw = getattr(c, "status", None) if c is not None else None
+        out.append(CatalogKeywordOut(
+            campaign_id=k.campaign_id,
+            campaign_name=getattr(c, name_col, None) if c is not None else None,
+            status=raw,
+            state=canonical_status(marketplace, raw),
+            keyword=k.keyword,
+            match_type=k.match_type,
+            bid=getattr(k, bid_col, None),
+            min_bid=k.min_bid,
+            unit=unit,
+            automatable=k.campaign_id not in refused,
+            not_automatable_reason=refused.get(k.campaign_id),
+            scraped_at=getattr(k, "scraped_at", None),
+        ))
+    return out
 
 
 def _zepto_bid_context(campaign_id: int, campaign, keywords, cities) -> BidContextOut:

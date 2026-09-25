@@ -51,7 +51,7 @@ export const JobLine = ({ jobId }) => {
 			</span>
 		);
 
-	// A job type that records nothing — a catalogue refresh reads Blinkit and writes only
+	// A job type that records nothing — a catalogue refresh reads the marketplace and writes only
 	// the catalogue. "The run finished" is the whole truth available, so it is all we claim.
 	if (!job?.run_id)
 		return <span className="text-xs text-success">Run finished</span>;

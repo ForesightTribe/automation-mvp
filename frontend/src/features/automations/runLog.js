@@ -8,6 +8,9 @@ export const KIND_LABEL = {
 	budget: "Budget change",
 	bid: "Bid change",
 	activation: "Start / stop",
+	// The engine's ad-wallet note (C12) — a warning with no campaign, written at most every
+	// 6h while a prepaid wallet (Zepto) runs low. Never a write.
+	wallet: "Ad wallet",
 };
 
 /**
@@ -37,6 +40,8 @@ const OUTCOME = {
 	"activation:skip": "Start / stop not applied",
 	"activation:no-op": "Already in that state",
 	"activation:error": "Could not start or stop",
+	"wallet:warn": "Ad wallet running low",
+	"wallet:error": "Ad wallet empty",
 };
 
 // Lifecycle rows (backend lifecycle.py) carry the same action whatever the kind.

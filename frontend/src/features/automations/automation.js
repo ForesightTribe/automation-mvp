@@ -282,9 +282,34 @@ const allWindows = (actions) =>
  * legal that is probably not what was meant. The wizard blocks on the first and states the
  * second, because a warning that stops you is indistinguishable from a bug when it is wrong.
  */
-export const scheduleIssues = ({ actions, defaultBudget, currentBudget }) => {
+export const scheduleIssues = ({
+	actions,
+	defaultBudget,
+	currentBudget,
+	minBudget = null,
+	marketplaceName = "The marketplace",
+}) => {
 	const out = [];
 	const base = Number(defaultBudget) || 0;
+
+	// ── below the marketplace's published minimum daily budget ─────────────────
+	//
+	// Zepto publishes ₹500 and refuses anything lower; Blinkit publishes none (`minBudget`
+	// null). Blocked here because the API refuses it too — the save would fail anyway.
+	if (minBudget != null) {
+		const low = [
+			base,
+			...actions
+				.filter((a) => a.budget != null && a.type !== "stop")
+				.map((a) => Number(a.budget)),
+		].filter((v) => v > 0 && v < minBudget);
+		if (low.length) {
+			out.push({
+				level: "block",
+				text: `${marketplaceName} does not accept a daily budget below ₹${minBudget.toLocaleString("en-IN")}. Raise ${low.length > 1 ? "each amount" : "the amount"} to at least that.`,
+			});
+		}
+	}
 
 	// ── a window with no day chosen ──────────────────────────────────────────
 	//
@@ -359,7 +384,7 @@ export const scheduleIssues = ({ actions, defaultBudget, currentBudget }) => {
 	if (currentBudget == null && base) {
 		out.push({
 			level: "warn",
-			text: "Blinkit has not reported what this campaign runs at today, so there is no way to check what this baseline is changing it from.",
+			text: `${marketplaceName} has not reported what this campaign runs at today, so there is no way to check what this baseline is changing it from.`,
 		});
 	}
 

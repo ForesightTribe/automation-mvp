@@ -204,6 +204,91 @@ def test_nothing_to_look_up_means_nothing_flagged():
     assert asyncio.run(repo.automation_refusals(TENANT, "zepto", [])) == {}
 
 
+# ── E3: the keyword picker's list, from the catalogue ───────────────────────
+
+def _catalog_rows(rows, refused=None):
+    """Run `list_catalog_keywords` over stubbed repo reads."""
+    orig = (repo.list_catalog_keywords, repo.automation_refusals)
+
+    async def _rows(tenant_id, platform):
+        return rows
+
+    async def _refused(tenant_id, platform, ids):
+        return {c: why for c, why in (refused or {}).items() if c in set(ids)}
+
+    repo.list_catalog_keywords, repo.automation_refusals = _rows, _refused
+    try:
+        return asyncio.run(svc.list_catalog_keywords(TENANT, "zepto"))
+    finally:
+        repo.list_catalog_keywords, repo.automation_refusals = orig
+
+
+def test_the_picker_gets_every_bid_keyword_with_bid_floor_and_cpc():
+    camp = SimpleNamespace(campaign_name="Tech Test", status="PAUSED")
+    kws = [_kw("pink toffee", "EXACT", 10, 10), _kw("pink toffee", "PHRASE", 12, 10)]
+    for k in kws:
+        k.campaign_id, k.scraped_at = 2427461, datetime(2026, 9, 21)
+    out = _catalog_rows([(k, camp) for k in kws])
+    assert [(r.keyword, r.match_type, r.bid, r.min_bid, r.unit) for r in out] == [
+        ("pink toffee", "EXACT", 10, 10, "CPC"), ("pink toffee", "PHRASE", 12, 10, "CPC")]
+    assert out[0].campaign_name == "Tech Test"
+    # The raw word AND what it means — the picker sorts and badges by the meaning.
+    assert (out[0].status, out[0].state) == ("PAUSED", "paused")
+    assert all(r.automatable for r in out)
+
+
+def test_the_picker_never_offers_a_negative_keyword():
+    neg = _kw("test", "EXACT", None, None, negative=True)
+    neg.campaign_id, neg.scraped_at = 2427461, None
+    assert _catalog_rows([(neg, None)]) == []
+
+
+def test_a_campaign_automations_may_not_touch_is_flagged_not_hidden():
+    k = _kw("bread", "EXACT", 8, 5)
+    k.campaign_id, k.scraped_at = 77, None
+    out = _catalog_rows([(k, SimpleNamespace(campaign_name="Auto", status="ACTIVE"))],
+                        refused={77: "automatic bidding"})
+    assert len(out) == 1
+    assert (out[0].automatable, out[0].not_automatable_reason) == (False, "automatic bidding")
+
+
+def test_a_keyword_whose_campaign_row_is_missing_still_comes_back():
+    k = _kw("bagel", "BROAD", 9, 5)
+    k.campaign_id, k.scraped_at = 99, None
+    out = _catalog_rows([(k, None)])
+    assert (out[0].campaign_id, out[0].campaign_name, out[0].state) == (99, None, None)
+
+
+# ── E1: the marketplace list says which ones automations can drive ──────────
+
+def test_the_marketplace_list_flags_automation_support_and_the_minimum():
+    from app.services import reference_service
+
+    class _Result:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def scalars(self):
+            return self
+
+        def all(self):
+            return self._rows
+
+    mps = [SimpleNamespace(slug=s, name=s.title(), color=None)
+           for s in ("blinkit", "instamart", "zepto")]
+    answers = iter([mps, ["blinkit", "instamart", "zepto"], ["blinkit", "zepto"]])
+
+    class _Session:
+        async def execute(self, _stmt):
+            return _Result(next(answers))
+
+    out = {m["slug"]: m for m in asyncio.run(reference_service.list_marketplaces(_Session()))}
+    assert out["blinkit"]["automations"] and out["zepto"]["automations"]
+    assert out["instamart"]["automations"] is False
+    assert out["zepto"]["min_daily_budget"] == 500
+    assert out["blinkit"]["min_daily_budget"] is None
+
+
 if __name__ == "__main__":
     tests = [v for k, v in sorted(globals().items()) if k.startswith("test_")]
     for t in tests:

@@ -1617,6 +1617,32 @@ async def get_bid_context(tenant_id: uuid.UUID, campaign_id: int, platform: str)
     return campaign, list(keywords)
 
 
+async def list_catalog_keywords(tenant_id: uuid.UUID, platform: str):
+    """Every catalogued (campaign, keyword, match_type) the tenant has on one marketplace,
+    each with its campaign row — the keyword picker's list (ZC-E3).
+
+    Returns `[(keyword_row, campaign_row | None)]`, the marketplace's OWN row types (see
+    `_catalog`), ordered by campaign then keyword. A keyword whose campaign row is missing
+    still comes back, with None — the picker can name it by id rather than lose it.
+
+    Why not `/ads/keywords`: that is Blinkit's per-campaign performance table. Zepto's
+    keyword metrics are BRAND grain with no campaign id (`zepto_ad_keyword_daily`), so the
+    only per-campaign keyword list Zepto has is this catalogue.
+    """
+    cat = _catalog(platform)
+    cm, km = cat.campaigns, cat.keywords
+    async with AsyncSessionLocal() as db:
+        rows = (await db.execute(
+            select(km, cm)
+            .outerjoin(cm, (cm.tenant_id == km.tenant_id)
+                       & (cm.platform == km.platform)
+                       & (cm.campaign_id == km.campaign_id))
+            .where(km.tenant_id == tenant_id, km.platform == platform)
+            .order_by(km.campaign_id, km.keyword, km.match_type)
+        )).all()
+    return [(k, c) for k, c in rows]
+
+
 async def get_keyword_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
                             match_type: str = "EXACT", *, platform: str) -> int | None:
     """The marketplace's published minimum bid for one keyword, or None when we have not

@@ -250,6 +250,7 @@ async def get_campaigns(
                     ),
                     "budget_consumed": z["spend"],
                     "impressions": z["impressions"],
+                    "clicks": z["clicks"],
                     "atc": z["atc"],
                     "quantities_sold": z["units_sold"],
                     "ad_sales": z["sales"],

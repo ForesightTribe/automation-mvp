@@ -91,7 +91,7 @@ export const InsightsTrendChart = () => {
 					<InfoTooltip
 						label={
 							metric === "money"
-								? "Ad spend is what Blinkit billed for the ads in this window. Ad revenue is the sales it attributes to them. Both are daily totals from the marketing scrape, so the last day moves until that day's scrape lands."
+								? "Ad spend is what the marketplace billed for the ads in this window. Ad revenue is the sales it attributes to them. Both are daily totals from each marketplace's ads scrape, so the last day moves until that day's scrape lands."
 								: "RoAS is ad revenue divided by ad spend for the day. 3x means three rupees back for every rupee spent. It is a ratio, so it is shown on its own scale rather than beside the money lines."
 						}
 					/>

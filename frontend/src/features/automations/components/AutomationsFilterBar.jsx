@@ -1,11 +1,3 @@
-import { ChannelBadge } from "./ChannelBadge";
-
-export const CHANNEL_OPTIONS = [
-	{ value: "", label: "All" },
-	{ value: "blinkit", label: "Blinkit" },
-	{ value: "zepto", label: "Zepto" },
-];
-
 export const TYPE_OPTIONS = [
 	{ value: "", label: "All" },
 	{ value: "campaign", label: "Campaigns" },
@@ -21,13 +13,13 @@ const STATUS_OPTIONS = [
 	{ value: "ended", label: "Ended" },
 ];
 
-/** Channel pills (with a platform monogram) + underlined type tabs — Dcluttr's
- * two-row filter header — plus a status dropdown for narrowing further.
- * Selected states use neutral ink (border-content/bg-muted), not a colour
- * fill: color here is reserved for real status (success/warning/danger). */
+/** Underlined type tabs plus a status dropdown for narrowing further.
+ *
+ * ⚠️ No channel pills any more (ZC-E1). The marketplace is the NAVBAR's choice on this page,
+ * one at a time, and the list is already scoped to it — a second, local marketplace filter
+ * could only disagree with the first. Selected states use neutral ink, not a colour fill:
+ * colour here is reserved for real status (success/warning/danger). */
 export const AutomationsFilterBar = ({
-	channel,
-	onChannel,
 	type,
 	onType,
 	status,
@@ -35,27 +27,6 @@ export const AutomationsFilterBar = ({
 	counts = {},
 }) => (
 	<div className="flex flex-col gap-3">
-		<div className="inline-flex w-fit items-center gap-1 rounded-lg border border-border bg-card p-1">
-			{CHANNEL_OPTIONS.map((o) => (
-				<button
-					key={o.value}
-					type="button"
-					onClick={() => onChannel(o.value)}
-					aria-pressed={channel === o.value}
-					className={`inline-flex items-center gap-1.5 rounded-md border px-3 py-1 text-xs font-medium transition-colors ${
-						channel === o.value
-							? "border-content bg-muted text-content"
-							: "border-transparent text-content-muted hover:text-content"
-					}`}
-				>
-					{o.value ? (
-						<ChannelBadge platform={o.value} showLabel={false} />
-					) : null}
-					{o.label}
-				</button>
-			))}
-		</div>
-
 		<div className="flex flex-wrap items-center justify-between gap-3 border-b border-border">
 			<div className="flex gap-5">
 				{TYPE_OPTIONS.map((o) => (

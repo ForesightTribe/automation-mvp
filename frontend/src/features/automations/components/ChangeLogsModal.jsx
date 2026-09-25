@@ -19,6 +19,7 @@ const TYPE_OPTIONS = [
 	["budget", "Budget change"],
 	["bid", "Bid change"],
 	["activation", "Start / stop"],
+	["wallet", "Ad wallet"],
 ];
 
 // `success` on the row means "did what it meant to": a refused or failed write is false, a
@@ -317,7 +318,13 @@ export const ChangeLogsModal = ({
 														}
 													>
 														{r.campaign_name ||
-															`Campaign ${r.campaign_id ?? "—"}`}
+															(r.campaign_id ==
+															null
+																? (KIND_LABEL[
+																		r.kind
+																	] ??
+																	"Account")
+																: `Campaign ${r.campaign_id}`)}
 													</span>
 												</div>
 												<div className="text-xs text-content-subtle">
