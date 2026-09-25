@@ -325,6 +325,13 @@ On boot, systemd restarts the runner (`Restart=always` + `systemctl enable`). Th
 host but whose PID no longer exists, and marks them `failed`, `error='runner_died'`. The
 overlap index is released and the next scheduled run proceeds.
 
+A **live** runner also checks itself every 3 minutes (added 2026-09-25): any of its own
+`running` rows that no task is driving any more (`runner_lost_track`), or that stayed open 10
+minutes past their type's time limit (`stuck_past_timeout`), is failed and logged as an
+ERROR. Every job-row write is retried, and a job whose handling breaks is marked failed
+rather than left `running`. The startup reaper alone could not help the 2026-09-24 case: the
+runner process was alive, only one job's task had died, so bidding stayed blocked ~8 h.
+
 ### The VM crashes hard (power loss, kernel panic)
 
 No `SIGTERM`, no cleanup. Row stranded at `running`; the reaper handles it identically on
