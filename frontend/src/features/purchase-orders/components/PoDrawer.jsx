@@ -211,7 +211,7 @@ export const PoDrawer = ({ poNumber, onClose }) => {
 							<Row label="City">{po.city_name}</Row>
 							<Row label="Address">{po.address}</Row>
 							<Row label="Vendor">{po.vendor_name}</Row>
-							<Row label="Blinkit contact">
+							<Row label="Platform contact">
 								{po.pm_name
 									? [po.pm_name, po.pm_phone]
 											.filter(Boolean)

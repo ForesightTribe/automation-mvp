@@ -2,6 +2,7 @@ import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useState } from "react";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
+import { useMarketplaces } from "../../context/MarketplaceContext";
 import {
 	getPoSummary,
 	getPoInsights,
@@ -11,14 +12,31 @@ import {
 } from "./api";
 import { downloadBlob } from "../../lib/exportTable";
 
+/**
+ * Resolves the global marketplace pill selection down to what the PO
+ * endpoints actually accept: undefined (Blinkit, the only marketplace this
+ * page had until now) or exactly "instamart" — never auto-detected, and
+ * there's no blended PO view across marketplaces, so "All" or a multi-select
+ * also falls back to undefined (Blinkit). Same convention as the Scorecard
+ * page's `useScorecardMarketplace`.
+ */
+const usePoMarketplace = () => {
+	const { selected, allSelected } = useMarketplaces();
+	if (allSelected || selected.length !== 1 || selected[0] === "blinkit") {
+		return undefined;
+	}
+	return selected[0];
+};
+
 /** The KPI tiles: ordered value, fill rate, undelivered value. */
 export const usePoSummary = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
+	const marketplace = usePoMarketplace();
 	return useQuery({
-		queryKey: ["po-summary", activeClientId, range],
+		queryKey: ["po-summary", activeClientId, range, marketplace],
 		queryFn: () =>
-			getPoSummary(activeClientId, { start: range.from, end: range.to }),
+			getPoSummary(activeClientId, { start: range.from, end: range.to, marketplace }),
 		enabled: Boolean(activeClientId),
 	});
 };
@@ -27,6 +45,7 @@ export const usePoSummary = () => {
 export const usePoInsights = ({ scope, search, status, page }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
+	const marketplace = usePoMarketplace();
 	return useQuery({
 		queryKey: [
 			"po-insights",
@@ -36,6 +55,7 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 			search,
 			status,
 			page,
+			marketplace,
 		],
 		queryFn: () =>
 			getPoInsights(activeClientId, {
@@ -45,6 +65,7 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 				search,
 				status,
 				page,
+				marketplace,
 			}),
 		enabled: Boolean(activeClientId),
 		placeholderData: keepPreviousData,
@@ -55,14 +76,16 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 export const usePoSkus = ({ search, page }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
+	const marketplace = usePoMarketplace();
 	return useQuery({
-		queryKey: ["po-skus", activeClientId, range, search, page],
+		queryKey: ["po-skus", activeClientId, range, search, page, marketplace],
 		queryFn: () =>
 			getPoSkus(activeClientId, {
 				start: range.from,
 				end: range.to,
 				search,
 				page,
+				marketplace,
 			}),
 		enabled: Boolean(activeClientId),
 		placeholderData: keepPreviousData,
@@ -73,6 +96,7 @@ export const usePoSkus = ({ search, page }) => {
 export const usePoExport = (scope, status) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
+	const marketplace = usePoMarketplace();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState(null);
 
@@ -85,6 +109,7 @@ export const usePoExport = (scope, status) => {
 				end: range.to,
 				scope,
 				status,
+				marketplace,
 			});
 			downloadBlob(
 				blob,
@@ -103,9 +128,10 @@ export const usePoExport = (scope, status) => {
 /** One PO's full record, fetched when its row is opened. */
 export const usePo = (poNumber) => {
 	const { activeClientId } = useClient();
+	const marketplace = usePoMarketplace();
 	return useQuery({
-		queryKey: ["po-detail", activeClientId, poNumber],
-		queryFn: () => getPo(activeClientId, poNumber),
+		queryKey: ["po-detail", activeClientId, poNumber, marketplace],
+		queryFn: () => getPo(activeClientId, poNumber, { marketplace }),
 		enabled: Boolean(activeClientId && poNumber),
 	});
 };

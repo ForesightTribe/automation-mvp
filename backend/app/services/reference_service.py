@@ -36,8 +36,26 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
     rows = (
         await session.execute(select(Marketplace).order_by(Marketplace.name))
     ).scalars().all()
+    # Public snapshots OR any successful scrape: a marketplace we only hold
+    # PRIVATE data for is still connected. Instamart is the case that forced
+    # this — its seller reports landed before any public snapshot did, and
+    # keying on `search_snapshots` alone hid real revenue behind "coming soon".
+    # This is the same reasoning `overview_service._tenant_marketplace_data`
+    # already documents: `scrape_jobs` is written by both planes, so it is the
+    # signal that holds for every `data_scope`. Union, never subtraction — no
+    # marketplace that used to be connected can lose the flag here.
     connected = set(
         (await session.execute(select(SearchSnapshot.mp_slug).distinct()))
+        .scalars()
+        .all()
+    ) | set(
+        (
+            await session.execute(
+                select(ScrapeJob.platform)
+                .where(ScrapeJob.status == JobStatus.success)
+                .distinct()
+            )
+        )
         .scalars()
         .all()
     )
