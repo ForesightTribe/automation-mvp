@@ -91,7 +91,16 @@ class PortalSession:
         self._pw = await async_playwright().start()
         self._browser = await self._pw.chromium.launch(
             headless=self.headless,
-            args=["--disable-blink-features=AutomationControlled"],
+            # --no-sandbox and --disable-dev-shm-usage match every other browser
+            # launch in this codebase (scraper/utils/browser.py and the public
+            # scrapers) — a root-run VM commonly refuses to start Chromium's
+            # sandbox without the first, and can crash mid-session on the
+            # container's tiny default /dev/shm without the second.
+            args=[
+                "--disable-blink-features=AutomationControlled",
+                "--no-sandbox",
+                "--disable-dev-shm-usage",
+            ],
         )
         await self._open_context(reuse=True)
         healthy = await self._is_logged_in()

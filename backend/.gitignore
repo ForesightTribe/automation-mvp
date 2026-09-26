@@ -36,4 +36,6 @@ promote.sh
 # The wasm is Swiggy's own public asset (re-fetched on demand); the session
 # file is a logged-in browser profile, so it never belongs in git.
 scraper/platforms/instamart/dashboard_data/seller/_signer_cache/
+# Supply Portal: the cached abacus-token is a live bearer credential.
+scraper/platforms/instamart/dashboard_data/supply/_token_cache/
 staging/instamart_reports/

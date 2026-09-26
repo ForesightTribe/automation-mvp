@@ -12,7 +12,7 @@ from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchSnapshot
 from app.services import (
-    instamart_analytics, watchlist_service, zepto_ads, zepto_analytics,
+    instamart_ads, instamart_analytics, watchlist_service, zepto_ads, zepto_analytics,
 )
 
 Sale = BlinkitSellerSale
@@ -125,6 +125,10 @@ async def _ads_agg(
     if zepto_ads.wants_zepto(marketplaces):
         z = await zepto_ads.ads_agg(session, tenant_id=tenant_id, start=start, end=end)
         totals = tuple(a + b for a, b in zip(totals, z))
+
+    if instamart_ads.wants_instamart(marketplaces):
+        i = await instamart_ads.ads_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, i))
 
     return totals
 
@@ -315,6 +319,20 @@ async def get_trends(
         ).items():
             b_sp, b_sa, b_im = ad_map.get(d, (0.0, 0.0, 0))
             ad_map[d] = (b_sp + sp, b_sa + sa, b_im + im)
+
+    # Same gap, same fix, for Instamart's account-daily table — without this
+    # the Overview's "Ad spend vs ad revenue" chart read empty for an
+    # Instamart-only client despite the Ads Insights tiles showing real spend.
+    if instamart_ads.wants_instamart(marketplaces):
+        for row in await instamart_ads.performance(
+            session, tenant_id=tenant_id, start=start, end=end
+        ):
+            b_sp, b_sa, b_im = ad_map.get(row["date"], (0.0, 0.0, 0))
+            ad_map[row["date"]] = (
+                b_sp + row["budget_consumed"],
+                b_sa + row["ad_sales"],
+                b_im + row["impressions"],
+            )
 
     sale_rows = (
         await session.execute(

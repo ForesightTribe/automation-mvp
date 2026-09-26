@@ -26,7 +26,11 @@ class CampaignRow(BaseModel):
 
     model_config = ConfigDict(from_attributes=True)
 
-    campaign_id: int
+    # Blinkit and Zepto both use integer campaign ids; Instamart's are UUID
+    # strings ("2d497b84-..."), so this widens rather than coercing — a
+    # coercion would silently mangle the id you need to look the campaign
+    # back up by.
+    campaign_id: int | str
     name: str | None
     type: str | None
     status: str | None

@@ -10,6 +10,10 @@ import {
 	getKeywords,
 	getZeptoKeywords,
 	getZeptoBudgetSplit,
+	getInstamartBudgetSplit,
+	getInstamartProducts,
+	getInstamartKeywords,
+	getInstamartCampaignKeywords,
 	getZeptoSov,
 	getZeptoProducts,
 	getZeptoBreakdown,
@@ -197,6 +201,93 @@ export const useZeptoBudgetSplit = () => {
 				end: range.to,
 			}),
 		enabled: Boolean(activeClientId) && wantsZepto,
+		placeholderData: keepPreviousData,
+	});
+};
+
+/** Instamart spend split by campaign type, windowed by the date picker
+ * (see api.js). Skipped when Instamart is out of scope. */
+export const useInstamartBudgetSplit = () => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	return useQuery({
+		queryKey: ["ads-instamart-budget-split", activeClientId, range],
+		queryFn: () =>
+			getInstamartBudgetSplit(activeClientId, {
+				start: range.from,
+				end: range.to,
+			}),
+		enabled: Boolean(activeClientId) && wantsInstamart,
+		placeholderData: keepPreviousData,
+	});
+};
+
+/** Instamart ad performance per product, account-wide, each row's `campaigns`
+ * breaking its total down by campaign. Skipped when Instamart is out of
+ * scope. No ad-type filter — it existed earlier and was removed as
+ * unreliable (see asset_metrics.py's docstring). */
+export const useInstamartProducts = ({ enabled = true } = {}) => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	return useQuery({
+		queryKey: ["ads-instamart-products", activeClientId, range],
+		queryFn: () =>
+			getInstamartProducts(activeClientId, {
+				start: range.from,
+				end: range.to,
+			}),
+		enabled: Boolean(activeClientId) && wantsInstamart && enabled,
+		placeholderData: keepPreviousData,
+	});
+};
+
+/** Instamart keyword performance, account-wide, same `campaigns` breakdown.
+ * Skipped when Instamart is out of scope. */
+export const useInstamartKeywords = ({
+	sort = "spend",
+	order = "desc",
+	enabled = true,
+} = {}) => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	const { selected } = useMarketplaces();
+	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	return useQuery({
+		queryKey: ["ads-instamart-keywords", activeClientId, range, sort, order],
+		queryFn: () =>
+			getInstamartKeywords(activeClientId, {
+				start: range.from,
+				end: range.to,
+				sort,
+				order,
+			}),
+		enabled: Boolean(activeClientId) && wantsInstamart && enabled,
+		placeholderData: keepPreviousData,
+	});
+};
+
+/** Top keywords by spend for ONE Instamart campaign, windowed — fills the
+ * Campaign insights drawer's "Top keywords by spend" for an Instamart
+ * campaign. `campaignId` is Instamart's UUID-string campaign id (distinct
+ * from Blinkit/Zepto's integer ids — see CampaignRow's docstring), so the
+ * caller decides which drawer data source to use by the id's shape. */
+export const useInstamartCampaignKeywords = (campaignId, { enabled = true } = {}) => {
+	const { activeClientId } = useClient();
+	const { range } = useDateRange();
+	return useQuery({
+		queryKey: ["ads-instamart-campaign-keywords", activeClientId, campaignId, range],
+		queryFn: () =>
+			getInstamartCampaignKeywords(activeClientId, {
+				campaignId,
+				start: range.from,
+				end: range.to,
+				limit: 10,
+			}),
+		enabled: Boolean(activeClientId) && Boolean(campaignId) && enabled,
 		placeholderData: keepPreviousData,
 	});
 };

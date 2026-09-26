@@ -5,7 +5,7 @@ import { Loading } from "../../../components/feedback/Loading";
 import { EChart } from "../../../components/charts/EChart";
 import { miniCompareOption, SERIES } from "../chartOptions";
 import { enumLabel } from "./insightsTable";
-import { useCampaigns, useKeywords } from "../hooks";
+import { useCampaigns, useKeywords, useInstamartCampaignKeywords } from "../hooks";
 import { useDateRange } from "../../../context/DateRangeContext";
 import {
 	formatCurrency,
@@ -13,28 +13,64 @@ import {
 	formatPercent,
 } from "../../../lib/format";
 
+// Instamart's campaign ids are UUID strings ("2d497b84-..."); Blinkit's and
+// Zepto's arrive as JSON numbers (see CampaignRow's docstring on the
+// backend). That's already enough to tell which "Top keywords" source a
+// campaign needs — Blinkit/Zepto's shared, campaign-keyed keyword table, or
+// Instamart's own (instamart_ad_keyword_daily, campaign-attributed since
+// asset_metrics.py started requesting DIMENSION_TYPE_CAMPAIGN).
+const isInstamartCampaign = (id) => typeof id === "string";
+
 /**
  * One campaign in full, opened from the table. Read-only: acting on the campaign stays in
  * the row's controls, so opening a detail view can never be what changes a live account.
  */
 export const CampaignDrawer = ({ campaignId, open, onClose }) => {
 	const { range, days } = useDateRange();
+	const isInstamart = isInstamartCampaign(campaignId);
 	const { data: page } = useCampaigns({
 		page: 1,
 		limit: 250,
 		sort: "spend",
 		order: "desc",
 	});
-	const { data: kw, isLoading: loadingKw } = useKeywords({
-		campaignId: open ? campaignId : null,
+	// Only one of these two actually runs (`enabled` on each is gated on the
+	// opposite branch) — Blinkit/Zepto and Instamart keep separate keyword
+	// tables (see isInstamartCampaign above), so a campaign only ever needs
+	// one of them.
+	const { data: kw, isLoading: loadingBlinkitKw } = useKeywords({
+		campaignId: open && !isInstamart ? campaignId : null,
 		page: 1,
 		limit: 50,
 		sort: "spend",
 		order: "desc",
 	});
+	const { data: imKw, isLoading: loadingImKw } = useInstamartCampaignKeywords(
+		campaignId,
+		{ enabled: open && isInstamart },
+	);
 
 	const c = (page?.items ?? []).find((r) => r.campaign_id === campaignId);
-	const keywords = useMemo(() => (kw?.items ?? []).slice(0, 10), [kw]);
+	// Normalised to the same shape the table below already renders
+	// (target/budget_consumed/total_roas/most_viewed_position) so the JSX
+	// doesn't need to branch per marketplace. Instamart has no ranked
+	// position or match type to report — left undefined, same as any other
+	// row missing an optional field.
+	const keywords = useMemo(
+		() =>
+			isInstamart
+				? (imKw ?? []).slice(0, 10).map((k) => ({
+						target: k.keyword,
+						budget_consumed: k.spend,
+						total_roas: k.roas,
+						most_viewed_position: null,
+						match_type: null,
+					}))
+				: (kw?.items ?? []).slice(0, 10),
+		[isInstamart, imKw, kw],
+	);
+	const loadingKw = isInstamart ? loadingImKw : loadingBlinkitKw;
+	const keywordsTotal = isInstamart ? (imKw ?? []).length : (kw?.total ?? 0);
 
 	if (!open) return null;
 
@@ -114,7 +150,7 @@ export const CampaignDrawer = ({ campaignId, open, onClose }) => {
 
 			<Section
 				title="Top keywords by spend"
-				hint={loadingKw ? "" : `${kw?.total ?? 0} total`}
+				hint={loadingKw ? "" : `${keywordsTotal} total`}
 			>
 				{loadingKw ? (
 					<Loading label="Loading keywords…" />

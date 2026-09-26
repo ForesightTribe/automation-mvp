@@ -1,4 +1,10 @@
-"""Client-scoped purchase orders (blinkit_pos) and PO snapshots."""
+"""Client-scoped purchase orders (blinkit_pos) and PO snapshots.
+
+`marketplace=` on `insights_summary`/`insights`/`sku_insights`/`get_po` is
+explicit-only, same convention as `scorecard_service._platform`: leaving it
+unset keeps every existing Blinkit caller unaffected, and Instamart is never
+auto-detected. See `instamart_po_service` for what it can't carry that
+Blinkit's PO data can (booking slots, a separate delivery date, city)."""
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -18,6 +24,7 @@ from app.schemas.purchase_order import (
     POSnapshotOut,
     PurchaseOrderOut,
 )
+from app.services import instamart_po_service
 
 # A PO whose delivery window has not closed: the undelivered part is still to come,
 # not lost. Anything else is settled, and its shortfall is a miss.
@@ -51,8 +58,13 @@ async def list_pos(
 
 
 async def get_po(
-    session: AsyncSession, *, tenant_id: uuid.UUID, po_number: str
+    session: AsyncSession, *, tenant_id: uuid.UUID, po_number: str,
+    marketplace: str | None = None,
 ) -> PODetailOut | None:
+    if marketplace == "instamart":
+        return await instamart_po_service.get_po(
+            session, tenant_id=tenant_id, po_number=po_number
+        )
     po = (
         await session.execute(
             select(BlinkitPO).where(
@@ -128,12 +140,18 @@ async def insights_summary(
     end: date,
     prev_start: date | None = None,
     prev_end: date | None = None,
+    marketplace: str | None = None,
 ) -> POInsightsSummary:
     """The KPI tiles: what was ordered, how much of it arrived, and what is undelivered.
 
     Fill rate counts CLOSED POs only. An open PO has delivered nothing yet by
     definition, and averaging those in reads as a collapse in fill rate.
     """
+    if marketplace == "instamart":
+        return await instamart_po_service.insights_summary(
+            session, tenant_id=tenant_id, start=start, end=end,
+            prev_start=prev_start, prev_end=prev_end,
+        )
     short_value = func.sum(
         BlinkitPOItem.remaining_quantity
         * func.coalesce(BlinkitPOItem.landing_rate, BlinkitPOItem.cost_price, 0)
@@ -213,10 +231,16 @@ async def insights(
     scope: str = "priority",
     search: str | None = None,
     status: str | None = None,
+    marketplace: str | None = None,
 ) -> Page[POInsightRow]:
     """The PO table. `scope="priority"` keeps the POs still worth acting on — open,
     with something undelivered — biggest money first; `"all"` is every PO in the window.
     """
+    if marketplace == "instamart":
+        return await instamart_po_service.insights(
+            session, tenant_id=tenant_id, pagination=pagination, start=start,
+            end=end, scope=scope, search=search, status=status,
+        )
     short_units = func.coalesce(func.sum(BlinkitPOItem.remaining_quantity), 0)
     short_value = func.coalesce(
         func.sum(
@@ -332,12 +356,18 @@ async def sku_insights(
     start: date,
     end: date,
     search: str | None = None,
+    marketplace: str | None = None,
 ) -> Page[POSkuRow]:
     """The same shortfall, read per SKU instead of per PO — which products Blinkit
     keeps ordering and not receiving, across every warehouse in the window.
 
     Open and settled value stay apart: one is still to come, the other is gone.
     """
+    if marketplace == "instamart":
+        return await instamart_po_service.sku_insights(
+            session, tenant_id=tenant_id, pagination=pagination, start=start,
+            end=end, search=search,
+        )
     is_open = BlinkitPO.po_state.in_(OPEN_STATES)
     short_value = BlinkitPOItem.remaining_quantity * func.coalesce(
         BlinkitPOItem.landing_rate, BlinkitPOItem.cost_price, 0

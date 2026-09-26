@@ -142,17 +142,19 @@ async def build_file(
     scope: str = "priority",
     status: str | None = None,
     client_name: str | None = None,
+    marketplace: str | None = None,
 ) -> tuple[str, str]:
     """Render the purchase-order section to an .xlsx. Returns (path, filename)."""
     summary = await po_service.insights_summary(
-        session, tenant_id=tenant_id, start=start, end=end
+        session, tenant_id=tenant_id, start=start, end=end, marketplace=marketplace,
     )
     pos = await po_service.insights(
         session, tenant_id=tenant_id, pagination=ALL, start=start, end=end,
-        scope=scope, status=status,
+        scope=scope, status=status, marketplace=marketplace,
     )
     skus = await po_service.sku_insights(
-        session, tenant_id=tenant_id, pagination=ALL, start=start, end=end
+        session, tenant_id=tenant_id, pagination=ALL, start=start, end=end,
+        marketplace=marketplace,
     )
     if not pos.items and not skus.items:
         raise ValueError("No purchase orders in that window.")

@@ -68,6 +68,8 @@ SALES_REPORT = "/api/v1/sales/report"        # singular: CREATE a report
 SALES_REPORTS = "/api/v1/sales/reports"      # plural: LIST reports
 SALES_FILTERS = "/api/v1/sales/filters"      # brand/city/category/product pickers
 SALES_METRIC = "/api/v1/sales/metric"        # dashboard aggregates (not used yet)
+CAMPAIGNS = "/api/v1/campaigns"              # list + per-campaign lifetime metrics
+ADVERTISER_METRICS_BATCH = "/api/v1/advertiser/metrics/batch"  # account-wide, DIMENSION_TYPE_DAY
 
 # The data client identifies itself as 1.4.136. This exact string is part of the
 # signed message, so it must match the `app_version` header byte for byte.
