@@ -110,7 +110,8 @@ export const MarketplaceCard = ({ row }) => {
 				/>
 				{!isFull && (
 					<p className="mt-1 text-[11px] text-content-subtle">
-						Public data only — no order/ads feed for this marketplace yet.
+						Public data only — no order/ads feed for this
+						marketplace yet.
 					</p>
 				)}
 			</div>

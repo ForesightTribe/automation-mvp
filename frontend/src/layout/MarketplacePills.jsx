@@ -1,3 +1,4 @@
+import { useLocation } from "react-router-dom";
 import { useMarketplaces } from "../context/MarketplaceContext";
 
 /**
@@ -10,7 +11,13 @@ import { useMarketplaces } from "../context/MarketplaceContext";
  * ⚠️ Selecting a pill selects ONLY that marketplace, and "All" is how you get back to
  * everything. The underlying state is still a list of slugs, so a caller that wants
  * several at once can still have them; this control just never produces that itself.
+ *
+ * ⚠️ "All" is hidden on the pages that cannot answer it. Purchase orders are read one
+ * marketplace at a time — the service returns BLINKIT's when none is named — so an
+ * "All" pill there offers a blended view that does not exist, and quietly shows one
+ * marketplace's orders as though they were every marketplace's.
  */
+const NO_ALL = ["/purchase-orders"];
 
 /**
  * Brand colours for the chip on each pill.
@@ -65,6 +72,9 @@ export const MarketplacePills = () => {
 		selectAll,
 	} = useMarketplaces();
 
+	const { pathname } = useLocation();
+	const allowAll = !NO_ALL.some((p) => pathname.startsWith(p));
+
 	if (isLoading) return null;
 
 	return (
@@ -73,19 +83,22 @@ export const MarketplacePills = () => {
 			aria-label="Marketplace"
 			className="flex items-center gap-1 rounded-xl border border-border bg-card p-1"
 		>
-			<button
-				type="button"
-				onClick={selectAll}
-				aria-pressed={allSelected}
-				className={`${PILL} ${allSelected ? PILL_ON : PILL_OFF}`}
-			>
-				All
-			</button>
+			{allowAll && (
+				<button
+					type="button"
+					onClick={selectAll}
+					aria-pressed={allSelected}
+					className={`${PILL} ${allSelected ? PILL_ON : PILL_OFF}`}
+				>
+					All
+				</button>
+			)}
 
 			{marketplaces.map((mp) => {
 				// "on" only when it is the sole selection. With All showing, every pill is
 				// included but none of them is the answer to "what am I looking at".
-				const on = !allSelected && selected.includes(mp.slug);
+				const on =
+					(!allSelected || !allowAll) && selected.includes(mp.slug);
 				const bg = mp.color ?? FALLBACK_COLOR[mp.slug] ?? "#6B7280";
 				return (
 					<button

@@ -32,6 +32,7 @@ class CampaignRow(BaseModel):
     # back up by.
     campaign_id: int | str
     name: str | None
+    marketplace: str | None = None  # slug the campaign runs on
     type: str | None
     status: str | None
     daily_budget: int | None = None

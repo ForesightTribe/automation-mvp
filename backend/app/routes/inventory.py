@@ -18,6 +18,7 @@ from app.schemas.inventory import (
     CitiesResponse,
     DistributionResponse,
     FillRateSummary,
+    ReachMarketplaceRow,
     SkuPricingResponse,
     SohRow,
     ProductDetailResponse,
@@ -90,6 +91,27 @@ async def distribution(
     `kind` = main (default) | combo | all."""
     return await inventory_service.get_distribution(
         session, tenant_id=client.id, start=period.start, end=period.end, city=city, marketplaces=marketplaces, kind=kind
+    )
+
+
+@router.get("/distribution/by-marketplace", response_model=list[ReachMarketplaceRow])
+async def distribution_by_marketplace(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    city: str | None = None,
+    kind: KindQuery = "main",
+    marketplaces: MarketplacesDep = None,
+):
+    """Reach and in-stock rate per marketplace, each against its own coverage."""
+    return await inventory_service.get_distribution_by_marketplace(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        city=city,
+        kind=kind,
+        marketplaces=marketplaces,
     )
 
 

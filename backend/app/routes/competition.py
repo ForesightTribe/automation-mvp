@@ -12,6 +12,7 @@ from app.schemas.competition import (
     RankMatrixResponse,
     ShareOfVoiceResponse,
     TopCompetitorsResponse,
+    TopCompetitorByMarketplaceRow,
 )
 from app.services import competition_service
 
@@ -68,6 +69,26 @@ async def top_competitors(
     )
 
 
+@router.get(
+    "/top-competitors/by-marketplace",
+    response_model=list[TopCompetitorByMarketplaceRow],
+)
+async def top_competitors_by_marketplace(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    keyword: str | None = None,
+    city: str | None = None,
+    marketplaces: MarketplacesDep = None,
+    limit: int = Query(15, ge=1, le=50),
+):
+    """The same leaderboard, split by the marketplace each presence was seen on."""
+    return await competition_service.get_top_competitors_by_marketplace(
+        session, tenant_id=client.id, keyword=keyword, city=city,
+        marketplaces=marketplaces, start=period.start, end=period.end, limit=limit,
+    )
+
+
 @router.get("/price-position", response_model=PricePositionResponse)
 async def price_position(
     session: SessionDep,
@@ -77,12 +98,16 @@ async def price_position(
     city: str | None = None,
     marketplaces: MarketplacesDep = None,
     kind: Literal["main", "combo", "all"] = "main",
+    by_marketplace: bool = Query(
+        False, description="Split each band by the shelf it was seen on"
+    ),
 ):
     """Per keyword: own price band vs competitor price band. `kind` filters
     combos/multipacks (default main = singles on both sides)."""
     return await competition_service.get_price_position(
         session, tenant_id=client.id, keyword=keyword, city=city,
         marketplaces=marketplaces, start=period.start, end=period.end, kind=kind,
+        by_marketplace=by_marketplace,
     )
 
 

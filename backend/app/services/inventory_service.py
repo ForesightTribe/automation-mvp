@@ -6,13 +6,15 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import Integer, case, cast, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.utils.cache import ttl_cache
+
 from app.dependencies import Pagination
 from app.utils.time import now_ist
 from app.models.blinkit_seller import BlinkitSOH, BlinkitScorecardFacility
 from app.models.search import MarketplaceLocation, SkuSnapshot
 from app.schemas.common import Page
 from app.schemas.inventory import AvailabilityRow, SohRow
-from app.services import watchlist_service
+from app.services import reference_service, watchlist_service
 from scraper.utils.pack import per_unit_price
 
 SOH = BlinkitSOH
@@ -317,6 +319,96 @@ async def get_availability(
         item.store_name = names.get(r.merchant_id)
         out.append(item)
     return Page.build(out, total, pagination)
+
+
+@ttl_cache(3 * 60 * 60)
+async def get_distribution_by_marketplace(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    city: str | None = None,
+    kind: str = "main",
+    marketplaces: list[str] | None = None,
+) -> list[dict]:
+    """`get_distribution` once per marketplace, reduced to the two headline
+    figures and shaped like the Overview's marketplace rows.
+
+    ⚠️ The two reductions below MUST match `ReachPanel.jsx`, which computes the
+    same pair for the account as a whole. Both are weighted by stores rather
+    than averaged across SKUs: a SKU listed in 300 stores and one listed in
+    1,700 do not count the same toward reach.
+
+    Scraped per marketplace, so a marketplace with nothing scraped in the window
+    is left out rather than drawn at 0% — no coverage and no listings are
+    different facts.
+    """
+    all_marketplaces = await reference_service.list_marketplaces(session)
+    out: list[dict] = []
+    for mp in all_marketplaces:
+        if not mp["connected"]:
+            continue
+        if marketplaces is not None and mp["slug"] not in marketplaces:
+            continue
+        data = await get_distribution(
+            session,
+            tenant_id=tenant_id,
+            start=start,
+            end=end,
+            city=city,
+            marketplaces=[mp["slug"]],
+            kind=kind,
+        )
+        skus = data["skus"]
+        covered = data["stores_scraped"]
+        if not skus or not covered:
+            continue
+        listed = sum(r["stores_listed"] or 0 for r in skus)
+        in_stock = sum(r["stores_in_stock"] or 0 for r in skus)
+
+        # DISTINCT stores carrying anything of ours, which is a different
+        # question from the listings summed above: one store stocking six SKUs
+        # is six listings and one store.
+        own = await watchlist_service.get_brands_by_relationship(
+            session, tenant_id, "own"
+        )
+        latest = _latest_per_store(
+            tenant_id, own, _bounds(start, end), city, [mp["slug"]], kind
+        )
+        # `stores_scraped` counts stores that answered FOR OUR BRAND, so every
+        # covered store carries a listing. The in-stock count is the one that
+        # differs from it.
+        stores_stocked = (
+            await session.execute(
+                select(func.count(distinct(latest.c.merchant_id))).where(
+                    latest.c.in_stock.is_(True)
+                )
+            )
+        ).scalar_one()
+        out.append(
+            {
+                "slug": mp["slug"],
+                "name": mp["name"],
+                "color": mp["color"],
+                "connected": True,
+                "reach": {
+                    "value": listed / (len(skus) * covered) * 100,
+                    "prev": None,
+                    "delta_pct": None,
+                },
+                "in_stock": {
+                    "value": (in_stock / listed * 100) if listed else None,
+                    "prev": None,
+                    "delta_pct": None,
+                },
+                "stores_scraped": covered,
+                "stores_stocked": int(stores_stocked or 0),
+                "skus": len(skus),
+                "listings": listed,
+            }
+        )
+    return out
 
 
 async def get_distribution(

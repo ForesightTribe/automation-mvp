@@ -4,13 +4,21 @@
  * they fetch data and call a builder. Nulls are left as-is so charts show honest
  * gaps on days with no data.
  */
-import { formatCompactCurrency, formatCurrency, formatDate, formatNumber } from "../../lib/format";
+import {
+	formatCompactCurrency,
+	formatCurrency,
+	formatDate,
+	formatDayLabel,
+	formatNumber,
+} from "../../lib/format";
 
 // Token-ish palette (ECharts needs concrete hex; mirrors index.css).
 const PRIMARY = "#4f46e5";
 const SUCCESS = "#16a34a";
 const INFO = "#0284c7";
 const WARNING = "#d97706";
+// Foresight red. Used to mark where the reader is, never to signal a problem.
+const BRAND = "#f42a34";
 
 // Category-trend / heatmap series palette (mirrors theme.js PALETTE).
 const SERIES_PALETTE = [
@@ -344,7 +352,11 @@ const OTHER_COLOR = "#94a3b8";
  * takes the neutral hue, so real entities keep a stable palette slot. Segments are
  * separated by a 2px surface gap; the tooltip lists the split plus the bar total.
  */
-export const stackedBarOption = (bars, series, { otherName = "Other" } = {}) => {
+export const stackedBarOption = (
+	bars,
+	series,
+	{ otherName = "Other" } = {},
+) => {
 	// ECharts draws the category axis bottom-up, so reverse to put the largest on top.
 	const labels = [...bars].reverse();
 	let hue = 0;
@@ -418,7 +430,13 @@ export const sovTrendOption = (rows) => {
 			type: "value",
 			axisLabel: { formatter: (v) => `${v}%` },
 		},
-		series: [areaSeries("Share of Voice", rows.map((r) => r.avg_sov), PRIMARY)],
+		series: [
+			areaSeries(
+				"Share of Voice",
+				rows.map((r) => r.avg_sov),
+				PRIMARY,
+			),
+		],
 	};
 };
 
@@ -441,7 +459,13 @@ export const availabilityTrendOption = (rows) => {
 			max: 100,
 			axisLabel: { formatter: (v) => `${v}%` },
 		},
-		series: [areaSeries("Availability", rows.map((r) => r.availability_pct), SUCCESS)],
+		series: [
+			areaSeries(
+				"Availability",
+				rows.map((r) => r.availability_pct),
+				SUCCESS,
+			),
+		],
 	};
 };
 
@@ -456,7 +480,9 @@ export const rankHeatmapOption = (keywords, cities, data, maxRank) => ({
 		position: "top",
 		formatter: (p) =>
 			`${cities[p.value[1]]} · ${keywords[p.value[0]]}<br/>Rank #${p.value[2]}` +
-			(p.data?.sov != null ? ` · SoV ${Number(p.data.sov).toFixed(1)}%` : ""),
+			(p.data?.sov != null
+				? ` · SoV ${Number(p.data.sov).toFixed(1)}%`
+				: ""),
 	},
 	grid: { left: 8, right: 16, top: 8, bottom: 48, containLabel: true },
 	xAxis: {
@@ -487,7 +513,9 @@ export const rankHeatmapOption = (keywords, cities, data, maxRank) => ({
 			type: "heatmap",
 			data,
 			label: { show: false },
-			emphasis: { itemStyle: { shadowBlur: 6, shadowColor: "#00000055" } },
+			emphasis: {
+				itemStyle: { shadowBlur: 6, shadowColor: "#00000055" },
+			},
 		},
 	],
 });
@@ -582,7 +610,13 @@ export const scorecardTrendOption = (rows, { metric = "fill_rate" } = {}) => {
 			axisLabel: { formatter: fmt },
 			...(meta.percent ? { max: 100 } : {}),
 		},
-		series: [areaSeries(meta.label, rows.map((r) => r[metric]), meta.color)],
+		series: [
+			areaSeries(
+				meta.label,
+				rows.map((r) => r[metric]),
+				meta.color,
+			),
+		],
 	};
 };
 
@@ -637,3 +671,341 @@ export const sparklineOption = (values, color = PRIMARY) => ({
 		},
 	],
 });
+
+/**
+ * A KPI's trajectory with the context needed to read it: the previous
+ * equal-length period as a faint line behind, the best and worst days marked,
+ * and the latest value labelled on the point rather than in a legend.
+ *
+ * No target line — this product has no revenue target, and drawing one would
+ * invent the very thing the numbers are being measured against.
+ */
+export const trajectoryOption = (
+	rows,
+	previous = [],
+	{
+		key = "revenue",
+		color = INFO,
+		format,
+		overlay,
+		kind = "line",
+		breakdown,
+		split = [],
+		legend = true,
+		focus,
+	} = {},
+) => {
+	// Bars carry best and worst in the bar's own colour; lines use markers.
+
+	const isBar = kind === "bar";
+	const stacked = isBar && split.length > 0;
+	const lined = !isBar && split.length > 0;
+	// Pointing at one channel pushes the rest back rather than hiding them: the
+	// line being followed still has the others to be read against.
+	const DIM = 0.15;
+	const dim = (name) => (focus && focus !== name ? DIM : 1);
+	const fmt = format ?? formatCompactCurrency;
+	const values = rows.map((r) => r[key]);
+	const real = values.map((v, i) => [i, v]).filter(([, v]) => v != null);
+	const lastIndex = real.length ? real[real.length - 1][0] : -1;
+	const best = real.length
+		? real.reduce((a, b) => (b[1] > a[1] ? b : a))
+		: null;
+	const worst = real.length
+		? real.reduce((a, b) => (b[1] < a[1] ? b : a))
+		: null;
+
+	const mark = (point, dotColor, size = 8) => ({
+		coord: point,
+		symbolSize: size,
+		itemStyle: {
+			color: dotColor,
+			borderColor: "#ffffff",
+			borderWidth: 1.5,
+		},
+	});
+	const marks = [];
+	if (best) marks.push(mark(best, SUCCESS));
+	// Worst day in amber, not red: the reported day is marked in BRAND red just
+	// below, and two near-identical reds on one line would read as one signal.
+	if (worst && worst[0] !== best?.[0]) marks.push(mark(worst, WARNING));
+	// The day the headline refers to, in the brand colour — this marks WHERE YOU
+	// ARE on the line, which is identity, not a business state. Drawn last and
+	// larger so it sits above the context markers.
+	const dayPoint = real.length ? real[real.length - 1] : null;
+	if (dayPoint) marks.push(mark(dayPoint, BRAND, 11));
+
+	return {
+		grid: {
+			left: 12,
+			right: 68,
+			top: 20,
+			bottom: split.length > 0 && legend ? 30 : 12,
+			containLabel: true,
+		},
+		legend:
+			split.length > 0 && legend
+				? {
+						bottom: 0,
+						icon: "circle",
+						itemWidth: 8,
+						itemHeight: 8,
+						textStyle: { color: "#646160", fontSize: 11 },
+						data: split.map((b) => b.name),
+					}
+				: undefined,
+		xAxis: {
+			type: "category",
+			boundaryGap: isBar,
+			data: rows.map((r) => formatDayLabel(r.date)),
+			axisTick: { show: false },
+			axisLine: { lineStyle: { color: "#e0ddd8" } },
+			axisLabel: {
+				color: "#646160",
+				fontSize: 10,
+				hideOverlap: true,
+				margin: 12,
+				// With boundaryGap off the first point sits ON the axis, so a
+				// centred label spills left across the y-axis figures. Anchor
+				// the end labels inside the plot instead.
+				alignMinLabel: "left",
+				alignMaxLabel: "right",
+			},
+		},
+		yAxis: {
+			type: "value",
+			// A bar's length IS its value, so its axis has to start at zero. It
+			// also keeps the scale still when a second measure is drawn.
+			scale: !isBar,
+			splitNumber: 3,
+			axisLabel: {
+				color: "#646160",
+				fontSize: 10,
+				margin: 14,
+				formatter: (v) => fmt(v),
+			},
+			splitLine: { lineStyle: { color: "#e0ddd8", type: [3, 3] } },
+		},
+		tooltip: {
+			trigger: "axis",
+			backgroundColor: "#ffffff",
+			borderColor: "#e0ddd8",
+			borderWidth: 1,
+			textStyle: { color: "#000000", fontSize: 11 },
+			// Exact rupees on hover; the axis keeps its short form so gridline
+			// labels do not eat the plot.
+			valueFormatter: (v) =>
+				v == null ? "—" : format ? fmt(v) : formatCurrency(v),
+			// With a breakdown the day's total is shown with its parts under it,
+			// whatever is drawn — so the split is one hover away rather than
+			// something the reader has to go and point at in the list first.
+			formatter: breakdown
+				? (params) => {
+						const p0 = Array.isArray(params) ? params[0] : params;
+						if (!p0) return "";
+						const i = p0.dataIndex;
+						const money = (v) =>
+							v == null
+								? "—"
+								: format
+									? fmt(v)
+									: formatCurrency(v);
+						const line = (dot, name, v, fmtOne) =>
+							`<div style="display:flex;align-items:center;gap:6px;margin-top:3px">
+								<span style="width:7px;height:7px;border-radius:50%;background:${dot}"></span>
+								<span style="flex:1;color:#646160">${name}</span>
+								<span style="font-weight:600">${fmtOne ? fmtOne(v) : money(v)}</span>
+							</div>`;
+						const total = values[i];
+						return (
+							`<div style="font-weight:600;margin-bottom:2px">${p0.axisValue}</div>` +
+							line(color, "Revenue", total) +
+							split
+								.map((b) => line(b.color, b.name, b.data[i]))
+								.join("") +
+							breakdown
+								.map((b) =>
+									line(b.color, b.name, b.data[i], b.format),
+								)
+								.join("")
+						);
+					}
+				: undefined,
+		},
+		series: [
+			// The measure split by channel, stacked so the column's height is
+			// still the day's total and each band is read as its share of it.
+			...(stacked
+				? split.map((b, idx) => ({
+						name: b.name,
+						type: "bar",
+						stack: "channels",
+						data: b.data,
+						barMaxWidth: 18,
+						itemStyle: {
+							color: b.color,
+							borderRadius:
+								idx === split.length - 1 ? [3, 3, 0, 0] : 0,
+						},
+						z: 2,
+					}))
+				: []),
+			// On a line chart the same split is a line each, so the channels are
+			// compared against one another rather than read as shares of a column.
+			...(lined
+				? split.map((b) => ({
+						name: b.name,
+						type: "line",
+						data: b.data,
+						smooth: true,
+						showSymbol: false,
+						connectNulls: false,
+						lineStyle: {
+							width: focus === b.name ? 2.5 : 1.5,
+							color: b.color,
+							opacity: dim(b.name),
+						},
+						itemStyle: { color: b.color, opacity: dim(b.name) },
+						z: focus === b.name ? 4 : 2,
+					}))
+				: []),
+			// An optional second measure, shown while the reader points at it in
+			// the breakdown — so the figure and its shape over time are the same
+			// gesture rather than two separate lookups.
+			// Ad and organic revenue are PARTS of the revenue drawn here, so on
+			// bars they split the bar rather than floating over it: the column's
+			// total height never changes, and the share is read directly.
+			...(overlay && isBar && !stacked
+				? [
+						{
+							name: overlay.name,
+							type: "bar",
+							stack: "total",
+							data: overlay.data,
+							barMaxWidth: 18,
+							itemStyle: { color: overlay.color },
+							z: 3,
+						},
+						{
+							name: "Rest of revenue",
+							type: "bar",
+							stack: "total",
+							data: values.map((v, i) => {
+								const part = overlay.data[i];
+								return v == null || part == null
+									? null
+									: Math.max(0, v - part);
+							}),
+							barMaxWidth: 18,
+							itemStyle: {
+								color,
+								opacity: 0.25,
+								borderRadius: [3, 3, 0, 0],
+							},
+							z: 3,
+						},
+					]
+				: []),
+			...(overlay && (!isBar || stacked)
+				? [
+						{
+							name: overlay.name,
+							type: "line",
+							data: overlay.data,
+							smooth: true,
+							showSymbol: false,
+							lineStyle: { width: 2, color: overlay.color },
+							itemStyle: { color: overlay.color },
+							z: 3,
+						},
+					]
+				: []),
+			{
+				name: "Previous period",
+				type: "line",
+				data: previous.map((r) => r[key]),
+				smooth: true,
+				showSymbol: false,
+				lineStyle: {
+					width: 1.5,
+					color: "#c8c5c2",
+					opacity: focus ? DIM : 1,
+				},
+				itemStyle: { color: "#c8c5c2", opacity: focus ? DIM : 1 },
+				z: 1,
+			},
+			{
+				name: "This period",
+				type: isBar ? "bar" : "line",
+				// Renders nothing while the split is drawn — that pair carries the
+				// total. The axis value label still comes from here.
+				silent: Boolean(isBar && (overlay || stacked)),
+				// Stacked with the split, so the empty series claims no slot of
+				// its own in the category band.
+				...(isBar && (overlay || stacked)
+					? { stack: stacked ? "channels" : "total" }
+					: {}),
+				data:
+					isBar && (overlay || stacked)
+						? []
+						: isBar
+							? values.map((v, i) => ({
+									value: v,
+									itemStyle: {
+										color:
+											i === best?.[0]
+												? SUCCESS
+												: i === worst?.[0]
+													? WARNING
+													: color,
+										opacity: overlay ? 0.3 : 1,
+										borderRadius: [3, 3, 0, 0],
+									},
+								}))
+							: values,
+				barMaxWidth: 18,
+				smooth: true,
+				showSymbol: false,
+				// Steps back while a second measure is drawn over it, so the
+				// line being pointed at is the one that reads.
+				lineStyle: {
+					width: 2.5,
+					color,
+					opacity: focus ? DIM : overlay ? 0.3 : 1,
+				},
+				itemStyle: {
+					color,
+					opacity: focus ? DIM : overlay ? 0.3 : 1,
+				},
+				z: 2,
+				// The best/worst/today markers belong to the total, so they come
+				// off while a single channel is being followed.
+				markPoint:
+					isBar || focus
+						? undefined
+						: {
+								symbol: "circle",
+								symbolSize: 8,
+								label: { show: false },
+								data: marks,
+							},
+				markLine:
+					lastIndex >= 0
+						? {
+								symbol: "none",
+								silent: true,
+								lineStyle: { width: 0 },
+								label: {
+									position: "end",
+									color: "#000000",
+									fontSize: 11,
+									fontWeight: 600,
+									formatter: () => fmt(values[lastIndex]),
+								},
+								data: [{ yAxis: values[lastIndex] }],
+							}
+						: undefined,
+			},
+		],
+	};
+};

@@ -4,12 +4,13 @@ from fastapi import APIRouter, Query
 
 from app.dependencies import ClientDep, PeriodDep, SessionDep
 from app.schemas.overview import (
-    AlertItem,
     FreshnessChip,
     MarketplaceRow,
-    MonthlyTrendPoint,
+    MarketplaceTrend,
 )
-from app.services import overview_service
+from app.schemas.insight import Insight
+from app.schemas.overview import SupplyOutlook
+from app.services import insights_service, overview_service, supply_service
 
 router = APIRouter()
 
@@ -30,14 +31,21 @@ async def marketplaces(
     )
 
 
-@router.get("/monthly-trends", response_model=list[MonthlyTrendPoint])
-async def monthly_trends(
+@router.get("/marketplace-trends", response_model=list[MarketplaceTrend])
+async def marketplace_trends(
     session: SessionDep,
     client: ClientDep,
-    months: int = Query(3, ge=1, le=24),
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated slugs; omitted = every connected one"
+    ),
 ):
-    return await overview_service.get_monthly_trends(
-        session, tenant_id=client.id, months=months
+    return await overview_service.get_marketplace_trends(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=[m for m in marketplaces.split(",") if m] if marketplaces else None,
     )
 
 
@@ -46,6 +54,22 @@ async def freshness(session: SessionDep, client: ClientDep):
     return await overview_service.get_freshness(session, tenant_id=client.id)
 
 
-@router.get("/alerts", response_model=list[AlertItem])
-async def alerts(session: SessionDep, client: ClientDep):
-    return await overview_service.get_alerts(session, tenant_id=client.id)
+@router.get("/insights", response_model=list[Insight])
+async def insights(session: SessionDep, client: ClientDep, period: PeriodDep):
+    """The Action Center: what is worth acting on, ranked by what it is worth."""
+    return await insights_service.get_insights(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        prev_start=period.prev_start,
+        prev_end=period.prev_end,
+    )
+
+
+@router.get("/supply-outlook", response_model=SupplyOutlook)
+async def supply_outlook(session: SessionDep, client: ClientDep, limit: int = 20):
+    """Stock, velocity and inbound POs per SKU — will it last, and is help coming."""
+    return await supply_service.get_supply_outlook(
+        session, tenant_id=client.id, limit=limit
+    )

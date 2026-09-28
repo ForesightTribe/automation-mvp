@@ -74,6 +74,14 @@ class TopCompetitorRow(BaseModel):
     share_pct: float | None  # share of all (competitor, store) presences
 
 
+class TopCompetitorByMarketplaceRow(TopCompetitorRow):
+    """A leaderboard row for one marketplace. `share_pct` is of THAT
+    marketplace's competitor presences, so each marketplace's shares add to 100
+    on their own."""
+
+    marketplace: str
+
+
 class TopCompetitorsResponse(BaseModel):
     period_days: int
     as_of: datetime | None
@@ -85,6 +93,8 @@ class TopCompetitorsResponse(BaseModel):
 
 class PricePositionRow(BaseModel):
     keyword: str
+    # Set only when the bands were split by shelf; None on the blended view.
+    marketplace: str | None = None
     own_avg_price: float | None
     own_min_price: float | None
     own_max_price: float | None
@@ -94,6 +104,11 @@ class PricePositionRow(BaseModel):
     comp_max_price: float | None
     own_samples: int
     comp_samples: int
+    # Distinct products behind the figures. `*_samples` count listing rows
+    # (product x store x scrape day) and overstate the basis roughly 1,800x, so
+    # these are what a confidence judgement must rest on.
+    own_products: int = 0
+    comp_products: int = 0
     # Per-unit band at `unit_uom`'s basis (₹/100 ml · 100 g · piece) — the fair
     # comparison across pack sizes. `unit_uom` is the keyword's dominant UOM ("" when
     # nothing parsed); per-unit values are None for rows with no parseable pack.

@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Search } from "lucide-react";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { PageHeader } from "../../components/ui/PageHeader";
@@ -66,7 +66,17 @@ export const PurchaseOrdersPage = () => {
 
 	// Same reasoning as the Scorecard page: no blended PO view, so only name a
 	// marketplace here when the picker itself has narrowed to exactly one.
-	const { marketplaces, selected, allSelected } = useMarketplaces();
+	const { marketplaces, selected, allSelected, selectOnly } =
+		useMarketplaces();
+
+	// ⚠️ These endpoints read ONE marketplace, and return Blinkit's orders when
+	// none is named, so there is no all-marketplaces view to show. The page
+	// runs on a single marketplace and picks the first connected one.
+	useEffect(() => {
+		if (!allSelected) return;
+		const first = marketplaces.find((m) => m.connected);
+		if (first) selectOnly(first.slug);
+	}, [allSelected, marketplaces, selectOnly]);
 	const explicitMp =
 		!allSelected && selected.length === 1
 			? marketplaces.find((m) => m.slug === selected[0])

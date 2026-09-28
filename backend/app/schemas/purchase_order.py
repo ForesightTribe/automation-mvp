@@ -2,6 +2,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.analytics import Metric
+
 
 class PurchaseOrderOut(BaseModel):
     """PO header (list view)."""
@@ -139,6 +141,22 @@ class POInsightsSummary(BaseModel):
     po_value_delta: float | None = None
     fill_rate_delta: float | None = None
     value_missed_delta: float | None = None
+
+
+class POMarketplaceRow(BaseModel):
+    """One marketplace's purchase orders for the window, shaped like the
+    Overview's marketplace rows so one table component renders both."""
+
+    slug: str
+    name: str
+    color: str | None = None
+    connected: bool = True
+    po_value: Metric | None = None
+    fill_rate: Metric | None = None  # percentage points, not a fraction
+    value_at_risk: float = 0.0
+    value_missed: float = 0.0
+    open_pos: int = 0
+    closed_pos: int = 0
 
 
 class POInsightRow(BaseModel):
