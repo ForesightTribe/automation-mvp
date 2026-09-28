@@ -7,6 +7,12 @@ Field names below are exactly what a live capture returned on 2026-09-25 (see
 `app/models/instamart_po.py`'s module docstring for the full context); fields
 the models don't need (reference_purchase_order_id, sample_po, business_type,
 delivery_mode, hsn, tax breakdowns, ...) are read from `raw` but dropped here.
+
+`appointment_start_date` and the four booking-status flags below were added
+2026-09-28 — they were present in every capture since day one, just never
+parsed. Confirmed live: this is the exact data the Supply Portal's own
+"PO Booking" tab renders (its "MOQ"/"PDP"/"Multi-GRN" badges and delivery
+slot), not a separate endpoint.
 """
 import csv
 import io
@@ -56,6 +62,12 @@ def parse_purchase_orders(raw: dict) -> list[dict]:
             "pending_quantity": int(po.get("pending_quantity") or 0),
             "grn_quantity": int(po.get("grn_quantity") or 0),
             "created_at": _epoch_ms_to_dt(po.get("created_at")),
+            # 0 means "not booked yet" — same sentinel as completed_date's 0.
+            "appointment_start_date": _epoch_ms_to_dt(po.get("appointment_start_date")),
+            "po_min_order_qty_fulfilled": bool(po.get("po_min_order_qty_fulfilled")),
+            "po_min_order_value_fulfilled": bool(po.get("po_min_order_value_fulfilled")),
+            "supplier_multi_grn_enabled": bool(po.get("supplier_multi_grn_enabled")),
+            "pdp_enabled": bool(po.get("pdp_enabled")),
         })
     return out
 
