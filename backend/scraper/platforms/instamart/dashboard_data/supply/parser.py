@@ -13,16 +13,27 @@ delivery_mode, hsn, tax breakdowns, ...) are read from `raw` but dropped here.
 parsed. Confirmed live: this is the exact data the Supply Portal's own
 "PO Booking" tab renders (its "MOQ"/"PDP"/"Multi-GRN" badges and delivery
 slot), not a separate endpoint.
+
+`_epoch_ms_to_date` was fixed 2026-09-28 to convert via IST, not UTC — a
+timestamp near midnight IST used to land on the wrong calendar day (e.g.
+`expiry_date` showing 28 Sept when Instamart's own UI showed 29 Sept for
+the same PO, confirmed live). `instamart_po_service.py` already works
+around this for `po_date` specifically via `_RAISED_DATE` (computed from
+`created_at`, bypassing this column); that workaround is now redundant
+but harmless. `expiry_date` and `completed_date` had no such workaround,
+so this is the real fix for those two.
 """
 import csv
 import io
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+
+_IST_OFFSET = timedelta(hours=5, minutes=30)
 
 
 def _epoch_ms_to_date(ms) -> date | None:
     if not ms:
         return None
-    return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).date()
+    return (datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc) + _IST_OFFSET).date()
 
 
 def _epoch_ms_to_dt(ms) -> datetime | None:
