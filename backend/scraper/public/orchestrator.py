@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.public import staging
+from scraper.public import guards, staging
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.browser import PLAYWRIGHT_ARGS
 
@@ -189,7 +189,7 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
 
 async def _worker(
     wid, provider, browser, seed, queue, kw_map, competitor_list, done,
-    stg, stats, total, tid, job_id, cap, misses,
+    stg, stats, total, tid, job_id, cap, misses, stop=None,
 ) -> None:
     """One concurrent worker: its own browser context + session, pulling stores off
     the shared queue until it's empty.
@@ -222,6 +222,9 @@ async def _worker(
     searches = 0        # since this worker's last rest, for provider.pause_every
     try:
         while True:
+            if stop is not None and stop.is_set():
+                logger.warning(f"worker {wid}: stopping - run flagged as stalled")
+                break
             try:
                 loc = queue.get_nowait()
             except asyncio.QueueEmpty:
@@ -535,21 +538,28 @@ async def run_tenant(
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+            browser = await pw.chromium.launch(headless=provider.headless, args=PLAYWRIGHT_ARGS)
             try:
                 logger.info(
                     f"orchestrator: tenant {tid} on {mp_slug} — {n_workers} workers × "
                     f"{total} stores, cap={cap}"
                 )
                 warn_if_co_located(locations, "orchestrator")
+                stop = asyncio.Event()
+                watchdog = asyncio.create_task(
+                    guards.watch_for_stall(stats, stop, label="orchestrator")
+                )
                 tasks = [
                     asyncio.create_task(_worker(
                         w, provider, browser, seed, queue, kw_map, competitor_list, done,
-                        stg, stats, total, tid, job_id, cap, misses,
+                        stg, stats, total, tid, job_id, cap, misses, stop,
                     ))
                     for w in range(1, n_workers + 1)
                 ]
-                await asyncio.gather(*tasks)
+                try:
+                    await asyncio.gather(*tasks)
+                finally:
+                    watchdog.cancel()
 
                 # Backlog pass: one more look at everything the main pass gave up
                 # on, now that the main queue is fully drained (so this can't
@@ -570,7 +580,11 @@ async def run_tenant(
                         ))
                         for w in range(1, min(n_workers, len(misses)) + 1)
                     ]
-                    await asyncio.gather(*retry_tasks)
+                    await guards.run_with_deadline(
+                        asyncio.gather(*retry_tasks),
+                        guards.RETRY_DEADLINE_S,
+                        "orchestrator: backlog pass",
+                    )
                     logger.info(
                         f"orchestrator: backlog pass done — "
                         f"{stats.get('recovered', 0)}/{len(misses)} recovered"
@@ -578,7 +592,7 @@ async def run_tenant(
             finally:
                 await browser.close()
         staging.update_stats(stg, stats, total)
-        staging.finish_run(stg, "success")
+        staging.finish_run(stg, "stalled" if stop.is_set() else "success")
     except Exception as e:
         staging.update_stats(stg, stats, total)
         staging.finish_run(stg, "failed", str(e))

@@ -17,7 +17,12 @@ from rich.table import Table
 
 from app.core.database import AsyncSessionLocal
 from app.schemas.explorer import ExplorerSpec
-from scraper.public.explorer import build_insights, run_explorer, supported_marketplaces
+from scraper.public.explorer import (
+    build_insights,
+    clear_checkpoint,
+    run_explorer,
+    supported_marketplaces,
+)
 from scraper.utils.search_result import slugify
 
 app = typer.Typer()
@@ -128,10 +133,28 @@ async def _run(spec: ExplorerSpec, out_path: Path) -> None:
         console.print("[yellow]No catalog locations matched the requested cities — nothing scraped.[/yellow]")
         raise typer.Exit(1)
 
+    if result.resumed_from:
+        console.print(
+            f"[green]Resumed[/green] from checkpoint — {result.resumed_from} store(s) "
+            f"were already done and were not re-scraped."
+        )
+
     insights = build_insights(result)
     path = str(out_path)
     from scraper.public.explorer import write_workbook
     write_workbook(insights, result, path)
+
+    # Only now is the run genuinely safe to forget — and only if it actually
+    # finished. A run whose workers died (network outage, session refresh
+    # exhausted) returns normally and would otherwise look like a success;
+    # clearing there deletes the resume point for a job that is only part done.
+    if result.complete:
+        clear_checkpoint(spec)
+    else:
+        console.print(
+            f"[yellow]Run incomplete — checkpoint kept at "
+            f"{result.checkpoint_path}. Re-run the same command to resume.[/yellow]"
+        )
 
     _print_summary(result, insights, path)
 
