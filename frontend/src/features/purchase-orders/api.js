@@ -25,6 +25,8 @@ export const getPoInsights = (
 		page = 1,
 		limit = 25,
 		marketplace,
+		sort,
+		order,
 	} = {},
 ) =>
 	api.get(`${base(clientId)}/insights`, {
@@ -37,15 +39,28 @@ export const getPoInsights = (
 			page,
 			limit,
 			marketplace,
+			// Ordered server-side so a header sorts every PO, not the page.
+			sort: sort || undefined,
+			order: sort ? order : undefined,
 		},
 	});
 
 export const getPoSkus = (
 	clientId,
-	{ start, end, search, page = 1, limit = 25, marketplace } = {},
+	{ start, end, search, page = 1, limit = 25, marketplace, sort, order } = {},
 ) =>
 	api.get(`${base(clientId)}/insights/skus`, {
-		params: { start, end, search: search || undefined, page, limit, marketplace },
+		params: {
+			start,
+			end,
+			search: search || undefined,
+			page,
+			limit,
+			marketplace,
+			// Ordered server-side so a header sorts every SKU, not the page.
+			sort: sort || undefined,
+			order: sort ? order : undefined,
+		},
 	});
 
 /**
@@ -66,3 +81,9 @@ export const getPoFile = (
 /** One PO with its line items — the drawer behind a row. */
 export const getPo = (clientId, poNumber, { marketplace } = {}) =>
 	api.get(`${base(clientId)}/${poNumber}`, { params: { marketplace } });
+
+/** Every PO carrying one SKU — what the SKU drawer lists. */
+export const getSkuPos = (clientId, itemId, { page = 1, limit = 50 } = {}) =>
+	api.get(`/clients/${clientId}/products/${itemId}/pos`, {
+		params: { page, limit },
+	});
