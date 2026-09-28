@@ -1,10 +1,11 @@
 import { Fragment } from "react";
 import { useWeekendPlanning } from "../hooks";
+import { useMarketplaces } from "../../../context/MarketplaceContext";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { WorkbookView } from "./WorkbookView";
-import { RawAdSheet } from "./RawAdSheet";
+import { RawAdSheet, INSTAMART_RAW_COLS } from "./RawAdSheet";
 import { HoverHint } from "../../../components/ui/HoverHint";
 import { formatCurrency, formatNumber } from "../../../lib/format";
 
@@ -60,6 +61,9 @@ const TrioHead = () => (
 
 export const WeekendPlanningReport = () => {
 	const { data, isLoading, error, refetch } = useWeekendPlanning();
+	const { selected } = useMarketplaces();
+	const wantsBlinkit = selected.includes("blinkit");
+	const wantsInstamart = selected.includes("instamart");
 
 	if (isLoading) return <Loading label="Loading weekend planning…" />;
 	if (error) return <ErrorState message={error.message} onRetry={refetch} />;
@@ -300,25 +304,45 @@ export const WeekendPlanningReport = () => {
 	}
 
 	// The workbook's raw sheets are tabs like any other, fetched only when opened.
-	sheets.push(
-		{
-			key: "raw_listing",
-			label: "PRODUCT_LISTING",
-			render: (active) => (
-				<RawAdSheet campaignType="PRODUCT_LISTING" active={active} />
-			),
-		},
-		{
-			key: "raw_reco",
-			label: "PRODUCT_RECOMMENDATION",
+	// Which ones show depends on the marketplace picker: Blinkit's two raw
+	// exports and Instamart's one flat export are different tables, so a raw
+	// tab only appears for a marketplace it actually belongs to — otherwise it
+	// silently shows Blinkit rows under an Instamart-only selection (see
+	// instamart_reports.raw_ad_rows for why Instamart's is one sheet, not two).
+	if (wantsBlinkit) {
+		sheets.push(
+			{
+				key: "raw_listing",
+				label: "PRODUCT_LISTING",
+				render: (active) => (
+					<RawAdSheet campaignType="PRODUCT_LISTING" active={active} />
+				),
+			},
+			{
+				key: "raw_reco",
+				label: "PRODUCT_RECOMMENDATION",
+				render: (active) => (
+					<RawAdSheet
+						campaignType="PRODUCT_RECOMMENDATION"
+						active={active}
+					/>
+				),
+			},
+		);
+	}
+	if (wantsInstamart) {
+		sheets.push({
+			key: "raw_instamart",
+			label: "INSTAMART RAW",
 			render: (active) => (
 				<RawAdSheet
-					campaignType="PRODUCT_RECOMMENDATION"
+					marketplace="instamart"
+					columns={INSTAMART_RAW_COLS}
 					active={active}
 				/>
 			),
-		},
-	);
+		});
+	}
 
 	return <WorkbookView sheets={sheets} />;
 };
