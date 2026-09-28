@@ -32,7 +32,7 @@ from app.models.blinkit_seller import (
 )
 from app.schemas.common import Page
 from app.schemas.scorecard import FacilityPoRow, FacilityRow, KeySkuRow
-from app.services import zepto_scorecard
+from app.services import instamart_scorecard, zepto_scorecard
 from app.services.analytics_service import _metric
 
 
@@ -43,7 +43,11 @@ async def _platform(
 
     Explicit wins. Otherwise Blinkit if it has any scraped scorecard week for
     this tenant, else Zepto — so a Blinkit tenant never silently switches to
-    derived numbers just because Zepto POs exist alongside.
+    derived numbers just because Zepto POs exist alongside. Instamart is
+    NEVER auto-detected (only reachable via `marketplace=instamart`):
+    Brik Oven has both Zepto and Instamart PO data, so guessing between two
+    derived sources would be ambiguous in a way Blinkit-vs-Zepto never was —
+    a Blinkit tenant has scraped rows for exactly one of the two.
     """
     if marketplace:
         return marketplace
@@ -80,7 +84,10 @@ async def get_weeks(
     session: AsyncSession, *, tenant_id: uuid.UUID, marketplace: str | None = None
 ) -> list[date]:
     """Available scorecard weeks, newest first — powers the page's week picker."""
-    if await _platform(session, tenant_id, marketplace) == "zepto":
+    platform = await _platform(session, tenant_id, marketplace)
+    if platform == "instamart":
+        return await instamart_scorecard.get_weeks(session, tenant_id=tenant_id)
+    if platform == "zepto":
         return await zepto_scorecard.get_weeks(session, tenant_id=tenant_id)
     return list(
         (
@@ -100,7 +107,12 @@ async def get_weekly(
 ) -> dict | None:
     """The selected (or latest) week plus growth vs the immediately-preceding
     week. Two rows at most: the target week and the one before it."""
-    if await _platform(session, tenant_id, marketplace) == "zepto":
+    platform = await _platform(session, tenant_id, marketplace)
+    if platform == "instamart":
+        return await instamart_scorecard.get_weekly(
+            session, tenant_id=tenant_id, from_date=from_date
+        )
+    if platform == "zepto":
         return await zepto_scorecard.get_weekly(
             session, tenant_id=tenant_id, from_date=from_date
         )
@@ -147,7 +159,12 @@ async def get_trend(
 ) -> list[dict]:
     """Per-week overall metrics across the last `weeks` snapshots, oldest first —
     feeds the fill-rate / potential-loss trend chart."""
-    if await _platform(session, tenant_id, marketplace) == "zepto":
+    platform = await _platform(session, tenant_id, marketplace)
+    if platform == "instamart":
+        return await instamart_scorecard.get_trend(
+            session, tenant_id=tenant_id, weeks=weeks
+        )
+    if platform == "zepto":
         return await zepto_scorecard.get_trend(
             session, tenant_id=tenant_id, weeks=weeks
         )
@@ -189,7 +206,12 @@ async def get_key_skus(
     from_date: date | None = None,
     marketplace: str | None = None,
 ) -> Page[KeySkuRow]:
-    if await _platform(session, tenant_id, marketplace) == "zepto":
+    platform = await _platform(session, tenant_id, marketplace)
+    if platform == "instamart":
+        return await instamart_scorecard.get_key_skus(
+            session, tenant_id=tenant_id, pagination=pagination, from_date=from_date
+        )
+    if platform == "zepto":
         return await zepto_scorecard.get_key_skus(
             session, tenant_id=tenant_id, pagination=pagination, from_date=from_date
         )
@@ -226,7 +248,12 @@ async def get_facilities(
     from_date: date | None = None,
     marketplace: str | None = None,
 ) -> Page[FacilityRow]:
-    if await _platform(session, tenant_id, marketplace) == "zepto":
+    platform = await _platform(session, tenant_id, marketplace)
+    if platform == "instamart":
+        return await instamart_scorecard.get_facilities(
+            session, tenant_id=tenant_id, pagination=pagination, from_date=from_date
+        )
+    if platform == "zepto":
         return await zepto_scorecard.get_facilities(
             session, tenant_id=tenant_id, pagination=pagination, from_date=from_date
         )
@@ -266,7 +293,13 @@ async def get_facility_pos(
     """POs behind a facility's fill loss — the supply story drill-down. Joined on
     `facility_id`; newest issue date first. Not week-scoped (a poor scorecard
     week traces back to POs issued before it)."""
-    if await _platform(session, tenant_id, marketplace) == "zepto":
+    platform = await _platform(session, tenant_id, marketplace)
+    if platform == "instamart":
+        return await instamart_scorecard.get_facility_pos(
+            session, tenant_id=tenant_id, facility_id=facility_id,
+            pagination=pagination,
+        )
+    if platform == "zepto":
         return await zepto_scorecard.get_facility_pos(
             session, tenant_id=tenant_id, facility_id=facility_id,
             pagination=pagination,

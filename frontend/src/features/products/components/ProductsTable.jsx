@@ -1,6 +1,7 @@
 import { useNavigate } from "react-router-dom";
 import { StatusBadge } from "./StatusBadge";
 import { formatCurrency, formatNumber } from "../../../lib/format";
+import { hasBackendStock, stockColumnLabel } from "../../../lib/marketplace";
 
 // Fixed sort direction per column (backend sorts each key one way: bigger-better
 // for money/units, smaller-first for cover so the at-risk SKUs surface).
@@ -82,11 +83,7 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 						<SortHead label="Units" sortKey="units" />
 						<SortHead label="Revenue" sortKey="revenue" />
 						<SortHead label="Avg. Price" sortKey="price" />
-						<th className={HEAD}>
-							{rows.length && rows.every((r) => r.marketplace === "zepto")
-								? "Stock"
-								: "Stock (FE/BE)"}
-						</th>
+						<th className={HEAD}>{stockColumnLabel(rows)}</th>
 						<SortHead label="Cover" sortKey="cover" />
 						<th className={HEAD}>Status</th>
 					</tr>
@@ -125,7 +122,7 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 							    selected the list interleaves them. */}
 							<td className={`${CELL} tabular-nums text-content`}>
 								{formatNumber(r.frontend_qty)}
-								{r.marketplace !== "zepto" && (
+								{hasBackendStock(r.marketplace) && (
 									<span className="text-content-subtle">
 										{" "}
 										/ {formatNumber(r.backend_qty)}

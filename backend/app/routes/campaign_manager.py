@@ -4,6 +4,7 @@ Thin HTTP handlers (§0 / D2): all logic lives in `campaign_manager_service`; th
 requests to it and results to HTTP. No Playwright, no Blinkit — the service only writes DB
 rows and enqueues jobs; browser work runs on the VM.
 """
+from datetime import datetime
 import uuid
 
 from fastapi import APIRouter, HTTPException, status
@@ -12,7 +13,7 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, BidContextOut, CmActionOut, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn,
+    BudgetScheduleUpdate, BidContextOut, CmActionOut, CmActionsPage, CmJobOut, EnqueuedOut, RunLogOut, SetActivationIn,
     SetBudgetIn,
 )
 from app.schemas.common import Page
@@ -181,9 +182,11 @@ async def reset_bid_rule(client: ClientDep, session: SessionDep, rule_id: str):
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
 @router.post("/set-budget", response_model=EnqueuedOut)
-async def set_budget_now(client: ClientDep, session: SessionDep, body: SetBudgetIn):
+async def set_budget_now(client: ClientDep, session: SessionDep, body: SetBudgetIn,
+                         source: str | None = None):
     try:
-        job_id = await svc.set_budget_now(session, client.id, body.campaign_id, body.budget)
+        job_id = await svc.set_budget_now(session, client.id, body.campaign_id, body.budget,
+                                          source=source)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A set-budget job is already active")
     return EnqueuedOut(job_id=job_id)
@@ -191,8 +194,11 @@ async def set_budget_now(client: ClientDep, session: SessionDep, body: SetBudget
 
 @router.post("/campaigns/{campaign_id}/activation", response_model=EnqueuedOut)
 async def set_activation_now(client: ClientDep, session: SessionDep, campaign_id: int,
-                             body: SetActivationIn):
+                             body: SetActivationIn, source: str | None = None):
     """Start or stop a campaign now. Enqueues a VM job and returns its id to poll.
+
+    `source` (all three on-demand endpoints) names the dashboard surface that asked, so that
+    surface can list only its own actions — see `svc.ACTION_SOURCES`.
 
     The transition guardrails (terminal states, budget bounds, rate limit) run on the VM
     against the campaign's live status — not here — so this endpoint accepts any pair and
@@ -200,14 +206,15 @@ async def set_activation_now(client: ClientDep, session: SessionDep, campaign_id
     """
     try:
         job_id = await svc.set_activation_now(session, client.id, campaign_id,
-                                              body.status, body.budget)
+                                              body.status, body.budget, source=source)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "An activation job is already active")
     return EnqueuedOut(job_id=job_id)
 
 
 @router.post("/campaigns/refresh", response_model=EnqueuedOut)
-async def refresh_campaigns(client: ClientDep, session: SessionDep):
+async def refresh_campaigns(client: ClientDep, session: SessionDep,
+                            source: str | None = None):
     """Re-read the account's campaigns + statuses from Blinkit into the catalogue.
 
     A read-only VM job (one list call, not a marketing scrape). The campaign pickers show
@@ -215,7 +222,7 @@ async def refresh_campaigns(client: ClientDep, session: SessionDep):
     last night's scrape becomes selectable.
     """
     try:
-        job_id = await svc.refresh_campaigns(session, client.id)
+        job_id = await svc.refresh_campaigns(session, client.id, source=source)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A campaign refresh is already active")
     return EnqueuedOut(job_id=job_id)
@@ -241,8 +248,9 @@ async def run_bid_optimizer(client: ClientDep, session: SessionDep):
 
 # ── Job status (poll) + history ─────────────────────────────────────────────
 
-@router.get("/actions", response_model=list[CmActionOut])
-async def recent_actions(client: ClientDep, session: SessionDep):
+@router.get("/actions", response_model=CmActionsPage)
+async def recent_actions(client: ClientDep, session: SessionDep, source: str | None = None,
+                         before: datetime | None = None, limit: int = 20):
     """What this client has recently ASKED FOR — the dashboard's activity list.
 
     Distinct from `/history`, and the difference is the point. History is `cm_run_log`:
@@ -253,8 +261,17 @@ async def recent_actions(client: ClientDep, session: SessionDep):
 
     Person-triggered only: a job type people perform AND no schedule behind this run. The
     hourly engines and the reconciler are excluded — see `svc.recent_actions`.
+
+    `source` narrows it to one surface's own actions (One-time Ops lists only what was
+    started from it). Omitted, it returns every person-triggered action — which is what the
+    per-row busy state wants, since a clash on a campaign is a clash whichever page caused it.
+
+    Paged by keyset: pass `before` (the `created_at` of the oldest row already shown) for the
+    next page. No time window — see `svc.recent_actions`.
     """
-    return await svc.recent_actions(session, client.id)
+    items, has_more = await svc.recent_actions(
+        session, client.id, limit=limit, source=source, before=before)
+    return CmActionsPage(items=items, has_more=has_more)
 
 
 @router.get("/jobs/{job_id}", response_model=CmJobOut)

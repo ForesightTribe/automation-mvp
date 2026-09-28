@@ -28,8 +28,17 @@ async def list_pos(session: SessionDep, client: ClientDep, pagination: Paginatio
     )
 
 
+_MP_DESC = (
+    "instamart to see Instamart's PO data explicitly; omit for Blinkit "
+    "(the page's only marketplace until now)."
+)
+
+
 @router.get("/insights/summary", response_model=POInsightsSummary)
-async def insights_summary(session: SessionDep, client: ClientDep, period: PeriodDep):
+async def insights_summary(
+    session: SessionDep, client: ClientDep, period: PeriodDep,
+    marketplace: str | None = Query(None, description=_MP_DESC),
+):
     """PO value, fill rate and undelivered value, against the preceding window."""
     return await po_service.insights_summary(
         session,
@@ -38,6 +47,7 @@ async def insights_summary(session: SessionDep, client: ClientDep, period: Perio
         end=period.end,
         prev_start=period.prev_start,
         prev_end=period.prev_end,
+        marketplace=marketplace,
     )
 
 
@@ -59,6 +69,7 @@ async def insights(
         None, description="Field to order by, applied across ALL rows before paging."
     ),
     order: str = Query("desc", pattern="^(asc|desc)$"),
+    marketplace: str | None = Query(None, description=_MP_DESC),
 ):
     """The PO queue. `priority` keeps open POs with something still undelivered."""
     return await po_service.insights(
@@ -72,6 +83,7 @@ async def insights(
         status=status,
         sort=sort,
         order=order,
+        marketplace=marketplace,
     )
 
 
@@ -86,6 +98,7 @@ async def sku_insights(
         None, description="Field to order by, applied across ALL rows before paging."
     ),
     order: str = Query("desc", pattern="^(asc|desc)$"),
+    marketplace: str | None = Query(None, description=_MP_DESC),
 ):
     """The shortfall per SKU across every PO in the window."""
     return await po_service.sku_insights(
@@ -97,6 +110,7 @@ async def sku_insights(
         search=search,
         sort=sort,
         order=order,
+        marketplace=marketplace,
     )
 
 
@@ -107,6 +121,7 @@ async def download_insights(
     period: PeriodDep,
     scope: str = Query("priority", pattern="^(priority|all)$"),
     status: str | None = None,
+    marketplace: str | None = Query(None, description=_MP_DESC),
 ):
     """The section on screen, as an .xlsx: the PO table and the SKU shortfall.
 
@@ -122,6 +137,7 @@ async def download_insights(
             scope=scope,
             status=status,
             client_name=client.name,
+            marketplace=marketplace,
         )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -146,8 +162,13 @@ async def list_snapshots(
 
 
 @router.get("/{po_number}", response_model=PODetailOut)
-async def get_po(session: SessionDep, client: ClientDep, po_number: str):
-    po = await po_service.get_po(session, tenant_id=client.id, po_number=po_number)
+async def get_po(
+    session: SessionDep, client: ClientDep, po_number: str,
+    marketplace: str | None = Query(None, description=_MP_DESC),
+):
+    po = await po_service.get_po(
+        session, tenant_id=client.id, po_number=po_number, marketplace=marketplace,
+    )
     if not po:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Purchase order not found"

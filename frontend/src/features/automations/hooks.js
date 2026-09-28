@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { useMemo, useRef, useState } from "react";
-import { invalidateCampaignData } from "../../lib/campaignData";
+import { useMemo, useState } from "react";
+import { invalidateAfterWrite } from "../../lib/campaignData";
+import { invalidateRecentActions, pollInterval } from "../../lib/actions";
 import { sortRows } from "../../lib/sortRows";
 
 import { useClient } from "../../context/ClientContext";
@@ -25,8 +26,6 @@ import {
 	getCampaigns,
 	getHistory,
 	getJob,
-	getRecentActions,
-	getRunOutcome,
 	refreshCampaigns,
 	resetBudgetSchedule,
 	setActivationNow,
@@ -221,8 +220,8 @@ export const useAdvertiser = () => {
  *
  * Invalidates rather than patches: the engine runs its own guardrails against a fresh
  * read, so a job can settle having done something other than what was asked. What the
- * account now says is the only reliable answer — which is also why `useRunOutcome` below
- * exists rather than trusting `status: success`.
+ * account now says is the only reliable answer — which is also why `useRunOutcome`
+ * (lib/actions.js) exists rather than trusting `status: success`.
  */
 export const useJob = (jobId) => {
 	const { activeClientId } = useClient();
@@ -232,122 +231,22 @@ export const useJob = (jobId) => {
 		queryFn: async () => {
 			const job = await getJob(activeClientId, jobId);
 			if (job.status === "success" || job.status === "failed") {
-				invalidateCampaignData(qc, activeClientId);
-				qc.invalidateQueries({ queryKey: [HISTORY, activeClientId] });
+				invalidateAfterWrite(qc, activeClientId);
 			}
 			return job;
 		},
 		enabled: Boolean(activeClientId && jobId),
-		refetchInterval: (query) => {
-			const s = query.state.data?.status;
-			return s === "success" || s === "failed" ? false : 1500;
-		},
-	});
-};
-
-/**
- * What this client has recently asked for, newest first — the activity list.
- *
- * Polls only while something is unfinished, and stops as soon as everything has settled:
- * an idle dashboard makes no requests at all. 2s rather than the job poller's 1.5s because
- * this is a list someone glances at, not a spinner they are watching.
- *
- * `ACTIVE` is what the badge counts and what keeps the poll alive.
- */
-export const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
-
-export const useRecentActions = () => {
-	const { activeClientId } = useClient();
-	const qc = useQueryClient();
-	const settled = useRef(new Set());
-	return useQuery({
-		queryKey: ["auto-actions", activeClientId],
-		queryFn: async () => {
-			const actions = (await getRecentActions(activeClientId)) ?? [];
-			// The moment an action finishes, every screen's campaign data is out of date.
-			// Done here as well as in `useJob` because this list outlives the component
-			// that started the job: reload the page mid-run and nothing else is watching,
-			// so without this the tables would keep serving pre-write values.
-			const done = actions.filter((a) => !ACTIVE_JOB_STATUSES.has(a.status));
-			const fresh = done.filter((a) => !settled.current.has(a.id));
-			for (const a of done) settled.current.add(a.id);
-			if (fresh.length) {
-				invalidateCampaignData(qc, activeClientId);
-				qc.invalidateQueries({ queryKey: [HISTORY, activeClientId] });
-			}
-			return actions;
-		},
-		enabled: Boolean(activeClientId),
+		// The same back-off as the recent-actions list (`pollInterval`): fast while the job is
+		// fresh, slower once it is plainly waiting in the queue, and stopped the moment it
+		// settles. A fixed 1.5s cost ~200 requests for one job that waited five minutes.
+		// Before the first fetch there is no job yet, so poll at the fast rate.
 		refetchInterval: (query) =>
-			(query.state.data ?? []).some((a) => ACTIVE_JOB_STATUSES.has(a.status))
-				? 2000
-				: false,
+			query.state.data ? pollInterval([query.state.data]) : 1500,
 	});
 };
 
-/**
- * Which of your in-flight actions, if any, is acting on a given row.
- *
- * One definition rather than one per surface, because "is this row busy" has to mean the
- * same thing in the automations table and in the wizard's campaign picker — and getting it
- * subtly different in two places is how a control ends up clickable during the write it
- * would conflict with.
- *
- * The match is deliberately narrow:
- *
- *   - a KEYWORD action (a bid reset) carries its keyword, so it marks only that rule busy.
- *     Matching on the campaign alone would freeze every bid rule on a campaign because one
- *     of its keywords was being reset.
- *   - a CAMPAIGN action (budget, start/stop) marks only campaign-kind rows. A budget write
- *     does not touch a keyword's bid, so its rules stay usable.
- *
- * Returns the action, so a caller can name what is happening rather than only that
- * something is.
- */
-export const useActiveActionFor = () => {
-	const { data: actions } = useRecentActions();
-	const live = useMemo(
-		() => (actions ?? []).filter((a) => ACTIVE_JOB_STATUSES.has(a.status)),
-		[actions],
-	);
-	return (row) => {
-		if (!row?.campaign_id) return null;
-		return (
-			live.find((a) =>
-				a.campaign_id !== row.campaign_id
-					? false
-					: a.keyword
-						? row.kind === "keyword" && row.keyword === a.keyword
-						: row.kind === "campaign",
-			) ?? null
-		);
-	};
-};
-
-/**
- * Every row one run recorded — what the engine actually did, read once its job has settled.
- *
- * `enabled` is the settled flag on purpose: before then the run has written nothing, and an
- * empty result would be indistinguishable from "it decided to change nothing".
- *
- * Keyed on the RUN, not the campaign. A run id is minted by the queue and travels into the
- * run, so this is an exact match — where "the newest row for this campaign" was a guess
- * that races the parallel cm_bid / cm_ops lanes and cannot describe a multi-campaign run.
- *
- * An EMPTY list is a real answer, not a missing one: the engines deliberately record no
- * row for a tick that changed nothing (docs D6), so zero rows means "nothing needed doing".
- */
-export const useRunOutcome = (runId, enabled) => {
-	const { activeClientId } = useClient();
-	return useQuery({
-		queryKey: ["auto-run-outcome", activeClientId, runId],
-		queryFn: () => getRunOutcome(activeClientId, runId),
-		enabled: Boolean(activeClientId && runId && enabled),
-		select: (page) => page?.items ?? [],
-		staleTime: 0,
-		gcTime: 0,
-	});
-};
+// Recent actions, row matching and run outcomes live in lib/actions.js — One-time Ops
+// needs the same answers and may not import from this feature.
 
 // ── Mutations ────────────────────────────────────────────────────────────────
 
@@ -417,11 +316,15 @@ export const useDeleteBudgetRule = () => {
 
 export const useResetBudgetSchedule = () => {
 	const { activeClientId } = useClient();
+	const qc = useQueryClient();
 	const invalidate = useInvalidate(SCHEDULES);
 	return useMutation({
 		mutationFn: (scheduleId) =>
 			resetBudgetSchedule(activeClientId, scheduleId),
-		onSuccess: invalidate,
+		onSuccess: () => {
+			invalidate();
+			invalidateRecentActions(qc, activeClientId);
+		},
 	});
 };
 
@@ -446,20 +349,30 @@ export const useUpdateBidRule = () => {
 
 export const useDeleteBidRule = () => {
 	const { activeClientId } = useClient();
+	const qc = useQueryClient();
 	const invalidate = useInvalidate(BID_RULES);
 	return useMutation({
 		mutationFn: ({ ruleId, reset = false }) =>
 			deleteBidRule(activeClientId, ruleId, { reset }),
-		onSuccess: invalidate,
+		// Delete-with-reset enqueues a bid write; a plain delete enqueues nothing, and the
+		// extra refetch costs one small request.
+		onSuccess: () => {
+			invalidate();
+			invalidateRecentActions(qc, activeClientId);
+		},
 	});
 };
 
 export const useResetBidRule = () => {
 	const { activeClientId } = useClient();
+	const qc = useQueryClient();
 	const invalidate = useInvalidate(BID_RULES);
 	return useMutation({
 		mutationFn: (ruleId) => resetBidRule(activeClientId, ruleId),
-		onSuccess: invalidate,
+		onSuccess: () => {
+			invalidate();
+			invalidateRecentActions(qc, activeClientId);
+		},
 	});
 };
 
@@ -475,15 +388,21 @@ export const useSetBidState = () => {
 
 export const useSetActivationNow = () => {
 	const { activeClientId } = useClient();
+	const qc = useQueryClient();
 	return useMutation({
 		mutationFn: ({ campaignId, ...body }) =>
 			setActivationNow(activeClientId, campaignId, body),
+		onSuccess: () => invalidateRecentActions(qc, activeClientId),
 	});
 };
 
 export const useRefreshCampaigns = () => {
 	const { activeClientId } = useClient();
-	return useMutation({ mutationFn: () => refreshCampaigns(activeClientId) });
+	const qc = useQueryClient();
+	return useMutation({
+		mutationFn: () => refreshCampaigns(activeClientId),
+		onSuccess: () => invalidateRecentActions(qc, activeClientId),
+	});
 };
 
 export const useUpdateAdvertiser = () => {

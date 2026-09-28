@@ -173,12 +173,31 @@ RULES: dict[str, MailRule] = {
     "instamart": MailRule(
         platform="instamart",
         secret_kind=SecretKind.OTP,
-        from_contains=("swiggy", "instamart"),
-        subject_contains=("otp", "verification", "code"),
-        subject_required=False,
-        body_pattern=r"(?<!\d)(\d{4,6})(?!\d)",
-        notes="Not investigated yet.",
-        verified=False,
+        # Full sender, same rule as the other two: a bare "swiggy" would also
+        # match order receipts and marketing from the consumer app.
+        from_contains=("no-reply@swiggy.in",),
+        # The mail says "Ads Portal" although the OTP opens the whole Brand
+        # Portal (sales, ads, requisition orders, catalog) — match what Swiggy
+        # sends, not what the portal is called.
+        subject_contains=("your login otp for swiggy instamart ads portal",),
+        subject_required=True,
+        recipient_required=True,
+        # SIX digits, anchored to the sentence that carries them. The body also
+        # contains "10 mins" and the year in the footer, so a bare \d{6} is not
+        # enough on its own; the anchor makes it exactly one candidate.
+        body_pattern=r"Ads Portal is:\s*(\d{6})(?!\d)",
+        initial_delay_seconds=8.0,
+        timeout_seconds=120.0,
+        notes=(
+            "Email OTP, no password. Verified against the real mailbox "
+            "2026-09-21: From 'no-reply@swiggy.in', Subject 'Your Login OTP for "
+            "Swiggy Instamart Ads Portal', body 'Your OTP for logging into the "
+            "Swiggy Instamart Ads Portal is: NNNNNN'. Single use, expires after "
+            "10 minutes. Sent to the tenant's own address (ecom@brikoven.com for "
+            "Brik Oven), so recipient_required is the per-tenant filter once the "
+            "forwarding rule to the automation inbox exists."
+        ),
+        verified=True,
     ),
 }
 

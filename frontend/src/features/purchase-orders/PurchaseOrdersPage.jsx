@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Search } from "lucide-react";
+import { useMarketplaces } from "../../context/MarketplaceContext";
 import { PageHeader } from "../../components/ui/PageHeader";
 import { Card } from "../../components/ui/Card";
 import { DataTable } from "../../components/ui/DataTable";
@@ -23,8 +24,11 @@ import { PoKpiTile } from "./components/PoKpiTile";
 import { usePoSummary, usePoInsights, usePoSkus, usePoExport } from "./hooks";
 
 /**
- * Purchase orders — what Blinkit ordered, how much of it arrived, and which POs still
- * have money sitting undelivered.
+ * Purchase orders — what was ordered, how much of it arrived, and which POs still
+ * have money sitting undelivered. Blinkit-only until now; Instamart is reachable by
+ * picking it explicitly in the navbar's marketplace pills (see hooks.js's
+ * `usePoMarketplace` — there's no blended PO view across marketplaces, so "All" or
+ * a multi-select falls back to Blinkit, this page's original and default platform).
  *
  * "Undelivered value" is short units × landing rate. On an open PO that is value still
  * to come; on a closed one it is value missed. The two are counted separately
@@ -59,6 +63,17 @@ export const PurchaseOrdersPage = () => {
 	const [openPo, setOpenPo] = useState(null);
 	// One switch for the whole strip: the tiles open and close together.
 	const [comparing, setComparing] = useState(false);
+
+	// Same reasoning as the Scorecard page: no blended PO view, so only name a
+	// marketplace here when the picker itself has narrowed to exactly one.
+	const { marketplaces, selected, allSelected } = useMarketplaces();
+	const explicitMp =
+		!allSelected && selected.length === 1
+			? marketplaces.find((m) => m.slug === selected[0])
+			: null;
+	const subtitle = explicitMp
+		? `What was ordered on ${explicitMp.name}, how much of it arrived, and what is still undelivered.`
+		: "What Blinkit ordered, what arrived, and what is still undelivered.";
 
 	const summary = usePoSummary();
 	const isSku = view === "sku";
@@ -234,10 +249,7 @@ export const PurchaseOrdersPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<PageHeader
-				title="Purchase Orders"
-				subtitle="What Blinkit ordered, what arrived, and what is still undelivered."
-			/>
+			<PageHeader title="Purchase Orders" subtitle={subtitle} />
 
 			{summary.isLoading && <Loading label="Loading purchase orders…" />}
 			{summary.error && (

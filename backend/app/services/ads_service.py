@@ -35,7 +35,7 @@ from app.models.blinkit_marketing import (
 )
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
-from app.services import reference_service, zepto_ads
+from app.services import instamart_ads, reference_service, zepto_ads
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
 
@@ -114,6 +114,14 @@ async def _summary_agg(
     if zepto_ads.wants_zepto(marketplaces):
         z = await zepto_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
         totals = tuple(a + b for a, b in zip(totals, z))
+
+    if instamart_ads.wants_instamart(marketplaces):
+        # Real window now (instamart_ad_account_daily) -- unlike the
+        # campaigns table, this one genuinely has day-level data, so a real
+        # previous-period comparison is possible and this is called once per
+        # window, same as Blinkit/Zepto above.
+        i = await instamart_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, i))
 
     return totals
 
@@ -252,6 +260,30 @@ async def get_campaigns(
                 }
             )
 
+    if instamart_ads.wants_instamart(marketplaces):
+        # Instamart's per-campaign METRICS are lifetime, not a daily backbone
+        # (see instamart_ads.py) -- but WHICH campaigns are listed is still
+        # windowed by start_time/end_time overlap, matching how the portal's
+        # own date picker narrows "All Campaigns" for the selected range.
+        for i in await instamart_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end):
+            if status and (i.get("status") or "") != status:
+                continue
+            rows.append(
+                {
+                    "campaign_id": i["campaign_id"],
+                    "name": i["name"],
+                    "type": i.get("campaign_type"),
+                    "status": i.get("status"),
+                    "daily_budget": i.get("daily_budget"),
+                    "budget_consumed": i["spend"],
+                    "impressions": i["impressions"],
+                    "atc": i["atc"],
+                    "quantities_sold": i["units_sold"],
+                    "ad_sales": i["sales"],
+                    "roas": i["roas"] or 0.0,
+                }
+            )
+
     # Campaign count per client is small -> rank + paginate in memory.
     sort_key = _CAMPAIGN_SORTS.get(sort, "budget_consumed")
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
@@ -304,6 +336,20 @@ async def get_performance(
                 cur["ad_sales"] += r["ad_sales"]
                 # RoAS is a ratio, so recompute from the merged bases rather
                 # than averaging the two marketplaces' ratios.
+                cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
+            else:
+                by_date[r["date"]] = dict(r)
+        series = [by_date[k] for k in sorted(by_date)]
+
+    if instamart_ads.wants_instamart(marketplaces):
+        i = await instamart_ads.performance(session, tenant_id=tenant_id, start=start, end=end)
+        by_date = {r["date"]: dict(r) for r in series}
+        for r in i:
+            cur = by_date.get(r["date"])
+            if cur:
+                cur["budget_consumed"] += r["budget_consumed"]
+                cur["impressions"] += r["impressions"]
+                cur["ad_sales"] += r["ad_sales"]
                 cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
             else:
                 by_date[r["date"]] = dict(r)

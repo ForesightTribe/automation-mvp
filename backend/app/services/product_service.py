@@ -25,7 +25,7 @@ from app.models.search import (
     SkuSnapshot,
     TenantLocation,
 )
-from app.services import zepto_products
+from app.services import instamart_products, zepto_products
 from app.utils.time import now_ist
 from scraper.utils.pack import per_unit_price
 from app.schemas.common import Page
@@ -243,6 +243,23 @@ async def get_products(
                 _list_row(**z, window_days=window_days, marketplace="zepto")
             )
 
+    # Instamart's sales come from the Brand Portal report (day x store x item,
+    # summed to one row per SKU) and its stock from the PUBLIC own-SKU scrape,
+    # because the private report carries no inventory at all — see
+    # instamart_products for why that join is on name+pack.
+    if instamart_products.wants_instamart(marketplaces):
+        for i in await instamart_products.list_agg(
+            session,
+            tenant_id=tenant_id,
+            start=period.start,
+            end=period.end,
+            search=search,
+            category=category,
+        ):
+            rows.append(
+                _list_row(**i, window_days=window_days, marketplace="instamart")
+            )
+
     # Summary reflects the search/category/window scope (pre status-filter).
     summary = ProductListSummary(
         active_skus=len(rows),
@@ -317,6 +334,62 @@ async def _zepto_detail(
     }
 
 
+async def _instamart_detail(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    period: Period,
+) -> dict | None:
+    """Product 360 for an Instamart SKU, in the same shape the Blinkit branch
+    returns.
+
+    `facilities` and `potential_loss` come back empty/None because Instamart
+    publishes neither. `cities` IS per-SKU here — the sales report carries the
+    store, and therefore its city, on every row — so it is always attached.
+
+    Stock is the public own-SKU scrape joined by name+pack (the private report
+    has no inventory); see `instamart_products` for why, and for the caveat that
+    it is as-of its own scrape date rather than the sales window.
+    """
+    d = await instamart_products.detail_agg(
+        session, tenant_id=tenant_id, item_id=item_id,
+        start=period.start, end=period.end,
+    )
+    if d is None:
+        return None
+
+    frontend_now = d.pop("frontend_qty", 0)
+    units = d["units_sold"]
+    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+
+    cities = [
+        CityShare(**c)
+        for c in await instamart_products.cities(
+            session, tenant_id=tenant_id, item_id=item_id,
+            start=period.start, end=period.end,
+        )
+    ]
+    # "Stock by facility" = per dark store here; Instamart has no warehouse tier.
+    d["facilities"] = [
+        FacilityStock(**f)
+        for f in await instamart_products.stores(
+            session, tenant_id=tenant_id, item_id=item_id
+        )
+    ]
+
+    return {
+        **d,
+        "marketplace": instamart_products.SLUG,
+        "period_days": period.length_days,
+        "avg_price": _avg_price(d["revenue"], units),
+        "avg_daily_units": avg_daily,
+        "days_of_cover": cover,
+        "status": cover_status(frontend_now, units, cover),
+        "cities": cities,
+    }
+
+
 async def get_product_detail(
     session: AsyncSession,
     *,
@@ -351,7 +424,16 @@ async def get_product_detail(
         # `product_variant_id` when the row came from the Zepto branch of the
         # list, so try there before 404-ing.
         if zepto_products.wants_zepto(marketplaces):
-            return await _zepto_detail(
+            z = await _zepto_detail(
+                session, tenant_id=tenant_id, item_id=item_id, period=period
+            )
+            if z is not None:
+                return z
+        # `item_id` is an Instamart ITEM_CODE when the row came from the
+        # Instamart branch of the list. Tried last so the two id spaces cannot
+        # shadow each other: a miss here is a real 404.
+        if instamart_products.wants_instamart(marketplaces):
+            return await _instamart_detail(
                 session, tenant_id=tenant_id, item_id=item_id, period=period
             )
         return None  # no sales for this SKU in the window -> 404 at the route
@@ -599,6 +681,10 @@ async def get_product_public(
     on-shelf distribution + price/discount/rating from `sku_snapshots`, and where it
     ranks per keyword from `search_listings`. Returns {"mapped": False} when the SKU
     has no public mapping yet (so the UI can prompt to run `sku-map`)."""
+    # No mp_slug filter: this route isn't marketplace-scoped, but item_id formats
+    # don't overlap across marketplaces in practice (Blinkit 8-digit, Zepto UUID,
+    # Instamart <=5-digit numeric), so `.first()` is safe today. sku_map itself
+    # IS scoped per mp_slug — see sku_map_service.py.
     row = (await session.execute(
         select(SkuMap.platform_product_id, SkuMap.product_name).where(
             SkuMap.tenant_id == tenant_id, SkuMap.item_id == item_id

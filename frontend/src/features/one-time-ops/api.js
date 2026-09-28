@@ -28,12 +28,23 @@ export const getCampaigns = (clientId, { days = 30 } = {}) =>
 		},
 	});
 
+/**
+ * Every write from this page says it came from this page.
+ *
+ * The server cannot otherwise tell: Ad Automation calls these exact endpoints too, so the
+ * job type alone says nothing about which page a click came from. This page's operations
+ * list shows ONLY what was started here, and it filters on this value.
+ */
+export const ONE_TIME_OPS = "one-time-ops";
+const fromHere = { params: { source: ONE_TIME_OPS } };
+
 // Pushes a budget to one campaign immediately. Enqueues a VM job, returns `{job_id}`.
 export const setBudgetNow = (clientId, campaignId, budget) =>
-	api.post(`${cm(clientId)}/set-budget`, {
-		campaign_id: campaignId,
-		budget,
-	});
+	api.post(
+		`${cm(clientId)}/set-budget`,
+		{ campaign_id: campaignId, budget },
+		fromHere,
+	);
 
 /**
  * Start or stop one campaign now. `budget` applies to "running" only: Blinkit's restart
@@ -41,15 +52,16 @@ export const setBudgetNow = (clientId, campaignId, budget) =>
  * the VM resolves it from a fresh read rather than guessing here.
  */
 export const setActivationNow = (clientId, campaignId, status, budget) =>
-	api.post(`${cm(clientId)}/campaigns/${campaignId}/activation`, {
-		status,
-		...(budget == null ? {} : { budget }),
-	});
+	api.post(
+		`${cm(clientId)}/campaigns/${campaignId}/activation`,
+		{ status, ...(budget == null ? {} : { budget }) },
+		fromHere,
+	);
 
 // Re-reads the account's campaigns and statuses from Blinkit into the catalogue. A
 // read-only job, and the only way a campaign created today becomes visible here.
 export const refreshCampaigns = (clientId) =>
-	api.post(`${cm(clientId)}/campaigns/refresh`);
+	api.post(`${cm(clientId)}/campaigns/refresh`, null, fromHere);
 
 /**
  * One campaign's targets, for the detail drawer.
@@ -69,18 +81,7 @@ export const getCampaignTargets = (clientId, campaignId, { days = 30 } = {}) =>
 		},
 	});
 
-/**
- * The engine's own verdict on what it last did to a campaign.
- *
- * ⚠️ A finished job is not a finished WRITE. `status: success` means the job ran, not
- * that anything changed: the engine records `apply` or `skip` in its run log, and a
- * refused write still exits cleanly. `include_unchanged` is required — a skip is
- * exactly the "nothing changed" row the default view hides.
- */
-export const getLastVerdict = (clientId, campaignId) =>
-	api.get(`${cm(clientId)}/history`, {
-		params: { campaign_id: campaignId, limit: 1, include_unchanged: true },
-	});
-
-export const getJob = (clientId, jobId) =>
-	api.get(`${cm(clientId)}/jobs/${jobId}`);
+// Operation progress and outcomes: lib/actions.js, shared with Ad Automation. An outcome is
+// read by the operation's own `run_id` — the lookup this replaced read "the newest row for
+// this campaign", which picked up another engine's row whenever one ran on the same
+// campaign in the same minute (the `cm_bid` and `cm_ops` lanes run in parallel).
