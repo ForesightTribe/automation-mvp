@@ -36,22 +36,24 @@ const VIEWS = [
 	{ value: "sku", label: "SKU insights" },
 ];
 
-// "open" and "closed" group the marketplace's own states; the rest are those states
-// as Blinkit writes them.
+// "open", "closed" and "cancelled" group the marketplace's own states; the rest
+// are those states as Blinkit writes them. "Closed" means settled — delivered or
+// expired, cancelled excluded.
 const STATUSES = [
-	["", "All statuses"],
-	["open", "Open (not yet delivered)"],
+	["open", "Open"],
 	["closed", "Closed"],
 	["Unscheduled", "Unscheduled"],
 	["Scheduled", "Scheduled"],
 	["Fulfilled", "Fulfilled"],
 	["Expired", "Expired"],
+	["cancelled", "Cancelled"],
+	["", "All statuses"],
 ];
 
 export const PurchaseOrdersPage = () => {
 	const [view, setView] = useState("po");
 	const [search, setSearch] = useState("");
-	const [status, setStatus] = useState("");
+	const [status, setStatus] = useState("open");
 	const [page, setPage] = useState(1);
 	// The PO whose drawer is open.
 	const [openPo, setOpenPo] = useState(null);
@@ -62,13 +64,24 @@ export const PurchaseOrdersPage = () => {
 	const isSku = view === "sku";
 	// Every PO in the window. The service orders them: still worth chasing first,
 	// settled below. The view not on screen is disabled rather than unmounted.
+	// Ordered by the API so a header sorts every PO, not the page in hand.
+	const [poSort, setPoSort] = useState({ key: null, order: "desc" });
 	const table = usePoInsights({
 		scope: "all",
 		search: isSku ? "" : search,
 		status,
 		page,
+		sort: poSort.key,
+		order: poSort.order,
 	});
-	const skus = usePoSkus({ search: isSku ? search : "", page });
+	// Ordered by the API so a header sorts every SKU, not the page in hand.
+	const [skuSort, setSkuSort] = useState({ key: null, order: "desc" });
+	const skus = usePoSkus({
+		search: isSku ? search : "",
+		page,
+		sort: skuSort.key,
+		order: skuSort.order,
+	});
 	// The file holds both views, so it does not change with the tab.
 	const exporter = usePoExport("all", status);
 	const s = summary.data;
@@ -222,7 +235,7 @@ export const PurchaseOrdersPage = () => {
 	return (
 		<div className="flex flex-col gap-6">
 			<PageHeader
-				title="Purchase orders"
+				title="Purchase Orders"
 				subtitle="What Blinkit ordered, what arrived, and what is still undelivered."
 			/>
 
@@ -328,7 +341,7 @@ export const PurchaseOrdersPage = () => {
 							options={STATUSES}
 							onChange={onStatus}
 							ariaLabel="Filter by status"
-							className="min-w-[12rem]"
+							className="min-w-[8rem]"
 						/>
 					) : (
 						<span />
@@ -355,7 +368,15 @@ export const PurchaseOrdersPage = () => {
 				</div>
 
 				{isSku ? (
-					<SkuTable query={skus} onPage={setPage} />
+					<SkuTable
+						query={skus}
+						onPage={setPage}
+						sort={skuSort}
+						onSort={(key, order) => {
+							setSkuSort({ key, order });
+							setPage(1);
+						}}
+					/>
 				) : (
 					<>
 						{table.isLoading && <Loading label="Loading POs…" />}
@@ -376,6 +397,12 @@ export const PurchaseOrdersPage = () => {
 									columns={columns}
 									rows={table.data.items}
 									rowKey={(r) => r.po_number}
+									sortKey={poSort.key}
+									sortOrder={poSort.order}
+									onSortChange={(key, order) => {
+										setPoSort({ key, order });
+										setPage(1);
+									}}
 									minWidth={900}
 									maxHeight={560}
 								/>

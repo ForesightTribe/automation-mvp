@@ -4,7 +4,9 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 /**
  * Generic data table — the tabular counterpart to the charts, reused across the
  * dashboard (analytics now, products/inventory later). `columns` is
- * [{ key, label, align?, render?, sortValue?, sortable? }]; `render(row)` overrides the raw
+ * [{ key, label, align?, render?, sortValue?, sortable?, hint? }]; `render(row)` overrides the raw
+ * value. `onRowClick(row)` makes each row a target — the row is the record, so the whole
+ * row is the hit area rather than a link in one cell.
  * cell value (e.g. to format currency). Numbers should pass `align: "right"`. The body
  * scrolls within `maxHeight` with a sticky header, so long lists (e.g. all
  * cities) stay usable.
@@ -29,10 +31,20 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
  * `sortable={false}` on the table where the row order carries meaning of its own, such as a
  * chronological log or an already-ranked list.
  */
+const Labelled = ({ column }) =>
+	column.hint ? (
+		<span className="cursor-help border-b border-dotted border-content-subtle/70">
+			{column.label}
+		</span>
+	) : (
+		column.label
+	);
+
 export const DataTable = ({
 	columns,
 	rows,
 	rowKey,
+	onRowClick,
 	maxHeight = 360,
 	minWidth = 640,
 	pinLast = false,
@@ -41,19 +53,31 @@ export const DataTable = ({
 	// which is usually the order the endpoint intended.
 	defaultSort = null,
 	defaultOrder = "desc",
+	// Controlled sorting: pass all three to have the caller own the order.
+	sortKey,
+	sortOrder,
+	onSortChange,
 	// Optional override for the header row's type. The default is the house header style,
 	// so a feature can ask for a different label treatment without changing the table
 	// everywhere else.
-	headClass = "px-3 py-2 font-medium text-content-subtle",
+	headClass = "px-3 py-2 font-medium whitespace-nowrap text-content-subtle",
 }) => {
 	const keyOf = rowKey ?? ((_, i) => i);
-	const [sort, setSort] = useState(defaultSort);
-	const [order, setOrder] = useState(defaultOrder);
+	const [localSort, setLocalSort] = useState(defaultSort);
+	const [localOrder, setLocalOrder] = useState(defaultOrder);
+
+	// Controlled when the caller owns the order. Paginated tables use this so a
+	// header sorts the whole set through the API, not the page in hand.
+	const controlled = Boolean(onSortChange);
+	const sort = controlled ? sortKey : localSort;
+	const order = controlled ? (sortOrder ?? "desc") : localOrder;
 
 	const canSort = (c) => sortable && c.sortable !== false;
 	const valueOf = (c, row) => (c.sortValue ? c.sortValue(row) : row[c.key]);
 
 	const sorted = useMemo(() => {
+		// Already ordered by the caller.
+		if (controlled) return rows;
 		const col = sort && columns.find((c) => c.key === sort);
 		if (!col) return rows;
 		const dir = order === "asc" ? 1 : -1;
@@ -69,14 +93,16 @@ export const DataTable = ({
 				: dir * (x - y);
 		});
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [rows, columns, sort, order]);
+	}, [rows, columns, sort, order, controlled]);
 
 	const onSort = (key) => {
-		if (key === sort) setOrder((o) => (o === "desc" ? "asc" : "desc"));
-		else {
-			setSort(key);
-			setOrder("desc");
+		const next = key === sort && order === "desc" ? "asc" : "desc";
+		if (controlled) {
+			onSortChange(key, next);
+			return;
 		}
+		setLocalSort(key);
+		setLocalOrder(next);
 	};
 
 	return (
@@ -110,12 +136,13 @@ export const DataTable = ({
 								{canSort(c) ? (
 									<button
 										type="button"
+										title={c.hint}
 										onClick={() => onSort(c.key)}
 										className={`inline-flex items-center gap-1 transition-colors hover:text-content ${
 											sort === c.key ? "text-content" : ""
 										} ${c.align === "right" ? "flex-row-reverse" : ""}`}
 									>
-										{c.label}
+										<Labelled column={c} />
 										{(() => {
 											const active = sort === c.key;
 											const Arrow = active
@@ -137,7 +164,9 @@ export const DataTable = ({
 										})()}
 									</button>
 								) : (
-									c.label
+									<span title={c.hint}>
+										<Labelled column={c} />
+									</span>
 								)}
 							</th>
 						))}
@@ -147,7 +176,12 @@ export const DataTable = ({
 					{sorted.map((row, i) => (
 						<tr
 							key={keyOf(row, i)}
-							className="border-b border-border/60 last:border-0 hover:bg-muted/50"
+							onClick={
+								onRowClick ? () => onRowClick(row) : undefined
+							}
+							className={`border-b border-border/60 last:border-0 hover:bg-muted/50 ${
+								onRowClick ? "cursor-pointer" : ""
+							}`}
 						>
 							{columns.map((c, ci) => (
 								<td

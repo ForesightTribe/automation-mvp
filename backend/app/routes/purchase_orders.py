@@ -52,8 +52,13 @@ async def insights(
     status: str | None = Query(
         None,
         description="A PO state (Scheduled, Unscheduled, Fulfilled, Expired…), "
-        "or 'open' / 'closed' for the two groups.",
+        "or 'open' / 'closed' / 'cancelled' for the groups. 'closed' means "
+        "settled — it excludes cancelled POs, which were never due.",
     ),
+    sort: str | None = Query(
+        None, description="Field to order by, applied across ALL rows before paging."
+    ),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ):
     """The PO queue. `priority` keeps open POs with something still undelivered."""
     return await po_service.insights(
@@ -65,6 +70,8 @@ async def insights(
         scope=scope,
         search=search,
         status=status,
+        sort=sort,
+        order=order,
     )
 
 
@@ -75,6 +82,10 @@ async def sku_insights(
     period: PeriodDep,
     pagination: PaginationDep,
     search: str | None = None,
+    sort: str | None = Query(
+        None, description="Field to order by, applied across ALL rows before paging."
+    ),
+    order: str = Query("desc", pattern="^(asc|desc)$"),
 ):
     """The shortfall per SKU across every PO in the window."""
     return await po_service.sku_insights(
@@ -84,6 +95,8 @@ async def sku_insights(
         start=period.start,
         end=period.end,
         search=search,
+        sort=sort,
+        order=order,
     )
 
 

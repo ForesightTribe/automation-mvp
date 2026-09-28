@@ -8,6 +8,7 @@ import {
 	getPoSkus,
 	getPoFile,
 	getPo,
+	getSkuPos,
 } from "./api";
 import { downloadBlob } from "../../lib/exportTable";
 
@@ -24,7 +25,7 @@ export const usePoSummary = () => {
 };
 
 /** The PO table. Keeps the previous page on screen while the next one loads. */
-export const usePoInsights = ({ scope, search, status, page }) => {
+export const usePoInsights = ({ scope, search, status, page, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
 	return useQuery({
@@ -36,6 +37,8 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 			search,
 			status,
 			page,
+			sort,
+			order,
 		],
 		queryFn: () =>
 			getPoInsights(activeClientId, {
@@ -45,6 +48,8 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 				search,
 				status,
 				page,
+				sort,
+				order,
 			}),
 		enabled: Boolean(activeClientId),
 		placeholderData: keepPreviousData,
@@ -52,17 +57,19 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 };
 
 /** The same shortfall per SKU rather than per PO. */
-export const usePoSkus = ({ search, page }) => {
+export const usePoSkus = ({ search, page, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["po-skus", activeClientId, range, search, page],
+		queryKey: ["po-skus", activeClientId, range, search, page, sort, order],
 		queryFn: () =>
 			getPoSkus(activeClientId, {
 				start: range.from,
 				end: range.to,
 				search,
 				page,
+				sort,
+				order,
 			}),
 		enabled: Boolean(activeClientId),
 		placeholderData: keepPreviousData,
@@ -107,5 +114,15 @@ export const usePo = (poNumber) => {
 		queryKey: ["po-detail", activeClientId, poNumber],
 		queryFn: () => getPo(activeClientId, poNumber),
 		enabled: Boolean(activeClientId && poNumber),
+	});
+};
+
+/** Every PO carrying one SKU. Only fetched once a SKU is opened. */
+export const useSkuPos = (itemId) => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: ["sku-pos", activeClientId, itemId],
+		queryFn: () => getSkuPos(activeClientId, itemId),
+		enabled: Boolean(activeClientId) && Boolean(itemId),
 	});
 };

@@ -64,8 +64,16 @@ def _po_section(
             "lines": r.lines,
             "fill_rate": r.fill_rate,
             "po_amount": r.po_amount,
-            "open_value": r.undelivered_value if r.is_open else None,
-            "missed_value": None if r.is_open else r.undelivered_value,
+            "open_value": (
+                None
+                if _cancelled(r.po_state)
+                else (r.undelivered_value if r.is_open else None)
+            ),
+            "missed_value": (
+                None
+                if _cancelled(r.po_state) or r.is_open
+                else r.undelivered_value
+            ),
             "delivery_days": r.delivery_days,
             "slot": r.schedule_date.strftime("%d %b %Y, %H:%M")
             if r.schedule_date
@@ -108,14 +116,21 @@ def _po_section(
     )
 
 
+def _cancelled(state: str | None) -> bool:
+    """Blinkit spells it `Cancelled` and `Cancelled post Creation`."""
+    return bool(state and state.lower().startswith("cancel"))
+
+
 def _sku_section(rows, start: date, end: date) -> Section:
     columns = [
         Column(key="name", header="SKU", type="text", width=44),
         Column(key="item_id", header="Item ID", type="id"),
-        Column(key="units_ordered", header="Units Ordered", type="count"),
+        Column(key="po_units", header="PO Units", type="count"),
+        Column(key="units_received", header="GRN Units", type="count"),
         Column(key="units_short", header="Units Short", type="count"),
+        Column(key="units_not_due", header="Not Yet Due", type="count"),
         Column(key="fill_rate", header="Fill Rate", type="pct", emphasis="good_high"),
-        Column(key="open_value", header="Still To Come", type="money"),
+        Column(key="open_value", header="Value On Open POs", type="money"),
         Column(key="missed_value", header="Missed", type="money", emphasis="bar"),
         Column(key="short_po_count", header="POs Short", type="count"),
         Column(key="po_count", header="POs", type="count"),
@@ -128,8 +143,18 @@ def _sku_section(rows, start: date, end: date) -> Section:
         description="The same shortfall per product, across every PO in the window.",
         context=f"{start:%d %b %Y} to {end:%d %b %Y} · {len(rows)} SKUs",
         columns=columns,
-        rows=[r.model_dump() for r in rows],
-        notes=["Sorted by undelivered value, worst first."],
+        rows=[
+            {**r.model_dump(), "po_units": r.units_received + r.units_short}
+            for r in rows
+        ],
+        notes=[
+            "Sorted by undelivered value, worst first.",
+            "PO Units, GRN Units, Units Short and Fill Rate all cover SETTLED POs "
+            "— the same set, so they reconcile. Units still awaiting delivery are "
+            "in Not Yet Due.",
+            "Cancelled POs are excluded throughout: the order was withdrawn, so "
+            "nothing was ever asked for.",
+        ],
     )
 
 
