@@ -6,19 +6,22 @@ instead of `blinkit_pos`/`blinkit_po_items`. `_priority()` and `_delta()` are
 imported from `po_service` rather than re-implemented — they're pure
 functions with no Blinkit-specific assumption in them.
 
-THREE THINGS BLINKIT HAS THAT INSTAMART'S PO DATA DOESN'T
-============================================================
-1. **A booking-slot concept.** Blinkit's `schedule_date` is a delivery slot
-   the vendor books; `needs_booking` flags an open PO with a shortfall and no
-   slot booked. Nothing in the Supply Portal API resembles this — every
-   `POInsightRow` here has `needs_booking=False` and `schedule_date=None`,
-   never really computed.
-2. **A separate delivery date.** Blinkit tracks `delivery_date` distinctly
+TWO THINGS BLINKIT HAS THAT INSTAMART'S PO DATA STILL DOESN'T
+================================================================
+(A third — a booking-slot concept — was believed missing here too, but
+`searchPurchaseOrder` was carrying `appointment_start_date` the whole time;
+the field just wasn't parsed. Confirmed live 2026-09-28 by capturing the
+Supply Portal's own "PO Booking" tab, whose "Schedule" action turned out to
+be reading and writing this same endpoint's response, not a separate one.
+`schedule_date`/`needs_booking` below are now real, mirroring Blinkit's.)
+
+1. **A separate delivery date.** Blinkit tracks `delivery_date` distinctly
    from `issue_date`, so `delivery_days` is a real lead-time figure. Instamart
    only has `po_date` (raised) and `completed_date` (set once, on full
    completion) — no per-PO "when this actually arrived" date, so
-   `delivery_days` stays null throughout.
-3. **A city field.** Blinkit's PO carries `city_name` separately from
+   `delivery_days` stays null throughout. `appointment_start_date` is the
+   PLANNED slot, not an arrival event, so it doesn't fill this gap either.
+2. **A city field.** Blinkit's PO carries `city_name` separately from
    `facility_name`; Instamart's doesn't, so `city_name` is always null and
    the SKU table's `cities` count is always 0.
 
@@ -218,6 +221,7 @@ async def insights(
             InstamartPO.value,
             _RAISED_DATE,
             InstamartPO.expiry_date,
+            InstamartPO.appointment_start_date,
             func.count(InstamartPOItem.id),
             func.count(InstamartPOItem.id).filter(_LINE_SHORT_QTY > 0),
             short_units,
@@ -233,7 +237,7 @@ async def insights(
         .group_by(
             InstamartPO.purchase_order_id, InstamartPO.facility_name, InstamartPO.status,
             InstamartPO.total_quantity, InstamartPO.grn_quantity, InstamartPO.value,
-            _RAISED_DATE, InstamartPO.expiry_date,
+            _RAISED_DATE, InstamartPO.expiry_date, InstamartPO.appointment_start_date,
         )
     )
     if search:
@@ -254,7 +258,7 @@ async def insights(
 
     out = []
     today = date.today()
-    for (po, facility, state, ordered, received, amount, issued, expiry,
+    for (po, facility, state, ordered, received, amount, issued, expiry, slot,
          lines, short_lines, s_units, s_value) in rows:
         ordered, received = ordered or 0, received or 0
         open_po = state in OPEN_STATES
@@ -273,13 +277,14 @@ async def insights(
                 fill_rate=round(received / ordered, 4) if ordered and not open_po else None,
                 po_amount=amount,
                 undelivered_value=round(float(s_value or 0), 2),
-                delivery_days=None,  # no separate delivery date in this data
+                delivery_days=None,  # still no separate delivery-EVENT date in this data
                 issue_date=issued,
                 delivery_date=None,
-                schedule_date=None,
+                schedule_date=slot,
                 expiry_date=expiry,
                 days_to_expiry=(expiry - today).days if expiry else None,
-                needs_booking=False,  # no booking-slot concept in this data
+                # Same rule as Blinkit's: open, something still owed, no slot booked.
+                needs_booking=bool(open_po and s_units and slot is None),
             )
         )
 
