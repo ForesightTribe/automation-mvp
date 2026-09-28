@@ -137,7 +137,7 @@ All tables are `(tenant_id, platform)` scoped.
 | `cm_platform_accounts` | `advertiser_id` + **`live_armed`** (the per-tenant arming switch)                      |
 | `cm_run_log`           | Slim append-only history for the UI                                                    |
 | `cm_city_stores`       | The frozen **measurement store set** per city — ranks 1–3 (1 = anchor), a global set (`tenant_id` NULL) a client can replace whole; see [7.6c](#76c-where-a-rule-measures--the-city-registry) |
-| `cm_store_stock`       | Stock cache: our products at each measurement store, with availability, from one brand search per store (~hourly) |
+| `cm_store_stock`       | Stock cache: our products at each measurement store, with availability, from one brand search per store (~hourly; on Zepto only when our ad is missing there — see the rotation) |
 | `cm_bid_store_reads`   | Append-only: what each store showed on each bid tick (verdict, position, bid in force, which store bound the decision); 30-day retention |
 
 **One schedule per (tenant, platform, campaign)** is a DB constraint — a campaign has one everyday
@@ -794,18 +794,61 @@ the set's lowest remaining rank becomes the anchor.
 
 | Setting                          | Default | Meaning                                                    |
 | -------------------------------- | ------- | ---------------------------------------------------------- |
-| `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 1              |
+| `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 3 (was 1 before C6) |
 | `CM_STOCK_MAX_AGE_MINUTES`       | 60      | reuse a store's stock read for this long                   |
+| `CM_STOCK_REST_MINUTES`          | 60      | rotation only: after a full cycle of stock-outs, check one store this often |
 | `CM_STOCK_DEFAULT_BRAND_CAP`     | 48      | brand-search cap when the watchlist sets no `brand_cap`    |
 | `CM_STORE_READS_RETENTION_DAYS`  | 30      | trim `cm_bid_store_reads`                                  |
 | `CM_BID_GIVE_UP_TICKS`           | 2       | checks not showing at the ceiling before a store is given up for the window; 0 disables |
 | `CM_STORE_PROBLEM_WARN_TICKS`    | 2       | consecutive unusable readings before a store is warned about |
 
-⚠️ **Zepto stays on one store** — its anonymous search allows ~4-5 requests a minute — and has no
-catalogue read, so its stock is always unknown and it behaves exactly as before. It also still resolves
-the store from the coordinate once per store per run (`get_page`): passing the frozen `merchant_id` would
-skip that but drops the secondary hub ids the lookup returns, which can change what a search shows —
-left alone until measured.
+#### Zepto rotates through its stores instead (C6, 2026-09-28)
+
+Everything above is Blinkit's **store strategy** (`config.store_strategy` → `every_store`). Zepto uses
+`rotate` (`campaign_manager/rotation.py`), for two reasons:
+
+- **Zepto's search hides sold-out products.** 0 sold-out rows in 6,073 keyword results and in 1,495
+  brand-search rows (Sept 2026), while the brand search found 1–9 Brik Oven products per store. So on
+  Zepto "our ad isn't showing" cannot tell *outbid* from *out of stock* — and raising on a stock-out
+  only pushes up a bid that covers every targeted city. Live, 2026-09-28: HSR Layout listed 1 of the 9
+  Brik Oven variants it had on 2 Sept, and "sourdough bread" there showed no Brik Oven at all.
+- **Zepto's anonymous search allows a few requests a minute**, so reading 3 stores plus their stock
+  every tick is not affordable.
+
+The set is still ranked 1–3, but as a **fallback order, not a fan-out**. Design agreed with Deepansh
+2026-09-24:
+
+1. Each window starts at store 1.
+2. Our ad shows → a normal tick, no extra search (showing proves it is in stock).
+3. Our ad is missing → **one** brand search at that store (`stock.load`, cached
+   `CM_STOCK_MAX_AGE_MINUTES` per store; `zepto/catalog.py`). Our product there → genuinely outbid →
+   the normal raise. Not there → **hold the bid**; the **next** tick measures at the next store
+   (1 → 2 → 3 → 1). At most one hop per tick, so the worst tick is 2 searches. Stock unreadable → hold
+   (never raise blind).
+4. A full cycle with no store able to sell → **out-of-stock rest**: the bid is held (never lowered — an
+   ad nobody sees costs nothing on CPC), no search at all, and one store is checked every
+   `CM_STOCK_REST_MINUTES`, still in rotation, until one can sell. History: "Store1 can't sell this
+   campaign right now (…), and nor can the other 2 stores we check — a stock problem, not a bidding one,
+   so the bid is held at ₹20…", then "back in stock at Store2 after every store we check had run out —
+   raising to ₹24…".
+5. Staying on store 2 after store 1 restocks is fine; the cycle returns to store 1 by itself.
+6. Moving to another store is a different auction: the rule's learned state (last position, raise
+   step, holding price, drift pause, relaxed target) starts fresh there. The bid itself carries over.
+
+**Stateless.** Where a rule stands is derived each tick from its own `cm_bid_store_reads` rows (one per
+store actually read, same dry-run mode), so there is no rotation column, and a tick that fails leaves the
+next one where it was. A resting tick writes no store row, only a `hold` History row.
+
+On Zepto a brand search that returns products but none of ours is an **answer** (nothing of ours is
+sellable there), not a failed read as on Blinkit; only an empty or failed search says nothing. Every
+Zepto search is bound to the store by `merchant_id`, never resolved from the coordinate.
+
+**A city with nothing frozen** measures at the rule's saved store only, a cycle of one: a single stock-out
+there starts the rest. Freeze three stores per city (`cm stores set -m zepto`) to get the fallback.
+
+**The shopper search could not be opened at all** (the WAF block of 2026-09-24): the run holds every bid
+and writes an `error` History row per automation saying so — for every marketplace. It used to escape the
+run with no History at all.
 
 ### 7.7 Bounds are invariants
 

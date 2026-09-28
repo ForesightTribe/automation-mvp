@@ -358,6 +358,16 @@ async def fetch_positions(session: dict, keyword: str, lat: float,
     return res.get("products") or []
 
 
+async def read_store_catalog(session: dict, query: str, lat: float, lon: float, *,
+                             cap: int, names, merchant_id: str | None = None) -> dict:
+    """Our products at one store, for the stock check — one capped brand search on the
+    run's position session. A READ. On Zepto a product missing from it is not sellable
+    there (Zepto hides sold-out products): see catalog.py."""
+    from campaign_manager.marketplaces.zepto import catalog
+    return await catalog.read(session, query, lat, lon, cap=cap, names=names,
+                              merchant_id=merchant_id)
+
+
 def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
                     products: list[dict] | None = None, campaign_id=None,
                     match_type: str = "EXACT", brand_name: str | None = None,

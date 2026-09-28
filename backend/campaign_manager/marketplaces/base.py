@@ -118,15 +118,18 @@ class CampaignAdapter(Protocol):
         """
 
     async def read_store_catalog(self, session, query: str, lat: float, lon: float, *,
-                                 cap: int, names) -> dict:
+                                 cap: int, names, merchant_id: str | None = None) -> dict:
         """OPTIONAL. Our products at one store, with availability, for the stock check.
 
         `{"ok": False, "error"}`, or `{"ok": True, "complete", "served_by",
         "products": [{pid, name, in_stock, inventory}]}` — `pid` in the SAME id space as
         `read_products`, or the join to a campaign silently finds nothing.
 
-        Blinkit: one capped brand search on the position session (a few requests).
-        Zepto:   not implemented — stock stays unknown, and every store counts.
+        Blinkit: one capped brand search on the position session (a few requests); read up
+                 front for every store, hourly. `merchant_id` ignored.
+        Zepto:   the same brand search, bound to the store by `merchant_id`; read only when
+                 our ad is missing (the rotation, campaign_manager/rotation.py). Sold-out
+                 products are hidden, so a product not returned is not sellable there.
         """
 
     # ── writes (guarded; only reached via writes.py) ─────────────────────────

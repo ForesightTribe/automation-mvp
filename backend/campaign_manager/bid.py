@@ -20,13 +20,14 @@ sourcing lives behind `adapter.resolve_position` (D17). MVP scrapes every keywor
 tiering (cheap sources for at-target keywords) is deferred — see the impl-doc backlog.
 """
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from app.core.config import settings
 from app.utils.time import now_ist
-from campaign_manager import (config, coverage, lifecycle, logs, repo, stock, wallet, window,
-                              writes)
+from campaign_manager import (config, coverage, lifecycle, logs, repo, rotation, stock, wallet,
+                              window, writes)
 from campaign_manager.marketplaces import get_adapter
 
 HOLD_MINUTES = 10                       # after a bid change, wait this long before nudging again
@@ -461,18 +462,49 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     logs.note(run_id, f"{len(active)} keyword automations active in this window",
               dry_run=dry_run)
     _anchor0 = rule_stores[active[0][0].id][0]
-    pos_session = await adapter.open_position_session(pw, float(_anchor0.lat),
-                                                      float(_anchor0.lon))
+    try:
+        pos_session = await adapter.open_position_session(pw, float(_anchor0.lat),
+                                                          float(_anchor0.lon))
+    except Exception as e:
+        # No shopper search = no position to act on, for any rule. Hold every bid and say so
+        # (C6 plan, point 5: rank unreadable → hold, never raise blind). This used to escape
+        # the run entirely — no History row, no summary, and on Blinkit the browser from
+        # `setup()` left open. Zepto's WAF refusing our browser (2026-09-24) went unnoticed
+        # for days partly because of that silence.
+        logs.note(run_id, f"could not open {mp}'s shopper search ({e}) — no position can be "
+                          f"read, so no bids are changed this run", dry_run=dry_run,
+                  level="error")
+        await _record_run_blocked(
+            tenant_id, platform, run_id, [r for r, _ in active],
+            _plain(e, f"{mp}'s shopper search could not be opened, so no position could be "
+                      f"read and the bid was left unchanged"), dry_run)
+        if browser is not None:
+            await browser.close()
+        if pw is not None:
+            await pw.stop()
+        logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
+                         processed=0, applied=0, skipped=0, errors=1)
+        return {"processed": 0, "applied": 0, "skipped": 0, "errors": 1}
     stock_searches = 0
+    # How the rules use their city's stores — every one each tick (Blinkit), or one at a time
+    # in rotation (Zepto, C6: campaign_manager/rotation.py).
+    rotate = config.store_strategy(platform) == config.ROTATE
 
     try:
         # Stock for every store this run measures at, before any decision: one brand search
         # per store, cached for an hour (campaign_manager/stock.py). Never raises — knowing
         # nothing just means every store counts.
-        stock_by_store, stock_searches = await stock.load(
-            adapter, pos_session, tenant_id, platform,
-            [s for stores in rule_stores.values() for s in stores],
-            now=now, run_id=run_id, dry_run=dry_run)
+        #
+        # A ROTATING marketplace takes only what is already cached: it reads a store's stock
+        # only when our ad is missing there (`_rotation_stock`), which is the whole point —
+        # three brand searches a store an hour is the search budget it does not have.
+        all_stores = [s for stores in rule_stores.values() for s in stores]
+        if rotate:
+            stock_by_store = await stock.cached(tenant_id, platform, all_stores, now=now)
+        else:
+            stock_by_store, stock_searches = await stock.load(
+                adapter, pos_session, tenant_id, platform, all_stores,
+                now=now, run_id=run_id, dry_run=dry_run)
         for rule, runtime in active:
             processed += 1
             cid, kw = rule.campaign_id, rule.keyword
@@ -743,11 +775,38 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     store_history.get((rule.id, s.merchant_id), []),
                     window_start=window_open_at, ceiling=ceiling, ticks=give_up_ticks)
             }
+            # ── ROTATE (Zepto, C6): ONE store this tick, chosen from the rule's history ──
+            rot = None
+            measure_at = stores
+            if rotate:
+                rule_history = _rule_history(store_history, rule.id)
+                rot = rotation.plan(stores, rule_history, window_start=window_open_at,
+                                    now=now, rest_minutes=config.STOCK_REST_MINUTES)
+                if rot.store is None:
+                    # Out-of-stock rest, and no check is due: no search at all this tick.
+                    why = _resting_reason(rot, len(stores), current_cpm)
+                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                 level="warning", msg=why)
+                    skipped += 1
+                    log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name,
+                                         kw, "hold", current_cpm, current_cpm, why, dry_run,
+                                         True, rule_id=rule.id, target=rule.target_position))
+                    continue
+                measure_at = [rot.store]
+                if len(stores) > 1:
+                    logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
+                                  msg=_rotation_note(rot, len(stores), rule_history))
             readings = await _read_stores(
-                adapter, pos_session, positions_cache, stores, kw,
+                adapter, pos_session, positions_cache, measure_at, kw,
                 products=products, campaign_pids=campaign_pids, stock_by_store=stock_by_store,
                 campaign_id=cid, match_type=rule.match_type, brand_name=rule.brand_name,
                 given_up=given_up)
+            if rotate:
+                readings, searched = await _rotation_stock(
+                    adapter, pos_session, tenant_id, platform, readings,
+                    campaign_pids=campaign_pids, stock_by_store=stock_by_store, now=now,
+                    run_id=run_id, dry_run=dry_run)
+                stock_searches += searched
             outcome = coverage.aggregate(readings)
             for reading in outcome.readings:
                 logs.store_reading(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
@@ -769,6 +828,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if outcome.kind == "no_stock":
                 why = ("none of this campaign's products are available at the stores we check "
                        "— a stock problem, not a bidding one, so the bid is left alone")
+                if rot is not None:
+                    # Which store comes next, and whether that completed a cycle of stock-outs.
+                    after = rotation.plan(
+                        stores, [_as_history(outcome.readings[0], now)] + rule_history,
+                        window_start=window_open_at, now=now,
+                        rest_minutes=config.STOCK_REST_MINUTES)
+                    why = _stock_out_reason(rot, after, outcome.readings[0], len(stores),
+                                            current_cpm)
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning", msg=why)
                 skipped += 1
@@ -796,11 +863,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                               msg=f"no store gave a usable reading — {err}. Bid left unchanged")
                 errors += int(failed)
                 skipped += int(not failed)
+                said = _plain(err, "no store gave a usable search reading, so the bid was left "
+                                   "unchanged")
+                if rot is not None and not failed and outcome.binding:
+                    # The rotation's own doubt is already a whole sentence — don't truncate it.
+                    name = outcome.binding.store.label or outcome.binding.store.merchant_id
+                    said = f"at {name}, {err}; the bid stays at ₹{current_cpm}"
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "error" if failed else "skip", current_cpm, current_cpm,
-                                     _plain(err, "no store gave a usable search reading, so "
-                                                 "the bid was left unchanged"), dry_run,
-                                     not failed,
+                                     said, dry_run, not failed,
                                      rule_id=rule.id, target=rule.target_position))
                 continue
 
@@ -848,14 +919,20 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                    f"our ad is at position {position:g}"),
                               position=position)
 
-            last_pos = runtime.last_position if runtime else None
+            # A rotating rule that has just moved to another store is in a different auction:
+            # what it learned at the last one (position, raise step, holding price, drift
+            # pause, relaxed target) says nothing here (C6, point 6). The BID carries over —
+            # it is campaign-wide; only the learning starts again.
+            switched = bool(rot and rot.switched)
+            fresh = open_stamp or switched
+            last_pos = None if switched else (runtime.last_position if runtime else None)
             mins = _minutes_since(runtime.last_bid_updated_at if runtime else None, now)
             # Drift state. `open_stamp` means the window just opened, which clears all of
             # it — yesterday's holding price says nothing about today, a pause must not
             # outlive the window that caused it, and a target relaxed against yesterday's
             # competition must be re-earned so every day retries the REAL target.
-            holding_cpm = None if open_stamp else (runtime.last_holding_cpm if runtime else None)
-            paused_until = None if open_stamp else (runtime.drift_paused_until if runtime else None)
+            holding_cpm = None if fresh else (runtime.last_holding_cpm if runtime else None)
+            paused_until = None if fresh else (runtime.drift_paused_until if runtime else None)
             drift_paused = bool(paused_until and paused_until > now)
 
             # Raise escalation. "Improved" = the position got BETTER since the last tick,
@@ -863,14 +940,14 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # keep accelerating into the next one. A window that just opened starts fresh.
             improved = last_pos is not None and position < last_pos
             step_now = next_raise_step(
-                current_cpm, None if open_stamp else (runtime.raise_step if runtime else None),
+                current_cpm, None if fresh else (runtime.raise_step if runtime else None),
                 improved, min_step=config.bid_tuning(platform, "BID_RAISE_MIN_STEP"),
                 pct=config.bid_tuning(platform, "BID_RAISE_PCT"),
                 escalate=config.bid_tuning(platform, "BID_RAISE_ESCALATE"),
             )
 
             # ── Unreachable target: chase what the ceiling can actually buy ──
-            eff = None if open_stamp else stored_effective_target(
+            eff = None if fresh else stored_effective_target(
                 rule.target_position, ceiling,
                 runtime.effective_target if runtime else None,
                 runtime.effective_at_max_bid if runtime else None,
@@ -910,13 +987,17 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 # Name the store that set it, so History says WHICH store is holding a bid up.
                 reason = (f"{reason} — worst of {outcome.counted} stores is "
                           f"{binding.store.label or binding.store.merchant_id}")
+            if rot is not None and rot.resting:
+                # The first reading that can sell after every store had run out.
+                reason = (f"back in stock at {binding.store.label or binding.store.merchant_id} "
+                          f"after every store we check had run out — {reason}")
             recovering = (drift_pct > 0
                           and is_recovery(position, target, current_cpm, holding_cpm))
             # `reason` is already a full sentence. The escalation clause is added here
             # because only the orchestration knows the step grew — compute_bid is handed
             # the step, not the history behind it.
             escalated = (new_cpm is not None and position > target and not improved
-                         and (runtime.raise_step if runtime else None)
+                         and not fresh and (runtime.raise_step if runtime else None)
                          and step_now > int(runtime.raise_step))
             msg = reason + ("; the last raise did not move us, so the step grew"
                             if escalated else "")
@@ -929,6 +1010,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             rt: dict = {"rule_id": rule.id, "last_position": position}
             if open_stamp:                         # observed truth: Blinkit reads back the floor
                 rt["last_cpm"] = int(min_bid)
+            if fresh:                              # a new window, or a new store's auction
                 rt["last_holding_cpm"] = None
                 rt["drift_paused_until"] = None
                 rt["effective_target"] = None
@@ -1158,6 +1240,122 @@ async def _read_stores(adapter, session, positions_cache: dict, stores, keyword:
             readings.append(coverage.Reading(store, elig, coverage.SPONSORED, float(position),
                                              len(results), source))
     return readings
+
+
+# ── Store rotation (ROTATE marketplaces — Zepto, C6; campaign_manager/rotation.py) ──────
+
+# What a rotating rule's History says a store can't sell, by eligibility. "There", because the
+# store is named just before it.
+_CANT_SELL_SAID = {
+    coverage.NOT_LISTED: "none of the campaign's products are available there",
+    coverage.OUT_OF_STOCK: "all of the campaign's products are sold out there",
+}
+
+
+def _rule_history(store_history: dict, rule_id) -> list:
+    """One rule's per-store readings across ALL its stores, newest first — what the rotation
+    derives its position from. `store_history` is keyed `(rule_id, merchant_id)`."""
+    rows = [h for (rid, _mid), hs in store_history.items() if rid == rule_id for h in hs]
+    return sorted(rows, key=lambda h: h.observed_at, reverse=True)
+
+
+def _as_history(reading, now: datetime):
+    """This tick's reading in the shape `rotation.plan` reads history in, so the engine can
+    ask "and where does that leave us?" before the row is stored."""
+    return SimpleNamespace(merchant_id=reading.store.merchant_id, verdict=reading.verdict,
+                           eligibility=reading.eligibility, observed_at=now)
+
+
+async def _rotation_stock(adapter, session, tenant_id, platform: str, readings, *,
+                          campaign_pids, stock_by_store: dict, now: datetime, run_id: str,
+                          dry_run: bool) -> tuple[list, int]:
+    """ROTATE only. Our ad is missing at a store whose stock we don't know → ONE brand search
+    there (`stock.load`, cached ~1 h per store), and the reading becomes one of:
+
+      in stock        → genuinely outbid: it counts, and the normal raise follows;
+      can't sell      → SKIPPED with the stock verdict: the bid is held, and the rotation
+                        moves to the next store on the next tick;
+      still unknown   → UNTRUSTED: the bid is held. Zepto's search hides sold-out products,
+                        so "not showing" alone can't tell being outbid from a stock-out, and
+                        raising on it would be raising blind (C6 plan, point 5).
+
+    Returns `(readings, brand searches made)`. `stock_by_store` is updated in place, so a
+    second rule at the same store this run reuses the answer."""
+    out, searches = [], 0
+    for r in readings:
+        if r.verdict == coverage.SKIPPED:
+            # Already known from the cache: say it the rotation's way.
+            out.append(replace(r, detail=_CANT_SELL_SAID.get(r.eligibility, r.detail)))
+            continue
+        if r.verdict != coverage.ABSENT or r.eligibility != coverage.UNKNOWN:
+            out.append(r)
+            continue
+        known = None
+        if r.store.merchant_id:
+            fresh, n = await stock.load(adapter, session, tenant_id, platform, [r.store],
+                                        now=now, run_id=run_id, dry_run=dry_run)
+            searches += n
+            stock_by_store.update(fresh)
+            known = fresh.get(r.store.merchant_id)
+        elig = coverage.eligibility(campaign_pids, known)
+        if elig == coverage.ELIGIBLE:
+            out.append(replace(r, eligibility=elig))
+        elif elig in rotation.CANT_SELL:
+            out.append(replace(r, eligibility=elig, verdict=coverage.SKIPPED, position=None,
+                               detail=_CANT_SELL_SAID[elig]))
+        else:
+            out.append(replace(r, verdict=coverage.UNTRUSTED, detail=(
+                "our ad isn't showing and stock there couldn't be checked, so being outbid "
+                "can't be told apart from a stock-out — holding rather than raising blind")))
+    return out, searches
+
+
+def _store_name(store) -> str:
+    return (getattr(store, "label", "") or getattr(store, "merchant_id", "") or "the store")
+
+
+def _everywhere(n: int) -> str:
+    return "the store we check" if n == 1 else f"all {n} stores we check"
+
+
+def _rotation_note(rot, n: int, history) -> str:
+    """The log line saying where a rotating rule measures this tick, and why there."""
+    said = f"measuring at {_store_name(rot.store)} (store {rot.rank} of {n})"
+    if rot.resting:
+        return (f"{said} — the out-of-stock check (every {config.STOCK_REST_MINUTES} min); "
+                f"nothing sellable at {_everywhere(n)} since {rot.rest_since:%H:%M}")
+    if rot.switched and history:
+        prev = getattr(history[0], "store_label", "") or getattr(history[0], "merchant_id", "")
+        return (f"{said} — {prev or 'the last store'} can't sell this campaign right now; a "
+                f"different auction, so the bid's learning starts fresh here")
+    return said
+
+
+def _resting_reason(rot, n: int, cpm) -> str:
+    """History for a resting tick that searches nothing."""
+    return (f"out of stock at {_everywhere(n)} since {rot.rest_since:%H:%M} — the bid is held "
+            f"at ₹{cpm}; next check around {rot.next_check_at:%H:%M} at "
+            f"{_store_name(rot.upcoming)}")
+
+
+def _stock_out_reason(rot, after, reading, n: int, cpm) -> str:
+    """History for a rotating rule's tick at a store that can't sell. `rot` is where this tick
+    stood, `after` where this reading leaves the rule."""
+    here = f"{_store_name(reading.store)} can't sell this campaign right now ({reading.detail})"
+    stock_problem = f"a stock problem, not a bidding one, so the bid is held at ₹{cpm}"
+    if after.resting and not rot.resting:
+        if n == 1:
+            return (f"{here} — {stock_problem}. It is checked again every "
+                    f"{config.STOCK_REST_MINUTES} min until it is back in stock")
+        return (f"{here}, and nor can the other {n - 1} stores we check — {stock_problem}. "
+                f"One store is checked every {config.STOCK_REST_MINUTES} min until one is "
+                f"back in stock")
+    if after.resting:
+        when = (f"around {after.next_check_at:%H:%M} at {_store_name(after.upcoming)}"
+                if after.next_check_at else f"at {_store_name(after.store)}")
+        return f"still out of stock: {here}. The bid stays at ₹{cpm}; next check {when}"
+    return (f"{here} — {stock_problem}; the next check moves to {_store_name(after.store)} "
+            f"(store {after.rank} of {n})")
 
 
 def _store_rows(tenant_id, platform, run_id, rule, readings, outcome, bid, dry_run) -> list[dict]:

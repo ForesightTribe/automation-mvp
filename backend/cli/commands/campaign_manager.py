@@ -813,8 +813,10 @@ def stores_set(
     city: str = _CITY,
     store: str = typer.Option(..., "--store", help="merchant_id (from `cm stores show --city …`)"),
     rank: int = typer.Option(1, "--rank",
-                             help="1 = the anchor store; 2-3 = validation stores. Bids aim for "
-                                  "target at every ranked store where the campaign is in stock"),
+                             help="1 = the anchor store; 2-3 = more stores. Blinkit aims for "
+                                  "target at every ranked store where the campaign is in stock; "
+                                  "Zepto measures at one at a time and moves down the ranks when "
+                                  "that one can't sell it"),
     platform: str = _MARKETPLACE,
     tenant: str = _STORE_TENANT,
     global_: bool = _GLOBAL,

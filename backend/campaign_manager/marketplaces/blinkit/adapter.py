@@ -237,9 +237,10 @@ async def fetch_positions(session: dict, keyword: str, lat: float, lon: float, *
 
 
 async def read_store_catalog(session: dict, query: str, lat: float, lon: float, *,
-                             cap: int, names) -> dict:
+                             cap: int, names, merchant_id: str | None = None) -> dict:
     """Our products at the store serving (lat, lon), with availability — one capped brand
-    search on the run's open session. A READ. Shape and the `complete` rule: catalog.py."""
+    search on the run's open session. A READ. Shape and the `complete` rule: catalog.py.
+    `merchant_id` is accepted for the contract and ignored: the coordinate picks the store."""
     from campaign_manager.marketplaces.blinkit import catalog
     return await catalog.read(session, query, lat, lon, cap=cap, names=names)
 
