@@ -29,6 +29,35 @@ from scraper.public.orchestrator import _clamp_workers, warn_if_co_located
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.search_result import classify_products
 
+# Start-up pacing for the worker pool — the SAME two rules as orchestrator.py,
+# copied rather than shared on purpose (see that file for the measurements).
+#
+# This pool did not have them, and on 2026-09-16 19:30 it paid for it on the
+# VM: all five workers opened a Blinkit session in the same second, Cloudflare
+# refused every one, each exited on its single attempt, and the run ended after
+# 38 s with 0 SKU rows across 2,059 locations. The keyword pool had survived the
+# identical burst that morning because of exactly these lines.
+#
+# Worker N waits (N-1) x _WORKER_STAGGER_S before its first page load; a worker
+# whose open fails waits and tries again, longer each time, before giving up.
+_WORKER_STAGGER_S = 5
+_OPEN_SESSION_RETRY_S = (10, 30)      # waits before attempt 2, attempt 3
+
+
+async def _open_with_retry(provider, browser, wid: int, seed) -> dict | None:
+    """Stagger by worker id, then open a session with retries. None = gave up."""
+    if _WORKER_STAGGER_S and wid > 1:
+        await asyncio.sleep(_WORKER_STAGGER_S * (wid - 1))
+    session = None
+    for attempt, wait in enumerate((*_OPEN_SESSION_RETRY_S, None), start=1):
+        session = await provider.open_session(browser, seed[0], seed[1])
+        if session or wait is None:
+            break
+        logger.warning(f"worker {wid}: could not open session (attempt {attempt}) — "
+                       f"retrying in {wait}s")
+        await asyncio.sleep(wait)
+    return session
+
 DASHBOARD = "public_skus"
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining brands
@@ -84,7 +113,7 @@ async def _worker(
     failed twice is simply absent from the run, and `--resume` cannot recover it
     either — resume skips stores that HAVE rows, so a failed store stays skipped.
     """
-    session = await provider.open_session(browser, seed[0], seed[1])
+    session = await _open_with_retry(provider, browser, wid, seed)
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
@@ -264,7 +293,7 @@ async def _retry_worker(
     Mirrors `orchestrator._retry_worker`; the two scrape paths should behave the
     same way under failure, and until now only the keyword one had a backlog pass.
     """
-    session = await provider.open_session(browser, seed[0], seed[1])
+    session = await _open_with_retry(provider, browser, wid, seed)
     if not session:
         logger.warning(f"backlog worker {wid}: could not open session — exiting")
         return

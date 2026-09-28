@@ -368,6 +368,13 @@ class CmActionOut(BaseModel):
     completed_at: datetime | None = None
 
 
+class CmActionsPage(BaseModel):
+    """One page of recent actions. `has_more` rather than a total: counting an account's
+    whole job history on every two-second poll is exactly what paging is meant to avoid."""
+    items: list[CmActionOut]
+    has_more: bool
+
+
 class RunLogOut(BaseModel):
     model_config = _orm
     id: int

@@ -13,6 +13,7 @@ other marketplace is not found under this one, so `…/zepto/…` can never act 
 rule. The one exception is `GET /jobs/{job_id}`, a status read Settings polls for jobs that
 belong to no marketplace. An old un-prefixed address answers 400 with the new form.
 """
+from datetime import datetime
 import uuid
 from typing import Annotated
 
@@ -22,8 +23,8 @@ from app.dependencies import ClientDep, PaginationDep, SessionDep
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionOut, CmJobOut,
-    EnqueuedOut, LiveOut, OverviewOut, RunLogOut, SetActivationIn, SetBudgetIn,
+    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionOut, CmActionsPage,
+    CmJobOut, EnqueuedOut, LiveOut, OverviewOut, RunLogOut, SetActivationIn, SetBudgetIn,
 )
 from app.schemas.common import Page
 from app.services import campaign_manager_service as svc
@@ -266,10 +267,10 @@ async def reset_bid_rule(client: ClientDep, session: SessionDep, marketplace: Ma
 
 @router.post("/{marketplace}/set-budget", response_model=EnqueuedOut)
 async def set_budget_now(client: ClientDep, session: SessionDep, marketplace: Marketplace,
-                         body: SetBudgetIn):
+                         body: SetBudgetIn, source: str | None = None):
     try:
         job_id = await svc.set_budget_now(session, client.id, marketplace, body.campaign_id,
-                                          body.budget)
+                                          body.budget, source=source)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A set-budget job is already active")
     except EditError as e:
@@ -279,8 +280,12 @@ async def set_budget_now(client: ClientDep, session: SessionDep, marketplace: Ma
 
 @router.post("/{marketplace}/campaigns/{campaign_id}/activation", response_model=EnqueuedOut)
 async def set_activation_now(client: ClientDep, session: SessionDep, marketplace: Marketplace,
-                             campaign_id: int, body: SetActivationIn):
+                             campaign_id: int, body: SetActivationIn,
+                             source: str | None = None):
     """Start or stop a campaign now. Enqueues a VM job and returns its id to poll.
+
+    `source` (all three on-demand endpoints) names the dashboard surface that asked, so that
+    surface can list only its own actions — see `svc.ACTION_SOURCES`.
 
     The transition guardrails (terminal states, budget bounds, rate limit) run on the VM
     against the campaign's live status — not here — so this endpoint accepts any pair and
@@ -288,7 +293,7 @@ async def set_activation_now(client: ClientDep, session: SessionDep, marketplace
     """
     try:
         job_id = await svc.set_activation_now(session, client.id, marketplace, campaign_id,
-                                              body.status, body.budget)
+                                              body.status, body.budget, source=source)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "An activation job is already active")
     except EditError as e:
@@ -297,7 +302,8 @@ async def set_activation_now(client: ClientDep, session: SessionDep, marketplace
 
 
 @router.post("/{marketplace}/campaigns/refresh", response_model=EnqueuedOut)
-async def refresh_campaigns(client: ClientDep, session: SessionDep, marketplace: Marketplace):
+async def refresh_campaigns(client: ClientDep, session: SessionDep, marketplace: Marketplace,
+                            source: str | None = None):
     """Re-read the account's campaigns + statuses from the marketplace into the catalogue.
 
     A read-only VM job (the campaign list, not a full scrape). The campaign pickers show
@@ -305,7 +311,7 @@ async def refresh_campaigns(client: ClientDep, session: SessionDep, marketplace:
     last night's scrape becomes selectable.
     """
     try:
-        job_id = await svc.refresh_campaigns(session, client.id, marketplace)
+        job_id = await svc.refresh_campaigns(session, client.id, marketplace, source=source)
     except DuplicateActiveJob:
         raise HTTPException(status.HTTP_409_CONFLICT, "A campaign refresh is already active")
     return EnqueuedOut(job_id=job_id)
@@ -331,8 +337,10 @@ async def run_bid_optimizer(client: ClientDep, session: SessionDep, marketplace:
 
 # ── Job status (poll) + history ─────────────────────────────────────────────
 
-@router.get("/{marketplace}/actions", response_model=list[CmActionOut])
-async def recent_actions(client: ClientDep, session: SessionDep, marketplace: Marketplace):
+@router.get("/{marketplace}/actions", response_model=CmActionsPage)
+async def recent_actions(client: ClientDep, session: SessionDep, marketplace: Marketplace,
+                         source: str | None = None, before: datetime | None = None,
+                         limit: int = 20):
     """What this client has recently ASKED FOR on this marketplace — the activity list.
 
     Distinct from `/history`, and the difference is the point. History is `cm_run_log`:
@@ -343,8 +351,17 @@ async def recent_actions(client: ClientDep, session: SessionDep, marketplace: Ma
 
     Person-triggered only: a job type people perform AND no schedule behind this run. The
     hourly engines and the reconciler are excluded — see `svc.recent_actions`.
+
+    `source` narrows it to one surface's own actions (One-time Ops lists only what was
+    started from it). Omitted, it returns every person-triggered action on this marketplace —
+    which is what the per-row busy state wants, since a clash on a campaign is a clash whichever page caused it.
+
+    Paged by keyset: pass `before` (the `created_at` of the oldest row already shown) for the
+    next page. No time window — see `svc.recent_actions`.
     """
-    return await svc.recent_actions(session, client.id, marketplace)
+    items, has_more = await svc.recent_actions(
+        session, client.id, marketplace, limit=limit, source=source, before=before)
+    return CmActionsPage(items=items, has_more=has_more)
 
 
 @router.get("/{marketplace}/jobs/{job_id}", response_model=CmJobOut)

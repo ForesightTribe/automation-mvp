@@ -161,6 +161,12 @@ def listing_extra(l: dict) -> dict[str, Any]:
     # away one step before the database. `zepto/public_data/ads.py` decodes it.
     if l.get("ucl_id"):
         extra["ucl_id"] = l["ucl_id"]
+    # Opt-in for a marketplace with listing-level detail the fixed keys above do
+    # not cover. Instamart sets it (relevance tier, cart limit + its message,
+    # bestseller badge); Blinkit and Zepto do not, so their rows are unchanged.
+    # Distinct from `l["extra"]`, which is the fuller own-SKU blob and is NOT
+    # carried here on purpose — the lean-row rule above still holds.
+    extra.update(l.get("listing_extra") or {})
     return extra
 
 

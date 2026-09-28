@@ -1,7 +1,7 @@
 """one LIVE bid rule per (tenant, platform, campaign, keyword, match type) — ZC-C9
 
 Revision ID: c4f7b2e81a93
-Revises: a6d2f9c41e87
+Revises: a9757fea742a
 Create Date: 2026-09-23
 
 Nothing stopped two bid automations chasing the SAME keyword on the same campaign. They do
@@ -24,11 +24,11 @@ duplicate groups, so the index can be created without cleaning anything up first
 with the query in the checklist (ZC-C9) before applying — a duplicate created meanwhile
 would make CREATE INDEX fail, which is the safe outcome, not a broken deploy.
 
-⚠️ NOT YET APPLIED (2026-09-23): the shared DB's `alembic_version` is `b1e4c7a9d20f`, a
-revision no branch here has (a coworker's uncommitted Instamart work). `alembic upgrade`
-cannot run until that lands; until then `repo.require_no_live_bid_rule` enforces this in
-code. When their migration is pushed, re-point `down_revision` at it (or add a merge
-revision) rather than leaving two heads on one database.
+Re-parented 2026-09-28 at the release merge of `dev`: written on top of `a6d2f9c41e87`, but
+the Instamart chain (`b1e4c7a9d20f` … `a9757fea742a`) landed on the shared DB first, from
+the same parent. Pointing `down_revision` at the end of that chain keeps ONE head; it was
+not applied anywhere before the move, so nothing records the old parent. Until it is
+applied, `repo.require_no_live_bid_rule` enforces the same rule in code.
 
 `downgrade` drops the index; no data is touched either way.
 
@@ -39,7 +39,7 @@ from typing import Sequence, Union
 from alembic import op
 
 revision: str = 'c4f7b2e81a93'
-down_revision: Union[str, Sequence[str], None] = 'a6d2f9c41e87'
+down_revision: Union[str, Sequence[str], None] = 'a9757fea742a'
 branch_labels: Union[str, Sequence[str], None] = None
 depends_on: Union[str, Sequence[str], None] = None
 

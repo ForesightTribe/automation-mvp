@@ -227,9 +227,14 @@ class WeekendCampaign(BaseModel):
     `ad_type` is the campaign's own type (PRODUCT_LISTING, BANNER_LISTING, …),
     which is the "Ad Type" column of the client's sheet. `weekends[i]` aligns to
     `WeekendPlanning.weekends`; a weekend the campaign did not run in is present
-    with zeros rather than missing, so every row has the same shape."""
+    with zeros rather than missing, so every row has the same shape.
 
-    campaign_id: int
+    `campaign_id` is `int | str`, not just `int`: Blinkit's ids are numeric,
+    but Instamart's are its own UUID strings (see instamart_reports.py) — the
+    two never collide as dict keys upstream, so both flow through unchanged
+    rather than one being coerced to fit the other's shape."""
+
+    campaign_id: int | str
     name: str
     ad_type: str | None
     weekends: list[CampaignHalf]
@@ -256,7 +261,7 @@ class BannerRow(BaseModel):
     """A banner campaign. No revenue: banner placements carry no attribution, so
     they are judged on what an impression cost rather than on RoAS."""
 
-    campaign_id: int
+    campaign_id: int | str
     name: str
     spend: float
     impressions: int

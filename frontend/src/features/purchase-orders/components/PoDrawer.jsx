@@ -46,7 +46,7 @@ const Row = ({ label, children }) => (
 	</div>
 );
 
-const itemColumns = [
+const itemColumns = (isOpen) => [
 	{
 		key: "name",
 		label: "SKU",
@@ -68,6 +68,7 @@ const itemColumns = [
 		key: "units_ordered",
 		label: "Ordered",
 		align: "right",
+		hint: "Units Blinkit ordered on this line.",
 		render: (r) => (
 			<span className="tabular-nums">
 				{formatNumber(r.units_ordered)}
@@ -75,16 +76,64 @@ const itemColumns = [
 		),
 	},
 	{
-		key: "remaining_quantity",
-		label: "Owed",
+		// Received is shown beside Ordered so the gap below reads as arithmetic
+		// rather than a bare difference.
+		key: "received",
+		label: "Received",
 		align: "right",
+		hint: "Units actually delivered against this line.",
+		sortValue: (r) => (r.units_ordered ?? 0) - (r.remaining_quantity ?? 0),
+		render: (r) => (
+			<span className="tabular-nums">
+				{formatNumber(
+					(r.units_ordered ?? 0) - (r.remaining_quantity ?? 0),
+				)}
+			</span>
+		),
+	},
+	{
+		key: "remaining_quantity",
+		// The same number means two different things: on an open PO it is stock
+		// still to come, on a settled one it is a shortfall that will not arrive.
+		label: isOpen ? "Awaiting" : "Short",
+		align: "right",
+		hint: isOpen
+			? "Units not yet delivered. This PO is still open, so these are still to come — not a shortfall."
+			: "Units that never arrived. This PO has settled, so the gap is final.",
 		render: (r) => (
 			<span
-				className={`tabular-nums ${r.remaining_quantity > 0 ? "font-medium text-danger" : "text-content-muted"}`}
+				className={`tabular-nums ${
+					r.remaining_quantity > 0
+						? isOpen
+							? "font-medium text-content"
+							: "font-medium text-danger"
+						: "text-content-muted"
+				}`}
 			>
 				{formatNumber(r.remaining_quantity)}
 			</span>
 		),
+	},
+	{
+		key: "line_fill",
+		label: "Fill",
+		align: "right",
+		hint: "Received divided by ordered, for this line.",
+		sortValue: (r) =>
+			r.units_ordered
+				? 1 - (r.remaining_quantity ?? 0) / r.units_ordered
+				: -1,
+		render: (r) =>
+			r.units_ordered ? (
+				<span className="tabular-nums text-content-muted">
+					{formatPercent(
+						1 - (r.remaining_quantity ?? 0) / r.units_ordered,
+						0,
+					)}
+				</span>
+			) : (
+				<span className="text-content-subtle">—</span>
+			),
 	},
 	{
 		key: "landing_rate",
@@ -98,7 +147,10 @@ const itemColumns = [
 	},
 	{
 		key: "owed_value",
-		label: "Value owed",
+		label: isOpen ? "Value to come" : "Value missed",
+		hint: isOpen
+			? "Cost of the units not yet delivered on this line. The PO is open, so this is still to come."
+			: "Cost of the units that never arrived on this line. The PO has settled, so this is final.",
 		align: "right",
 		sortValue: (r) => (r.remaining_quantity ?? 0) * (r.landing_rate ?? 0),
 		render: (r) => (
@@ -161,7 +213,12 @@ export const PoDrawer = ({ poNumber, onClose }) => {
 									: "—"
 							}
 						/>
-						<Stat label="Value owed" value={formatCurrency(owed)} />
+						<Stat
+							label={
+								po.is_open ? "Value on open PO" : "Value missed"
+							}
+							value={formatCurrency(owed)}
+						/>
 					</>
 				)
 			}
@@ -211,7 +268,7 @@ export const PoDrawer = ({ poNumber, onClose }) => {
 							<Row label="City">{po.city_name}</Row>
 							<Row label="Address">{po.address}</Row>
 							<Row label="Vendor">{po.vendor_name}</Row>
-							<Row label="Blinkit contact">
+							<Row label="Platform contact">
 								{po.pm_name
 									? [po.pm_name, po.pm_phone]
 											.filter(Boolean)
@@ -227,10 +284,10 @@ export const PoDrawer = ({ poNumber, onClose }) => {
 						</h3>
 						{po.items?.length ? (
 							<DataTable
-								columns={itemColumns}
+								columns={itemColumns(po.is_open ?? false)}
 								rows={po.items}
 								rowKey={(r) => r.line_id ?? r.item_id}
-								minWidth={620}
+								minWidth={760}
 								maxHeight={420}
 								defaultSort="owed_value"
 							/>

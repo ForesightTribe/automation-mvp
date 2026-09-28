@@ -155,6 +155,22 @@ def _zepto(tenant_id, p):
     return a
 
 
+def _instamart(tenant_id, p):
+    """Sales + ads + PO in ONE run — the same 'one console, one login' shape
+    as Zepto: Instamart's Brand Portal covers all three behind one login (see
+    platform_auth/registry.py), unlike Blinkit's two separate dashboards.
+    Mirrors `cli scrape instamart`'s own flags, the master command it drives.
+    """
+    a = ["scrape", "instamart", "--tenant", str(tenant_id)]
+    _opt(a, "--from", p.get("date_from"))
+    _opt(a, "--to", p.get("date_to"))
+    _opt(a, "--sales-days-back", p.get("sales_days_back"))
+    _opt(a, "--ads-days-back", p.get("ads_days_back"))
+    for flag in ("sales", "ads", "po"):
+        _flag(a, f"--{flag}", p.get(flag))
+    return a
+
+
 
 # Public scrapes are READS of public search, not campaign operations, and stored schedules
 # predate the param — so they keep a Blinkit fallback. The cm.* builders below do not.
@@ -355,6 +371,20 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         param_keys=("date_from", "date_to", "sales", "po", "ads",
                     "po_days_back", "category", "all_cities"),
         label="Zepto scrape",
+    ),
+    # ── Instamart, same "one console" shape as Zepto ────────────────────────
+    # `dashboard` lane for the same reason Zepto shares it: one browser-driven
+    # scrape at a time on this VM. 120-minute ceiling (vs Zepto's 90) because
+    # Instamart's own edge throttles per-call and can force several 60-120s
+    # backoffs in a row — measured live 2026-09-28, a 30-day ads fetch alone
+    # took over 15 minutes under heavy throttling, on top of sales' own report-
+    # generation poll (up to 15 min) and PO's full-history fetch (~15 min).
+    # This is a safety ceiling for a genuinely hung run, not an expectation.
+    "scrape.instamart": JobTypeSpec(
+        Lane.dashboard, 120 * 60, _instamart,
+        param_keys=("date_from", "date_to", "sales_days_back", "ads_days_back",
+                    "sales", "ads", "po"),
+        label="Instamart scrape",
     ),
     # Public scrapes take the marketplace as a PARAM rather than having a job type
     # each: lane and timeout are identical, and sharing the `batch` lane is correct —

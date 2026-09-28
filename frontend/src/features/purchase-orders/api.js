@@ -1,10 +1,18 @@
 import { api } from "../../lib/axios";
 
-/** Purchase orders — the PO queue and the figures above it. */
+/**
+ * Purchase orders — the PO queue and the figures above it.
+ *
+ * `marketplace` is optional — omit it (undefined) for Blinkit, this page's
+ * only marketplace until now. Pass "instamart" explicitly to see Instamart's
+ * PO data instead; it's never auto-detected (see po_service.py's docstring).
+ */
 const base = (clientId) => `/clients/${clientId}/purchase-orders`;
 
-export const getPoSummary = (clientId, { start, end } = {}) =>
-	api.get(`${base(clientId)}/insights/summary`, { params: { start, end } });
+export const getPoSummary = (clientId, { start, end, marketplace } = {}) =>
+	api.get(`${base(clientId)}/insights/summary`, {
+		params: { start, end, marketplace },
+	});
 
 export const getPoInsights = (
 	clientId,
@@ -16,6 +24,9 @@ export const getPoInsights = (
 		status,
 		page = 1,
 		limit = 25,
+		marketplace,
+		sort,
+		order,
 	} = {},
 ) =>
 	api.get(`${base(clientId)}/insights`, {
@@ -27,15 +38,29 @@ export const getPoInsights = (
 			status: status || undefined,
 			page,
 			limit,
+			marketplace,
+			// Ordered server-side so a header sorts every PO, not the page.
+			sort: sort || undefined,
+			order: sort ? order : undefined,
 		},
 	});
 
 export const getPoSkus = (
 	clientId,
-	{ start, end, search, page = 1, limit = 25 } = {},
+	{ start, end, search, page = 1, limit = 25, marketplace, sort, order } = {},
 ) =>
 	api.get(`${base(clientId)}/insights/skus`, {
-		params: { start, end, search: search || undefined, page, limit },
+		params: {
+			start,
+			end,
+			search: search || undefined,
+			page,
+			limit,
+			marketplace,
+			// Ordered server-side so a header sorts every SKU, not the page.
+			sort: sort || undefined,
+			order: sort ? order : undefined,
+		},
 	});
 
 /**
@@ -46,13 +71,19 @@ export const getPoSkus = (
  */
 export const getPoFile = (
 	clientId,
-	{ start, end, scope = "priority", status } = {},
+	{ start, end, scope = "priority", status, marketplace } = {},
 ) =>
 	api.get(`${base(clientId)}/insights/file`, {
-		params: { start, end, scope, status: status || undefined },
+		params: { start, end, scope, status: status || undefined, marketplace },
 		responseType: "blob",
 	});
 
 /** One PO with its line items — the drawer behind a row. */
-export const getPo = (clientId, poNumber) =>
-	api.get(`${base(clientId)}/${poNumber}`);
+export const getPo = (clientId, poNumber, { marketplace } = {}) =>
+	api.get(`${base(clientId)}/${poNumber}`, { params: { marketplace } });
+
+/** Every PO carrying one SKU — what the SKU drawer lists. */
+export const getSkuPos = (clientId, itemId, { page = 1, limit = 50 } = {}) =>
+	api.get(`/clients/${clientId}/products/${itemId}/pos`, {
+		params: { page, limit },
+	});

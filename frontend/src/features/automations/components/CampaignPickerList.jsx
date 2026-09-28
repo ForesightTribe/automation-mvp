@@ -1,6 +1,7 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
-import { useActiveActionFor, useCampaigns, useTableSort } from "../hooks";
+import { useActiveActionFor } from "../../../lib/actions";
+import { useCampaigns, useTableSort } from "../hooks";
 import { CampaignStateToggle } from "./CampaignStateToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { formatCurrency, formatNumber } from "../../../lib/format";

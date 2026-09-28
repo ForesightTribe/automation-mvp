@@ -276,7 +276,9 @@ def test_the_marketplace_list_flags_automation_support_and_the_minimum():
 
     mps = [SimpleNamespace(slug=s, name=s.title(), color=None)
            for s in ("blinkit", "instamart", "zepto")]
-    answers = iter([mps, ["blinkit", "instamart", "zepto"], ["blinkit", "zepto"]])
+    # rows · public snapshots · successful scrapes (either plane) · private scrapes
+    answers = iter([mps, ["blinkit", "zepto"], ["blinkit", "instamart", "zepto"],
+                    ["blinkit", "zepto"]])
 
     class _Session:
         async def execute(self, _stmt):

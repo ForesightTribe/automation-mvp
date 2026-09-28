@@ -1,5 +1,5 @@
 import { useMemo, useState } from "react";
-import { IndianRupee, RefreshCw, Search } from "lucide-react";
+import { History, IndianRupee, RefreshCw, Search } from "lucide-react";
 import { PageHeader } from "../../components/ui/PageHeader";
 import { Button } from "../../components/ui/Button";
 import { Select } from "../../components/ui/Select";
@@ -19,14 +19,20 @@ import {
 	isEndedState,
 	isLiveState,
 } from "../../lib/marketplaces";
+import { OperationsPanel } from "./components/OperationsPanel";
+import { RowOperation } from "./components/RowOperation";
+import { ONE_TIME_OPS } from "./api";
 import {
 	useCampaigns,
-	useLastVerdict,
 	useSetBudget,
 	useSetActivation,
 	useRefreshCampaigns,
-	useJob,
 } from "./hooks";
+import {
+	isActive,
+	useLatestActionFor,
+	useRecentActions,
+} from "../../lib/actions";
 
 /**
  * One-time operations — the immediate half of campaign control.
@@ -68,57 +74,18 @@ const STATUS_OPTIONS = [
 ];
 
 /**
- * What a job is doing, and then what it actually DID.
+ * Why an operation could not even be QUEUED — distinct from one that was queued and then
+ * refused, which its row and the operations panel report.
  *
- * ⚠️ Two different questions. `status: success` says the job ran; whether the write
- * landed is the engine's verdict in the run log, and a refused write exits cleanly.
- * Reporting the first as though it answered the second is how a budget that never
- * changed reads as "Done".
+ * 409 is expected, not an error: each campaign lane holds ONE job, and the queue refuses a
+ * second of the same kind for the same client rather than letting two writes race. So it
+ * reads as a wait, not a failure.
  */
-const JobLine = ({ job, mpName }) => {
-	const { data: jobRow } = useJob(job?.id);
-	const status = jobRow?.status ?? "pending";
-	const settled = status === "success" || status === "failed";
-	const { data: verdict } = useLastVerdict(job?.campaignId, settled);
-
-	if (!job) return null;
-
-	if (!settled)
-		return (
-			<span className="inline-flex items-center gap-2 text-xs text-content-muted">
-				<span className="h-3 w-3 animate-spin rounded-full border-2 border-border border-t-brand" />
-				{status === "running" ? "Applying…" : "Queued…"}
-			</span>
-		);
-
-	if (status === "failed")
-		return (
-			<span className="text-xs text-danger">
-				Failed{jobRow?.error ? `: ${jobRow.error}` : ""}
-			</span>
-		);
-
-	// Settled, so the run log has the answer. Until it arrives, say nothing rather than
-	// claim a result.
-	if (!verdict)
-		return <span className="text-xs text-content-muted">Checking…</span>;
-
-	if (verdict.action === "apply")
-		return (
-			<span className="text-xs text-success">
-				Applied
-				{verdict.new_value != null
-					? ` · now ${formatCurrency(verdict.new_value)}`
-					: ""}
-			</span>
-		);
-
-	return (
-		<span className="text-xs text-warning">
-			{mpName} did not accept this change, so nothing was altered.
-		</span>
-	);
-};
+const queueMessage = (err, what) =>
+	// `lib/axios` rejects with `{ status, message }` — there is no `err.response`.
+	err?.status === 409
+		? `Another operation is already running, so this one was not queued. Wait for it to finish, then try to ${what} again.`
+		: (err?.message ?? `Could not ${what}.`);
 
 export const OneTimeOpsPage = () => {
 	const { data: campaigns, isLoading, error } = useCampaigns();
@@ -149,10 +116,21 @@ export const OneTimeOpsPage = () => {
 	const [confirm, setConfirm] = useState(null); // { op, row }
 	const [amount, setAmount] = useState("");
 	const [confirmError, setConfirmError] = useState(null);
-	// The campaign travels with the job id: the verdict is read per campaign, and "which
-	// campaign did I just act on" is not recoverable from the job alone.
-	const [job, setJob] = useState(null);
 	const [detail, setDetail] = useState(null);
+	const [opsOpen, setOpsOpen] = useState(false);
+	// A refresh can be refused before it is queued (409). It has no dialog to report into, so
+	// its reason needs a home of its own — it used to be written to the confirm dialog's
+	// error, which is only visible while that dialog is open.
+	const [actionError, setActionError] = useState(null);
+
+	// Operations started from THIS page, from the server rather than component state — so
+	// they survive a reload, several can be tracked at once, and one started in another tab
+	// shows here too. One query serves the badge, each row and the panel.
+	const { data: operations } = useRecentActions({ source: ONE_TIME_OPS });
+	const latestFor = useLatestActionFor({ source: ONE_TIME_OPS });
+	const running = (operations ?? []).filter(isActive).length;
+	const nameOf = (id) =>
+		(campaigns ?? []).find((c) => c.campaign_id === id)?.name ?? null;
 
 	const rows = useMemo(() => {
 		const q = query.trim().toLowerCase();
@@ -181,29 +159,38 @@ export const OneTimeOpsPage = () => {
 		const { op, row } = confirm;
 		setConfirmError(null);
 		try {
-			const res =
-				op === "budget"
-					? await setBudget.mutateAsync({
-							campaignId: row.campaign_id,
-							budget: Number(amount),
-						})
-					: await setActivation.mutateAsync({
-							campaignId: row.campaign_id,
-							status: op === "start" ? "running" : "paused",
-						});
-			setJob({ id: res.job_id, campaignId: row.campaign_id });
+			// Nothing to keep from the response: progress and the outcome are read from the
+			// queue by source, so the page does not have to remember which job it started.
+			if (op === "budget")
+				await setBudget.mutateAsync({
+					campaignId: row.campaign_id,
+					budget: Number(amount),
+				});
+			else
+				await setActivation.mutateAsync({
+					campaignId: row.campaign_id,
+					status: op === "start" ? "running" : "paused",
+				});
 			setConfirm(null);
+			setActionError(null);
 		} catch (err) {
-			setConfirmError(err.message);
+			setConfirmError(
+				queueMessage(
+					err,
+					op === "budget"
+						? "set this budget"
+						: "change this campaign",
+				),
+			);
 		}
 	};
 
 	const onRefresh = async () => {
 		try {
-			const res = await refresh.mutateAsync();
-			setJob({ id: res.job_id, campaignId: null });
+			await refresh.mutateAsync();
+			setActionError(null);
 		} catch (err) {
-			setConfirmError(err.message);
+			setActionError(queueMessage(err, "refresh the campaign list"));
 		}
 	};
 
@@ -335,46 +322,61 @@ export const OneTimeOpsPage = () => {
 							: null);
 				const held =
 					c.state === "held" ? holdReason(c.status, mpName) : null;
+				// The latest operation from this page on this campaign. While it runs the
+				// controls are inert, so a second click cannot queue a contradictory write
+				// behind the first; once it finishes, its outcome shows on the row for a few
+				// minutes (`RowOperation`). The full record is in Recent operations.
+				const op = latestFor(c.campaign_id);
+				const busy = isActive(op);
+				const busyHint = busy
+					? `${op.label || "An operation"} is ${op.status === "pending" ? "queued" : "running"} on this campaign — wait for it to finish`
+					: null;
 				return (
-					<div className="flex items-center justify-end gap-3">
-						{/* Stays clickable even when the platform will not accept the change.
+					<div className="flex flex-col items-end gap-1">
+						<div className="flex items-center justify-end gap-3">
+							{/* Stays clickable even when the platform will not accept the change.
 						    A disabled control can only hint, and the reason here is worth a
 						    sentence: the dialog says why and offers the way forward, rather
 						    than leaving a dead button and a tooltip. */}
-						<Button
-							size="xs"
-							variant="secondary"
-							disabled={Boolean(refused)}
-							title={refused ?? undefined}
-							onClick={() => ask("budget", c)}
-						>
-							<IndianRupee size={12} /> Set budget
-						</Button>
-						{/* The title sits on a wrapper: a disabled button fires no mouse
-						    events, so a tooltip on the switch itself would be invisible in
-						    exactly the case that needs explaining. */}
-						<span
-							className="inline-flex"
-							title={
-								blocked ??
-								(held
-									? `${held} Stop it now to halt it completely.`
-									: live
-										? "Stop this campaign now"
-										: "Start this campaign now")
-							}
-						>
-							<Toggle
-								on={live}
-								disabled={Boolean(blocked)}
-								aria-label={
-									live
-										? "Stop this campaign"
-										: "Start this campaign"
+							<Button
+								size="xs"
+								variant="secondary"
+								disabled={Boolean(refused) || busy}
+								title={busyHint ?? refused ?? undefined}
+								onClick={() => ask("budget", c)}
+							>
+								<IndianRupee size={12} /> Set budget
+							</Button>
+							{/* The title sits on a wrapper: a disabled button fires no mouse
+							    events, so a tooltip on the switch itself would be invisible in
+							    exactly the case that needs explaining. */}
+							<span
+								className="inline-flex"
+								title={
+									busyHint ??
+									blocked ??
+									(held
+										? `${held} Stop it now to halt it completely.`
+										: live
+											? "Stop this campaign now"
+											: "Start this campaign now")
 								}
-								onChange={() => ask(live ? "stop" : "start", c)}
-							/>
-						</span>
+							>
+								<Toggle
+									on={live}
+									disabled={Boolean(blocked) || busy}
+									aria-label={
+										live
+											? "Stop this campaign"
+											: "Start this campaign"
+									}
+									onChange={() =>
+										ask(live ? "stop" : "start", c)
+									}
+								/>
+							</span>
+						</div>
+						<RowOperation action={op} />
 					</div>
 				);
 			},
@@ -468,7 +470,27 @@ export const OneTimeOpsPage = () => {
 				subtitle={`Change a budget, or start and stop a campaign on ${mpName}, right now. Every action here applies immediately. Switch marketplace in the bar above.`}
 				actions={
 					<div className="flex items-center gap-3">
-						<JobLine job={job} mpName={mpName} />
+						{/* A count, not a sentence. It stays meaningful when two operations are
+						    queued, and it is the one signal that has to live outside the panel —
+						    without it an operation would have no visible consequence until you
+						    thought to open something. */}
+						<Button
+							size="sm"
+							variant="secondary"
+							onClick={() => setOpsOpen(true)}
+							title={
+								running
+									? `${running} operation${running > 1 ? "s" : ""} in progress`
+									: "What you changed from this page, and whether it took effect"
+							}
+						>
+							<History size={14} /> Recent operations
+							{running > 0 && (
+								<span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-on-primary">
+									{running}
+								</span>
+							)}
+						</Button>
 						<Button
 							size="sm"
 							variant="secondary"
@@ -484,6 +506,19 @@ export const OneTimeOpsPage = () => {
 					</div>
 				}
 			/>
+
+			{actionError && (
+				<div className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-content">
+					<span>{actionError}</span>
+					<button
+						type="button"
+						onClick={() => setActionError(null)}
+						className="shrink-0 cursor-pointer text-xs text-content-muted underline hover:text-content"
+					>
+						Dismiss
+					</button>
+				</div>
+			)}
 
 			{/* Count left, controls right — the same shape as the Insights cards, so the
 			    search box is in the place the reader has already learned. */}
@@ -536,6 +571,12 @@ export const OneTimeOpsPage = () => {
 					/>
 				</div>
 			)}
+
+			<OperationsPanel
+				open={opsOpen}
+				onClose={() => setOpsOpen(false)}
+				campaignNameOf={nameOf}
+			/>
 
 			<CampaignDrawer
 				open={detail != null}

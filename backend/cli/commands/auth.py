@@ -39,19 +39,36 @@ def credentials_set(
     password: bool = typer.Option(
         False, "--password", help="Prompt for a password (hidden input)"
     ),
+    extra: list[str] = typer.Option(
+        None, "--extra",
+        help="key=value the platform needs besides the address, e.g. "
+             "account_id=<id> for Instamart. Repeatable; merges with what is stored.",
+    ),
 ) -> None:
     """Store a tenant's login credentials for a platform.
 
     The password is encrypted at rest with the same Fernet key as sessions, and
     is never echoed or logged. Platforms that log in by magic link or OTP
-    (both Blinkit dashboards) need no password at all.
+    (both Blinkit dashboards, Instamart) need no password at all.
+
+    `--extra` fills `Credentials.extra` — the per-tenant values a platform needs
+    that are not a password: Instamart's advertiser account id, which every data
+    call must carry and which no login call returns.
     """
     secret = typer.prompt("Password", hide_input=True, confirmation_prompt=True) if password else None
-    asyncio.run(_credentials_set(platform, tenant_id, email, secret))
+    pairs: dict[str, str] = {}
+    for item in extra or []:
+        k, sep, v = item.partition("=")
+        if not sep or not k.strip():
+            console.print(f"[red]--extra expects key=value, got {item!r}[/red]")
+            raise typer.Exit(1)
+        pairs[k.strip()] = v.strip()
+    asyncio.run(_credentials_set(platform, tenant_id, email, secret, pairs))
 
 
 async def _credentials_set(
-    platform: str, tenant_id: str, email: str, password: str | None
+    platform: str, tenant_id: str, email: str, password: str | None,
+    extra: dict[str, str] | None = None,
 ) -> None:
     auth = AUTHENTICATORS.get(platform)
     if auth is None:
@@ -69,9 +86,16 @@ async def _credentials_set(
         )
 
     async with AsyncSessionLocal() as db:
+        # Merge, never replace: `--extra` on a later call must not drop a key
+        # set earlier, the same way an omitted password keeps the stored one.
+        stored = await store.get_credentials(db, tenant_id, platform)
+        merged = {**((stored.extra if stored else {}) or {}), **(extra or {})}
         await store.save_credentials(
-            db, tenant_id, platform, Credentials(email=email, password=password)
+            db, tenant_id, platform,
+            Credentials(email=email, password=password, extra=merged),
         )
+        if merged:
+            console.print(f"  extra: {', '.join(f'{k}={v}' for k, v in merged.items())}")
     console.print(f"[green]Credentials saved for {platform}.[/green]")
 
 

@@ -35,10 +35,11 @@ from app.models.blinkit_marketing import (
 )
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
-from app.services import reference_service, zepto_ads
+from app.services import instamart_ads, reference_service, zepto_ads
 # The pure status vocabularies — NOT the adapters, which pull in Playwright.
 from campaign_manager import repo as cm_repo
 from campaign_manager.marketplaces import canonical_status
+from campaign_manager.marketplaces import supported as supported_marketplaces
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
 
@@ -117,6 +118,14 @@ async def _summary_agg(
     if zepto_ads.wants_zepto(marketplaces):
         z = await zepto_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
         totals = tuple(a + b for a, b in zip(totals, z))
+
+    if instamart_ads.wants_instamart(marketplaces):
+        # Real window now (instamart_ad_account_daily) -- unlike the
+        # campaigns table, this one genuinely has day-level data, so a real
+        # previous-period comparison is possible and this is called once per
+        # window, same as Blinkit/Zepto above.
+        i = await instamart_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, i))
 
     return totals
 
@@ -259,6 +268,33 @@ async def get_campaigns(
                 }
             )
 
+    if instamart_ads.wants_instamart(marketplaces):
+        # Instamart's per-campaign METRICS are lifetime, not a daily backbone
+        # (see instamart_ads.py) -- but WHICH campaigns are listed is still
+        # windowed by start_time/end_time overlap, matching how the portal's
+        # own date picker narrows "All Campaigns" for the selected range.
+        for i in await instamart_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end):
+            if status and (i.get("status") or "") != status:
+                continue
+            rows.append(
+                {
+                    "campaign_id": i["campaign_id"],
+                    # Required on every row (ZC-D1) — the automatable check and the
+                    # canonical state below are both keyed by it.
+                    "platform": "instamart",
+                    "name": i["name"],
+                    "type": i.get("campaign_type"),
+                    "status": i.get("status"),
+                    "daily_budget": i.get("daily_budget"),
+                    "budget_consumed": i["spend"],
+                    "impressions": i["impressions"],
+                    "atc": i["atc"],
+                    "quantities_sold": i["units_sold"],
+                    "ad_sales": i["sales"],
+                    "roas": i["roas"] or 0.0,
+                }
+            )
+
     # Campaign count per client is small -> rank + paginate in memory.
     sort_key = _CAMPAIGN_SORTS.get(sort, "budget_consumed")
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
@@ -266,8 +302,18 @@ async def get_campaigns(
     page = rows[pagination.offset : pagination.offset + pagination.limit]
     # Which of this page's campaigns the automations may not touch (ZC-D3) — one catalogue
     # query per marketplace on the page, never per row.
-    refused: dict[tuple[str, int], str] = {}
+    refused: dict[tuple[str, int | str], str] = {}
+    driven = set(supported_marketplaces())
     for mp in {r["platform"] for r in page}:
+        if mp not in driven:
+            # A marketplace the automations cannot drive at all (Instamart): say so on every
+            # row rather than asking a catalogue — `automation_refusals` would read it as
+            # Blinkit's, and Instamart's campaign ids are UUIDs, not ints.
+            for r in page:
+                if r["platform"] == mp:
+                    refused[(mp, r["campaign_id"])] = (
+                        f"automations are not available on {mp.title()} yet")
+            continue
         # On THIS request's session — a second session here held two pooled connections
         # per request and let bursts (Insights' per-day lists) deadlock the pool.
         for cid, why in (await cm_repo.automation_refusals(
@@ -389,6 +435,20 @@ async def get_performance(
                 cur["ad_sales"] += r["ad_sales"]
                 # RoAS is a ratio, so recompute from the merged bases rather
                 # than averaging the two marketplaces' ratios.
+                cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
+            else:
+                by_date[r["date"]] = dict(r)
+        series = [by_date[k] for k in sorted(by_date)]
+
+    if instamart_ads.wants_instamart(marketplaces):
+        i = await instamart_ads.performance(session, tenant_id=tenant_id, start=start, end=end)
+        by_date = {r["date"]: dict(r) for r in series}
+        for r in i:
+            cur = by_date.get(r["date"])
+            if cur:
+                cur["budget_consumed"] += r["budget_consumed"]
+                cur["impressions"] += r["impressions"]
+                cur["ad_sales"] += r["ad_sales"]
                 cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
             else:
                 by_date[r["date"]] = dict(r)

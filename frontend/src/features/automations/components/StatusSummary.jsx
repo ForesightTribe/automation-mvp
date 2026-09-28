@@ -2,7 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
 import { useLatestHistory } from "../hooks";
 import { formatCurrency } from "../../../lib/format";
-import { outcomeOf } from "../runLog";
+import { outcomeOf } from "../../../lib/runLog";
 
 const DAY_INDEX = {
 	sunday: 0,

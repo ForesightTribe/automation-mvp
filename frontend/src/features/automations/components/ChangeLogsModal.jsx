@@ -6,13 +6,12 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { ChannelBadge } from "./ChannelBadge";
 import { useHistory } from "../hooks";
-import { ActivityList } from "./ActivityList";
 import { Select } from "../../../components/ui/Select";
 import { ExportButton } from "../../../components/ui/ExportButton";
 import { downloadCsv } from "../../../lib/exportTable";
 import { HoverHint } from "../../../components/ui/HoverHint";
 import { formatDateTime } from "../../../lib/format";
-import { KIND_LABEL, outcomeOf, rankOf, resultOf } from "../runLog";
+import { KIND_LABEL, outcomeOf, rankOf, resultOf } from "../../../lib/runLog";
 
 const TYPE_OPTIONS = [
 	["", "All types"],
@@ -22,13 +21,41 @@ const TYPE_OPTIONS = [
 	["wallet", "Ad wallet"],
 ];
 
-// `success` on the row means "did what it meant to": a refused or failed write is false, a
-// check that rightly changed nothing is true. So these two split the log cleanly.
+/**
+ * The result filter — which also carries what used to be a separate "Include checks with no
+ * change" checkbox.
+ *
+ * Those two filter DIFFERENT things (whether a write worked; whether to show the ticks where
+ * nothing needed changing), so they are not one-to-one. Of their combinations, these four are
+ * the ones worth offering. The one dropped is "worked as intended AND no-change checks", which
+ * is only "everything except failures".
+ *
+ * `success` on a row means "did what it meant to": a refused or failed write is false, a check
+ * that rightly changed nothing is true.
+ */
 const STATUS_OPTIONS = [
 	["", "All results"],
-	["failed", "Not applied / errors"],
+	["with-unchanged", "All results + no-change checks"],
 	["success", "Worked as intended"],
+	["failed", "Not applied / errors"],
 ];
+
+// One automation's log already shows its no-change checks — "why has this not moved" is what
+// it is opened to answer — so there the extra option would change nothing.
+const FOCUS_STATUS_OPTIONS = STATUS_OPTIONS.filter(
+	([value]) => value !== "with-unchanged",
+);
+
+/** The chosen result → the server query's `success` and `include_unchanged`. */
+const resultQuery = (statusFilter, focused) => ({
+	success:
+		statusFilter === "failed"
+			? false
+			: statusFilter === "success"
+				? true
+				: undefined,
+	includeUnchanged: focused || statusFilter === "with-unchanged",
+});
 
 /**
  * What one automation's log is, as a server query.
@@ -103,15 +130,10 @@ export const ChangeLogsModal = ({
 	focusRow,
 	platformOf,
 	locationOf,
-	campaignNameOf,
 }) => {
 	const [page, setPage] = useState(1);
 	const [statusFilter, setStatusFilter] = useState("");
 	const [typeFilter, setTypeFilter] = useState("");
-	// The full list hides the ticks that changed nothing, or they would bury every real
-	// change. One automation's list always shows them — "why has this not moved" is what
-	// it is opened to answer — and the full list can opt in.
-	const [showUnchanged, setShowUnchanged] = useState(false);
 
 	/**
 	 * Every filter is applied BY THE SERVER. Filtering one page client-side — as this did —
@@ -119,19 +141,20 @@ export const ChangeLogsModal = ({
 	 * "Failed" only ever searched the newest twenty rows.
 	 */
 	const focus = focusQuery(focusRow);
+	// The full list hides the ticks that changed nothing, or they would bury every real change;
+	// "All results + no-change checks" opts in. One automation's list always shows them. A
+	// choice made in the full list that means nothing in a focused one reads as "All results".
+	const status =
+		focus && statusFilter === "with-unchanged" ? "" : statusFilter;
+	const result = resultQuery(status, Boolean(focus));
 	const { data, isLoading, error, refetch } = useHistory(
 		page,
 		focus?.kind ?? (typeFilter || undefined),
 		{
 			campaignId: focus?.campaignId,
 			keyword: focus?.keyword,
-			success:
-				statusFilter === "failed"
-					? false
-					: statusFilter === "success"
-						? true
-						: undefined,
-			includeUnchanged: Boolean(focus) || showUnchanged,
+			success: result.success,
+			includeUnchanged: result.includeUnchanged,
 			enabled: open,
 		},
 	);
@@ -141,13 +164,7 @@ export const ChangeLogsModal = ({
 	// (or of one filter) is never read as page 3 of the next.
 	useEffect(() => {
 		setPage(1);
-	}, [
-		focusRow?.campaign_id,
-		focusRow?.id,
-		statusFilter,
-		typeFilter,
-		showUnchanged,
-	]);
+	}, [focusRow?.campaign_id, focusRow?.id, statusFilter, typeFilter]);
 
 	if (!open) return null;
 
@@ -188,31 +205,20 @@ export const ChangeLogsModal = ({
 					<div className="flex flex-wrap items-center gap-3">
 						{/* One automation is already one type, so its log has no type to pick. */}
 						{!focusRow && (
-							<>
-								<label className="flex items-center gap-1.5 text-xs text-content-muted">
-									<input
-										type="checkbox"
-										checked={showUnchanged}
-										onChange={(e) =>
-											setShowUnchanged(e.target.checked)
-										}
-										className="accent-brand"
-									/>
-									Include checks with no change
-								</label>
-								<Select
-									ariaLabel="Filter by type"
-									value={typeFilter}
-									onChange={setTypeFilter}
-									options={TYPE_OPTIONS}
-								/>
-							</>
+							<Select
+								ariaLabel="Filter by type"
+								value={typeFilter}
+								onChange={setTypeFilter}
+								options={TYPE_OPTIONS}
+							/>
 						)}
 						<Select
 							ariaLabel="Filter by result"
-							value={statusFilter}
+							value={status}
 							onChange={setStatusFilter}
-							options={STATUS_OPTIONS}
+							options={
+								focusRow ? FOCUS_STATUS_OPTIONS : STATUS_OPTIONS
+							}
 						/>
 						<ExportButton
 							onExport={exportCsv}
@@ -230,12 +236,6 @@ export const ChangeLogsModal = ({
 				</header>
 
 				<div className="flex-1 overflow-auto px-5 py-4">
-					{/* What you asked for, above what the engines did. Hidden while a single
-					    automation is in focus: that view is about one rule's own history, and
-					    the account's recent actions are not part of that question. */}
-					{!focusRow && (
-						<ActivityList campaignNameOf={campaignNameOf} />
-					)}
 					{isLoading && <Loading label="Loading history…" />}
 					{error && (
 						<ErrorState message={error.message} onRetry={refetch} />

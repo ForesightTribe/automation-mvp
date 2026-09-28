@@ -17,18 +17,23 @@ import {
  * a page = adding one entry here (plus its feature folder).
  *
  * `icon` is a lucide component — the rail is icon-only, so `label` is what the
- * tooltip and aria-label read.
+ * tooltip and aria-label read. `badge` is an optional pill (e.g. "New"), shown
+ * only when the rail is expanded.
  */
 export const NAV_ITEMS = [
 	{ label: "Overview", path: "/overview", icon: LayoutGrid },
 	{ label: "Sales & Analytics", path: "/analytics", icon: BarChart3 },
 	{ label: "Products", path: "/products", icon: Package },
 	{ label: "Inventory", path: "/inventory", icon: Warehouse },
-	{ label: "Purchase Orders", path: "/purchase-orders", icon: ClipboardList },
-	// Ads (/ads) and Campaign Manager (/campaign-manager) are hidden from the rail
-	// while AdsBeta carries the ad work; both routes still resolve for saved links.
 	{
-		label: "AdsBeta",
+		label: "Purchase Orders",
+		path: "/purchase-orders",
+		icon: ClipboardList,
+		badge: "New",
+	},
+
+	{
+		label: "Ads",
 		icon: FlaskConical,
 		children: [
 			{ label: "Insights", path: "/ads/insights" },

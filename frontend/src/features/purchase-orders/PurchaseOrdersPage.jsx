@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { Search } from "lucide-react";
+import { useMarketplaces } from "../../context/MarketplaceContext";
 import { PageHeader } from "../../components/ui/PageHeader";
 import { Card } from "../../components/ui/Card";
 import { DataTable } from "../../components/ui/DataTable";
@@ -23,8 +24,11 @@ import { PoKpiTile } from "./components/PoKpiTile";
 import { usePoSummary, usePoInsights, usePoSkus, usePoExport } from "./hooks";
 
 /**
- * Purchase orders — what Blinkit ordered, how much of it arrived, and which POs still
- * have money sitting undelivered.
+ * Purchase orders — what was ordered, how much of it arrived, and which POs still
+ * have money sitting undelivered. Blinkit-only until now; Instamart is reachable by
+ * picking it explicitly in the navbar's marketplace pills (see hooks.js's
+ * `usePoMarketplace` — there's no blended PO view across marketplaces, so "All" or
+ * a multi-select falls back to Blinkit, this page's original and default platform).
  *
  * "Undelivered value" is short units × landing rate. On an open PO that is value still
  * to come; on a closed one it is value missed. The two are counted separately
@@ -36,39 +40,63 @@ const VIEWS = [
 	{ value: "sku", label: "SKU insights" },
 ];
 
-// "open" and "closed" group the marketplace's own states; the rest are those states
-// as Blinkit writes them.
+// "open", "closed" and "cancelled" group the marketplace's own states; the rest
+// are those states as Blinkit writes them. "Closed" means settled — delivered or
+// expired, cancelled excluded.
 const STATUSES = [
-	["", "All statuses"],
-	["open", "Open (not yet delivered)"],
+	["open", "Open"],
 	["closed", "Closed"],
 	["Unscheduled", "Unscheduled"],
 	["Scheduled", "Scheduled"],
 	["Fulfilled", "Fulfilled"],
 	["Expired", "Expired"],
+	["cancelled", "Cancelled"],
+	["", "All statuses"],
 ];
 
 export const PurchaseOrdersPage = () => {
 	const [view, setView] = useState("po");
 	const [search, setSearch] = useState("");
-	const [status, setStatus] = useState("");
+	const [status, setStatus] = useState("open");
 	const [page, setPage] = useState(1);
 	// The PO whose drawer is open.
 	const [openPo, setOpenPo] = useState(null);
 	// One switch for the whole strip: the tiles open and close together.
 	const [comparing, setComparing] = useState(false);
 
+	// Same reasoning as the Scorecard page: no blended PO view, so only name a
+	// marketplace here when the picker itself has narrowed to exactly one.
+	const { marketplaces, selected, allSelected } = useMarketplaces();
+	const explicitMp =
+		!allSelected && selected.length === 1
+			? marketplaces.find((m) => m.slug === selected[0])
+			: null;
+	const subtitle = explicitMp
+		? `What was ordered on ${explicitMp.name}, how much of it arrived, and what is still undelivered.`
+		: "What Blinkit ordered, what arrived, and what is still undelivered.";
+
 	const summary = usePoSummary();
 	const isSku = view === "sku";
 	// Every PO in the window. The service orders them: still worth chasing first,
 	// settled below. The view not on screen is disabled rather than unmounted.
+	// Ordered by the API so a header sorts every PO, not the page in hand.
+	const [poSort, setPoSort] = useState({ key: null, order: "desc" });
 	const table = usePoInsights({
 		scope: "all",
 		search: isSku ? "" : search,
 		status,
 		page,
+		sort: poSort.key,
+		order: poSort.order,
 	});
-	const skus = usePoSkus({ search: isSku ? search : "", page });
+	// Ordered by the API so a header sorts every SKU, not the page in hand.
+	const [skuSort, setSkuSort] = useState({ key: null, order: "desc" });
+	const skus = usePoSkus({
+		search: isSku ? search : "",
+		page,
+		sort: skuSort.key,
+		order: skuSort.order,
+	});
 	// The file holds both views, so it does not change with the tab.
 	const exporter = usePoExport("all", status);
 	const s = summary.data;
@@ -221,10 +249,7 @@ export const PurchaseOrdersPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<PageHeader
-				title="Purchase orders"
-				subtitle="What Blinkit ordered, what arrived, and what is still undelivered."
-			/>
+			<PageHeader title="Purchase Orders" subtitle={subtitle} />
 
 			{summary.isLoading && <Loading label="Loading purchase orders…" />}
 			{summary.error && (
@@ -328,7 +353,7 @@ export const PurchaseOrdersPage = () => {
 							options={STATUSES}
 							onChange={onStatus}
 							ariaLabel="Filter by status"
-							className="min-w-[12rem]"
+							className="min-w-[8rem]"
 						/>
 					) : (
 						<span />
@@ -355,7 +380,15 @@ export const PurchaseOrdersPage = () => {
 				</div>
 
 				{isSku ? (
-					<SkuTable query={skus} onPage={setPage} />
+					<SkuTable
+						query={skus}
+						onPage={setPage}
+						sort={skuSort}
+						onSort={(key, order) => {
+							setSkuSort({ key, order });
+							setPage(1);
+						}}
+					/>
 				) : (
 					<>
 						{table.isLoading && <Loading label="Loading POs…" />}
@@ -376,6 +409,12 @@ export const PurchaseOrdersPage = () => {
 									columns={columns}
 									rows={table.data.items}
 									rowKey={(r) => r.po_number}
+									sortKey={poSort.key}
+									sortOrder={poSort.order}
+									onSortChange={(key, order) => {
+										setPoSort({ key, order });
+										setPage(1);
+									}}
 									minWidth={900}
 									maxHeight={560}
 								/>
