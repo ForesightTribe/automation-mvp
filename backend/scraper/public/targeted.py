@@ -27,7 +27,6 @@ from app.utils.logger import logger
 from scraper.public import staging
 from scraper.public.orchestrator import _clamp_workers, warn_if_co_located
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
-from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.search_result import classify_products
 
 DASHBOARD = "public_skus"
@@ -404,7 +403,7 @@ async def run_targeted(
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+            browser = await provider.launch_browser(pw)
             try:
                 logger.info(
                     f"targeted: tenant {tid} on {mp_slug} — {n_workers} workers × "
