@@ -1542,18 +1542,19 @@ async def require_automatable(tenant_id: uuid.UUID, platform: str, campaign_id: 
                              "Nothing was created.")
 
 
-async def catalog_cutoff(tenant_id: uuid.UUID, platform: str):
+async def catalog_cutoff(tenant_id: uuid.UUID, platform: str, *, db=None):
     """`scraped_at` a campaign must reach to count as part of the CURRENT account (ZC-B8).
 
     Every catalogue write upserts what the marketplace returned, so a campaign that stops
     coming back (deleted, or on an account the client left) keeps its last `scraped_at`
     forever. Within 2 h of the newest write = returned by the latest scrape or Refresh.
     Same rule as `ads_service._recent_campaign_cutoff` (Blinkit). None when there is none.
+    Read by the Zepto campaign list's `recent_only` (`zepto_ads.campaigns`), on its session.
     """
     from sqlalchemy import func
 
     model = _catalog(platform).campaigns
-    async with AsyncSessionLocal() as db:
+    async with _session(db) as db:
         latest = (await db.execute(
             select(func.max(model.scraped_at)).where(model.tenant_id == tenant_id)
         )).scalar()

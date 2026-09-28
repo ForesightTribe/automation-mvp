@@ -316,8 +316,11 @@ does not make it browser-valid** — that gap cost the scorecard four weeks whil
 
 ## Public Scraper — Key Facts
 
-Blinkit-only (Instamart/Zepto are out of scope). Fully per-tenant and DB-driven.
-Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md).
+Blinkit and Zepto, through one provider registry (`scraper/public/providers.py`: each
+marketplace supplies its browser, session, search and parse; the orchestrators never branch
+on marketplace). Fully per-tenant and DB-driven. Deep dive + status:
+[docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) (engine, Blinkit) ·
+[docs/zepto-public.md](docs/zepto-public.md) (Zepto).
 
 - **Config is a workbook, applied via `cli sync`.** `config.xlsx` (sheets
   `locations` / `brands` / `coverage`) is the source of truth: the darkstore
@@ -378,7 +381,17 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
 - **`sku_map` bridges private↔public** (`item_id` ↔ `platform_product_id`) — different
   Blinkit id systems, no shared UPC, built by name-match (`cli sku-map build`/`apply`).
   Powers the Products page public panel (`/products/{item_id}/public`).
-- **Cloudflare** blocks direct httpx (403, TLS fingerprint) even with cookies — must
+- **Zepto differs in four ways** ([docs/zepto-public.md](docs/zepto-public.md)):
+  a search is bound to a store by the `merchant_id` HEADER — a coordinate alone returns a
+  generic catalog with a valid 200; the anonymous allowance is small (HTTP 299
+  `LOGIN_REQUIRED` clears in ~1 min, 202 = the WAF pass expired → re-mint it, never wait),
+  so one worker at 2 s pacing; the browser must be the **full Chromium, headless**
+  (`endpoints.BROWSER_CHANNEL`) — Zepto's firewall refuses Playwright's default headless
+  shell (found 2026-09-24); and **sold-out products are hidden from search entirely**, so a
+  product missing from a Zepto brand search is not sellable at that store. No Zepto public
+  schedule runs yet; public scraping is to move to separate infra and must never share the
+  bidding VM's IP or search allowance (agreed 2026-09-26).
+- **Cloudflare** (Blinkit) blocks direct httpx (403, TLS fingerprint) even with cookies — must
   fetch via in-page `page.evaluate(fetch(...))` in a real browser session. **One
   session is reused across all locations** by swapping the lat/lon headers (no
   per-location relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.

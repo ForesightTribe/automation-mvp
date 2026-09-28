@@ -234,7 +234,8 @@ async def get_campaigns(
         # its campaigns endpoint returns identity and metrics together — so they
         # are appended already-shaped rather than merged by campaign_id. The
         # two marketplaces' ids are separate namespaces and never collide.
-        for z in await zepto_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end):
+        for z in await zepto_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end,
+                                           recent_only=recent_only):
             if status and (z.get("status") or "") != status:
                 continue
             rows.append(

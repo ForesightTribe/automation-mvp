@@ -45,8 +45,13 @@ real cost on both marketplaces. In particular:
   anyone looked (docs §8.2b). Blinkit has exactly ONE write endpoint —
   `PUT /adservice/v3/campaigns`, full body, `campaign_request_type` as the discriminator —
   so every Blinkit write carries the same whole-campaign blast radius Zepto's does.
-- Position lookup is a *session* on both, but Blinkit's costs a browser warm-up and
-  a per-keyword search; Zepto's shape is still being determined.
+- Position lookup is a *session* on both: one browser warm-up per run, then a plain
+  request per (keyword, store). Blinkit picks the store by coordinate; Zepto by
+  `merchant_id` (a coordinate would spend its much scarcer store-lookup allowance), and
+  Zepto's session runs the FULL Chromium headless — its firewall refuses Playwright's
+  default headless shell (`scraper/platforms/zepto/public_data/endpoints.BROWSER_CHANNEL`).
+  Zepto's anonymous search allows only a few requests a minute, which is why it measures
+  at one store a tick (`campaign_manager/rotation.py`) where Blinkit reads every store.
 
 ## What is NOT in this contract
 

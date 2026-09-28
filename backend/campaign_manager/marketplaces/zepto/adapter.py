@@ -10,23 +10,31 @@ Budget and bid are both a **whole-campaign PUT** — geo targeting, the product 
 and every other keyword's bid ride in the same body. A wrong payload does not fail
 loudly; it rewrites live configuration.
 
-So `apply_budget` and `apply_bid` never construct a payload. They:
+So `apply_budget` and `apply_bid` never construct a payload. Holding the campaign's write
+lock (`repo.campaign_write_lock` — the budget and bid lanes run in parallel, and each PUT
+carries the other's field), `_put_one_field`:
 
-    1. read the campaign fresh,
-    2. translate it into the PUT shape (translate.to_put),
-    3. mutate ONE field,
-    4. diff against the untouched translation and REFUSE unless exactly that field
+    1. reads the campaign fresh,
+    2. translates it into the PUT shape (`translate.to_put`),
+    3. mutates ONE field,
+    4. diffs against the untouched translation and REFUSES unless exactly that field
        changed,
-    5. only then PUT.
+    5. checks the whole body against the campaign as Zepto reported it
+       (`payload.py`, a rule per PUT field) and REFUSES on any other difference,
+    6. only then PUTs — and reads the campaign back, logging an ERROR if it does not
+       equal what was sent.
 
-Step 4 is the load-bearing one. It catches both a translator bug and a campaign
-that changed under us between read and write — someone editing in the dashboard
-while a job runs is routine here, not exotic.
+Steps 4 and 5 are the load-bearing ones. Step 4 catches a mutation that touched more than
+it meant to, or a campaign that changed under us between read and write (someone editing
+in the dashboard while a job runs is routine here, not exotic). Step 5 catches what step 4
+cannot: a translator that rewrites a field the SAME way on both sides of the diff — the
+empty city list, the wrong city shape and the dropped negative keywords of 2026-09-21
+(A12–A14) all passed step 4.
 
-⚠️ This is mechanism, not policy, which is why it lives here and not in
-`writes.py`: it defends against a hazard only Zepto has. Blinkit's targeted writes
-cannot damage a campaign this way, and forcing every marketplace through a
-whole-object diff would be wrong.
+⚠️ This is mechanism, not policy, which is why it lives here and not in `writes.py`.
+Blinkit's writes are whole-campaign PUTs too (docs §8.2b — a hardcoded city list once
+broadened nine live campaigns to pan-India) and carry their own equivalent in
+`blinkit/payload.py`; the two differ in shape, so each marketplace owns its own check.
 
 ## Status vocabulary
 

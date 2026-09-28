@@ -202,7 +202,8 @@ async def performance(
 
 
 async def campaigns(
-    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date,
+    recent_only: bool = False,
 ) -> list[dict]:
     """Per-campaign rollup over the window.
 
@@ -218,6 +219,13 @@ async def campaigns(
     to a day; the catalogue is what Refresh and every write-back update. A catalogued
     campaign with no metrics in the window is listed too, at zero — as Blinkit's are — so a
     campaign created today can be picked.
+
+    `recent_only` (ZC-B8, what the automation pickers ask for) drops a catalogued campaign
+    the latest catalogue write no longer returned — Blinkit's `recent_only` rule, via
+    `repo.catalog_cutoff`. Zepto's list keeps ENDED campaigns, so this is rare: a campaign
+    deleted on Zepto, or one left behind on an account the client no longer uses. A campaign
+    the catalogue never holds (Display) is kept: it is only listed when it has metrics in
+    the window, and the pickers grey it out as not automatable anyway.
     """
     rows = (
         await session.execute(
@@ -265,8 +273,19 @@ async def campaigns(
             )
         ).scalars().all()
     }
+    stale: set = set()
+    if recent_only:
+        from campaign_manager import repo as cm_repo
+
+        cutoff = await cm_repo.catalog_cutoff(tenant_id, SLUG, db=session)
+        if cutoff:
+            stale = {cid for cid, c in catalogue.items()
+                     if c.scraped_at is not None and c.scraped_at < cutoff}
+            catalogue = {cid: c for cid, c in catalogue.items() if cid not in stale}
     out = []
     for cid, name, spend, impr, sales, atc, units, ctype, clicks in rows:
+        if cid in stale:
+            continue
         cat = catalogue.get(cid)
         out.append(
             {

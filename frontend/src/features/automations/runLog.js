@@ -33,7 +33,10 @@ const OUTCOME = {
 	"bid:bounds": "Bid brought within limits",
 	"bid:relax": "Target relaxed",
 	"bid:no-op": "Rank held",
-	"bid:hold": "Waiting for the last change",
+	// Two kinds of hold write this: waiting for the last change to show up in search, and
+	// Zepto's out-of-stock rest (campaign_manager/rotation.py). "Bid held" is true of both;
+	// the row's reason says which.
+	"bid:hold": "Bid held",
 	"bid:skip": "Bid not changed",
 	"bid:error": "Could not check or change",
 	"activation:apply": "Campaign started or stopped",
