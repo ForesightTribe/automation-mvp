@@ -15,9 +15,11 @@ import { formatCurrency, formatDate, formatNumber } from "../../../lib/format";
  * them.
  *
  * The columns are the platform's own, in the platform's own order, because the
- * point of a raw sheet is that it matches the export somebody is used to.
+ * point of a raw sheet is that it matches the export somebody is used to —
+ * which is why `columns` is a prop rather than fixed: Blinkit's and
+ * Instamart's raw tables don't share a shape.
  */
-const COLS = [
+const BLINKIT_COLS = [
 	["date", "Date", "date"],
 	["campaign_id", "Campaign ID", "id"],
 	["campaign_name", "Campaign Name", "text"],
@@ -40,6 +42,20 @@ const COLS = [
 	["total_roas", "Total RoAS", "ratio"],
 ];
 
+export const INSTAMART_RAW_COLS = [
+	["date", "Date", "date"],
+	["campaign_id", "Campaign ID", "id"],
+	["campaign_name", "Campaign Name", "text"],
+	["candidate_id", "Product ID", "id"],
+	["product_name", "Product Name", "text"],
+	["spend", "Spend", "money"],
+	["gmv", "Ad GMV", "money"],
+	["roas", "RoAS", "ratio"],
+	["impressions", "Impressions", "count"],
+	["clicks", "Clicks", "count"],
+	["add_to_cart_count", "Add to Cart", "count"],
+];
+
 const cell = (v, type) => {
 	if (v === null || v === undefined || v === "") return "—";
 	if (type === "money") return formatCurrency(v);
@@ -49,13 +65,20 @@ const cell = (v, type) => {
 	return String(v);
 };
 
-export const RawAdSheet = ({ campaignType, active }) => {
+export const RawAdSheet = ({
+	campaignType,
+	active,
+	marketplace = "blinkit",
+	columns = BLINKIT_COLS,
+}) => {
 	const [page, setPage] = useState(1);
 	const { data, isLoading, error, refetch } = useRawAds(
 		campaignType,
 		page,
 		active,
+		marketplace,
 	);
+	const COLS = columns;
 
 	if (isLoading) return <Loading label="Loading rows…" />;
 	if (error) return <ErrorState message={error.message} onRetry={refetch} />;

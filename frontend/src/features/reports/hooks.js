@@ -138,7 +138,7 @@ export const useWeekendPlanning = () => {
  * is actually opened: these run to tens of thousands of rows and nobody opens
  * the report to look at them first.
  */
-export const useRawAds = (campaignType, page, enabled) => {
+export const useRawAds = (campaignType, page, enabled, marketplace = "blinkit") => {
 	const { activeClientId } = useClient();
 	const { range, activePreset } = useDateRange();
 	const { start, end } = reportWindow(range, activePreset);
@@ -148,6 +148,7 @@ export const useRawAds = (campaignType, page, enabled) => {
 			activeClientId,
 			start,
 			end,
+			marketplace,
 			campaignType,
 			page,
 		],
@@ -155,6 +156,7 @@ export const useRawAds = (campaignType, page, enabled) => {
 			getRawAds(activeClientId, {
 				start,
 				end,
+				marketplace,
 				campaignType,
 				page,
 				limit: 100,
