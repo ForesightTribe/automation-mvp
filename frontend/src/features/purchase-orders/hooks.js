@@ -14,11 +14,11 @@ import { downloadBlob } from "../../lib/exportTable";
 
 /**
  * Resolves the global marketplace pill selection down to what the PO
- * endpoints actually accept: undefined (Blinkit, the only marketplace this
- * page had until now) or exactly "instamart" — never auto-detected, and
- * there's no blended PO view across marketplaces, so "All" or a multi-select
- * also falls back to undefined (Blinkit). Same convention as the Scorecard
- * page's `useScorecardMarketplace`.
+ * endpoints actually accept: undefined (Blinkit, this page's original
+ * default), "instamart", or "zepto" — never auto-detected, and there's no
+ * blended PO view across marketplaces, so "All" or a multi-select also falls
+ * back to undefined (Blinkit). Same convention as the Scorecard page's
+ * `useScorecardMarketplace`.
  */
 const usePoMarketplace = () => {
 	const { selected, allSelected } = useMarketplaces();

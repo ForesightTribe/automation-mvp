@@ -2,9 +2,11 @@
 
 `marketplace=` on `insights_summary`/`insights`/`sku_insights`/`get_po` is
 explicit-only, same convention as `scorecard_service._platform`: leaving it
-unset keeps every existing Blinkit caller unaffected, and Instamart is never
-auto-detected. See `instamart_po_service` for what it can't carry that
-Blinkit's PO data can (booking slots, a separate delivery date, city)."""
+unset keeps every existing Blinkit caller unaffected, and neither Instamart
+nor Zepto is ever auto-detected. See `instamart_po_service` for what it can't
+carry that Blinkit's PO data can (booking slots, a separate delivery date,
+city); see `zepto_po_service` for why IT reads from line items instead of its
+own PO header (the header's own received/asn totals are always null)."""
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -24,7 +26,7 @@ from app.schemas.purchase_order import (
     POSnapshotOut,
     PurchaseOrderOut,
 )
-from app.services import instamart_po_service
+from app.services import instamart_po_service, zepto_po_service
 
 # A PO whose delivery window has not closed: the undelivered part is still to come,
 # not lost. Anything else is settled, and its shortfall is a miss.
@@ -63,6 +65,10 @@ async def get_po(
 ) -> PODetailOut | None:
     if marketplace == "instamart":
         return await instamart_po_service.get_po(
+            session, tenant_id=tenant_id, po_number=po_number
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.get_po(
             session, tenant_id=tenant_id, po_number=po_number
         )
     po = (
@@ -152,6 +158,11 @@ async def insights_summary(
             session, tenant_id=tenant_id, start=start, end=end,
             prev_start=prev_start, prev_end=prev_end,
         )
+    if marketplace == "zepto":
+        return await zepto_po_service.insights_summary(
+            session, tenant_id=tenant_id, start=start, end=end,
+            prev_start=prev_start, prev_end=prev_end,
+        )
     short_value = func.sum(
         BlinkitPOItem.remaining_quantity
         * func.coalesce(BlinkitPOItem.landing_rate, BlinkitPOItem.cost_price, 0)
@@ -238,6 +249,11 @@ async def insights(
     """
     if marketplace == "instamart":
         return await instamart_po_service.insights(
+            session, tenant_id=tenant_id, pagination=pagination, start=start,
+            end=end, scope=scope, search=search, status=status,
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.insights(
             session, tenant_id=tenant_id, pagination=pagination, start=start,
             end=end, scope=scope, search=search, status=status,
         )
@@ -365,6 +381,11 @@ async def sku_insights(
     """
     if marketplace == "instamart":
         return await instamart_po_service.sku_insights(
+            session, tenant_id=tenant_id, pagination=pagination, start=start,
+            end=end, search=search,
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.sku_insights(
             session, tenant_id=tenant_id, pagination=pagination, start=start,
             end=end, search=search,
         )

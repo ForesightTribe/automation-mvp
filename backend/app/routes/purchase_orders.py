@@ -29,8 +29,8 @@ async def list_pos(session: SessionDep, client: ClientDep, pagination: Paginatio
 
 
 _MP_DESC = (
-    "instamart to see Instamart's PO data explicitly; omit for Blinkit "
-    "(the page's only marketplace until now)."
+    "'instamart' or 'zepto' to see that marketplace's PO data explicitly; "
+    "omit for Blinkit (the page's original default)."
 )
 
 
