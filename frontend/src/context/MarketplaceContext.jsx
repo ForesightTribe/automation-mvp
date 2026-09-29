@@ -204,5 +204,8 @@ export const useAutomationMarketplace = () => {
 		marketplace: automation,
 		name: automationInfo?.name ?? "the marketplace",
 		minDailyBudget: automationInfo?.min_daily_budget ?? null,
+		// Why keyword-bid automations are off on this marketplace (Zepto, for now), or null
+		// when they are available. From the server, so switching it back on needs no deploy.
+		keywordBiddingOff: automationInfo?.keyword_bidding_off ?? null,
 	};
 };

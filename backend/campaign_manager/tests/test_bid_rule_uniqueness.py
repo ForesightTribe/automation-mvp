@@ -14,6 +14,7 @@ import asyncio
 import uuid
 
 from campaign_manager import repo
+from campaign_manager.tests._zepto_flags import zepto_bidding_on
 
 TENANT = uuid.UUID("fa53082e-7e83-424d-aab9-086fe1b4c680")
 
@@ -113,6 +114,7 @@ def test_creating_a_rule_checks_before_writing_anything():
     assert calls and calls[0][1][0] == "blinkit"
 
 
+@zepto_bidding_on
 def test_resuming_a_paused_rule_checks_too_and_excludes_itself():
     """Pausing frees the keyword, so something else may have taken it. Resuming into that
     would be exactly the bid fight this prevents — and the rule must not find ITSELF."""

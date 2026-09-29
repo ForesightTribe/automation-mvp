@@ -13,6 +13,7 @@ from campaign_manager import repo, writes
 from campaign_manager.marketplaces import automation_refusal, rule_needs_location
 from campaign_manager.marketplaces.zepto import adapter as zad
 from campaign_manager.marketplaces.zepto import eligibility, translate
+from campaign_manager.tests._zepto_flags import zepto_bidding_on
 from campaign_manager.tests.test_zepto_translate import (
     CAMPAIGN_ID, GET_DETAIL, TARGETING_OPTIONS)
 
@@ -148,6 +149,7 @@ def test_zepto_needs_a_location_blinkit_does_not():
     assert zad.REQUIRES_RULE_LOCATION is True
 
 
+@zepto_bidding_on
 def test_a_zepto_rule_with_no_city_is_placed_from_the_campaigns_targeting():
     """C14's answer is not a refusal: `create_bid_rule` asks `pick_rule_location` for a city
     the campaign actually runs in, and refuses only if there is none.

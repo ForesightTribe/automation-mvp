@@ -6,6 +6,7 @@ from app.models.brand import Brand, Marketplace
 from app.models.job import JobStatus, ScrapeJob
 from app.models.search import MarketplaceLocation, SearchSnapshot
 from campaign_manager.marketplaces import min_daily_budget as cm_min_daily_budget
+from campaign_manager.marketplaces import keyword_bidding_refusal as cm_keyword_bidding_off
 from campaign_manager.marketplaces import supported as cm_supported
 
 
@@ -85,6 +86,8 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
             "data_scope": "full" if m.slug in full_scope else "public",
             "automations": m.slug in automations,
             "min_daily_budget": cm_min_daily_budget(m.slug),
+            "keyword_bidding_off": (cm_keyword_bidding_off(m.slug)
+                                    if m.slug in automations else None),
         }
         for m in rows
     ]

@@ -289,6 +289,11 @@ def test_the_marketplace_list_flags_automation_support_and_the_minimum():
     assert out["instamart"]["automations"] is False
     assert out["zepto"]["min_daily_budget"] == 500
     assert out["blinkit"]["min_daily_budget"] is None
+    # Zepto keyword bidding is switched off for now (2026-09-29); Blinkit's is on. A
+    # marketplace without automations at all carries no reason.
+    assert "Zepto" in (out["zepto"]["keyword_bidding_off"] or "")
+    assert out["blinkit"]["keyword_bidding_off"] is None
+    assert out["instamart"]["keyword_bidding_off"] is None
 
 
 if __name__ == "__main__":

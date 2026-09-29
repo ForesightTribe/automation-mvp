@@ -10,6 +10,7 @@ import asyncio
 import uuid
 
 from campaign_manager import repo
+from campaign_manager.tests._zepto_flags import zepto_bidding_on
 
 TENANT = uuid.UUID("fa53082e-7e83-424d-aab9-086fe1b4c680")
 CAMPAIGN = 2427461
@@ -159,6 +160,7 @@ def test_catalog_text_entries_are_never_saved_as_a_city_id():
 
 # ── what the save does with it ──────────────────────────────────────────────
 
+@zepto_bidding_on
 def test_a_rule_with_no_city_is_given_one_rather_than_refused():
     created = {}
 
@@ -187,6 +189,7 @@ def test_a_rule_with_no_city_is_given_one_rather_than_refused():
     assert created["location_name"] == "Byatarayanapura"
 
 
+@zepto_bidding_on
 def test_a_rule_that_cannot_be_placed_says_which_cities_failed():
     async def _ok(tenant_id, platform, campaign_id):
         return None
