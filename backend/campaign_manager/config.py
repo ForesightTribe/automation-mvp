@@ -92,19 +92,38 @@ SETTLE_MAX_AGE_HOURS: float = float(os.getenv("CM_SETTLE_MAX_AGE_HOURS", "24"))
 # ── Multi-store measurement + stock (coverage.py, stock.py) ─────────────────
 #
 # A keyword automation measures at up to BID_MAX_STORES frozen stores per city
-# (`cm_city_stores` ranks 1..N) and bids for target at every one where the campaign is in
-# stock. More stores = more consumer searches per tick; a marketplace with a tight search
-# allowance is capped lower. Zepto's anonymous search allows ~4-5 requests a minute, so it
-# stays on one store.
+# (`cm_city_stores` ranks 1..N). HOW it uses them is the marketplace's store strategy:
+#
+#   EVERY_STORE (Blinkit) — read every store each tick and bid for target at every one where
+#       the campaign is in stock (coverage.py). N stores = N searches a tick.
+#   ROTATE (Zepto, C6) — read ONE store a tick and move to the next only when that one can't
+#       sell the campaign (rotation.py). Zepto's anonymous search allows a few requests a
+#       minute, and its search hides sold-out products, so it can't afford — or use — a read
+#       of every store. The set is still 3 deep: it is the fallback order, not a fan-out.
 BID_MAX_STORES: int = int(os.getenv("CM_BID_MAX_STORES", "3"))
 _MAX_STORES_OVERRIDES: dict[str, int] = {
-    "zepto": int(os.getenv("CM_ZEPTO_BID_MAX_STORES", "1")),
+    "zepto": int(os.getenv("CM_ZEPTO_BID_MAX_STORES", "3")),
 }
+
+EVERY_STORE = "every_store"
+ROTATE = "rotate"
+_STORE_STRATEGY: dict[str, str] = {"zepto": ROTATE}
 
 
 def max_stores(platform: str) -> int:
     """How many ranked stores a city may measure at on this marketplace."""
     return max(1, min(BID_MAX_STORES, _MAX_STORES_OVERRIDES.get(platform, BID_MAX_STORES)))
+
+
+def store_strategy(platform: str) -> str:
+    """`EVERY_STORE` or `ROTATE` — see above. Anything unlisted keeps Blinkit's behaviour."""
+    return _STORE_STRATEGY.get(platform, EVERY_STORE)
+
+
+# ROTATE only: once a full cycle of stores has come back unable to sell the campaign, the bid
+# is held and ONE store is checked every this many minutes (in rotation) until one can sell
+# again. The ~15-minute tick keeps running; it just doesn't search while resting.
+STOCK_REST_MINUTES: int = int(os.getenv("CM_STOCK_REST_MINUTES", "60"))
 
 
 # Stock is one brand search per store, reused across runs until it is this old. Inventory
@@ -122,6 +141,17 @@ BID_GIVE_UP_TICKS: int = int(os.getenv("CM_BID_GIVE_UP_TICKS", "2"))
 # Warn once a store has given no usable reading this many checks in a row — the decision is
 # quietly running on fewer stores. Warning, not error: it is not an outage.
 STORE_PROBLEM_WARN_TICKS: int = int(os.getenv("CM_STORE_PROBLEM_WARN_TICKS", "2"))
+
+# ── Prepaid ad wallet (wallet.py, ZC-C12) ───────────────────────────────────
+#
+# Zepto ads spend from a prepaid wallet; when it runs dry every campaign stops delivering
+# whatever its budget says, and topping it up is not in our permissions. Below this balance
+# (₹) each run warns; at zero it is an ERROR, which alerts. Default ≈ a day of Brik Oven's
+# spend (₹5–9k/day in Sept 2026). A marketplace without a wallet is never checked.
+WALLET_WARN_BELOW: float = float(os.getenv("CM_WALLET_WARN_BELOW", "5000"))
+# The engines run every 15–60 minutes; a History line on every run would bury the real
+# changes. Logs get it every run, History at most once per this many hours.
+WALLET_NOTE_EVERY_HOURS: float = float(os.getenv("CM_WALLET_NOTE_EVERY_HOURS", "6"))
 
 # ── Per-marketplace tuning ──────────────────────────────────────────────────
 #

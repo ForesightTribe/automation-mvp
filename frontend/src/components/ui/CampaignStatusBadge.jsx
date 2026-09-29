@@ -26,6 +26,17 @@ const STYLES = {
 	draft: { label: "Draft", cls: "bg-muted text-content-muted" },
 	rejected: { label: "Rejected", cls: "bg-danger-soft text-danger" },
 	under_review: { label: "Under review", cls: "bg-info-soft text-info" },
+	// Zepto's own words. Its two holds are amber for the same reason ON_HOLD is: the
+	// campaign is live and recovers without a decision — more budget, or a topped-up wallet.
+	ended: { label: "Ended", cls: "bg-muted text-content-muted" },
+	daily_budget_exhausted: {
+		label: "Budget used up",
+		cls: "bg-warning-soft text-warning",
+	},
+	insufficient_wallet_balance: {
+		label: "Wallet empty",
+		cls: "bg-warning-soft text-warning",
+	},
 };
 
 const norm = (status) =>

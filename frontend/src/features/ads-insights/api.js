@@ -19,7 +19,17 @@ import { api } from "../../lib/axios";
  *
  * Both ENQUEUE a job and return its id; nothing has happened when the promise resolves.
  */
-const cm = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1) — and none here. This page can show several marketplaces at once, so an
+// action names the ROW's marketplace (`CampaignRow.platform`); without one it throws
+// rather than guessing, because a guess is how a Zepto id once reached Blinkit's account.
+const cm = (clientId, marketplace) => {
+	if (!marketplace)
+		throw new Error(
+			"No marketplace on this campaign row, so the action was not sent.",
+		);
+	return `/clients/${clientId}/campaign-manager/${marketplace}`;
+};
 
 /**
  * One page of keyword rows for CURRENT campaigns only (`recent_only`).
@@ -44,8 +54,37 @@ export const getKeywordRowsPage = (clientId, { marketplaces, page, limit }) =>
 		},
 	});
 
-export const setCampaignActivation = (clientId, campaignId, status) =>
-	api.post(`${cm(clientId)}/campaigns/${campaignId}/activation`, { status });
+export const setCampaignActivation = (
+	clientId,
+	marketplace,
+	campaignId,
+	status,
+) =>
+	api.post(
+		`${cm(clientId, marketplace)}/campaigns/${campaignId}/activation`,
+		{
+			status,
+		},
+	);
 
-export const setCampaignBudget = (clientId, campaignId, budget) =>
-	api.post(`${cm(clientId)}/set-budget`, { campaign_id: campaignId, budget });
+export const setCampaignBudget = (clientId, marketplace, campaignId, budget) =>
+	api.post(`${cm(clientId, marketplace)}/set-budget`, {
+		campaign_id: campaignId,
+		budget,
+	});
+
+/**
+ * Every campaign's spend per day over [start, end], for the days it spent — the
+ * budget-utilisation views' data in ONE request. They used to call `/ads/campaigns` once
+ * per day (up to 31), each holding a pooled API connection (2026-09-25).
+ */
+export const getCampaignsDaily = (clientId, { start, end, marketplaces }) =>
+	api.get(`/clients/${clientId}/ads/campaigns/daily`, {
+		params: {
+			start,
+			end,
+			marketplaces: marketplaces?.length
+				? marketplaces.join(",")
+				: undefined,
+		},
+	});

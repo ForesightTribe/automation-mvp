@@ -51,8 +51,12 @@ class _Rule:
         self.__dict__.update(over)
 
 
-def _run(coro_fn, rule, **extra):
-    """Call a service action against `rule`, with the DB and the queue stubbed out."""
+def _run(coro_fn, rule, marketplace=None, **extra):
+    """Call a service action against `rule`, with the DB and the queue stubbed out.
+
+    `marketplace` is the one in the URL (ZC-D1) — the rule's own unless a test says
+    otherwise, which is how the cross-marketplace refusal is tested."""
+    marketplace = marketplace or rule.platform
     calls = {"state": None, "cleared": False, "enqueued": [], "deleted": False,
              "reconciled": False}
 
@@ -72,7 +76,7 @@ def _run(coro_fn, rule, **extra):
         calls["deleted"] = True
         return True
 
-    async def get_armed(tenant_id, platform="blinkit"):
+    async def get_armed(tenant_id, platform):
         return True
 
     async def enqueue(session, *, job_type, tenant_id, params, priority=100):
@@ -82,8 +86,8 @@ def _run(coro_fn, rule, **extra):
             id = "job-1"
         return _Job()
 
-    async def _reconcile(session, tenant_id):
-        calls["reconciled"] = True
+    async def _reconcile(session, tenant_id, marketplace):
+        calls["reconciled"] = marketplace
 
     async def city_names_for(platform, rules):
         # Every single-rule response resolves the measurement city for display, and it does
@@ -101,7 +105,7 @@ def _run(coro_fn, rule, **extra):
     repo.city_names_for = city_names_for
     svc.now_ist = lambda: NOW
     try:
-        calls["result"] = asyncio.run(coro_fn(None, TENANT, rule.id, **extra))
+        calls["result"] = asyncio.run(coro_fn(None, TENANT, marketplace, rule.id, **extra))
         calls["error"] = None
     except svc.StateError as e:
         calls["result"], calls["error"] = None, str(e)
@@ -215,12 +219,28 @@ def test_delete_with_reset_works_on_a_running_rule():
 # ── the reset job carries values, not a rule id ─────────────────────────────
 
 def test_the_reset_job_targets_the_rules_own_marketplace():
-    """The CM API is Blinkit-only, but `get_bid_rule` looks up by id and does not filter by
-    platform — so a Zepto rule reaching Reset must not be enqueued as a Blinkit job. The
-    argv builder defaults `marketplace` to blinkit, which would send a Zepto campaign id to
-    the wrong ad account with live writes armed."""
+    """A Zepto rule's reset is a Zepto job — sent to Zepto's ad account, armed against
+    Zepto's `live_armed`. (It once went to Blinkit via the argv builder's default.)"""
     c = _run(svc.reset_bid_rule, _Rule(state="paused", platform="zepto", campaign_id=2427461))
     assert c["enqueued"][0]["params"]["marketplace"] == "zepto"
+
+
+def test_the_other_marketplaces_address_cannot_touch_a_rule():
+    """ZC-D1: a rule id is global, so `…/zepto/bid-rules/<a Blinkit rule>` used to find it
+    and act on it. Every action now answers not-found and does nothing."""
+    blinkit_rule = _Rule(state="paused")
+    for action in (svc.reset_bid_rule, svc.resume_bid_rule, svc.pause_bid_rule):
+        c = _run(action, blinkit_rule, marketplace="zepto")
+        assert c["result"] is None and c["error"] is None, action.__name__
+        assert c["enqueued"] == [] and c["state"] is None and not c["reconciled"]
+    c = _run(svc.delete_bid_rule, _Rule(), marketplace="zepto")
+    assert c["result"] is False and not c["deleted"]
+
+
+def test_every_job_the_actions_queue_names_its_marketplace():
+    c = _run(svc.reset_bid_rule, _Rule(state="paused"))
+    assert c["enqueued"][0]["params"]["marketplace"] == "blinkit"
+    assert c["reconciled"] is False or c["reconciled"] == "blinkit"
 
 
 def test_the_reset_job_is_self_contained():

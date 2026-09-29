@@ -64,6 +64,14 @@ OpenSession = Callable[..., Awaitable[dict | None]]
 Search = Callable[..., Awaitable[dict]]
 CloseSession = Callable[[dict], Awaitable[None]]
 Parse = Callable[[dict], dict]
+LaunchBrowser = Callable[[Any], Awaitable[Any]]
+
+
+async def _default_launch(pw):
+    """Playwright's default headless browser — what every marketplace used until
+    2026-09-26, and what Blinkit still uses."""
+    from scraper.utils.browser import PLAYWRIGHT_ARGS
+    return await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
 
 
 @dataclass(frozen=True)
@@ -116,6 +124,11 @@ class Provider:
     # sleep wastes 10 minutes of every block.
     probe_every_s: int = 0
     max_block_waits: int = 0         # consecutive block waits before giving up
+    # How to start this marketplace's browser. The worker pools (keyword scrape, own-SKU
+    # scrape, Explorer) all launch through this, so a marketplace that needs a different
+    # browser changes it in ONE place. Zepto needs the full Chromium — its WAF blocks the
+    # default headless shell (see zepto/public_data/endpoints.BROWSER_CHANNEL).
+    launch_browser: LaunchBrowser = _default_launch
 
 
 _PROVIDERS: dict[str, Provider] = {
@@ -176,6 +189,7 @@ _PROVIDERS: dict[str, Provider] = {
         probe_every_s=ze_ep.PROBE_EVERY_S,
         max_block_waits=len(ze_ep.RECOVERY_WAITS_S),
         max_workers=ze_ep.MAX_WORKERS,
+        launch_browser=ze_scraper.launch_browser,
     ),
 }
 

@@ -1,4 +1,7 @@
+import { useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { useMarketplaces } from "../context/MarketplaceContext";
+import { SINGLE_MARKETPLACE_PATHS } from "../lib/constants";
 
 /**
  * The marketplace filter, as a row of pills in the navbar.
@@ -10,6 +13,10 @@ import { useMarketplaces } from "../context/MarketplaceContext";
  * ⚠️ Selecting a pill selects ONLY that marketplace, and "All" is how you get back to
  * everything. The underlying state is still a list of slugs, so a caller that wants
  * several at once can still have them; this control just never produces that itself.
+ *
+ * On the automation pages (`SINGLE_MARKETPLACE_PATHS`) the same row is a strict
+ * one-of choice with no "All", and marketplaces the campaign manager cannot drive are
+ * greyed out with the reason. See `MarketplaceContext` for why that choice is kept apart.
  */
 
 /**
@@ -55,6 +62,17 @@ const PILL_ON = "border-inverse bg-inverse font-semibold text-on-inverse";
 const PILL_OFF =
 	"border-transparent font-medium text-content-muted hover:bg-muted hover:text-content";
 
+/**
+ * Why a pill cannot be picked on an automation page, or null when it can.
+ * Unconnected first: a marketplace with no data at all is "not connected", whatever else.
+ */
+const automationBlock = (mp) =>
+	!mp.connected
+		? `${mp.name} — not connected yet`
+		: !mp.automations
+			? `Automations aren't available on ${mp.name} yet`
+			: null;
+
 export const MarketplacePills = () => {
 	const {
 		marketplaces,
@@ -63,7 +81,22 @@ export const MarketplacePills = () => {
 		isLoading,
 		selectOnly,
 		selectAll,
+		automation,
+		selectAutomation,
+		enterAutomationPage,
 	} = useMarketplaces();
+
+	// The automation pages act on ONE marketplace: every campaign-manager address names
+	// one, so there is no "All" to send a write to. There the row drops "All" and drives
+	// the pages' own choice, leaving the global selection untouched.
+	const { pathname } = useLocation();
+	const single = SINGLE_MARKETPLACE_PATHS.includes(pathname);
+	useEffect(() => {
+		if (single && !isLoading) enterAutomationPage();
+		// Entry only — re-running on every selection change would override the pill the
+		// reader just clicked on this page.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [single, isLoading]);
 
 	if (isLoading) return null;
 
@@ -73,32 +106,41 @@ export const MarketplacePills = () => {
 			aria-label="Marketplace"
 			className="flex items-center gap-1 rounded-xl border border-border bg-card p-1"
 		>
-			<button
-				type="button"
-				onClick={selectAll}
-				aria-pressed={allSelected}
-				className={`${PILL} ${allSelected ? PILL_ON : PILL_OFF}`}
-			>
-				All
-			</button>
+			{!single && (
+				<button
+					type="button"
+					onClick={selectAll}
+					aria-pressed={allSelected}
+					className={`${PILL} ${allSelected ? PILL_ON : PILL_OFF}`}
+				>
+					All
+				</button>
+			)}
 
 			{marketplaces.map((mp) => {
 				// "on" only when it is the sole selection. With All showing, every pill is
 				// included but none of them is the answer to "what am I looking at".
-				const on = !allSelected && selected.includes(mp.slug);
+				const blocked = single
+					? automationBlock(mp)
+					: mp.connected
+						? null
+						: `${mp.name} — not connected yet`;
+				const on = single
+					? mp.slug === automation
+					: !allSelected && selected.includes(mp.slug);
 				const bg = mp.color ?? FALLBACK_COLOR[mp.slug] ?? "#6B7280";
 				return (
 					<button
 						key={mp.slug}
 						type="button"
-						disabled={!mp.connected}
-						onClick={() => selectOnly(mp.slug)}
-						aria-pressed={on}
-						title={
-							mp.connected
-								? mp.name
-								: `${mp.name} — not connected yet`
+						disabled={Boolean(blocked)}
+						onClick={() =>
+							single
+								? selectAutomation(mp.slug)
+								: selectOnly(mp.slug)
 						}
+						aria-pressed={on}
+						title={blocked ?? mp.name}
 						className={`${PILL} ${on ? PILL_ON : PILL_OFF} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
 					>
 						<span

@@ -47,6 +47,18 @@ WARMUP_SEARCH_URL = BASE_URL + "/search?query=bread"
 
 SEARCH_BODY = {"query": "", "pageNumber": 0, "mode": "SHOW_ALL_RESULTS"}
 
+# Which Chromium build to run headless. "chromium" = the FULL browser in headless mode.
+#
+# ⚠️ NOT Playwright's default. Since Playwright 1.49, `launch(headless=True)` runs a
+# stripped-down `chromium-headless-shell`, and Zepto's WAF refuses it (found 2026-09-24,
+# diagnosed 2026-09-26): the challenge is solved and the pass cookie is set, then the
+# homepage AND the search page answer 429 and the page never fires its search. Same
+# machine, same IP, seconds apart: a visible browser went straight through, and the full
+# Chromium in headless mode did too — 50 Bengaluru stores, 50/50 ok, 0 blocks, ~740 MB,
+# ~4% of a core. Needs Playwright >= 1.49 and `playwright install chromium` (which installs
+# the full build alongside the shell). See zepto-cm-exp/CHECKLIST.md C6.
+BROWSER_CHANNEL = "chromium"
+
 # Headers the transport sets itself; copying them from a capture corrupts the
 # request.
 DROP_HEADER_KEYS = frozenset({

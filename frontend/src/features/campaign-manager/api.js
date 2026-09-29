@@ -8,7 +8,9 @@ import { api } from "../../lib/axios";
  * The backend is thin: rule edits only write DB rows + enqueue `cm.reconcile`;
  * on-demand actions enqueue a job and return `{ job_id }` for the UI to poll.
  */
-const base = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1). This deprecated page is Blinkit-only.
+const base = (clientId) => `/clients/${clientId}/campaign-manager/blinkit`;
 
 // ── Budget schedules + rules ────────────────────────────────────────────────
 export const getBudgetSchedules = (clientId) => api.get(`${base(clientId)}/budget-schedules`);

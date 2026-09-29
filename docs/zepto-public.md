@@ -100,6 +100,31 @@ re-mints on a 4-minute timer rather than discovering expiry as a wall of 202s.
 > invents a plausible, well-formed, wrong answer — a store that stocks the brand
 > reported as not stocking it.
 
+### A fourth block: the browser itself (2026-09-24)
+
+From 24 Sept every session failed before its first search: the warm-up's
+**homepage and search page answered HTTP 429** (a blank page), so no search headers
+were captured ("no session headers captured"). Not the ~60 s `429` above — it
+persisted for 30+ minutes, and a human's browser on the same connection was fine.
+
+Diagnosed 26 Sept, same machine, same IP, seconds apart: since Playwright 1.49,
+`chromium.launch(headless=True)` runs a stripped-down **`chromium-headless-shell`**,
+and Zepto's firewall refuses it — it solves the 202 challenge, gets the pass cookie,
+then 429s every page. A visible browser went straight through, and so did the
+**full Chromium in headless mode** (`channel="chromium"`): 50 Bengaluru stores,
+50/50 OK, 0 blocks, ~740 MB RAM, ~4% of a core.
+
+So every Zepto shopper session — this scrape, the own-SKU scrape, the Explorer and
+the bid engine's rank checks — launches through ONE function,
+`platforms/zepto/public_data/scraper.launch_browser`, with
+`endpoints.BROWSER_CHANNEL = "chromium"` (the worker pools reach it via
+`providers.Provider.launch_browser`; Blinkit keeps the default). It needs
+Playwright ≥ 1.49 and `playwright install chromium` on the machine. Pinned by
+`public_data/tests/test_browser_launch.py`.
+
+Nothing noticed this for days: the last Zepto scrape had run on 1 Sept and there is
+no schedule, so a daily "can a session open?" check is on the list.
+
 ---
 
 ## Tunables, and the measurements behind them
@@ -231,6 +256,20 @@ It marks Zepto's organic "flywheel" re-ranking. Reading it as the ad flag is wha
 made ads look invisible for two days — and is most of why the paragraph above was
 written.
 
+**Sold-out products are not shown at all.** Unlike Blinkit, Zepto's search leaves a
+sold-out product out of the results rather than flagging it: 0 `outOfStock` rows in
+6,073 keyword results, 1,495 own-SKU rows (165 stores, 1-9 Brik Oven products each)
+and 1,479 results of a 50-store test. So on Zepto:
+
+* **Distribution % (in-stock ÷ listed) is not measurable** from public data — every
+  listed row is in stock by construction. What varies is how MANY products a store
+  lists, which is the stock signal.
+* **A product missing from a search is either out of stock or not sold there** — the
+  two cannot be told apart, and neither can "outbid" from "sold out" when an ad is
+  missing. This is why the bid engine confirms stock with a brand search before
+  raising, and moves to another store when the product is not there
+  (docs/campaign-manager.md, "Zepto rotates through its stores").
+
 ---
 
 ## What a run costs
@@ -273,7 +312,10 @@ Rule of thumb: **a keyword costs ~6 minutes per 160 stores**; one IP delivers
 **Bidding must be sized for the WORST hour**, not the best — it runs continuously
 and hits the ~10/min morning every day. Safe budget is ~100 requests per cycle
 across all automations, which is ~100 automations at 1 store each, or ~16-20 at
-5-6 stores.
+5-6 stores. The bid engine therefore reads ONE store per automation per tick
+(rotating through a city's frozen stores only when one cannot sell the product) —
+1 search a tick, 2 when our ad is missing and stock has to be checked; a brand
+search is cached ~1 h per store and serves every automation there.
 
 ### Throughput across the day
 
@@ -348,14 +390,25 @@ trips the rate limit within a minute.
 
 ## Open
 
-* **`public-skus` has never run end to end on Zepto.** The brand query is
-  verified (it finds strictly more own SKUs than the keyword set at the same
-  store), but the `targeted.py` → `sku_snapshots` path is untested.
-* **Overnight rate (22:00-10:00)** unmeasured.
-* **`search_listings.extra` is not written for Zepto** — deliberately. At ~212k
-  rows per national run a JSON blob costs ~85 MB against a 500 MB quota, for
-  fields nothing queries. The richness goes on `sku_snapshots.extra` instead,
-  which is 6-17× smaller.
-* **Bidding storage.** At 15-minute cadence, storing full listings is ~1 GB/month
-  against a 500 MB quota. Store own-SKU rank and price only, plus a retention
-  policy — a schema decision to make before the automation is built.
+* **No schedule.** The last keyword scrape ran 2026-09-01 and the last own-SKU
+  scrape 2026-09-02, so every Zepto public view shows early-September data. Public
+  scraping is to move to separate infra — never the bidding VM, whose IP and search
+  allowance the bid engine needs (agreed 2026-09-26; the guard that enforces this on
+  the VM is not built yet).
+* **No daily "can a session open?" check** — the 24 Sept browser block went
+  unnoticed because nothing was running (see "A fourth block" above).
+* **Overnight rate (22:00-10:00)** unmeasured — needed before any overnight Zepto
+  bid window.
+* **`is_ad` unproven on stored rows** — all 6,073 were loaded before the marker; the
+  first scheduled run is the check.
+
+Closed since this page was written:
+
+* ~~`public-skus` has never run end to end~~ — it ran 2026-09-02: 1,495
+  `sku_snapshots` rows across 165 Bengaluru stores.
+* ~~`search_listings.extra` is not written for Zepto~~ — it is, but only the
+  engine's small generic keys (`unit`, `category`, `group_id`, `match_reason`…).
+  Zepto's detail (`brand_id`, manufacturer, scores…) still goes only on
+  `sku_snapshots.extra`, for the size reason: ~212k rows per national run.
+* ~~Bidding storage~~ — the bid engine stores per-store READINGS
+  (`cm_bid_store_reads`: position, stock verdict, bid; 30-day trim), never listings.

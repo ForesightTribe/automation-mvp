@@ -9,6 +9,7 @@ import {
 	getPoSkus,
 	getPoFile,
 	getPo,
+	getSkuPos,
 } from "./api";
 import { downloadBlob } from "../../lib/exportTable";
 
@@ -36,13 +37,17 @@ export const usePoSummary = () => {
 	return useQuery({
 		queryKey: ["po-summary", activeClientId, range, marketplace],
 		queryFn: () =>
-			getPoSummary(activeClientId, { start: range.from, end: range.to, marketplace }),
+			getPoSummary(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplace,
+			}),
 		enabled: Boolean(activeClientId),
 	});
 };
 
 /** The PO table. Keeps the previous page on screen while the next one loads. */
-export const usePoInsights = ({ scope, search, status, page }) => {
+export const usePoInsights = ({ scope, search, status, page, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
 	const marketplace = usePoMarketplace();
@@ -55,6 +60,8 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 			search,
 			status,
 			page,
+			sort,
+			order,
 			marketplace,
 		],
 		queryFn: () =>
@@ -65,6 +72,8 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 				search,
 				status,
 				page,
+				sort,
+				order,
 				marketplace,
 			}),
 		enabled: Boolean(activeClientId),
@@ -73,18 +82,29 @@ export const usePoInsights = ({ scope, search, status, page }) => {
 };
 
 /** The same shortfall per SKU rather than per PO. */
-export const usePoSkus = ({ search, page }) => {
+export const usePoSkus = ({ search, page, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
 	const marketplace = usePoMarketplace();
 	return useQuery({
-		queryKey: ["po-skus", activeClientId, range, search, page, marketplace],
+		queryKey: [
+			"po-skus",
+			activeClientId,
+			range,
+			search,
+			page,
+			marketplace,
+			sort,
+			order,
+		],
 		queryFn: () =>
 			getPoSkus(activeClientId, {
 				start: range.from,
 				end: range.to,
 				search,
 				page,
+				sort,
+				order,
 				marketplace,
 			}),
 		enabled: Boolean(activeClientId),
@@ -133,5 +153,15 @@ export const usePo = (poNumber) => {
 		queryKey: ["po-detail", activeClientId, poNumber, marketplace],
 		queryFn: () => getPo(activeClientId, poNumber, { marketplace }),
 		enabled: Boolean(activeClientId && poNumber),
+	});
+};
+
+/** Every PO carrying one SKU. Only fetched once a SKU is opened. */
+export const useSkuPos = (itemId) => {
+	const { activeClientId } = useClient();
+	return useQuery({
+		queryKey: ["sku-pos", activeClientId, itemId],
+		queryFn: () => getSkuPos(activeClientId, itemId),
+		enabled: Boolean(activeClientId) && Boolean(itemId),
 	});
 };

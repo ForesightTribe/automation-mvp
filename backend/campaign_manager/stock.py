@@ -23,6 +23,21 @@ def _fresh(stock: coverage.StoreStock | None, now: datetime) -> bool:
                 and now - stock.checked_at < timedelta(minutes=config.STOCK_MAX_AGE_MINUTES))
 
 
+async def cached(tenant_id: uuid.UUID, platform: str, stores, *,
+                 now: datetime) -> dict[str, coverage.StoreStock]:
+    """`{merchant_id: StoreStock}` for the stores whose cached read is still fresh — no
+    searches at all. The rotation (campaign_manager/rotation.py) starts from this and reads
+    a store only when our ad is missing there. Never raises: no cache = nothing known."""
+    ids = {s.merchant_id for s in stores if getattr(s, "merchant_id", "")}
+    if not ids:
+        return {}
+    try:
+        got = await repo.get_store_stock(tenant_id, platform, ids)
+    except Exception:
+        return {}
+    return {mid: st for mid, st in got.items() if _fresh(st, now)}
+
+
 async def load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *,
                now: datetime, run_id: str,
                dry_run: bool) -> tuple[dict[str, coverage.StoreStock], int]:
@@ -76,7 +91,9 @@ async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *
         for query, cap, names in brands:
             searches += 1
             try:
-                res = await reader(session, query, store.lat, store.lon, cap=cap, names=names)
+                # The store id binds a Zepto search to its store (Blinkit ignores it).
+                res = await reader(session, query, store.lat, store.lon, cap=cap, names=names,
+                                   merchant_id=store.merchant_id)
             except Exception as e:                      # a read failure is not a run failure
                 res = {"ok": False, "error": str(e) or type(e).__name__}
             if not res.get("ok"):

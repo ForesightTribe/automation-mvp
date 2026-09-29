@@ -60,16 +60,21 @@ _PLATFORM = "zepto"
 # working in the dashboard could cost us a whole day's logins in minutes.
 MAX_REAUTH_PER_RUN = 2
 
-# The CROSS-RUN bound. `MAX_REAUTH_PER_RUN` resets with every subprocess, and the bid
-# optimizer is a new subprocess every 15 minutes — so on its own it permits ~32 logins
-# across a 4-hour window. This floor is measured against the shared `last_login_at`,
-# so every run on every machine sees the same clock.
+# The CROSS-RUN floor: refuse a re-login when the last one (shared `last_login_at`, so every
+# run on every machine sees the same clock) was less than this long ago.
 #
-# 30 minutes: long enough that a sustained fight costs at most 2 logins an hour instead
-# of 4-8, short enough that a genuine one-off eviction (someone glanced at the
-# dashboard and left) still recovers on the next tick or two.
-MIN_REAUTH_INTERVAL_SECONDS = int(
-    os.getenv("CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS", str(30 * 60)))
+# ⚠️ DEFAULT 0 = OFF, since 2026-09-21 (Deepansh). It was 30 minutes, built to stop a
+# tug-of-war with a person in the dashboard — each of our logins logs them out and costs an
+# OTP, each of theirs logs us out. But there is no service user coming and the client
+# accepts being logged out, so the floor's only remaining effect was a job that REFUSED to
+# log in and failed — a missed bid tick, a budget window left open. Actions must not be
+# missed for a login we could have made.
+#
+# What still bounds logins: `MAX_REAUTH_PER_RUN` (one job cannot loop), the auth circuit
+# breaker (3 consecutive FAILED logins stop all logins and alert), and `_adopt_stored`
+# (jobs overlapping reuse each other's login instead of each making their own). Set the env
+# var to a positive number of seconds to bring the floor back.
+MIN_REAUTH_INTERVAL_SECONDS = int(os.getenv("CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS", "0"))
 
 # CloudFront's answers when the WAF is unsatisfied: 202 = challenge, 429 = present
 # but rejected (or the `waf-enabled` header missing). Both mean "re-mint", not
@@ -141,33 +146,61 @@ class ZeptoClient:
         self.remint_count += 1
         logger.info(f"Zepto WAF token re-minted (#{self.remint_count})")
 
+    async def _adopt_stored(self) -> bool:
+        """Take a FRESHER session another job already saved, instead of logging in. (ZC-P25)
+
+        Several Zepto jobs run at once — the daily `scrape.zepto` in the `dashboard` lane,
+        the campaign-manager jobs in `cm_ops` / `cm_bid` — and they share ONE Zepto login,
+        because Zepto allows one session per user. When one of them logs in again, every
+        other job's in-memory token is revoked. Before this, the next 401 in those jobs went
+        straight to `_reauth`, saw "last login < 30 min ago", refused, and FAILED the run —
+        with a perfectly good token sitting in `platform_sessions` the whole time.
+
+        Costs one DB read, no request to Zepto, no OTP, and evicts nobody — so it is tried
+        before every re-login, and is also safe on a write (see `request`).
+        Returns True only when the stored token differs from the one that just got a 401.
+        """
+        try:
+            async with AsyncSessionLocal() as db:
+                stored = await auth_store.load(db, self.tenant_id, _PLATFORM)
+        except Exception as e:
+            logger.debug(f"Zepto: could not re-read the stored session ({e})")
+            return False
+        raw = (stored.raw if stored else None) or {}
+        jwt = raw.get("jwt")
+        if not jwt or jwt == self.jwt:
+            return False
+        self.jwt = jwt
+        self.brand_ids = raw.get("brand_ids") or self.brand_ids
+        logger.info("Zepto session was replaced by another job's login — adopted the "
+                    "fresher stored session instead of logging in again")
+        return True
+
     async def _reauth(self) -> bool:
         """Re-login after eviction. Returns False when either budget is spent.
 
-        Bounded TWICE, because the two limits answer different questions.
+        A fresher session another job already saved is adopted FIRST (`_adopt_stored`) —
+        that is the common case when jobs overlap, and it costs no login at all.
 
-        `MAX_REAUTH_PER_RUN` bounds one run: it stops a single process ping-ponging
-        with a human inside a few minutes.
+        Otherwise it LOGS IN — the policy since 2026-09-21: a missed action costs more
+        than logging a dashboard user out, and the client accepts that. Bounded by
+        `MAX_REAUTH_PER_RUN` (a single job cannot loop), by the auth circuit breaker
+        (3 consecutive failed logins), and — only if configured above 0 — by
+        `MIN_REAUTH_INTERVAL_SECONDS` (see its note: off by default).
 
-        `MIN_REAUTH_INTERVAL_SECONDS` bounds across runs, and it is the one that
-        actually matters for bidding. The optimizer runs every 15 minutes as a
-        SEPARATE SUBPROCESS, so the per-run counter resets every tick — a 4-hour
-        window is 16 fresh budgets, i.e. up to 32 logins, 32 OTP emails and a client
-        evicted 32 times in an afternoon. Nothing observed that: these logins SUCCEED,
-        so `consecutive_failures` resets each cycle and the circuit breaker stays
-        green throughout. The shared `last_login_at` timestamp is the only cross-run
-        signal available without new schema.
-
-        Refusing is the right outcome, not a degraded one: if someone is holding the
-        session, another login cannot fix the run — it only takes their dashboard away
-        again. The run fails visibly instead, which is what surfaces the real problem
-        (no service user) rather than hiding it behind a retry.
+        ⚠️ Known cost: with someone working in the Zepto dashboard during a bid window,
+        each tick logs them out and sends an OTP email. Our jobs keep running.
         """
+        if await self._adopt_stored():
+            return True
         if self.reauth_count >= MAX_REAUTH_PER_RUN:
+            logger.error(f"Zepto session rejected (401) again after {MAX_REAUTH_PER_RUN} "
+                         "re-logins in this run — giving up on this run.")
             return False
 
         async with AsyncSessionLocal() as db:
-            last = await auth_store.last_login(db, self.tenant_id, _PLATFORM)
+            last = await auth_store.last_login(db, self.tenant_id, _PLATFORM) \
+                if MIN_REAUTH_INTERVAL_SECONDS > 0 else None
             if last is not None:
                 age = (now_ist() - last).total_seconds()
                 if age < MIN_REAUTH_INTERVAL_SECONDS:
@@ -183,9 +216,9 @@ class ZeptoClient:
 
             self.reauth_count += 1
             logger.warning(
-                f"Zepto session rejected (401) — re-login {self.reauth_count}/"
-                f"{MAX_REAUTH_PER_RUN}. If this recurs, someone is probably using the "
-                "dashboard on the same account; a service user would end it."
+                f"Zepto session rejected (401) — logging in again ({self.reauth_count}/"
+                f"{MAX_REAUTH_PER_RUN} this run). This logs out anyone using the Zepto "
+                "dashboard on the same account."
             )
             session = await auth_service.ensure(db, self.tenant_id, _PLATFORM)
         self.jwt = session.raw.get("jwt", "")
@@ -195,13 +228,19 @@ class ZeptoClient:
     # ── the one request path ─────────────────────────────────────────────────
     async def request(self, method: str, path: str, *, brand_analytics: bool = False,
                       retry_writes: bool = True, **kw: Any) -> httpx.Response:
-        """Make one API call, recovering from the two recoverable failures.
+        """Make one API call, recovering from the two recoverable failures:
 
-        ⚠️ `retry_writes=False` for any non-idempotent call. A 401 is safe to retry
-        (rejected BEFORE processing, so nothing landed), but a **timeout is not** —
-        the write may well have applied and we simply never heard. Retrying that
-        blindly is how a retry becomes a second unintended write. Timeouts are
-        therefore never retried here at all; the caller must re-read and compare.
+        * **202/429** — the WAF pass is stale: re-mint, resend once.
+        * **401** — the session is gone: adopt a fresher stored one or log in
+          (`_reauth`), resend once. For EVERY method, writes included, since 2026-09-21:
+          a 401 is rejected before Zepto processes anything, so resending cannot apply a
+          change twice — and refusing to log in on a write meant an action was missed.
+
+        A **timeout** is never retried, on any method: the call may have landed and we
+        simply never heard. The write path reads back instead (`writes.WriteUnverified`).
+
+        `retry_writes` is accepted for the callers that pass it and no longer changes
+        anything: it only ever governed the 401 retry, which is now safe everywhere.
         """
         url = f"{ep.API}{path}"
         # http2 is deliberately OFF: the VM's venv has no `h2`, so http2=True raises
@@ -215,7 +254,7 @@ class ZeptoClient:
                 await self._remint()
                 r = await http.request(method, url, headers=self.headers(), **kw)
 
-            if r.status_code == 401 and (retry_writes or method.upper() == "GET"):
+            if r.status_code == 401:
                 if await self._reauth():
                     r = await http.request(method, url, headers=self.headers(
                         brand_analytics=brand_analytics), **kw)

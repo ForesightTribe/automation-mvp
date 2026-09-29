@@ -1,4 +1,6 @@
+import { useState } from "react";
 import { DataTable } from "../../../components/ui/DataTable";
+import { SkuDrawer } from "./SkuDrawer";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
@@ -33,44 +35,76 @@ const columns = [
 		),
 	},
 	{
-		key: "units_ordered",
-		label: "Units ordered",
+		key: "drr",
+		label: "DRR",
 		align: "right",
+		hint: "Daily run rate — units sold per day over the selected window, from the sales feed.",
 		render: (r) => (
 			<span className="tabular-nums">
-				{formatNumber(r.units_ordered)}
+				{r.drr == null ? "—" : formatNumber(Math.round(r.drr))}
 			</span>
 		),
 	},
 	{
-		key: "units_short",
-		label: "Units short",
+		key: "doi_days",
+		label: "DOI (FE+BE)",
 		align: "right",
+		hint: "Days of inventory: stock on hand now — front end plus back end — divided by the daily run rate. Reads the latest stock snapshot, so it does not move with the date picker.",
 		render: (r) => (
-			<span
-				className={`tabular-nums ${r.units_short > 0 ? "text-content" : "text-content-muted"}`}
-			>
-				{formatNumber(r.units_short)}
+			<span className="tabular-nums">
+				{r.doi_days == null ? "—" : `${Math.round(r.doi_days)} days`}
+			</span>
+		),
+	},
+	{
+		key: "po_units",
+		label: "PO Units",
+		align: "right",
+		hint: "Units ordered on POs that have settled — the same set Fill Rate is measured over, so the three columns reconcile. Open POs are counted under Not yet due.",
+		sortValue: (r) => r.units_received + r.units_short,
+		render: (r) => (
+			<span className="tabular-nums">
+				{formatNumber(r.units_received + r.units_short)}
+			</span>
+		),
+	},
+	{
+		key: "units_received",
+		label: "GRN Units",
+		align: "right",
+		hint: "Units actually received against settled POs.",
+		render: (r) => (
+			<span className="tabular-nums">
+				{formatNumber(r.units_received)}
 			</span>
 		),
 	},
 	{
 		key: "fill_rate",
-		label: "Fill rate",
+		label: "Fill Rate (%)",
 		align: "right",
+		hint: "Received divided by ordered, on settled POs only. Cancelled POs are excluded: the order was withdrawn, so nothing was ever asked for.",
 		render: (r) => (
 			<span className="tabular-nums">
-				{r.fill_rate === null ? "—" : formatPercent(r.fill_rate, 1)}
+				{r.fill_rate === null ? "—" : formatPercent(r.fill_rate, 2)}
 			</span>
 		),
 	},
 	{
-		key: "open_value",
-		label: "Still to come",
+		key: "deficit",
+		label: "Deficit (%)",
 		align: "right",
+		hint: "The share of ordered units that never arrived — the remainder of Fill Rate.",
+		sortValue: (r) => (r.fill_rate === null ? -1 : 1 - r.fill_rate),
 		render: (r) => (
-			<span className="tabular-nums text-content-muted">
-				{formatCurrency(r.open_value)}
+			<span
+				className={`tabular-nums ${
+					r.fill_rate !== null && 1 - r.fill_rate > 0
+						? "text-content"
+						: "text-content-muted"
+				}`}
+			>
+				{r.fill_rate === null ? "—" : formatPercent(1 - r.fill_rate, 2)}
 			</span>
 		),
 	},
@@ -78,6 +112,7 @@ const columns = [
 		key: "missed_value",
 		label: "Missed",
 		align: "right",
+		hint: "Cost value of units on settled POs that never arrived. No longer recoverable, unlike value on open POs.",
 		render: (r) => (
 			<span
 				className={`tabular-nums ${r.missed_value > 0 ? "font-medium text-danger" : "text-content-muted"}`}
@@ -87,13 +122,17 @@ const columns = [
 		),
 	},
 	{
-		key: "short_po_count",
-		label: "POs short",
+		key: "open_po_count",
+		label: "POs open",
 		align: "right",
+		hint: "POs still awaiting delivery, against every PO this SKU has appeared on in the window.",
 		render: (r) => (
-			<span className="tabular-nums">
-				{r.short_po_count}
-				<span className="text-content-subtle"> / {r.po_count}</span>
+			<span className="tabular-nums text-content-muted">
+				{formatNumber(r.open_po_count)}
+				<span className="text-content-subtle">
+					{" "}
+					/ {formatNumber(r.po_count)}
+				</span>
 			</span>
 		),
 	},
@@ -101,22 +140,29 @@ const columns = [
 		key: "cities",
 		label: "Cities",
 		align: "right",
-		render: (r) => <span className="tabular-nums">{r.cities}</span>,
+		hint: "Distinct cities whose warehouses ordered this SKU in the window.",
+		render: (r) => (
+			<span className="tabular-nums text-content-muted">
+				{formatNumber(r.cities)}
+			</span>
+		),
 	},
 	{
 		key: "last_ordered",
 		label: "Last ordered",
 		align: "right",
-		sortValue: (r) => r.last_ordered ?? "",
+		hint: "Issue date of the most recent PO carrying this SKU.",
 		render: (r) => (
-			<span className="whitespace-nowrap text-content-muted">
-				{formatDate(r.last_ordered)}
+			<span className="tabular-nums text-content-muted">
+				{r.last_ordered ? formatDate(r.last_ordered) : "—"}
 			</span>
 		),
 	},
 ];
 
-export const SkuTable = ({ query, onPage }) => {
+export const SkuTable = ({ query, onPage, sort, onSort }) => {
+	const [openSku, setOpenSku] = useState(null);
+
 	if (query.isLoading) return <Loading label="Loading SKUs…" />;
 	if (query.error)
 		return (
@@ -136,7 +182,11 @@ export const SkuTable = ({ query, onPage }) => {
 				columns={columns}
 				rows={query.data.items}
 				rowKey={(r) => r.item_id}
-				minWidth={980}
+				onRowClick={setOpenSku}
+				sortKey={sort?.key}
+				sortOrder={sort?.order}
+				onSortChange={onSort}
+				minWidth={1320}
 				maxHeight={560}
 			/>
 			<Pagination
@@ -146,6 +196,7 @@ export const SkuTable = ({ query, onPage }) => {
 				limit={query.data.limit}
 				onChange={onPage}
 			/>
+			<SkuDrawer sku={openSku} onClose={() => setOpenSku(null)} />
 		</>
 	);
 };

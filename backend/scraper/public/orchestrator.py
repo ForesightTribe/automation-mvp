@@ -31,7 +31,6 @@ from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
 from scraper.public import staging
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
-from scraper.utils.browser import PLAYWRIGHT_ARGS
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
@@ -535,7 +534,7 @@ async def run_tenant(
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+            browser = await provider.launch_browser(pw)
             try:
                 logger.info(
                     f"orchestrator: tenant {tid} on {mp_slug} — {n_workers} workers × "

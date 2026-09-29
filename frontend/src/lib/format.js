@@ -63,6 +63,24 @@ export const formatDate = (value) => {
 };
 
 /**
+ * A server timestamp → epoch milliseconds, read as IST.
+ *
+ * ⚠️ The backend stores and returns NAIVE IST wall-clock values ("2026-09-22T11:56:47", no
+ * offset — see `app/utils/time.now_ist`). `new Date(value)` reads a naive value as the
+ * BROWSER's local time, so anything measuring elapsed time is wrong by the browser's offset
+ * from IST: on a UTC machine a "5 minutes after it finished" rule would run for five and a
+ * half hours. Use this wherever a duration is computed from a server time; a value that
+ * already carries an offset or a `Z` is left as it is.
+ */
+export const parseIst = (value) => {
+	if (!value) return null;
+	const s = String(value);
+	const withZone = /(Z|[+-]\d\d:?\d\d)$/.test(s) ? s : `${s}+05:30`;
+	const ms = Date.parse(withZone);
+	return Number.isNaN(ms) ? null : ms;
+};
+
+/**
  * ISO/Date -> "7 Sept 2026, 4:00 pm".
  *
  * Separate from `formatDate` because a LOG without a time answers half the question —

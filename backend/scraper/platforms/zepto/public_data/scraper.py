@@ -379,10 +379,22 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
     return session
 
 
+async def launch_browser(pw):
+    """The browser every Zepto shopper session runs in — the public scrape's worker pool,
+    the own-SKU scrape, the Explorer and the bid engine's rank checks all come through
+    here (the pool via `providers.Provider.launch_browser`).
+
+    The FULL Chromium in headless mode, not Playwright's default headless shell, which
+    Zepto's WAF blocks — see `endpoints.BROWSER_CHANNEL`.
+    """
+    return await pw.chromium.launch(headless=True, channel=ep.BROWSER_CHANNEL,
+                                    args=PLAYWRIGHT_ARGS)
+
+
 async def open_session(pw, lat: float, lon: float) -> dict | None:
     """Launch a browser + one session (ad-hoc / single-worker use). The session
     OWNS the browser; close_session shuts it down."""
-    browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+    browser = await launch_browser(pw)
     session = await _make_session(browser, lat, lon)
     if not session:
         await browser.close()

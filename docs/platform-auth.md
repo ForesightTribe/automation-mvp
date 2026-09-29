@@ -238,9 +238,24 @@ on demand if the scheduled login fails. But it *is* a real exception — one ema
 single-use secret burned per day, per tenant. **Do not extend `auth.login` to a platform
 that can refresh.**
 
-⚠️ **`auth.login` for Zepto stays DISABLED until the client provisions a service user.**
-Single-session eviction means a nightly login logs the client's own team out of their
-dashboard. Build it, schedule it `--disabled`, enable it when the account is ours.
+⚠️ **Updated 2026-09-21 — there will be no service user, and the client accepts being
+logged out.** So a missed action now counts as worse than an eviction, and Zepto jobs log in
+whenever they have to:
+
+* **At job start** — `ensure()` probes the stored session and logs in if it is dead (always
+  was so).
+* **Mid-run, on a 401** (`campaign_manager/marketplaces/zepto/transport.py`) — first ADOPT a
+  fresher session another job already saved (Zepto's jobs share one login, so one job's
+  login revokes the others' tokens; adopting costs no login and evicts nobody); otherwise LOG
+  IN and resend once. Writes included: a 401 is rejected before Zepto processes anything, so
+  resending cannot double-apply.
+* **Bounds that remain:** `MAX_REAUTH_PER_RUN = 2` (one job cannot loop) and the circuit
+  breaker (3 consecutive FAILED logins stop all logins). The old 30-minute cross-run floor is
+  **off by default** (`CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS=0`); set it to bring it back.
+* **Cost:** anyone in the Zepto dashboard during a bid window is logged out on each tick,
+  and each login mails an OTP.
+
+The daily `auth.login` schedule may now be enabled; its timing is Deepansh's call.
 
 **Everything runs on the VM.** Both logins are now plain HTTP that Render *could* make,
 but shouldn't: Blinkit is India-geo, so a login from Render's US IP shortly before the
@@ -334,8 +349,15 @@ python -m cli auth platforms                              # registry + wiring st
 python -m cli auth login blinkit -t <uuid> [--email x] [--manual]
 python -m cli auth refresh blinkit -t <uuid>              # no email needed
 python -m cli auth probe blinkit -t <uuid>                # is it actually alive?
-python -m cli auth status -t <uuid>                       # all platforms + health
+python -m cli auth status -t <uuid>                       # all platforms + health + logins in the last 24 h
 ```
+
+`logins 24h` (2026-09-23) counts full logins in the last day, from a 7-day history kept inside
+the encrypted session envelope (`__logins`, carried forward by `store.save()` — no column, no
+migration). On Zepto each login evicts the client's dashboard, and since the 30-minute re-login
+floor was removed a job that keeps losing its session would do so repeatedly while every login
+SUCCEEDS, so the circuit breaker never trips. Above `AUTH_LOGINS_PER_DAY_WARN` (4) `save()` logs a
+warning and `status` shows the count in red.
 
 `auth blinkit` / `auth blinkit-seller` still work as aliases. **First login for a tenant
 should be `--manual`** — it captures the address and is where anything unexpected

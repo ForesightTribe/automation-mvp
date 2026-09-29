@@ -81,10 +81,10 @@ def note(run_id: str, msg: str, *, dry_run: bool = False, level: str = "info") -
     _emit(level, "note", dry_run, msg, run_id=run_id)
 
 
-def session_ok(run_id: str, *, dry_run: bool, platform: str = "blinkit") -> None:
-    # `platform` defaults for the callers that predate a second marketplace. It said
-    # "Blinkit session loaded" unconditionally, which is actively misleading in a
-    # Zepto run — the one line that tells you WHOSE account you are about to touch.
+def session_ok(run_id: str, *, dry_run: bool, platform: str) -> None:
+    # `platform` is required — no default marketplace (ZC-D1). It once said "Blinkit
+    # session loaded" unconditionally, which is actively misleading in a Zepto run — the
+    # one line that tells you WHOSE account you are about to touch.
     _emit("info", "session.ok", dry_run, f"{platform} session loaded",
           run_id=run_id, platform=platform)
 
@@ -100,9 +100,14 @@ def live_refused(run_id: str, *, reason: str) -> None:
           f"LIVE write refused — {reason}", run_id=run_id, reason=reason)
 
 
-def session_expired(run_id: str, *, dry_run: bool) -> None:
+def session_expired(run_id: str, *, dry_run: bool, platform: str) -> None:
+    # Named the marketplace unconditionally ("Blinkit session expired — re-auth with `cli
+    # auth blinkit`") — on a Zepto run that is the wrong account AND a command that does
+    # not exist. Same bug `session_ok` had.
     _emit("error", "session.expired", dry_run,
-          "Blinkit session expired — re-auth with `cli auth blinkit`", run_id=run_id)
+          f"{platform.title()} session expired or could not be restored — re-auth with "
+          f"`python -m cli auth login {platform} -t <tenant>`",
+          run_id=run_id, platform=platform)
 
 
 def decision(run_id: str, *, dry_run: bool, campaign_id, verdict: str, reason: str,

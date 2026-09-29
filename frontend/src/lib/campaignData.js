@@ -50,3 +50,27 @@ export const invalidateCampaignData = (queryClient, clientId) => {
 		queryClient.invalidateQueries({ queryKey: [key, clientId] });
 	}
 };
+
+/**
+ * The run log (`cm_run_log`) behind each feature's History view. A landed write adds rows to
+ * it, so these go stale at the same moment the campaign data does.
+ */
+export const RUN_LOG_KEYS = [
+	"auto-history", // features/automations — Execution logs
+	// features/automations — the page's one-request overview: its automation list, the header's
+	// recent history and the wallet note all come from the run log too.
+	"auto-overview",
+	"cm-history", // features/campaign-manager (deprecated)
+];
+
+/**
+ * Everything a finished write makes stale: the campaign data AND the run log. The one call
+ * to make when a job settles — having two had already let one screen refresh its campaigns
+ * and not its history.
+ */
+export const invalidateAfterWrite = (queryClient, clientId) => {
+	invalidateCampaignData(queryClient, clientId);
+	for (const key of RUN_LOG_KEYS) {
+		queryClient.invalidateQueries({ queryKey: [key, clientId] });
+	}
+};

@@ -854,3 +854,143 @@ def parse_po_items(
                 }
             )
     return rows
+
+
+# ── Campaign CATALOGUE (zepto_ad_campaigns / zepto_ad_campaign_keywords) ─────
+#
+# What each campaign is configured to do NOW — Zepto's answer to Blinkit's
+# `blinkit_ad_campaigns` / `blinkit_ad_campaign_keywords`, filled the same way: by this
+# daily ads scrape, with the campaign manager's Refresh (`cm.sync_campaigns -m zepto`)
+# re-reading the LIST fields in between through `parse_catalog_list_row`.
+#
+# Two sources, deliberately kept apart:
+#   * the campaign LIST (`/ads-bff/api/v1/campaigns`) — every campaign, Display and
+#     auto-bid included; strings for numbers, "" for none, IST dates without an offset;
+#   * the per-campaign DETAIL (`/ads-bff/api/v1/campaigns/pla/{id}`) — PLA only; city and
+#     store targeting, products, keywords.
+# A list-only row must never blank the detail columns, so the two parse separately and
+# storage updates only the columns a row actually carries.
+
+CATALOG_LIST_FIELDS = (
+    "campaign_id", "campaign_name", "brand_id", "status", "campaign_type",
+    "campaign_sub_type", "bid_targeting_type", "daily_budget", "lifetime_budget",
+    "campaign_start_date", "campaign_end_date",
+)
+
+
+def parse_catalog_list_row(raw: dict, tenant_id: str, scrape_job_id: str | None) -> dict:
+    """One campaign-list row -> the LIST columns of `zepto_ad_campaigns`.
+
+    `status` is the campaign's CURRENT status (the list is read now), which is exactly what
+    `zepto_ad_campaign_daily.status` is NOT — that one is stamped per scraped day (ZC-A11).
+    """
+    cid = int(raw["campaign_id"])
+    name_status = raw.get("name_with_active_status") or {}
+    budget = _f(raw.get("daily_budget"))
+    lifetime = _f(raw.get("lifetime_budget"))
+    return {
+        "upsert_key": make_upsert_key(tenant_id, "zepto", "campaign", cid),
+        "tenant_id": uuid.UUID(tenant_id),
+        "platform": "zepto",
+        "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+        "campaign_id": cid,
+        "campaign_name": raw.get("campaign_name") or name_status.get("campaign_name"),
+        "brand_id": raw.get("brand_id"),
+        "status": raw.get("status") or None,
+        "campaign_type": raw.get("campaign_type") or None,
+        "campaign_sub_type": raw.get("campaign_sub_type") or None,
+        "bid_targeting_type": raw.get("bid_targeting_type") or None,
+        "daily_budget": int(round(budget)) if budget is not None else None,
+        # "" (none) and -1 (the detail's spelling of none) both mean no lifetime budget.
+        "lifetime_budget": int(round(lifetime)) if lifetime not in (None, -1.0) else None,
+        "campaign_start_date": _dt(raw.get("start_date")),
+        "campaign_end_date": _dt(raw.get("end_date")),
+        "scraped_at": now_ist(),
+    }
+
+
+def parse_catalog_detail(detail: dict, city_names: dict[str, str]) -> dict:
+    """One campaign DETAIL -> the DETAIL columns of `zepto_ad_campaigns`.
+
+    `city_names` maps Zepto's city uuid -> name (from `targeting-options`). Chosen cities
+    come back as `{city_id, is_included, is_active}`; inactive ones are dropped, excluded
+    ones kept with `included: false` so the row says what the campaign actually does.
+    """
+    cfg = detail.get("campaign_configs") or {}
+    mode = (cfg.get("city_targeting") or "ALL").upper()
+    cities = None
+    if mode != "ALL":
+        cities = [
+            {"id": c["city_id"], "name": city_names.get(c["city_id"]),
+             "included": c.get("is_included", True) is not False}
+            for c in detail.get("city_targeting") or []
+            if isinstance(c, dict) and c.get("city_id") and c.get("is_active") is not False
+        ]
+    return {
+        "city_targeting": mode,
+        "cities": cities,
+        "store_targeting": (cfg.get("store_targeting") or None),
+        "product_variant_ids": [
+            str(a["product_variant_id"]) for a in detail.get("ad_assets_pla") or []
+            if a.get("product_variant_id")
+        ],
+        "detail_scraped_at": now_ist(),
+    }
+
+
+def parse_catalog_keywords(detail: dict, campaign_id: int,
+                           floors: dict[tuple[str, str], int],
+                           tenant_id: str, scrape_job_id: str | None) -> list[dict]:
+    """One campaign's `keyword_config` -> `zepto_ad_campaign_keywords` rows.
+
+    One row per (keyword, match_type) — Zepto bids the same text under EXACT, PHRASE and
+    BROAD at different rates, so the pair is the identity. Negatives are rows too, with no
+    bid. `min_bid` from `floors` (keyword/config); None where Zepto did not say.
+    """
+    rows = []
+    for k in detail.get("keyword_config") or []:
+        kw, match = k.get("keyword"), k.get("match_type")
+        if not kw or not match:
+            continue
+        negative = bool(k.get("is_negative"))
+        bid = _f(k.get("bid_value"))
+        rows.append({
+            "upsert_key": make_upsert_key(tenant_id, "zepto", "ad_kw_bid", campaign_id,
+                                          kw, match),
+            "tenant_id": uuid.UUID(tenant_id),
+            "platform": "zepto",
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "campaign_id": int(campaign_id),
+            "keyword": kw,
+            "match_type": match,
+            "is_negative": negative,
+            "bid_value": None if negative or bid is None else int(round(bid)),
+            "min_bid": None if negative else floors.get((kw, match)),
+            "scraped_at": now_ist(),
+        })
+    return rows
+
+
+def parse_campaign_catalog(catalog: dict, tenant_id: str, scrape_job_id: str | None
+                           ) -> tuple[list[dict], list[dict], dict[int, list[dict]]]:
+    """`fetch_campaign_catalog`'s result -> (full rows, list-only rows, keywords by campaign).
+
+    A campaign whose detail was read gets a FULL row (list + detail columns) and its keyword
+    rows; every other campaign (Display, or a detail read that failed) a LIST-ONLY row,
+    which storage upserts without touching its detail columns.
+    """
+    full, list_only, keywords = [], [], {}
+    details = catalog.get("details") or {}
+    for raw in catalog.get("campaigns") or []:
+        if raw.get("campaign_id") is None:
+            continue
+        row = parse_catalog_list_row(raw, tenant_id, scrape_job_id)
+        detail = details.get(row["campaign_id"])
+        if detail is None:
+            list_only.append(row)
+            continue
+        full.append({**row, **parse_catalog_detail(detail, catalog.get("city_names") or {})})
+        keywords[row["campaign_id"]] = parse_catalog_keywords(
+            detail, row["campaign_id"], (catalog.get("floors") or {}).get(row["campaign_id"], {}),
+            tenant_id, scrape_job_id)
+    return full, list_only, keywords

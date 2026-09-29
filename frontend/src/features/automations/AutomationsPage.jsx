@@ -10,6 +10,8 @@ import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import { WalletBanner } from "./components/WalletBanner";
+import { useAutomationMarketplace } from "../../context/MarketplaceContext";
 import { formatCurrency, formatMeasuredAt } from "../../lib/format";
 import {
 	useBudgetSchedules,
@@ -21,10 +23,8 @@ import {
 	useResetBudgetSchedule,
 	useResetBidRule,
 	useRefreshCampaigns,
-	useRecentActions,
-	useActiveActionFor,
-	ACTIVE_JOB_STATUSES,
 } from "./hooks";
+import { useActiveActionFor } from "../../lib/actions";
 
 /**
  * What each confirmation says, per action and per kind of automation.
@@ -130,20 +130,25 @@ const confirmCopy = (action, row) => {
  * Anything else keeps the server's own message, which is more specific than a generic
  * sentence would be.
  */
+// `lib/axios` rejects with `{ status, data }`, not axios's `response` — reading
+// `err.response.status` here never matched, so a 409 surfaced as the raw server sentence.
 const conflictMessage = (err, what) =>
-	err?.response?.status === 409
+	err?.status === 409
 		? `Another action is already running, so this one was not queued. Wait for it to finish, then try to ${what} again.`
 		: (err?.message ?? `Could not ${what}.`);
 
 /**
  * Automations — a new, independently-built management experience over the
  * same Campaign Manager v2 backend (budget schedules + bid rules), styled
- * after Dcluttr's Automations screen: a beta-tagged header with its own
+ * after Dcluttr's Automations screen: a header with its own
  * Create/Change-Logs actions, a rank-automation promo, channel pills +
  * underlined type tabs, a list with an inline on/off toggle and icon
  * controls, and a full-screen change-log overlay. Campaign Manager's own
  * page is untouched; this is a second, first-class way to reach the same
  * automations. No row-selection/bulk actions — that isn't built yet.
+ *
+ * ONE marketplace at a time, the navbar's choice (ZC-E1): lists, the wizard, the logs, the
+ * activity list and Refresh all act on it, and switching marketplace switches all of them.
  */
 export const AutomationsPage = () => {
 	const {
@@ -157,7 +162,10 @@ export const AutomationsPage = () => {
 		error: bidRulesError,
 	} = useBidRules();
 
-	const [channel, setChannel] = useState("");
+	// Which marketplace this page acts on is the NAVBAR's choice (one at a time here — see
+	// MarketplaceContext); every list and action below is already scoped to it. The page's
+	// own channel pills are gone: two controls for one question could disagree.
+	const { marketplace, name: mpName } = useAutomationMarketplace();
 	const [type, setType] = useState("");
 	const [status, setStatus] = useState("");
 	const [wizardKind, setWizardKind] = useState(null); // null | "campaign" | "keyword"
@@ -173,10 +181,9 @@ export const AutomationsPage = () => {
 	// the alternative leaves a bid the optimizer raised with no rule left to lower it.
 	const [resetBidOnDelete, setResetBidOnDelete] = useState(true);
 	const [detailCampaign, setDetailCampaign] = useState(null);
-	// The most recent action this page enqueued. It is NOT how the page reports progress
-	// any more — that is `useRecentActions`, which reads the queue from the server and so
-	// survives a reload and covers several actions at once, where this single slot could
-	// do neither.
+	// The most recent action this page enqueued. It is NOT how the page reports progress —
+	// that is inline, on the row being acted on (`activeActionFor`, below), which reads the
+	// queue from the server and so survives a reload and covers several actions at once.
 	//
 	// It is kept for one job only: the campaign toggle inside the wizard. That toggle sits
 	// behind a full-screen overlay, so its result has to be rendered inside the wizard, and
@@ -184,7 +191,7 @@ export const AutomationsPage = () => {
 	// and the outcome is read from the history rows filed under it.
 	const [actionJob, setActionJob] = useState(null);
 	// Why the last action could not even be QUEUED — distinct from what an action did once
-	// it ran, which the activity list reports. Nothing reaches the VM in this case, so
+	// it ran, which the row and the run log report. Nothing reaches the VM in this case, so
 	// there is no job and no run log row to read it from.
 	const [actionError, setActionError] = useState(null);
 
@@ -195,23 +202,10 @@ export const AutomationsPage = () => {
 	const resetSchedule = useResetBudgetSchedule();
 	const resetBid = useResetBidRule();
 	const refreshCampaigns = useRefreshCampaigns();
-	// In-flight actions, from the server rather than from component state — so the count
-	// survives a reload, and a job someone started in another tab still shows here.
-	const { data: recentActions } = useRecentActions();
+	// In-flight actions against each row, from the server rather than component state — so
+	// a row stays busy across a reload, and one started in another tab still shows.
+	// UNFILTERED on purpose: a clash on a campaign is a clash whichever page caused it.
 	const activeActionFor = useActiveActionFor();
-	const runningCount = (recentActions ?? []).filter((a) =>
-		ACTIVE_JOB_STATUSES.has(a.status),
-	).length;
-
-	/**
-	 * A campaign id to the name a person recognises. The activity list gets ids (that is
-	 * what the job carries), and "Campaign budget change · 637511" tells a reader nothing.
-	 * Read off the automations already loaded for the table, so it costs no extra request.
-	 */
-	const campaignNameOf = (id) =>
-		schedules?.find((x) => x.campaign_id === id)?.campaign_name ??
-		bidRules?.find((x) => x.campaign_id === id)?.campaign_name ??
-		null;
 
 	const rows = useMemo(() => {
 		const campaignRows = (schedules ?? []).map((s) => ({
@@ -223,12 +217,11 @@ export const AutomationsPage = () => {
 			kind: "keyword",
 		}));
 		return [...campaignRows, ...keywordRows].filter((r) => {
-			if (channel && r.platform !== channel) return false;
 			if (type && r.kind !== type) return false;
 			if (status && r.status !== status) return false;
 			return true;
 		});
-	}, [schedules, bidRules, channel, type, status]);
+	}, [schedules, bidRules, type, status]);
 
 	// Cheap enough to derive on every render, and it keeps the header honest as rows change.
 	const total = (schedules?.length ?? 0) + (bidRules?.length ?? 0);
@@ -238,9 +231,10 @@ export const AutomationsPage = () => {
 		keyword: bidRules?.length ?? 0,
 	};
 
-	const platformOf = (campaignId) =>
-		schedules?.find((s) => s.campaign_id === campaignId)?.platform ??
-		bidRules?.find((b) => b.campaign_id === campaignId)?.platform;
+	// Every row the logs show is this marketplace's: the history is read from its address.
+	// This used to look the campaign up among the automations on screen, so a row for a
+	// campaign with no automation left (or an account-level wallet note) had no channel.
+	const platformOf = () => marketplace;
 
 	/**
 	 * The store a bid rule measures position at, looked up from the rules already
@@ -292,6 +286,8 @@ export const AutomationsPage = () => {
 			setActionJob(res.job_id);
 			setActionError(null);
 		} catch (err) {
+			// Shown inside the wizard too — this toggle lives behind its overlay, where a line
+			// on the page is invisible.
 			setActionError(conflictMessage(err, "start or stop a campaign"));
 		}
 	};
@@ -349,16 +345,12 @@ export const AutomationsPage = () => {
 		<div className="space-y-6">
 			<header className="flex flex-wrap items-center justify-between gap-3">
 				<div>
-					<div className="flex items-center gap-2">
-						<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
-							Automations
-						</h1>
-						<span className="rounded-full bg-warning-soft px-2 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-warning">
-							Beta
-						</span>
-					</div>
+					<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
+						Automations
+					</h1>
 					<p className="text-sm text-content-muted">
-						Budget and bid automations across channels.
+						Budget and bid automations on {mpName}. Switch
+						marketplace in the bar above.
 					</p>
 				</div>
 				<div className="flex items-center gap-2">
@@ -374,14 +366,10 @@ export const AutomationsPage = () => {
 						size="sm"
 						disabled={refreshCampaigns.isPending}
 						onClick={handleRefreshCampaigns}
-						title="Re-read the campaign list from Blinkit"
+						title={`Re-read the campaign list from ${mpName}`}
 					>
 						<RefreshCw size={14} /> Refresh Campaigns
 					</Button>
-					{/* The one signal that has to live OUTSIDE the logs modal: without it a
-					    click would have no visible consequence at all until you thought to
-					    open something. A count rather than a word — it stays meaningful when
-					    two things are queued, which "Applying…" never was. */}
 					<Button
 						variant="secondary"
 						size="sm"
@@ -389,21 +377,14 @@ export const AutomationsPage = () => {
 							setLogRow(null);
 							setLogsOpen(true);
 						}}
-						title={
-							runningCount
-								? `${runningCount} action${runningCount > 1 ? "s" : ""} in progress`
-								: "What the automations have been doing"
-						}
+						title="What the automations have been doing"
 					>
 						<ScrollText size={14} /> Execution logs
-						{runningCount > 0 && (
-							<span className="ml-1.5 inline-flex h-5 min-w-5 items-center justify-center rounded-full bg-primary px-1.5 text-[11px] font-semibold text-on-primary">
-								{runningCount}
-							</span>
-						)}
 					</Button>
 				</div>
 			</header>
+
+			<WalletBanner />
 
 			{/* A refusal to QUEUE, which is different from a write that was refused: nothing
 			    reached the marketplace, so there is no run to look up and the activity list
@@ -469,8 +450,6 @@ export const AutomationsPage = () => {
 			    section as a whole sits well clear of the create CTAs above it. */}
 			<section className="mt-10 space-y-4">
 				<AutomationsFilterBar
-					channel={channel}
-					onChannel={setChannel}
 					type={type}
 					onType={setType}
 					status={status}
@@ -523,6 +502,7 @@ export const AutomationsPage = () => {
 				/* The toggle lives inside this overlay, so its result has to be reported
 				   inside it too — the page behind is not visible while it is open. */
 				activationJobId={actionJob}
+				activationError={actionError}
 				onClose={() => {
 					setWizardKind(null);
 					setEditRow(null);
@@ -534,7 +514,6 @@ export const AutomationsPage = () => {
 				focusRow={logRow}
 				platformOf={platformOf}
 				locationOf={locationOf}
-				campaignNameOf={campaignNameOf}
 			/>
 
 			<ConfirmDialog

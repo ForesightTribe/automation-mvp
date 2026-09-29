@@ -137,7 +137,7 @@ All tables are `(tenant_id, platform)` scoped.
 | `cm_platform_accounts` | `advertiser_id` + **`live_armed`** (the per-tenant arming switch)                      |
 | `cm_run_log`           | Slim append-only history for the UI                                                    |
 | `cm_city_stores`       | The frozen **measurement store set** per city — ranks 1–3 (1 = anchor), a global set (`tenant_id` NULL) a client can replace whole; see [7.6c](#76c-where-a-rule-measures--the-city-registry) |
-| `cm_store_stock`       | Stock cache: our products at each measurement store, with availability, from one brand search per store (~hourly) |
+| `cm_store_stock`       | Stock cache: our products at each measurement store, with availability, from one brand search per store (~hourly; on Zepto only when our ad is missing there — see the rotation) |
 | `cm_bid_store_reads`   | Append-only: what each store showed on each bid tick (verdict, position, bid in force, which store bound the decision); 30-day retention |
 
 **One schedule per (tenant, platform, campaign)** is a DB constraint — a campaign has one everyday
@@ -168,14 +168,18 @@ Cloud Logging, not the DB.
 
 ### Tables it READS but does not own
 
-The campaign manager owns the `cm_*` tables above. It also reads three things filled by the daily
-Blinkit scrape and by `cli sync` — deliberately not copied into a `cm_*` table, because a second
-copy would drift from the one the scraper maintains.
+The campaign manager owns the `cm_*` tables above. It also reads things filled by the daily
+marketplace scrapes and by `cli sync` — deliberately not copied into a `cm_*` table, because a second
+copy would drift from the one the scraper maintains. Each marketplace has its own catalogue pair,
+picked by ONE mapping (`repo._catalog(platform)`), never an `if platform ==` at a call site.
 
 | Table                                                       | Holds                                                                                                                               | Filled by                      |
 | ----------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- | ------------------------------ |
-| `blinkit_ad_campaigns`                                      | The campaign catalogue, plus its city targeting (`region_type`, `cities`), budget, `pacing_type` and spend-to-date                  | daily marketing scrape         |
-| `blinkit_ad_campaign_keywords`                              | The marketplace's published bid range per (campaign, keyword, match type) — `min_bid`, `max_bid`, `suggested_*`, `keyword_searches` | daily marketing scrape         |
+| `blinkit_ad_campaigns`                                      | Blinkit's campaign catalogue, plus its city targeting (`region_type`, `cities`), budget, `pacing_type` and spend-to-date            | daily marketing scrape         |
+| `blinkit_ad_campaign_keywords`                              | Blinkit's published bid range per (campaign, keyword, match type) — `min_bid`, `max_bid`, `suggested_*`, `keyword_searches`         | daily marketing scrape         |
+| `zepto_ad_campaigns`                                        | Zepto's campaign catalogue (**product ads only** — Zepto's list returns nothing else): type + bidding mode, budget, dates, city targeting (`city_targeting` ALL/MANUAL + `cities`), products | daily `scrape zepto --ads`; list fields also by `cm sync-campaigns -m zepto` |
+| `zepto_ad_campaign_keywords`                                | Zepto's keywords per (campaign, keyword, match type): live bid, published `min_bid`, `is_negative`                                  | daily `scrape zepto --ads`     |
+| `zepto_ad_campaign_daily`                                   | Zepto's daily metrics — read by the CM only for the TYPE of campaigns the catalogue lacks (Display), so they are refused, not "unseen" | daily `scrape zepto --ads`     |
 | `cities` · `city_aliases` · `marketplace_locations.city_id` | The canonical city registry — what turns a campaign's city targeting into a real store to measure at                                | `cli cities seed` + `cli sync` |
 
 ⚠️ These are for the **UI**. The engine re-reads the bid floor live at write time (§7.6) — the
@@ -656,6 +660,14 @@ Maintenance is the ~14 exceptions in `config.xlsx`'s `city_map` sheet; the other
 name. `cli cities seed` builds the list, `cli sync` applies the sheet and tags stores, `cli cities
 status` reports what still resolves to nothing.
 
+**Zepto's ad spellings** reach the registry the same way. A Zepto campaign's cities come in Zepto's
+ADS spelling, which can differ from both our canonical name and Zepto's own store catalogue: city 498
+is `Belgaum` to us, `belagavi` in Zepto's store catalogue (`zepto:catalog` alias) and **`Belgavi`**
+in its ads (`zepto:ads` alias, added 2026-09-23 — the first `:ads` row of any marketplace; Blinkit's ad
+names all match canonical ones). All 9 of Brik Oven's Zepto cities resolve. `cli cities seed` reads
+**Blinkit's** directory only and refuses `--mp zepto`: Zepto publishes no account-independent city
+list (its `targeting-options` is scoped to one brand), so seeding from it would shrink the registry.
+
 #### The stores inside the city — a frozen set, and stock
 
 A city is still not a store. Until 2026-09-11 the store was the city's **lowest `merchant_id`** —
@@ -782,18 +794,61 @@ the set's lowest remaining rank becomes the anchor.
 
 | Setting                          | Default | Meaning                                                    |
 | -------------------------------- | ------- | ---------------------------------------------------------- |
-| `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 1              |
+| `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 3 (was 1 before C6) |
 | `CM_STOCK_MAX_AGE_MINUTES`       | 60      | reuse a store's stock read for this long                   |
+| `CM_STOCK_REST_MINUTES`          | 60      | rotation only: after a full cycle of stock-outs, check one store this often |
 | `CM_STOCK_DEFAULT_BRAND_CAP`     | 48      | brand-search cap when the watchlist sets no `brand_cap`    |
 | `CM_STORE_READS_RETENTION_DAYS`  | 30      | trim `cm_bid_store_reads`                                  |
 | `CM_BID_GIVE_UP_TICKS`           | 2       | checks not showing at the ceiling before a store is given up for the window; 0 disables |
 | `CM_STORE_PROBLEM_WARN_TICKS`    | 2       | consecutive unusable readings before a store is warned about |
 
-⚠️ **Zepto stays on one store** — its anonymous search allows ~4-5 requests a minute — and has no
-catalogue read, so its stock is always unknown and it behaves exactly as before. It also still resolves
-the store from the coordinate once per store per run (`get_page`): passing the frozen `merchant_id` would
-skip that but drops the secondary hub ids the lookup returns, which can change what a search shows —
-left alone until measured.
+#### Zepto rotates through its stores instead (C6, 2026-09-28)
+
+Everything above is Blinkit's **store strategy** (`config.store_strategy` → `every_store`). Zepto uses
+`rotate` (`campaign_manager/rotation.py`), for two reasons:
+
+- **Zepto's search hides sold-out products.** 0 sold-out rows in 6,073 keyword results and in 1,495
+  brand-search rows (Sept 2026), while the brand search found 1–9 Brik Oven products per store. So on
+  Zepto "our ad isn't showing" cannot tell *outbid* from *out of stock* — and raising on a stock-out
+  only pushes up a bid that covers every targeted city. Live, 2026-09-28: HSR Layout listed 1 of the 9
+  Brik Oven variants it had on 2 Sept, and "sourdough bread" there showed no Brik Oven at all.
+- **Zepto's anonymous search allows a few requests a minute**, so reading 3 stores plus their stock
+  every tick is not affordable.
+
+The set is still ranked 1–3, but as a **fallback order, not a fan-out**. Design agreed with Deepansh
+2026-09-24:
+
+1. Each window starts at store 1.
+2. Our ad shows → a normal tick, no extra search (showing proves it is in stock).
+3. Our ad is missing → **one** brand search at that store (`stock.load`, cached
+   `CM_STOCK_MAX_AGE_MINUTES` per store; `zepto/catalog.py`). Our product there → genuinely outbid →
+   the normal raise. Not there → **hold the bid**; the **next** tick measures at the next store
+   (1 → 2 → 3 → 1). At most one hop per tick, so the worst tick is 2 searches. Stock unreadable → hold
+   (never raise blind).
+4. A full cycle with no store able to sell → **out-of-stock rest**: the bid is held (never lowered — an
+   ad nobody sees costs nothing on CPC), no search at all, and one store is checked every
+   `CM_STOCK_REST_MINUTES`, still in rotation, until one can sell. History: "Store1 can't sell this
+   campaign right now (…), and nor can the other 2 stores we check — a stock problem, not a bidding one,
+   so the bid is held at ₹20…", then "back in stock at Store2 after every store we check had run out —
+   raising to ₹24…".
+5. Staying on store 2 after store 1 restocks is fine; the cycle returns to store 1 by itself.
+6. Moving to another store is a different auction: the rule's learned state (last position, raise
+   step, holding price, drift pause, relaxed target) starts fresh there. The bid itself carries over.
+
+**Stateless.** Where a rule stands is derived each tick from its own `cm_bid_store_reads` rows (one per
+store actually read, same dry-run mode), so there is no rotation column, and a tick that fails leaves the
+next one where it was. A resting tick writes no store row, only a `hold` History row.
+
+On Zepto a brand search that returns products but none of ours is an **answer** (nothing of ours is
+sellable there), not a failed read as on Blinkit; only an empty or failed search says nothing. Every
+Zepto search is bound to the store by `merchant_id`, never resolved from the coordinate.
+
+**A city with nothing frozen** measures at the rule's saved store only, a cycle of one: a single stock-out
+there starts the rest. Freeze three stores per city (`cm stores set -m zepto`) to get the fallback.
+
+**The shopper search could not be opened at all** (the WAF block of 2026-09-24): the run holds every bid
+and writes an `error` History row per automation saying so — for every marketplace. It used to escape the
+run with no History at all.
 
 ### 7.7 Bounds are invariants
 
@@ -1614,24 +1669,71 @@ Reversible — disarm, reconcile, back to dry.
 ### CLI
 
 ```bash
-python -m cli cm budget-scheduler --tenant <uuid> [--live]
-python -m cli cm bid-optimizer    --tenant <uuid> [--live] [--reset]
-python -m cli cm reconcile        --tenant <uuid> [--marketplace blinkit|zepto] [--live]
-python -m cli cm set-budget       --tenant <uuid> --campaign <id> --budget <n> [--live]
-python -m cli cm show             --tenant <uuid> --campaign <id>     # READ ONLY
-python -m cli cm set-advertiser   --tenant <uuid> --id <n>
-python -m cli cm arm|disarm       --tenant <uuid>
-python -m cli cm rules add-bid|add-budget|list|remove-bid|remove-budget
+python -m cli cm budget-scheduler --tenant <uuid> -m blinkit|zepto [--live]
+python -m cli cm bid-optimizer    --tenant <uuid> -m blinkit|zepto [--live] [--reset]
+python -m cli cm reconcile        --tenant <uuid> -m blinkit|zepto [--live]
+python -m cli cm set-budget       --tenant <uuid> -m blinkit|zepto --campaign <id> --budget <n> [--live]
+python -m cli cm status           --tenant <uuid> -m blinkit|zepto --campaign <id>     # READ ONLY
+python -m cli cm set-advertiser   --tenant <uuid> -m blinkit|zepto --id <n|brand-uuid>
+python -m cli cm arm|disarm       --tenant <uuid> -m blinkit|zepto
+python -m cli cm rules add-bid|add-budget-schedule|list -m blinkit|zepto …
+python -m cli cm rules remove-bid|remove-budget|add-budget-rule …     # by id — no -m needed
 ```
 
-Everything defaults to dry-run. `--live` is always explicit.
+Everything defaults to dry-run. `--live` is always explicit. Full reference: [CLI.md](CLI.md#campaign-manager-cm).
+
+### The marketplace is never assumed (2026-09-24)
+
+Every layer names the marketplace it acts on, and **none has a default** — a forgotten one fails
+rather than driving Blinkit's account by accident:
+
+| Layer | How the marketplace is chosen | Without one |
+|---|---|---|
+| CLI | `-m blinkit\|zepto` (required) | usage error |
+| API | `/campaign-manager/<marketplace>/…` ([api-reference.md](api-reference.md)) | old address → 400 saying the new form; unknown → 404 |
+| API ids | a rule/schedule/job id must belong to the address's marketplace | 404 — `…/zepto/…` can never act on a Blinkit rule |
+| Job queue | `marketplace` param on every `cm.*` job (API and reconciler stamp it) | the runner fails the job before it starts (`MissingMarketplace`) |
+| Engines · repo | `platform` argument, required | `TypeError` at the call — caught by tests, never guessed |
+| Dashboard — Ad Automation, One-time ops | the navbar pills, **one marketplace at a time** (no "All" on these pages) | nothing loads until the marketplace list has — no page-side default |
+| Dashboard — Ads Insights actions | the row's own `platform` (the page can show several marketplaces) | the action throws before sending |
+
+Two deliberate exceptions: public-scrape jobs (reads, not operations) keep a Blinkit fallback, and the
+queue's `uq_jobs_active` index still COALESCEs a missing marketplace to 'blinkit' — harmless now that
+no `cm.*` job lacks one; changing it needs a migration.
+
+### The dashboard on Zepto (2026-09-24)
+
+On **Ad Automation** and **One-time ops** the navbar's marketplace pills lose "All" and pick
+ONE marketplace; a marketplace the campaign manager cannot drive (`/reference/marketplaces`
+→ `automations: false`, e.g. Instamart) is greyed out. That choice is remembered apart from
+the global one, so visiting these pages never changes what Overview shows. Entering them
+while the navbar shows a single automatable marketplace opens on it. Everything on the page —
+lists, wizard, logs, activity, Refresh — then talks to that marketplace's address.
+
+What changes on Zepto:
+
+| Surface | Blinkit | Zepto |
+|---|---|---|
+| Campaign picker | every campaign; Avg CPM | Display / auto-bid campaigns greyed with the reason (`automatable: false`); Avg **CPC** |
+| Keyword picker | `/ads/keywords` performance | the catalogue (`GET …/zepto/keywords`): match type, current bid, floor — each match type its own row, since a rule binds one |
+| Bid form | min/max in CPM; floor for EXACT | CPC; floor for the chosen match type; **city optional** — empty = the campaign's best city (`pick_rule_location`) |
+| Budget fields | no minimum | **₹500 minimum**, checked before the save |
+| Start/Stop switch | on `state` — a held (ON_HOLD) campaign shows ON with Stop | on `state` — out of budget / wallet shows ON with Stop, with the reason |
+| One-time budget | running or held only | also on a **paused** campaign (C11) |
+| Wallet | — | a banner from the engine's latest `kind=wallet` History row (< 24h) |
+| "Live or simulating" | `GET …/live` — the engine's real switch, not inferred | same |
+
+The old, deprecated Campaign Manager page stays Blinkit-only.
 
 ### Rolling out a change
 
 1. Apply any migration (shown and confirmed first — shared DB).
 2. Merge to `main` and pull on the VM. **The VM runs `main`; nothing on a feature branch exists there.**
-   Then run one live reconcile per tenant (`cm reconcile --tenant <uuid> --live`), so its schedules and
-   lifecycle markers match the new code now rather than at the 04:00 cleanup.
+   A change to the API's addresses (like 2026-09-24's marketplace-in-the-path) must ship the
+   **frontend, API (Render) and VM together** — API → VM → website — or the dashboard's automation
+   buttons fail in the gap. Then run one live reconcile per tenant and marketplace
+   (`cm reconcile --tenant <uuid> -m <marketplace> --live`), so its schedules and lifecycle markers
+   match the new code now rather than at the 04:00 cleanup.
 3. Create one bid rule on a **low-stakes campaign**, with drift off — which now takes an
    explicit `CM_BID_DRIFT_PCT=0`, because the default is `7` (armed).
 4. Watch a day of `cm_run_log` + Cloud Logging: does the window-open floor land, does the end reset
@@ -1696,7 +1798,7 @@ With v1 gone, the surviving manager took its plain name back: the UI route is
 | Bid window scheduling is hour-granular                                  | A 09:30 start rounds to the 09:00 hour; `_in_window` filters the early ticks, so it's cosmetic                                                                                                                                                                                                                                                                                                                                                                                           |
 | ~~Stale boundary crons after expiry~~                                   | **FIXED 2026-09-10** — an ended rule produces no crons, so the cleanup prunes them (it used to derive them again). The expiry one-shot is gone (§5b) |
 | `cm_run_log` has no retention policy                                    | Grows unbounded against a 500 MB quota                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
-| **Zepto automations get no schedules from the API**                    | The API service always reconciles Blinkit (`_reconcile` sends no marketplace), so a Zepto rule created in the UI gets no crons until someone runs `cm reconcile --marketplace zepto` |
+| ~~Zepto automations get no schedules from the API~~                    | **FIXED 2026-09-24** — every API edit reconciles the marketplace in its address (`_reconcile(session, tenant, marketplace)`) |
 | Unarmed tenants' settle passes sign in                                  | While an ended automation's teardown is unlanded, its hourly pass runs dry, never latches (a dry run lands nothing) and signs in each hour until `CM_SETTLE_MAX_AGE_HOURS` |
 | A settle pass and a reset in the same minute                            | `uq_jobs_active` refuses the second `cm.bid_optimizer --reset` for the client. Rare — the settle cron sits at :37, away from the usual reset minutes |
 | Bid rules with no stop time                                             | Other rules' reset runs treat them as closing at midnight, but they are never scheduled a reset of their own. Predates the lifecycle work; half-defined |

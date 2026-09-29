@@ -5,6 +5,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.brand import Brand, Marketplace
 from app.models.job import JobStatus, ScrapeJob
 from app.models.search import MarketplaceLocation, SearchSnapshot
+from campaign_manager.marketplaces import min_daily_budget as cm_min_daily_budget
+from campaign_manager.marketplaces import supported as cm_supported
 
 
 async def list_brands(session: AsyncSession) -> list[Brand]:
@@ -73,6 +75,7 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
         .scalars()
         .all()
     )
+    automations = set(cm_supported())
     return [
         {
             "slug": m.slug,
@@ -80,6 +83,8 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
             "color": m.color,
             "connected": m.slug in connected,
             "data_scope": "full" if m.slug in full_scope else "public",
+            "automations": m.slug in automations,
+            "min_daily_budget": cm_min_daily_budget(m.slug),
         }
         for m in rows
     ]

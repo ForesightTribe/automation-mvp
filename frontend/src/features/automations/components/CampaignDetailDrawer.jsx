@@ -6,10 +6,17 @@ import { StatusPill } from "./StatusPill";
 import { ChannelBadge } from "./ChannelBadge";
 import { budgetScheduleTags, bidRuleTags } from "../automation";
 import { ActionsSummaryPills } from "./ActionsSummaryPills";
-import { useCampaignsForRange, useHistory, useKeywordMetrics } from "../hooks";
+import {
+	useCampaignsForRange,
+	useCatalogKeywords,
+	useHistory,
+	useKeywordMetrics,
+} from "../hooks";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { bidUnit } from "../../../lib/marketplaces";
 import { useDateRange } from "../../../context/DateRangeContext";
 import { formatCurrency, formatNumber } from "../../../lib/format";
-import { outcomeOf } from "../runLog";
+import { outcomeOf } from "../../../lib/runLog";
 
 const when = (iso) =>
 	new Intl.DateTimeFormat("en-IN", {
@@ -35,10 +42,30 @@ export const CampaignDetailDrawer = ({
 	schedules = [],
 	bidRules = [],
 }) => {
-	const { data: campaigns } = useCampaignsForRange();
+	// Only while open — the drawer is mounted closed on the page.
+	const { data: campaigns } = useCampaignsForRange({ enabled: open });
 	const { range, days } = useDateRange();
+	const { marketplace } = useAutomationMarketplace();
+	const unit = bidUnit(marketplace);
+	// Blinkit has per-keyword PERFORMANCE for a campaign; Zepto has only its catalogue (the
+	// keywords it bids on, at what, above which floor) — so the keyword section shows that.
+	const catalogMode = marketplace !== "blinkit";
 	const { data: keywords, isLoading: loadingKw } = useKeywordMetrics(
 		open ? campaignId : null,
+	);
+	const { data: catalogRows, isLoading: loadingCatalog } = useCatalogKeywords(
+		{ enabled: open && catalogMode },
+	);
+	const campaignCatalog = useMemo(
+		() =>
+			(catalogRows ?? [])
+				.filter((k) => k.campaign_id === campaignId)
+				.sort(
+					(a, b) =>
+						(b.bid ?? 0) - (a.bid ?? 0) ||
+						a.keyword.localeCompare(b.keyword),
+				),
+		[catalogRows, campaignId],
 	);
 	// THIS campaign's rows, asked of the server. Filtering page 1 of every campaign's history
 	// found this one's only if it happened to be among the newest twenty account-wide.
@@ -72,9 +99,15 @@ export const CampaignDetailDrawer = ({
 	const aov = campaign?.quantities_sold
 		? campaign.ad_sales / campaign.quantities_sold
 		: null;
-	const cpm = campaign?.impressions
-		? (campaign.budget_consumed / campaign.impressions) * 1000
-		: null;
+	// What a bid buys on this marketplace: per click on Zepto, per 1,000 views on Blinkit.
+	const cost =
+		unit.code === "CPC"
+			? campaign?.clicks
+				? campaign.budget_consumed / campaign.clicks
+				: null
+			: campaign?.impressions
+				? (campaign.budget_consumed / campaign.impressions) * 1000
+				: null;
 
 	return (
 		<Drawer
@@ -121,8 +154,8 @@ export const CampaignDetailDrawer = ({
 							aov == null ? "—" : formatCurrency(aov),
 						],
 						[
-							"Average CPM",
-							cpm == null ? "—" : formatCurrency(cpm),
+							`Average ${unit.code}`,
+							cost == null ? "—" : formatCurrency(cost),
 						],
 						[
 							"Daily budget",
@@ -188,46 +221,99 @@ export const CampaignDetailDrawer = ({
 				)}
 			</Section>
 
-			<Section
-				title="Top keywords by spend"
-				hint={loadingKw ? "" : `${keywords?.length ?? 0} total`}
-			>
-				{loadingKw ? (
-					<Loading label="Loading keywords…" />
-				) : topKeywords.length === 0 ? (
-					<p className="text-sm text-content-muted">
-						No keyword data scraped for this campaign yet.
-					</p>
-				) : (
-					<table className="w-full text-sm">
-						<tbody>
-							{topKeywords.map((k) => (
-								<tr
-									key={`${k.target}|${k.match_type}`}
-									className="border-b border-border/60 last:border-0"
-								>
-									<td className="py-1.5 pr-2 text-content">
-										{k.target}
-									</td>
-									<td className="py-1.5 text-right tabular-nums text-content-muted">
-										{k.most_viewed_position != null
-											? `#${k.most_viewed_position}`
-											: "—"}
-									</td>
-									<td className="py-1.5 text-right tabular-nums text-content">
-										{formatCurrency(k.budget_consumed ?? 0)}
-									</td>
-									<td className="py-1.5 text-right tabular-nums text-content-muted">
-										{k.total_roas != null
-											? `${k.total_roas.toFixed(2)}x`
-											: "—"}
-									</td>
-								</tr>
-							))}
-						</tbody>
-					</table>
-				)}
-			</Section>
+			{catalogMode ? (
+				<Section
+					title="Keywords it bids on"
+					hint={
+						loadingCatalog ? "" : `${campaignCatalog.length} total`
+					}
+				>
+					{loadingCatalog ? (
+						<Loading label="Loading keywords…" />
+					) : campaignCatalog.length === 0 ? (
+						<p className="text-sm text-content-muted">
+							No keywords in the catalogue for this campaign yet.
+						</p>
+					) : (
+						<table className="w-full text-sm">
+							<tbody>
+								{campaignCatalog.slice(0, 12).map((k) => (
+									<tr
+										key={`${k.keyword}|${k.match_type}`}
+										className="border-b border-border/60 last:border-0"
+									>
+										<td className="py-1.5 pr-2 text-content">
+											{k.keyword}
+										</td>
+										<td className="py-1.5 text-[11px] text-content-muted uppercase">
+											{k.match_type}
+										</td>
+										<td
+											className="py-1.5 text-right tabular-nums text-content"
+											title={`Current bid (${unit.code})`}
+										>
+											{k.bid != null
+												? formatCurrency(k.bid)
+												: "—"}
+										</td>
+										<td
+											className="py-1.5 text-right tabular-nums text-content-muted"
+											title={`Minimum bid (${unit.code})`}
+										>
+											{k.min_bid != null
+												? `min ${formatCurrency(k.min_bid)}`
+												: "—"}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					)}
+				</Section>
+			) : (
+				<Section
+					title="Top keywords by spend"
+					hint={loadingKw ? "" : `${keywords?.length ?? 0} total`}
+				>
+					{loadingKw ? (
+						<Loading label="Loading keywords…" />
+					) : topKeywords.length === 0 ? (
+						<p className="text-sm text-content-muted">
+							No keyword data scraped for this campaign yet.
+						</p>
+					) : (
+						<table className="w-full text-sm">
+							<tbody>
+								{topKeywords.map((k) => (
+									<tr
+										key={`${k.target}|${k.match_type}`}
+										className="border-b border-border/60 last:border-0"
+									>
+										<td className="py-1.5 pr-2 text-content">
+											{k.target}
+										</td>
+										<td className="py-1.5 text-right tabular-nums text-content-muted">
+											{k.most_viewed_position != null
+												? `#${k.most_viewed_position}`
+												: "—"}
+										</td>
+										<td className="py-1.5 text-right tabular-nums text-content">
+											{formatCurrency(
+												k.budget_consumed ?? 0,
+											)}
+										</td>
+										<td className="py-1.5 text-right tabular-nums text-content-muted">
+											{k.total_roas != null
+												? `${k.total_roas.toFixed(2)}x`
+												: "—"}
+										</td>
+									</tr>
+								))}
+							</tbody>
+						</table>
+					)}
+				</Section>
+			)}
 
 			<Section title="Recent activity">
 				{activity.length === 0 ? (

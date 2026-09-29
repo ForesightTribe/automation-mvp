@@ -1,8 +1,8 @@
 /**
  * Small platform monogram — Dcluttr uses real marketplace logos; we don't
- * ship those assets, so a colour-coded initial stands in. Blinkit is this
- * project's only live public/private platform today; Zepto appears once
- * `campaign_manager` data exists for it (see docs/zepto.md).
+ * ship those assets, so a colour-coded initial stands in. One entry per
+ * marketplace the campaign manager drives (Blinkit, Zepto); an unknown slug
+ * falls back to a neutral chip with its name.
  */
 const STYLE = {
 	blinkit: { bg: "bg-[#f8cb46]", fg: "text-[#5a4a00]", label: "Blinkit" },

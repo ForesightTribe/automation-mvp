@@ -22,7 +22,12 @@ class AdsSummary(BaseModel):
 
 
 class CampaignRow(BaseModel):
-    """Campaign metadata + its metric rollup over the window."""
+    """Campaign metadata + its metric rollup over the window.
+
+    `platform` says which marketplace the campaign belongs to. The list merges Blinkit and
+    Zepto rows, and their campaign ids are separate namespaces — without it a Zepto row is
+    indistinguishable from a Blinkit one, which is how a Zepto campaign could be picked on a
+    Blinkit-only write surface."""
 
     model_config = ConfigDict(from_attributes=True)
 
@@ -31,16 +36,51 @@ class CampaignRow(BaseModel):
     # coercion would silently mangle the id you need to look the campaign
     # back up by.
     campaign_id: int | str
+    # Required — no default marketplace (ZC-D1). Every path that builds rows sets it.
+    platform: str
     name: str | None
     type: str | None
+    # Can automations run on this campaign (ZC-D3)? False with a reason for a Zepto
+    # Display or automatic-bidding campaign, so a picker greys it out instead of the save
+    # failing. True for anything not catalogued yet — the save-time check allows those too.
+    automatable: bool = True
+    not_automatable_reason: str | None = None
+    # `status` is the marketplace's own word (ACTIVE / ON_HOLD / DAILY_BUDGET_EXHAUSTED …);
+    # `state` is what it MEANS, in the vocabulary the engines act on: running / paused /
+    # held / ended / draft. UI decisions — offer Start or Stop — must read `state`: the raw
+    # words differ per marketplace, and a Zepto campaign out of budget is live (Stop), not
+    # stopped (Start). An unmapped status passes through unchanged in both.
     status: str | None
+    state: str | None = None
     daily_budget: int | None = None
     budget_consumed: float
     impressions: int
+    # Zepto only — it bills per click, so the pickers show Avg CPC from this (ZC-E12).
+    # None on Blinkit, which reports no clicks; never 0 there, which would read as "none".
+    clicks: int | None = None
     atc: int
     quantities_sold: int
     ad_sales: float
     roas: float
+
+
+class CampaignDayRow(BaseModel):
+    """One campaign's spend on one day — the budget-utilisation views' grain.
+
+    Exactly the fields those views read off a one-day `/ads/campaigns` call, for a whole
+    window in ONE request: they used to make one call per day (up to 31, four at a time), and
+    every one held a pooled connection (2026-09-25). Only days a campaign SPENT on are
+    returned — a day it did not run is absent, which the views read as "did not run".
+    `daily_budget` is the campaign's current setting, as on `/ads/campaigns`."""
+
+    date: date
+    campaign_id: int
+    platform: str
+    name: str | None
+    type: str | None
+    budget_consumed: float
+    daily_budget: int | None = None
+    ad_sales: float
 
 
 class AdPerformancePoint(BaseModel):

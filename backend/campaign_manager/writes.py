@@ -182,14 +182,52 @@ def exceeds_rate_limit(recent_writes: int, *, limit: int | None = None) -> bool:
 WRITABLE_STATES = ("running", "paused")
 
 
+def hold_reason(adapter, current: str | None, detail: dict | None) -> str | None:
+    """The marketplace's own words for WHY a `held` campaign is held, or None.
+
+    Optional on the adapter (`hold_reason(detail)`). Blinkit has one kind of hold, so it
+    declares nothing and the default ON_HOLD wording applies; Zepto has two needing
+    opposite advice (spent budget vs empty wallet). Pure, and never raises — it only ever
+    improves a sentence."""
+    reader = getattr(adapter, "hold_reason", None)
+    if current != "held" or reader is None:
+        return None
+    try:
+        return reader(detail or {})
+    except Exception:
+        return None
+
+
+def automation_refusal(adapter, detail: dict | None) -> str | None:
+    """Why the automations must leave this campaign alone, or None (ZC-C3).
+
+    Optional on the adapter (`automation_refusal(detail)`), read off a campaign the caller
+    has ALREADY fetched. Zepto limits automations to keyword-bid product ads; Blinkit
+    declares nothing, so every Blinkit campaign stays eligible. Never raises: a checker
+    that crashes must not take the run down — the adapter's write-time check still stands."""
+    reader = getattr(adapter, "automation_refusal", None)
+    if reader is None:
+        return None
+    try:
+        return reader(detail or {})
+    except Exception:
+        return None
+
+
 def status_transition_denied(current: str | None, target: str, *,
-                             allow_draft: bool = False) -> str | None:
+                             allow_draft: bool = False,
+                             hold_reason: str | None = None) -> str | None:
     """Return a reason string if `current → target` must not be written, else None.
 
     `allow_draft` is True only for an on-demand action (AD8): a human clicking Start on
     a draft means it; a scheduled rule reaching one does not — drafts are often
     incomplete. A no-op (current == target) is NOT rejected here; the caller checks that
     separately so it can log it as a skip rather than a guardrail trip.
+
+    `hold_reason` is the marketplace's own explanation of a `held` campaign, from
+    `adapter.hold_reason(detail)`. `held` covers holds needing opposite advice — Zepto's
+    empty wallet is not revived by a budget, only by a top-up — so the default wording
+    (which is Blinkit's ON_HOLD) is used only when the adapter has nothing more precise.
     """
     if target not in WRITABLE_STATES:
         return f"refusing to write status {target!r} (only {'/'.join(WRITABLE_STATES)})"
@@ -208,8 +246,8 @@ def status_transition_denied(current: str | None, target: str, *,
         # restart, which is why Blinkit offers `['UPDATE']` and never `['RESTART']` for it.
         if target == "paused":
             return None
-        return ("campaign is ON_HOLD (its budget is exhausted) — raise the budget to revive "
-                "it; there is nothing to restart")
+        return hold_reason or ("campaign is ON_HOLD (its budget is exhausted) — raise the "
+                               "budget to revive it; there is nothing to restart")
     if current == "ended":
         return "campaign is COMPLETED — terminal, cannot be restarted"
     # An unmapped marketplace string. Refuse rather than guess: a new Blinkit status
@@ -374,6 +412,21 @@ async def apply_budget(adapter, client, *, run_id: str, campaign_id, target, cur
                           reason=str(e))
         _refused(outcome, str(e))
         return False
+    except WriteUnverified as e:
+        # Sent, and the answer does not say whether it landed. Read the budget back — the
+        # same reasoning as `apply_bid`: guessing "failed" makes our record disagree with
+        # the marketplace whenever the write did go through.
+        ok = await verify_budget(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                                 intended=target, why=str(e))
+        why = None if ok else f"{e}; and the budget did not change"
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
+                          subject="the budget", old=money(current), new=money(target),
+                          reason=why)
+        if ok:
+            _record(applied, adapter, "budget", campaign_id=campaign_id, value=target)
+        else:
+            _refused(outcome, why)
+        return ok
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       subject="the budget", old=money(current), new=money(target),
@@ -389,10 +442,17 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
                     current_cpm, min_bid, max_bid, match_type="EXACT",
                     dry_run: bool, recent_writes: int = 0,
                     applied: list | None = None,
-                    outcome: dict | None = None) -> bool:
+                    outcome: dict | None = None,
+                    keyword_floor: int | None = None) -> bool:
     """Guardrailed keyword-bid write. Clamps to [min_bid, max_bid] first.
 
-    `outcome` collects WHY a write did not land — see `_refused`."""
+    `outcome` collects WHY a write did not land — see `_refused`.
+
+    `keyword_floor` is the marketplace's PUBLISHED minimum for this very keyword, read live
+    (`adapter.read_bid_floors`). When known it is the marketplace's law for this write and
+    REPLACES the adapter's flat `MIN_BID`, which is only the observed default for a keyword
+    with no published floor (ZC-C1). Without this, Zepto's ₹10 default also blocked keywords
+    Zepto itself allows lower. Unknown (None) → the flat value still applies."""
     clamped = clamp_bid(new_cpm, min_bid, max_bid)
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id, keyword=keyword,
                       what="bid", old=current_cpm, new=clamped)
@@ -408,7 +468,8 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
     # applies the RULE's range: a rule whose floor is below the platform's still needs
     # catching, and the platform gets the final say.
     reason = bid_out_of_bounds(clamped,
-                               min_bid=getattr(adapter, "MIN_BID", None),
+                               min_bid=(keyword_floor if keyword_floor is not None
+                                        else getattr(adapter, "MIN_BID", None)),
                                max_bid=getattr(adapter, "MAX_BID", None))
     if reason:
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
@@ -445,7 +506,8 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
         # The write went out and we did not get a usable answer. Ask the marketplace what
         # the bid IS now, rather than assuming the worst — see WriteUnverified.
         ok = await verify_bid(adapter, client, run_id=run_id, campaign_id=campaign_id,
-                              keyword=keyword, intended=clamped, why=str(e))
+                              keyword=keyword, intended=clamped, why=str(e),
+                              match_type=match_type)
         # `resp` never existed on this path. The reason is the unverified reply itself,
         # which `verify_bid` has already narrated in full; this is its one-line form.
         why = None if ok else f"{e}; and the bid did not change"
@@ -462,7 +524,7 @@ async def apply_bid(adapter, client, *, run_id: str, campaign_id, keyword, new_c
 
 
 async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
-                     intended: int, why: str) -> bool:
+                     intended: int, why: str, match_type: str | None = None) -> bool:
     """Did an unacknowledged bid write actually land? Read the bid back and see.
 
     Returns True only when the marketplace now reports the value we sent. Anything else —
@@ -471,8 +533,14 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
 
     Compares against `adapter.read_bids`, which is the SAME source the engine reads
     `current_cpm` from, so a confirmation here means the next tick will agree with us.
+
+    ⚠️ Where the adapter can read bids per `(keyword, match_type)` it is asked for exactly
+    the pair we wrote. `read_bids` is keyed by text alone, which on Zepto collapses a
+    keyword bid under EXACT and PHRASE into one value — confirming a write against the
+    OTHER match type's bid would record a change that never happened.
     """
-    read = getattr(adapter, "read_bids", None)
+    by_match = getattr(adapter, "read_bids_by_match", None) if match_type else None
+    read = by_match or getattr(adapter, "read_bids", None)
     if read is None:                              # a marketplace with no read-back path
         logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
                              reason=f"{why}; this marketplace cannot be read back",
@@ -486,7 +554,7 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
                              keyword=keyword)
         return False
 
-    current = live.get(keyword)
+    current = live.get((keyword, match_type) if by_match else keyword)
     if current is not None and int(current) == int(intended):
         logs.note(run_id, f'"{keyword}" — {why}, but the bid IS now ₹{intended} on the '
                           f"marketplace, so the change did land", level="warning")
@@ -498,10 +566,73 @@ async def verify_bid(adapter, client, *, run_id: str, campaign_id, keyword: str,
     return False
 
 
+async def _read_back(read, client, campaign_id, *, run_id: str, why: str, what: str):
+    """`(value, readable)` from a best-effort read-back. Narrates a failed read itself."""
+    if read is None:
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; this marketplace cannot read {what} back")
+        return None, False
+    try:
+        return await read(client, campaign_id), True
+    except Exception as e:                        # the read is best-effort by definition
+        logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                             reason=f"{why}; reading {what} back failed too ({e})")
+        return None, False
+
+
+async def verify_budget(adapter, client, *, run_id: str, campaign_id, intended,
+                        why: str) -> bool:
+    """Did an unacknowledged budget write land? `verify_bid`'s rules, for the budget:
+    True only when the marketplace now reports the value we sent."""
+    live, readable = await _read_back(getattr(adapter, "read_budget", None), client,
+                                      campaign_id, run_id=run_id, why=why, what="the budget")
+    if not readable:
+        return False
+    if live is not None and is_noop(intended, live):
+        logs.note(run_id, f"campaign {campaign_id} — {why}, but its budget IS now "
+                          f"{money(intended)}, so the change did land", level="warning")
+        return True
+    logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                         reason=f"{why}; the budget is still {money(live)}, so it did not land")
+    return False
+
+
+async def verify_status(adapter, client, *, run_id: str, campaign_id, target: str,
+                        why: str) -> bool:
+    """Did an unacknowledged start/stop land? Read the status back.
+
+    A start that comes back `held` DID land: the campaign is live and Zepto/Blinkit is
+    holding delivery for budget or wallet reasons — which is theirs to lift, not ours."""
+    live, readable = await _read_back(getattr(adapter, "read_status", None), client,
+                                      campaign_id, run_id=run_id, why=why, what="the status")
+    if not readable:
+        return False
+    if live == target or (target == "running" and live == "held"):
+        logs.note(run_id, f"campaign {campaign_id} — {why}, but it IS now "
+                          f"{STATE_WORDS.get(live, live)}, so the change did land",
+                  level="warning")
+        return True
+    logs.write_guardrail(run_id, dry_run=False, campaign_id=campaign_id, passed=False,
+                         reason=f"{why}; the campaign is still "
+                                f"{STATE_WORDS.get(live, live or 'unknown')}, so it did not land")
+    return False
+
+
 # A campaign's run state, in the words a person uses for it. `held` and `ended` are
 # Blinkit's own conditions, so they are named rather than translated away.
 STATE_WORDS = {"running": "running", "paused": "stopped", "held": "on hold (out of budget)",
                 "ended": "finished", "draft": "a draft"}
+
+
+def state_words(state: str | None, hold_reason: str | None = None) -> str | None:
+    """`STATE_WORDS`, except a `held` campaign the marketplace has explained.
+
+    "Out of budget" is Blinkit's only hold, but Zepto also holds for an empty ad wallet —
+    where the budget is irrelevant. With a `hold_reason` in hand, say "on hold" and let the
+    reason (logged beside it) name the cause, rather than guess the wrong one."""
+    if state == "held" and hold_reason:
+        return "on hold"
+    return STATE_WORDS.get(state, state)
 
 
 def _status_words(target: str, budget: float | None) -> str:
@@ -521,8 +652,13 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                        dry_run: bool, recent_writes: int = 0, allow_draft: bool = False,
                        budget: float | None = None, overwrites: dict | None = None,
                        applied: list | None = None,
-                       outcome: dict | None = None) -> bool:
+                       outcome: dict | None = None,
+                       hold_reason: str | None = None,
+                       not_automatable: str | None = None) -> bool:
     """Guardrailed campaign start/stop. Returns True if applied (or would-apply in dry-run).
+
+    `hold_reason` — see `status_transition_denied`. `not_automatable` — the caller's
+    `automation_refusal` for this campaign; set, the write is refused before anything else.
 
     The two directions are NOT symmetric, and HOW asymmetric depends on the
     marketplace — which is why the adapter declares it via `RESUME_RESUBMITS`
@@ -542,13 +678,20 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
     logs.write_intent(run_id, dry_run=dry_run, campaign_id=campaign_id,
                       what="status", old=current, new=target)
 
+    if not_automatable:
+        refused = f"campaign is not automatable — {not_automatable}"
+        logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
+                             passed=False, reason=refused)
+        _refused(outcome, refused)
+        return False
     if current == target:
         already = f"the campaign is already {STATE_WORDS.get(target, target)}"
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id, passed=False,
                              reason=already, level="debug")
         _refused(outcome, already, noop=True)
         return False
-    reason = status_transition_denied(current, target, allow_draft=allow_draft)
+    reason = status_transition_denied(current, target, allow_draft=allow_draft,
+                                      hold_reason=hold_reason)
     if reason:
         logs.write_guardrail(run_id, dry_run=dry_run, campaign_id=campaign_id,
                              passed=False, reason=reason)
@@ -579,7 +722,7 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
         logs.status_overwrites(run_id, dry_run=dry_run, campaign_id=campaign_id,
                                fields=overwrites)
 
-    was = STATE_WORDS.get(current, current)
+    was = state_words(current, hold_reason)
     if dry_run:
         # Same values the live branch reports. A dry run that says only "would
         # apply" tells a reviewer nothing about WHAT it would apply.
@@ -599,6 +742,19 @@ async def apply_status(adapter, client, *, run_id, campaign_id, target, current,
                           new=_status_words(target, budget), reason=str(e))
         _refused(outcome, str(e))
         return False
+    except WriteUnverified as e:
+        ok = await verify_status(adapter, client, run_id=run_id, campaign_id=campaign_id,
+                                 target=target, why=str(e))
+        why = None if ok else f"{e}; and the campaign did not change"
+        logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
+                          subject="the campaign", old=was,
+                          new=_status_words(target, budget), reason=why)
+        if ok:
+            _record(applied, adapter, "status", campaign_id=campaign_id, value=target,
+                    budget=budget)
+        else:
+            _refused(outcome, why)
+        return ok
     ok = bool(resp.get("status") or resp.get("success"))
     logs.write_result(run_id, dry_run=False, campaign_id=campaign_id, applied=ok,
                       subject="the campaign", old=was,

@@ -1,13 +1,17 @@
 /**
- * How a `cm_run_log` row reads, shared by every surface that shows one: the Execution
- * logs, the campaign drawer's recent activity, and the header's status summary. One
- * vocabulary, so the same row never reads three ways on one page.
+ * How a `cm_run_log` row reads, shared by every surface that shows one: Ad Automation's
+ * Execution logs, its campaign drawer and status summary, One-time Ops' Recent operations,
+ * and the inline outcomes on both pages. One vocabulary, so the same row never reads two
+ * ways — in lib/ rather than a feature because features may not import each other.
  */
 
 export const KIND_LABEL = {
 	budget: "Budget change",
 	bid: "Bid change",
 	activation: "Start / stop",
+	// The engine's ad-wallet note (C12) — a warning with no campaign, written at most every
+	// 6h while a prepaid wallet (Zepto) runs low. Never a write.
+	wallet: "Ad wallet",
 };
 
 /**
@@ -30,13 +34,18 @@ const OUTCOME = {
 	"bid:bounds": "Bid brought within limits",
 	"bid:relax": "Target relaxed",
 	"bid:no-op": "Rank held",
-	"bid:hold": "Waiting for the last change",
+	// Two kinds of hold write this: waiting for the last change to show up in search, and
+	// Zepto's out-of-stock rest (campaign_manager/rotation.py). "Bid held" is true of both;
+	// the row's reason says which.
+	"bid:hold": "Bid held",
 	"bid:skip": "Bid not changed",
 	"bid:error": "Could not check or change",
 	"activation:apply": "Campaign started or stopped",
 	"activation:skip": "Start / stop not applied",
 	"activation:no-op": "Already in that state",
 	"activation:error": "Could not start or stop",
+	"wallet:warn": "Ad wallet running low",
+	"wallet:error": "Ad wallet empty",
 };
 
 // Lifecycle rows (backend lifecycle.py) carry the same action whatever the kind.

@@ -59,7 +59,30 @@ _REASON_TEXT = {
     "timeout": "ran past its time limit and was stopped",
     "runner_died": "the runner was killed while this was running",
     "interrupted": "was stopped when the runner shut down",
+    "runner_lost_track": "the runner lost track of it (a database hiccup) — freed so the next run can go",
+    "stuck_past_timeout": "stayed open long past its time limit and was released",
+    "runner_error": "the runner hit an error handling it — nothing may have run",
 }
+
+# ── Stuck-job protection (2026-09-25) ────────────────────────────────────────
+#
+# On 2026-09-24 one Dobra bid job was claimed, then the write that records its start failed
+# during a pooler outage. The task died silently, the row stayed `running` with no argv, and
+# the overlap guard refused every bid fire for ~8 h until a restart. Three defences:
+#   * every write to a job row is retried (`_job_write`), and a job whose handling fails
+#     anyway is marked failed — never left `running`;
+#   * a failed claim is logged and retried next poll instead of killing the runner;
+#   * `_self_check` re-examines this process's `running` rows every few minutes and fails
+#     the ones nothing is driving any more (see `job_queue.orphan_verdicts`).
+
+# Jobs THIS process is driving right now — the ground truth the self-check compares the
+# queue against. Added when a job's task starts, removed when it ends, however it ends.
+_ACTIVE: set[uuid.UUID] = set()
+
+_JOB_WRITE_WAITS_S = (1.0, 3.0, 10.0)   # between tries of a job-row write (4 tries, ~14 s)
+_SELF_CHECK_EVERY_S = 180.0             # how often the running runner re-checks its rows
+_ORPHAN_GRACE_S = 120.0                 # claim → task registered; never judge a row younger
+_TIMEOUT_MARGIN_S = 600.0               # past a type's own limit before "stuck" is declared
 
 # Tenant names for log lines, cached for the process lifetime — a UUID tells a human
 # nothing, and names effectively never change.
@@ -241,7 +264,61 @@ async def _supervise(proc, timeout_s: int, shutdown: asyncio.Event) -> tuple[int
                 return proc.returncode, peak, False, True
 
 
+async def _job_write(label: str, fn):
+    """Run one job-row write on a fresh session, retrying a transient DB failure.
+
+    A job row is the queue's only record that a job exists, so losing a write to a pooler
+    blip is what strands it. Four tries over ~14 s; the last failure propagates."""
+    for attempt, wait in enumerate((*_JOB_WRITE_WAITS_S, None)):
+        try:
+            async with AsyncSessionLocal() as db:
+                return await fn(db)
+        except Exception as e:
+            if wait is None:
+                raise
+            logger.warning(f"{label}: database write failed ({e}) — retry "
+                           f"{attempt + 1}/{len(_JOB_WRITE_WAITS_S)} in {wait:g}s")
+            await asyncio.sleep(wait)
+
+
+def _timeout_for(job_type: str) -> int | None:
+    """A job type's time limit in seconds, or None for a type this runner does not know."""
+    try:
+        return settings.JOB_TIMEOUT_OVERRIDES.get(job_type, spec_for(job_type).timeout_s)
+    except ValueError:
+        return None
+
+
 async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
+    """Drive one claimed job to a recorded outcome — whatever goes wrong on the way.
+
+    `_drive_job` does the work. Anything it raises means the job's handling broke part-way
+    (almost always a DB write that failed even after retries), and the row is then marked
+    failed here so the overlap guard frees up. If even that write fails, the job leaves
+    `_ACTIVE` regardless, and `_self_check` fails the row within minutes."""
+    _ACTIVE.add(job.id)
+    try:
+        await _drive_job(job, shutdown)
+    except Exception as e:
+        short = str(job.id)[:8]
+        err = f"runner_error: {e}"[:500]
+        bound = logger.bind(job_id=str(job.id), job_type=job.job_type,
+                            tenant_id=str(job.tenant_id) if job.tenant_id else None,
+                            lane=job.lane.value, error="runner_error")
+        try:
+            await _job_write(f"job {short} failed-mark", lambda db: job_queue.complete(
+                db, job.id, JobStatus.failed, error=err))
+            bound.error(f"{label_for(job.job_type)} · the runner hit an error handling it "
+                        f"({e}) — marked failed so the next run is not blocked · job {short}")
+        except Exception as e2:
+            bound.error(f"{label_for(job.job_type)} · the runner hit an error handling it "
+                        f"({e}) and could not record that ({e2}) — the self-check will "
+                        f"release it within {_SELF_CHECK_EVERY_S / 60:.0f} min · job {short}")
+    finally:
+        _ACTIVE.discard(job.id)
+
+
+async def _drive_job(job: Job, shutdown: asyncio.Event) -> None:
     """Execute one claimed job as a subprocess and record its outcome."""
     # Resolving the type and building the argv happen AFTER the claim, so a failure here
     # must fail the job explicitly. Letting it raise strands the row in `running` with no
@@ -261,14 +338,18 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
         timeout_s = settings.JOB_TIMEOUT_OVERRIDES.get(job.job_type, spec.timeout_s)
         args = spec.build_args(job.tenant_id, job.params or {})
     except Exception as e:
-        async with AsyncSessionLocal() as db:
-            await job_queue.complete(db, job.id, JobStatus.failed, error=f"unresolvable: {e}")
+        unresolvable = f"unresolvable: {e}"
+        await _job_write(f"job {short} unresolvable", lambda db: job_queue.complete(
+            db, job.id, JobStatus.failed, error=unresolvable))
+        from jobs.types import MissingMarketplace
+        why = (f"it names no marketplace, and campaign-manager jobs never guess one ({e})"
+               if isinstance(e, MissingMarketplace) else
+               f"this runner has no code for job type '{job.job_type}'. Something newer "
+               f"enqueued it, so this box is probably behind main")
         logger.bind(job_id=str(job.id), job_type=job.job_type,
                     tenant_id=str(job.tenant_id) if job.tenant_id else None,
                     lane=job.lane.value, error=f"unresolvable: {e}").error(
-            f"{desc} · COULD NOT START — this runner has no code for job type "
-            f"'{job.job_type}'. Something newer enqueued it, so this box is probably "
-            f"behind main. Nothing ran. · job {short}")
+            f"{desc} · COULD NOT START — {why}. Nothing ran. · job {short}")
         return
     # shlex.join so a value containing spaces (e.g. --city "delhi ncr") is recorded
     # unambiguously and stays copy-pasteable. The subprocess itself gets an argv
@@ -276,8 +357,8 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     argv = shlex.join([sys.executable, "-m", "cli", *args])
     log_path = _log_path_for(job)
 
-    async with AsyncSessionLocal() as db:
-        await job_queue.mark_started(db, job.id, argv, str(log_path))
+    await _job_write(f"job {short} start", lambda db: job_queue.mark_started(
+        db, job.id, argv, str(log_path)))
 
     logger.info(f"{desc} · started · {job.lane.value} lane · job {short}")
 
@@ -296,15 +377,27 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
             )
         except Exception as e:
             f.write(f"\n# runner failed to spawn: {e}\n")
-            async with AsyncSessionLocal() as db:
-                await job_queue.complete(db, job.id, JobStatus.failed, error=f"spawn_failed: {e}")
+            spawn_err = f"spawn_failed: {e}"
+            await _job_write(f"job {short} spawn-failure", lambda db: job_queue.complete(
+                db, job.id, JobStatus.failed, error=spawn_err))
             logger.bind(job_id=str(job.id), job_type=job.job_type,
                         tenant_id=str(job.tenant_id) if job.tenant_id else None,
                         lane=job.lane.value, error=f"spawn_failed: {e}").error(
                 f"{desc} · COULD NOT START — the runner failed to launch the command: "
                 f"{e} · job {short}")
             return
-        returncode, peak, timed_out, interrupted = await _supervise(proc, timeout_s, shutdown)
+        try:
+            returncode, peak, timed_out, interrupted = await _supervise(
+                proc, timeout_s, shutdown)
+        except BaseException:
+            # Supervision broke (or this task was cancelled) with the child still running.
+            # Kill it rather than leave an unsupervised process holding the job's work.
+            if proc.returncode is None:
+                if psutil:
+                    _kill_tree(proc.pid)
+                else:
+                    proc.kill()
+            raise
         f.write(f"\n# exit {returncode} · peak {peak} MB · "
                 f"{'timeout' if timed_out else 'interrupted' if interrupted else 'done'}\n")
 
@@ -315,9 +408,8 @@ async def _run_job(job: Job, shutdown: asyncio.Event) -> None:
     else:
         status, error = JobStatus.failed, _classify_failure(returncode, timed_out, interrupted)
 
-    async with AsyncSessionLocal() as db:
-        await job_queue.complete(db, job.id, status, exit_code=returncode,
-                                 error=error, peak_rss_mb=peak)
+    await _job_write(f"job {short} result", lambda db: job_queue.complete(
+        db, job.id, status, exit_code=returncode, error=error, peak_rss_mb=peak))
 
     # On failure, read back the end of the child's own log. See _tail_lines: this is
     # the ONLY way the reason can reach this process, and it is what the alert email
@@ -373,13 +465,22 @@ async def _consume(shutdown: asyncio.Event, lane_slots: dict[str, int] | None = 
         for lane in Lane:
             slots = lane_slots.get(lane.value, 0)
             while len(active[lane]) < slots and not shutdown.is_set():
-                async with AsyncSessionLocal() as db:
-                    job = await job_queue.claim_one(db, lane, WORKER_ID)
+                # A DB error here used to propagate and kill the runner (2026-09-24).
+                # Logged and retried at the next poll instead. If the claim committed
+                # but the row never came back, the self-check releases it.
+                try:
+                    async with AsyncSessionLocal() as db:
+                        job = await job_queue.claim_one(db, lane, WORKER_ID)
+                except Exception as e:
+                    logger.error(f"could not claim from the {lane.value} lane ({e}) — "
+                                 f"retrying at the next poll")
+                    break
                 if job is None:
                     break
                 task = asyncio.create_task(_run_job(job, shutdown))
                 active[lane].add(task)
                 task.add_done_callback(active[lane].discard)
+                task.add_done_callback(_log_task_crash)
         try:
             await asyncio.wait_for(shutdown.wait(), timeout=settings.RUNNER_POLL_SECONDS)
         except asyncio.TimeoutError:
@@ -389,6 +490,45 @@ async def _consume(shutdown: asyncio.Event, lane_slots: dict[str, int] | None = 
     if inflight:
         logger.info(f"shutdown: draining {len(inflight)} in-flight job(s)…")
         await asyncio.gather(*inflight, return_exceptions=True)
+
+
+def _log_task_crash(task: asyncio.Task) -> None:
+    """Say so when a job task dies with an exception. `_run_job` catches everything, so
+    this should never fire — it exists so that if it ever does, the death is an ERROR in
+    the log (and an alert) instead of a silent "Task exception was never retrieved"."""
+    if task.cancelled():
+        return
+    exc = task.exception()
+    if exc is not None:
+        logger.error(f"a job task crashed unexpectedly: {exc!r}")
+
+
+async def _self_check(shutdown: asyncio.Event) -> None:
+    """Every few minutes, fail this runner's `running` rows that nothing is driving.
+
+    The startup reaper only helps after a restart, and only when the old runner's PID is
+    gone. This covers a LIVE runner that lost a job — the 2026-09-24 case — so the overlap
+    guard frees within minutes instead of at the next restart."""
+    while not shutdown.is_set():
+        try:
+            await asyncio.wait_for(shutdown.wait(), timeout=_SELF_CHECK_EVERY_S)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            async with AsyncSessionLocal() as db:
+                released = await job_queue.fail_orphans(
+                    db, WORKER_ID, set(_ACTIVE), grace_s=_ORPHAN_GRACE_S,
+                    timeout_for=_timeout_for, margin_s=_TIMEOUT_MARGIN_S)
+        except Exception as e:
+            logger.warning(f"self-check could not read the queue ({e}) — trying again later")
+            continue
+        for job, why in released:
+            logger.bind(job_id=str(job.id), job_type=job.job_type,
+                        tenant_id=str(job.tenant_id) if job.tenant_id else None,
+                        lane=job.lane.value, error=why).error(
+                f"{label_for(job.job_type)} · released a stuck job — "
+                f"{_REASON_TEXT.get(why, why)} · job {str(job.id)[:8]}")
 
 
 # Campaign-manager lanes — the only lanes a `--only-cm` runner serves. `interactive`
@@ -432,6 +572,7 @@ async def run(only_cm: bool = False) -> None:
     await asyncio.gather(
         run_producer(shutdown, job_type_prefix=prefix, force=only_cm),
         _consume(shutdown, lane_slots),
+        _self_check(shutdown),
     )
     logger.info("runner stopped")
 

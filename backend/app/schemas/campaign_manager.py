@@ -249,6 +249,31 @@ class BidContextOut(BaseModel):
     daily_budget: int | None = None
     pacing_type: str | None = None
     billed_amount: float | None = None
+    # What a bid buys on this marketplace — CPM (Blinkit, per 1,000 impressions) or CPC
+    # (Zepto, per click). The same ₹ figure is very different money, so the form must say.
+    # `keywords[].current_cpm` keeps its old name on both; this field is its unit.
+    unit: Literal["CPM", "CPC"] | None = None
+
+
+class CatalogKeywordOut(BaseModel):
+    """One (campaign, keyword, match_type) the marketplace's catalogue holds — a row of the
+    keyword picker (ZC-E3). No performance numbers: on Zepto there are none per campaign
+    (its keyword metrics are brand grain), so the picker shows the bid and the floor instead.
+    """
+    campaign_id: int
+    campaign_name: str | None = None
+    # Raw status and its meaning, same pair as `CampaignRow` — sort and badge by `state`.
+    status: str | None = None
+    state: str | None = None
+    keyword: str
+    match_type: str
+    # The live bid, in `unit` (CPC on Zepto, CPM on Blinkit), and the marketplace's floor.
+    bid: int | None = None
+    min_bid: int | None = None
+    unit: Literal["CPM", "CPC"] | None = None
+    automatable: bool = True
+    not_automatable_reason: str | None = None
+    scraped_at: datetime | None = None
 
 
 # ── Actions ─────────────────────────────────────────────────────────────────
@@ -270,11 +295,20 @@ class SetActivationIn(BaseModel):
 
 
 class AdvertiserIn(BaseModel):
-    advertiser_id: int
+    # Blinkit: an integer advertiser id. Zepto: the brand UUID (ZC-D5) — the old `int`
+    # refused it, so a Zepto account could never be stored through the API.
+    advertiser_id: int | str
 
 
 class AdvertiserOut(BaseModel):
-    advertiser_id: int | None = None
+    advertiser_id: int | str | None = None
+
+
+class LiveOut(BaseModel):
+    """Whether automations on this marketplace write for real (ZC-D9). Armed from the CLI
+    only (`cm arm -m <marketplace>`) — the switch that spends money is not a button."""
+    marketplace: str
+    live: bool
 
 
 class EnqueuedOut(BaseModel):
@@ -334,6 +368,13 @@ class CmActionOut(BaseModel):
     completed_at: datetime | None = None
 
 
+class CmActionsPage(BaseModel):
+    """One page of recent actions. `has_more` rather than a total: counting an account's
+    whole job history on every two-second poll is exactly what paging is meant to avoid."""
+    items: list[CmActionOut]
+    has_more: bool
+
+
 class RunLogOut(BaseModel):
     model_config = _orm
     id: int
@@ -357,3 +398,24 @@ class RunLogOut(BaseModel):
     dry_run: bool
     success: bool
     timestamp: datetime
+
+
+class OverviewOut(BaseModel):
+    """What the Automations page needs the moment it opens, in ONE request (2026-09-25).
+
+    It used to be five requests fired together — schedules, bid rules, the header's history,
+    the wallet note, the live switch — each holding a pooled API connection, which is how
+    the page could exhaust the pool. Every field is exactly what its own address returns;
+    those addresses remain for the calls that refresh one thing (and for the CLI).
+
+    The activity list is NOT here: it polls every 2 s while a job runs, and folding it in
+    would re-read everything else on every poll.
+    """
+    budget_schedules: list[BudgetScheduleOut]
+    bid_rules: list[BidRuleOut]
+    # Page 1 of History, changes only — what the header's status line reads.
+    history: list[RunLogOut]
+    history_total: int
+    # The newest ad-wallet note (`kind=wallet`), or None — the page's wallet banner.
+    wallet: RunLogOut | None = None
+    live: bool

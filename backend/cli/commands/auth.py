@@ -331,15 +331,22 @@ async def _auth_status(tenant_id: str) -> None:
 
     colours = {"active": "green", "expired": "red", "unknown": "yellow"}
     table = Table(title=f"Platform sessions — tenant {tenant_id}")
-    for col in ("platform", "email", "status", "last login", "last verified", "fails"):
+    for col in ("platform", "email", "status", "last login", "logins 24h", "last verified",
+                "fails"):
         table.add_column(col)
     for r in rows:
         colour = colours.get(r["status"], "yellow")
+        # Every login on a one-session marketplace signs the client out of its dashboard, so
+        # a high count means something keeps losing its session (ZC-C22).
+        n = r.get("logins_24h", 0)
+        logins = (f"[red]{n}[/red]" if n > store.LOGINS_PER_DAY_WARN
+                  else f"[yellow]{n}[/yellow]" if n > 1 else str(n))
         table.add_row(
             r["platform"],
             r["login_email"] or "—",
             f"[{colour}]{r['status']}[/{colour}]",
             str(r["last_login_at"] or "—")[:19],
+            logins,
             str(r["last_validated_at"] or "—")[:19],
             str(r["consecutive_failures"]),
         )

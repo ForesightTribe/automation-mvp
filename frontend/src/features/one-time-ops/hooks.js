@@ -1,15 +1,15 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
-import { invalidateCampaignData } from "../../lib/campaignData";
+import { useAutomationMarketplace } from "../../context/MarketplaceContext";
+import { invalidateRecentActions } from "../../lib/actions";
 import {
 	getCampaigns,
 	setBudgetNow,
 	setActivationNow,
 	refreshCampaigns,
 	getCampaignTargets,
-	getLastVerdict,
-	getJob,
+	getCatalogKeywords,
 } from "./api";
 
 /**
@@ -17,106 +17,95 @@ import {
  *
  * Everything here writes to a LIVE ad account the moment it is called, so nothing is
  * optimistic and nothing is cached as though it succeeded. A write enqueues a job on the
- * VM and returns its id; the truth arrives when that job finishes and the catalogue is
- * re-read.
+ * VM; its progress and its real outcome come from `lib/actions.js`, and the campaign list
+ * is refreshed there when the job finishes.
+ *
+ * Every hook acts on ONE marketplace — the navbar's choice for this page — and carries it
+ * in its cache key, so switching marketplace never shows the other one's rows.
  */
 const CAMPAIGNS = "ots-campaigns";
 
+/** The active client and the page's marketplace; `ready` once both are known. */
+const useScope = () => {
+	const { activeClientId } = useClient();
+	const { marketplace: mp } = useAutomationMarketplace();
+	return { activeClientId, mp, ready: Boolean(activeClientId && mp) };
+};
+
 /** The account's campaigns, over the window the navbar has selected. */
 export const useCampaigns = () => {
-	const { activeClientId } = useClient();
+	const { activeClientId, mp, ready } = useScope();
 	const { days } = useDateRange();
 	return useQuery({
-		queryKey: [CAMPAIGNS, activeClientId, days],
-		queryFn: () => getCampaigns(activeClientId, { days }),
-		enabled: Boolean(activeClientId),
+		queryKey: [CAMPAIGNS, activeClientId, mp, days],
+		queryFn: () => getCampaigns(activeClientId, mp, { days }),
+		enabled: ready,
 		select: (page) => page.items ?? [],
 	});
 };
 
-/** One campaign's targets. Only fetched while its drawer is open. */
+/**
+ * One campaign's targets. Only fetched while its drawer is open.
+ *
+ * Blinkit: its keyword performance over the window. Elsewhere (Zepto): the keywords the
+ * catalogue says the campaign bids on, with the live bid and floor and no performance —
+ * `catalog: true` on each row tells the drawer which columns to draw. The catalogue is one
+ * request for the whole account, cached, then filtered to the campaign.
+ */
 export const useCampaignTargets = (campaignId) => {
-	const { activeClientId } = useClient();
+	const { activeClientId, mp, ready } = useScope();
 	const { days } = useDateRange();
-	return useQuery({
+	const blinkit = mp === "blinkit";
+	const perf = useQuery({
 		queryKey: ["ots-targets", activeClientId, campaignId, days],
 		queryFn: () => getCampaignTargets(activeClientId, campaignId, { days }),
-		enabled: Boolean(activeClientId && campaignId),
+		enabled: Boolean(ready && blinkit && campaignId),
 		select: (page) => page.items ?? [],
 		staleTime: 5 * 60 * 1000,
 	});
+	const catalog = useQuery({
+		queryKey: [CAMPAIGNS, activeClientId, mp, "catalog-keywords"],
+		queryFn: () => getCatalogKeywords(activeClientId, mp),
+		enabled: Boolean(ready && !blinkit && campaignId),
+		staleTime: 5 * 60 * 1000,
+	});
+	if (blinkit) return perf;
+	return {
+		...catalog,
+		data: (catalog.data ?? [])
+			.filter((k) => k.campaign_id === campaignId)
+			.map((k) => ({
+				...k,
+				target: k.keyword,
+				target_type: "keyword",
+				catalog: true,
+			})),
+	};
 };
 
 /**
- * Poll one enqueued job until it settles.
- *
- * ⚠️ On success the campaign list is invalidated, not patched. What the account now says
- * is the only reliable answer: the VM applies its own guardrails (terminal states, budget
- * bounds, rate limits) against a fresh read, so a job can succeed having done something
- * other than exactly what was asked.
+ * A write that enqueues a job. On success it tells the operations list AT ONCE — the job row
+ * exists before the request returns, and without this the list kept its old all-finished
+ * state and never started polling (see `invalidateRecentActions`).
  */
-export const useJob = (jobId, { onSettled } = {}) => {
-	const { activeClientId } = useClient();
+const useEnqueue = (mutationFn) => {
+	const { activeClientId, mp } = useScope();
 	const qc = useQueryClient();
-	return useQuery({
-		queryKey: ["ots-job", activeClientId, jobId],
-		queryFn: async () => {
-			const job = await getJob(activeClientId, jobId);
-			if (job.status === "success" || job.status === "failed") {
-				// Every screen's campaign data, not just this page's. A budget written
-				// here also changes what Ads Insights divides by — and that page's
-				// utilisation is a RATIO, so a stale denominator reads as a confident
-				// wrong percentage rather than as stale. See lib/campaignData.js.
-				invalidateCampaignData(qc, activeClientId);
-				onSettled?.(job);
-			}
-			return job;
-		},
-		enabled: Boolean(activeClientId && jobId),
-		refetchInterval: (query) => {
-			const s = query.state.data?.status;
-			return s === "success" || s === "failed" ? false : 1500;
-		},
-	});
-};
-
-/**
- * What the engine actually did, read once a job has settled.
- *
- * Polling it before then would report the PREVIOUS action on that campaign, which is
- * worse than saying nothing: it would confirm a change that has not happened yet.
- */
-export const useLastVerdict = (campaignId, enabled) => {
-	const { activeClientId } = useClient();
-	return useQuery({
-		queryKey: ["ots-verdict", activeClientId, campaignId],
-		queryFn: () => getLastVerdict(activeClientId, campaignId),
-		enabled: Boolean(activeClientId && campaignId && enabled),
-		select: (page) => page.items?.[0] ?? null,
-		staleTime: 0,
-		gcTime: 0,
-	});
-};
-
-export const useSetBudget = () => {
-	const { activeClientId } = useClient();
 	return useMutation({
-		mutationFn: ({ campaignId, budget }) =>
-			setBudgetNow(activeClientId, campaignId, budget),
+		mutationFn: (vars) => mutationFn(activeClientId, mp, vars),
+		onSuccess: () => invalidateRecentActions(qc, activeClientId),
 	});
 };
 
-export const useSetActivation = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: ({ campaignId, status, budget }) =>
-			setActivationNow(activeClientId, campaignId, status, budget),
-	});
-};
+export const useSetBudget = () =>
+	useEnqueue((clientId, mp, { campaignId, budget }) =>
+		setBudgetNow(clientId, mp, campaignId, budget),
+	);
 
-export const useRefreshCampaigns = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: () => refreshCampaigns(activeClientId),
-	});
-};
+export const useSetActivation = () =>
+	useEnqueue((clientId, mp, { campaignId, status, budget }) =>
+		setActivationNow(clientId, mp, campaignId, status, budget),
+	);
+
+export const useRefreshCampaigns = () =>
+	useEnqueue((clientId, mp) => refreshCampaigns(clientId, mp));

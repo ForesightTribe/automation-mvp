@@ -1,9 +1,12 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
-import { useActiveActionFor, useCampaigns, useTableSort } from "../hooks";
+import { useActiveActionFor } from "../../../lib/actions";
+import { useCampaigns, useTableSort } from "../hooks";
 import { CampaignStateToggle } from "./CampaignStateToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { formatCurrency, formatNumber } from "../../../lib/format";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { bidUnit } from "../../../lib/marketplaces";
 
 const TH =
 	"whitespace-nowrap px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-content-subtle";
@@ -81,7 +84,7 @@ const SortHead = ({ label, sortKey, sort, order, onSort, className = "" }) => {
  * would invite picking five campaigns and then quietly creating one.
  *
  * Columns are everything `/ads/campaigns` actually returns, plus the two that fall
- * out of it by arithmetic (AOV, CPM). The design also asks for a direct/indirect
+ * out of it by arithmetic (AOV, and Avg CPM on Blinkit / Avg CPC on Zepto). The design also asks for a direct/indirect
  * sales split, Reach and New Users Acquired; no endpoint returns those, so they are
  * left out rather than drawn as empty columns. Wide, so it scrolls SIDEWAYS only —
  * see the note on the wrapper about why it must not scroll vertically too.
@@ -94,6 +97,12 @@ export const CampaignPickerList = ({
 	label = "Choose a campaign",
 }) => {
 	const { data: campaigns, isLoading } = useCampaigns();
+	const { marketplace } = useAutomationMarketplace();
+	// The cost column follows what a bid BUYS on this marketplace: per 1,000 impressions on
+	// Blinkit (CPM), per click on Zepto (CPC). Showing Zepto a CPM would compare its bids
+	// with a number it never charges.
+	const unit = bidUnit(marketplace);
+	const perClick = unit.code === "CPC";
 	// A start/stop of this campaign already on its way. The toggle is inert while one is,
 	// so a second click cannot queue a contradictory write behind the first.
 	const activeActionFor = useActiveActionFor();
@@ -113,6 +122,16 @@ export const CampaignPickerList = ({
 		);
 	}, [campaigns, search]);
 
+	/** Avg CPC (spend per click) on a per-click marketplace, else Avg CPM. */
+	const costOf = (c) =>
+		perClick
+			? c.clicks
+				? c.budget_consumed / c.clicks
+				: null
+			: c.impressions
+				? (c.budget_consumed / c.impressions) * 1000
+				: null;
+
 	/** Every column, including the two that fall out of the others by arithmetic. */
 	const ACCESSORS = {
 		name: (c) => c.name ?? "",
@@ -125,8 +144,7 @@ export const CampaignPickerList = ({
 		impressions: (c) => c.impressions,
 		atc: (c) => c.atc,
 		units: (c) => c.quantities_sold,
-		cpm: (c) =>
-			c.impressions ? (c.budget_consumed / c.impressions) * 1000 : null,
+		cost: (c) => costOf(c),
 	};
 	const { sorted, sort, order, onSort } = useTableSort(
 		rows,
@@ -256,8 +274,8 @@ export const CampaignPickerList = ({
 								className="text-right"
 							/>
 							<SortHead
-								label="Avg CPM"
-								sortKey="cpm"
+								label={`Avg ${unit.code}`}
+								sortKey="cost"
 								sort={sort}
 								order={order}
 								onSort={onSort}
@@ -289,35 +307,47 @@ export const CampaignPickerList = ({
 							const aov = c.quantities_sold
 								? c.ad_sales / c.quantities_sold
 								: null;
-							const cpm = c.impressions
-								? (c.budget_consumed / c.impressions) * 1000
-								: null;
+							const cost = costOf(c);
+							// A campaign automations may not touch (Zepto Display / auto-bid) is
+							// listed — someone may be looking for it — but cannot be chosen, and
+							// says why here rather than failing on save.
+							const refused =
+								c.automatable === false
+									? c.not_automatable_reason ||
+										"Automations cannot run on this campaign."
+									: null;
 							// Repeated on the frozen cells so they stay opaque over the scrolling
 							// columns and still follow the row's selected/hover state.
 							const cellBg = selected
 								? "bg-muted"
-								: "bg-card group-hover:bg-muted";
+								: refused
+									? "bg-card"
+									: "bg-card group-hover:bg-muted";
 							return (
 								<tr
 									key={c.campaign_id}
 									role="radio"
-									tabIndex={0}
+									tabIndex={refused ? -1 : 0}
 									aria-checked={selected}
+									aria-disabled={Boolean(refused)}
 									aria-label={c.name}
-									onClick={() => onSelect(c)}
+									title={refused || undefined}
+									onClick={() => !refused && onSelect(c)}
 									onKeyDown={(e) => {
 										if (
-											e.key === "Enter" ||
-											e.key === " "
+											!refused &&
+											(e.key === "Enter" || e.key === " ")
 										) {
 											e.preventDefault();
 											onSelect(c);
 										}
 									}}
-									className={`group cursor-pointer border-b border-border/60 last:border-0 ${
-										selected
-											? "bg-muted shadow-[inset_3px_0_0_0_var(--color-brand)]"
-											: "hover:bg-muted"
+									className={`group border-b border-border/60 last:border-0 ${
+										refused
+											? "cursor-not-allowed text-content-subtle"
+											: selected
+												? "cursor-pointer bg-muted shadow-[inset_3px_0_0_0_var(--color-brand)]"
+												: "cursor-pointer hover:bg-muted"
 									}`}
 								>
 									{/* ⚠️ A radio that is VISIBLE WHEN EMPTY. A tick that only appears
@@ -346,9 +376,20 @@ export const CampaignPickerList = ({
 									    alongside the full name for when this cell truncates. */}
 									<td
 										className={`${TD} ${STICKY_NAME} ${edge} ${cellBg} max-w-[15rem] truncate font-medium`}
-										title={`${c.name} · ID ${c.campaign_id}`}
+										title={`${c.name} · ID ${c.campaign_id}${refused ? ` · ${refused}` : ""}`}
 									>
-										{c.name}
+										<span
+											className={
+												refused ? "opacity-60" : ""
+											}
+										>
+											{c.name}
+										</span>
+										{refused && (
+											<div className="truncate text-[11px] font-normal text-content-subtle">
+												Can&rsquo;t be automated
+											</div>
+										)}
 									</td>
 									<td className={`${TD} text-content-muted`}>
 										{c.type}
@@ -356,9 +397,11 @@ export const CampaignPickerList = ({
 									<td className={TD}>
 										<span
 											className={`rounded-full px-2 py-0.5 text-xs font-medium ${
-												c.status === "ACTIVE"
+												c.state === "running"
 													? "bg-success-soft text-success"
-													: "bg-muted text-content-muted"
+													: c.state === "held"
+														? "bg-warning-soft text-warning"
+														: "bg-muted text-content-muted"
 											}`}
 										>
 											{c.status}
@@ -388,9 +431,9 @@ export const CampaignPickerList = ({
 										{formatNumber(c.quantities_sold)}
 									</td>
 									<td className={NUM}>
-										{cpm == null
+										{cost == null
 											? "—"
-											: formatCurrency(cpm)}
+											: formatCurrency(cost)}
 									</td>
 									<td
 										className={`${TD} ${STICKY_CTRL} ${cellBg} text-center`}
@@ -398,6 +441,8 @@ export const CampaignPickerList = ({
 										<CampaignStateToggle
 											name={c.name}
 											status={c.status}
+											state={c.state}
+											refused={refused}
 											busy={activeActionFor?.({
 												kind: "campaign",
 												campaign_id: c.campaign_id,

@@ -223,10 +223,12 @@ async def close_position_session(session: dict) -> None:
     await live_position.close_session(session)
 
 
-async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -> list[dict]:
+async def fetch_positions(session: dict, keyword: str, lat: float, lon: float, *,
+                          merchant_id: str | None = None) -> list[dict]:
     """Raw search results for (keyword, store) on an open session — one API request, no
     page navigation. The store is selected by the lat/lon HEADERS, so a run spanning
-    several stores costs no more than one at a single store.
+    several stores costs no more than one at a single store. `merchant_id` is accepted
+    for the contract and ignored: the coordinate is how Blinkit picks the store.
 
     Raises when the search could not be performed, so the caller can tell "our ad isn't
     there" (empty list) from "we couldn't look" (error)."""
@@ -235,9 +237,10 @@ async def fetch_positions(session: dict, keyword: str, lat: float, lon: float) -
 
 
 async def read_store_catalog(session: dict, query: str, lat: float, lon: float, *,
-                             cap: int, names) -> dict:
+                             cap: int, names, merchant_id: str | None = None) -> dict:
     """Our products at the store serving (lat, lon), with availability — one capped brand
-    search on the run's open session. A READ. Shape and the `complete` rule: catalog.py."""
+    search on the run's open session. A READ. Shape and the `complete` rule: catalog.py.
+    `merchant_id` is accepted for the contract and ignored: the coordinate picks the store."""
     from campaign_manager.marketplaces.blinkit import catalog
     return await catalog.read(session, query, lat, lon, cap=cap, names=names)
 
@@ -284,28 +287,11 @@ async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
 # `running` / `paused` / `held` / `ended` / `draft`, so a second marketplace only has to
 # supply its own mapping (AD9 of the design; D17 — no abstract base until MP #2).
 
-_STATUS_FROM_BLINKIT = {
-    "ACTIVE": "running",
-    "STOPPED": "paused",        # user-stopped — resumable
-    "ON_HOLD": "held",          # Blinkit-imposed — never ours to clear
-    "COMPLETED": "ended",       # terminal
-    "DRAFT": "draft",           # never launched
-    # TRANSIENT, and it bit us in production on 2026-08-08: for a minute or two after a
-    # RESTART, Blinkit reports the campaign as SCHEDULED before settling to ACTIVE. It is
-    # live (or imminently so), not stopped — so it maps to `running`: we may set its budget
-    # and we may stop it. Treating it as unknown made the engine skip a window-end stop and
-    # leave the campaign spending. Too short-lived to appear in the scraped status table,
-    # which is why the first five values looked like the whole vocabulary.
-    "SCHEDULED": "running",
-}
-
-
-def _canonical(blinkit_status: str | None) -> str | None:
-    """Blinkit's status → ours. An unmapped value returns as-is so the guardrail can
-    refuse it by name rather than silently coercing it to something writable."""
-    if not blinkit_status:
-        return None
-    return _STATUS_FROM_BLINKIT.get(blinkit_status.strip().upper(), blinkit_status)
+# The vocabulary itself lives in `status.py` — pure, so the API can read it without pulling
+# in this module's Playwright import. Re-exported under the names the engines and tests use.
+from campaign_manager.marketplaces.blinkit.status import (  # noqa: E402
+    FROM_BLINKIT as _STATUS_FROM_BLINKIT, canonical as _canonical,
+)
 
 
 async def list_campaigns(client, days: int = 90) -> list[dict]:
@@ -412,10 +398,9 @@ async def read_restart_context(client, campaign_id: int) -> dict:
 # function. An MP-agnostic caller must never know a marketplace's words.
 #
 # ⚠️ A marketplace with no `catalog_patch` gets NO write-back at all, silently and by
-# design. That is how Zepto stays untouched today: not an `if platform == "blinkit"` in
-# the choke point, but an absent attribute. When Zepto's turn comes it defines its own
-# `catalog_patch`, adds its table names to `repo._catalog_model`, and nothing in
-# `writes.py` or the engines changes.
+# design — not an `if platform == "blinkit"` in the choke point, but an absent attribute.
+# Zepto got its own on 2026-09-21 (`zepto/adapter.catalog_patch` + two lines in
+# `repo._catalog_model`) exactly that way: nothing in `writes.py` or the engines changed.
 
 # The inverse of `_STATUS_FROM_BLINKIT`, and deliberately NOT derived from it: that map is
 # many-to-one (`ACTIVE` and the transient `SCHEDULED` both mean `running`), so inverting it

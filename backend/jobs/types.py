@@ -172,9 +172,14 @@ def _instamart(tenant_id, p):
 
 
 
+# Public scrapes are READS of public search, not campaign operations, and stored schedules
+# predate the param — so they keep a Blinkit fallback. The cm.* builders below do not.
+_PUBLIC_DEFAULT_MP = "blinkit"
+
+
 def _public_keyword(tenant_id, p):
     a = ["scrape", "public-run", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", p.get("marketplace") or _PUBLIC_DEFAULT_MP)
     _opt(a, "--city", p.get("city"))
     _opt(a, "--keyword", p.get("keyword"))
     _opt(a, "--cap", p.get("cap"))
@@ -185,7 +190,7 @@ def _public_keyword(tenant_id, p):
 
 def _public_skus(tenant_id, p):
     a = ["scrape", "public-skus", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", p.get("marketplace") or _PUBLIC_DEFAULT_MP)
     _opt(a, "--city", p.get("city"))
     _opt(a, "--brand-cap", p.get("brand_cap"))
     _opt(a, "--workers", p.get("workers"))
@@ -200,20 +205,34 @@ def _public_skus(tenant_id, p):
 #
 # `marketplace` selects the adapter (see campaign_manager/marketplaces/__init__.py).
 #
-# The CLI REQUIRES --marketplace (no default) so a human can never drive the wrong
-# ad account by forgetting a flag. Stored schedules predate that flag, so the builder
-# fills in `_DEFAULT_MP` when a schedule has no marketplace param — every row already
-# in job_schedules keeps running against Blinkit with nothing to rewrite.
+# There is NO default (ZC-D1, 2026-09-24). A cm.* job without a `marketplace` param FAILS
+# instead of running on Blinkit: the CLI requires --marketplace, the reconciler stamps it on
+# every schedule it writes, and the API adds it to every job it queues. The fallback this
+# replaced (`or "blinkit"`) is how an unnamed job could drive Blinkit's account by accident.
+# Checked before removal: all 6 cm.* rows in job_schedules carry `marketplace`.
 #
-# ⚠️ argv is therefore NO LONGER byte-identical to pre-Zepto runs: an old schedule
-# now emits `--marketplace blinkit`. Behaviour is unchanged, and nothing keys on argv
-# (the overlap guard is a DB index on (job_type, tenant_id)) — but a log diff will
-# show it.
-# Named `marketplace`, not `platform`, to match the public scrape job types.
-_DEFAULT_MP = "blinkit"
+# (The queue's overlap guard, `uq_jobs_active`, still COALESCEs a missing marketplace to
+# 'blinkit' inside the index — harmless now that no cm.* job lacks one; changing it needs a
+# migration.) Named `marketplace`, not `platform`, to match the public scrape job types.
+
+
+class MissingMarketplace(ValueError):
+    """A cm.* job with no `marketplace` param. Raised while BUILDING argv, so the runner
+    fails the job before anything starts — never guesses one."""
+
+
+def _cm_marketplace(p) -> str:
+    mp = (p or {}).get("marketplace")
+    if not mp:
+        raise MissingMarketplace(
+            "campaign-manager job has no `marketplace` param — refusing to guess one. Every "
+            "cm.* job must say which ad account it drives.")
+    return mp
+
+
 def _cm_budget_scheduler(tenant_id, p):
     a = ["cm", "budget-scheduler", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--run-id", p.get("run_id"))
     _flag(a, "--live", p.get("live"))
     return a
@@ -221,7 +240,7 @@ def _cm_budget_scheduler(tenant_id, p):
 
 def _cm_bid_optimizer(tenant_id, p):
     a = ["cm", "bid-optimizer", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--run-id", p.get("run_id"))
     _flag(a, "--live", p.get("live"))
     _flag(a, "--reset", p.get("reset"))     # end-of-window de-escalation, not optimization
@@ -230,7 +249,7 @@ def _cm_bid_optimizer(tenant_id, p):
 
 def _cm_reconcile(tenant_id, p):
     a = ["cm", "reconcile", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--run-id", p.get("run_id"))
     _flag(a, "--live", p.get("live"))
     return a
@@ -238,14 +257,14 @@ def _cm_reconcile(tenant_id, p):
 
 def _cm_sync_campaigns(tenant_id, p):
     a = ["cm", "sync-campaigns", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--days", p.get("days"))
     return a
 
 
 def _cm_set_budget(tenant_id, p):
     a = ["cm", "set-budget", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--run-id", p.get("run_id"))
     _opt(a, "--campaign", p.get("campaign"))
     _opt(a, "--budget", p.get("budget"))
@@ -255,7 +274,7 @@ def _cm_set_budget(tenant_id, p):
 
 def _cm_set_bid(tenant_id, p):
     a = ["cm", "set-bid", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--run-id", p.get("run_id"))
     _opt(a, "--campaign", p.get("campaign"))
     _opt(a, "--keyword", p.get("keyword"))
@@ -267,7 +286,7 @@ def _cm_set_bid(tenant_id, p):
 
 def _cm_set_activation(tenant_id, p):
     a = ["cm", "set-activation", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _DEFAULT_MP)
+    _opt(a, "--marketplace", _cm_marketplace(p))
     _opt(a, "--run-id", p.get("run_id"))
     _opt(a, "--campaign", p.get("campaign"))
     _opt(a, "--status", p.get("status"))

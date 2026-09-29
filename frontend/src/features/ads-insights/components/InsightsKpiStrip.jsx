@@ -23,17 +23,17 @@ const formatRoas = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
  */
 const ABOUT = {
 	"Ad Spend":
-		"What Blinkit billed for these ads in the window. It is the platform's own figure from the marketing scrape, so the most recent day keeps moving until that day's scrape lands.",
+		"What the marketplace billed for these ads in the window — each marketplace's own figure, from its ads scrape, so the most recent day keeps moving until that day's scrape lands.",
 	"Ad Revenue":
-		"Sales Blinkit ATTRIBUTES to these ads within its own attribution window. It is not the brand's total sales, and it will not tie out to the sales report.",
-	RoAS: "Ad revenue divided by ad spend. 4x means four rupees of attributed sales for every rupee billed. It inherits Blinkit's attribution, so treat it as a comparison between campaigns rather than a profit figure.",
+		"Sales the marketplace ATTRIBUTES to these ads within its own attribution window. It is not the brand's total sales, and it will not tie out to the sales report.",
+	RoAS: "Ad revenue divided by ad spend. 4x means four rupees of attributed sales for every rupee billed. It inherits the marketplace's attribution, so treat it as a comparison between campaigns rather than a profit figure.",
 	ACoS: "Ad spend as a percentage of ad revenue, the inverse of RoAS. Lower is better: 25% ACoS is the same statement as 4x RoAS.",
 	Impressions:
 		"How many times an ad was shown. It counts placements, not people, so one shopper scrolling a category can produce several.",
 	"Add-to-carts":
-		"Adds to cart Blinkit attributes to these ads. A cart is not an order, so this sits above units sold and the gap between them is abandonment.",
+		"Adds to cart the marketplace attributes to these ads. A cart is not an order, so this sits above units sold and the gap between them is abandonment.",
 	"Units sold":
-		"Units Blinkit attributes to these ads. Multiple units of one SKU in a single order each count.",
+		"Units the marketplace attributes to these ads. Multiple units of one SKU in a single order each count.",
 	"Active campaigns":
 		"Campaigns that delivered at least once in this window. A campaign that exists but never served does not appear here.",
 };
