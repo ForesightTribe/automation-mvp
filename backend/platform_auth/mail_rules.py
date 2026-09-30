@@ -125,6 +125,14 @@ RULES: dict[str, MailRule] = {
         # ⚠️ Do NOT add "blinkit" here. It was here originally and made this rule
         # match brands@blinkit.com — the marketing dashboard's mail — from which a
         # six-digit pattern would happily extract a wrong "OTP".
+        #
+        # 2026-09-29: accounts already migrated to seller.blinkit.com (e.g.
+        # Sereko) get OTP mail from a DIFFERENT sender instead — Blinkit
+        # <no-reply@blinkit.com>, subject "<code> is your OTP from Blinkit Seller
+        # Hub". Not added as a second rule yet: that domain can't be logged into
+        # server-side at all right now (Cloudflare bot management), so a mail
+        # rule for it has nothing to serve. Add it back when that login path
+        # exists — see the note on SELLER_BASE in blinkit/endpoints.py.
         from_contains=("noreply@partnersbiz.com",),
         subject_contains=("your otp for partnersbiz login",),
         subject_required=True,
@@ -136,6 +144,31 @@ RULES: dict[str, MailRule] = {
         initial_delay_seconds=12.0,
         timeout_seconds=150.0,
         notes="partnersbiz.com. 6-digit OTP, expires quickly — read it fast.",
+        verified=True,
+    ),
+    "blinkit_seller_new": MailRule(
+        platform="blinkit_seller_new",
+        secret_kind=SecretKind.OTP,
+        # Real message, verified 2026-09-30 across three separate logins:
+        #   From:    blinkit <no-reply@blinkit.com>
+        #   Subject: "<code> is your OTP from Blinkit Seller Hub"
+        # A DIFFERENT sender from blinkit_seller's noreply@partnersbiz.com — the
+        # two domains' OTP mail does not overlap, so this needs its own rule
+        # rather than a merge.
+        from_contains=("no-reply@blinkit.com",),
+        subject_contains=("is your otp from blinkit seller hub",),
+        subject_required=True,
+        recipient_required=True,
+        body_pattern=r"(?<!\d)(\d{6})(?!\d)",
+        initial_delay_seconds=8.0,
+        timeout_seconds=150.0,
+        notes=(
+            "seller.blinkit.com — accounts Blinkit has migrated off partnersbiz.com "
+            "(e.g. Sereko's kriti.agarwal@foresighttribe.com). Verified against the "
+            "real mailbox 2026-09-30 via three OTP mails during login testing: From "
+            "'blinkit <no-reply@blinkit.com>', Subject 'NNNNNN is your OTP from "
+            "Blinkit Seller Hub'."
+        ),
         verified=True,
     ),
     # ── Planned ───────────────────────────────────────────────────────────────

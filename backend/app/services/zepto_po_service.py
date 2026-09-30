@@ -284,6 +284,9 @@ async def sku_insights(
     short_value = _SHORT_QTY * _UNIT_COST
     closed_ordered = func.sum(ZeptoPOItem.po_qty).filter(~is_open)
     closed_short = func.sum(_SHORT_QTY).filter(~is_open)
+    # Units still owed on OPEN POs — not a shortfall yet, since the PO hasn't
+    # closed. Same "not due" concept as Blinkit's/Instamart's open_units.
+    open_units = func.sum(_SHORT_QTY).filter(is_open)
 
     stmt = (
         select(
@@ -300,6 +303,8 @@ async def sku_insights(
             func.max(ZeptoPO.po_date),
             func.coalesce(closed_ordered, 0),
             func.coalesce(closed_short, 0),
+            func.coalesce(open_units, 0),
+            func.count(func.distinct(ZeptoPOItem.po_id)).filter(is_open),
         )
         .select_from(ZeptoPOItem)
         .join(
@@ -324,17 +329,20 @@ async def sku_insights(
             name=name,
             units_ordered=ordered,
             units_short=round(float(short or 0)),
+            units_not_due=round(float(not_due or 0)),
+            units_received=max(0, round(float(c_ordered or 0) - float(c_short or 0))),
             fill_rate=round((c_ordered - c_short) / c_ordered, 4) if c_ordered else None,
             undelivered_value=round(float(value), 2),
             open_value=round(float(open_value), 2),
             missed_value=round(float(missed_value), 2),
             po_count=pos,
+            open_po_count=open_pos,
             short_po_count=short_pos,
             cities=cities,
             last_ordered=last,
         )
         for (item_id, name, ordered, short, value, open_value, missed_value, pos,
-             short_pos, cities, last, c_ordered, c_short) in rows
+             short_pos, cities, last, c_ordered, c_short, not_due, open_pos) in rows
     ]
     out.sort(key=lambda r: -r.undelivered_value)
     return Page.build(

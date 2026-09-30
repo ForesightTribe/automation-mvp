@@ -38,6 +38,22 @@ MARKETING_SESSION_DAYS_PERSISTENT = 7
 MARKETING_SESSION_DAYS_DEFAULT = 1
 
 # ── Seller dashboard (partnersbiz.com) ───────────────────────────────────────
+# 2026-09-29: Blinkit is migrating seller accounts to seller.blinkit.com
+# individually, not as a single platform-wide cutover — confirmed by Dobra's
+# account (bhanu.na...@...) still logging in successfully here on 2026-09-29
+# 06:10 while Sereko's account (kriti.agarwal@foresighttribe.com) gets
+# {"action":"signup"} from send_otp and 500 "Verification failed" from
+# verify_otp, because that specific account's identity has already been moved
+# to seller.blinkit.com. See platform_auth/marketplaces/blinkit/seller_new.py
+# for that domain's contract, wired 2026-09-30 as a SEPARATE registry slug
+# (blinkit_seller_new) — NOT a swap of this constant, because
+# seller.blinkit.com sits behind Cloudflare bot management that blocks plain
+# httpx entirely, for both login AND data calls (proven 2026-09-30: even a
+# live session's exact browser headers/cookies 403 when replayed over httpx —
+# see seller_new.py). It needs a real browser for everything. Do not repoint
+# SELLER_BASE here — every account still on partnersbiz.com (e.g. Dobra) would
+# break, and this module's plain-httpx approach could never serve the new
+# domain anyway.
 SELLER_BASE = "https://partnersbiz.com"
 
 SELLER_SEND_OTP = "/auth/api/v1/email/send_otp"
@@ -63,6 +79,17 @@ SELLER_SERVICE = "partnersbiz"
 # unless these carry the selected entity. The token alone is not enough.
 SELLER_ENTITY_ID_HEADER = "X-Entity-Id"
 SELLER_ENTITY_TYPE_HEADER = "X-Entity-Type"
+
+# ── Seller dashboard, new domain (seller.blinkit.com) ────────────────────────
+# For accounts already migrated (e.g. Sereko's kriti.agarwal@foresighttribe.com).
+# Confirmed via live DevTools capture 2026-09-29 (send_otp, verify_otp,
+# resolve-account, and one data call — GET /seller-hub/api/app/feed). Not yet
+# usable server-side: see the note on SELLER_BASE above.
+SELLER_BASE_NEW = "https://seller.blinkit.com"
+SELLER_RESOLVE_ACCOUNT = "/seller-hub/api/org/resolve-account"
+SELLER_API_KEY_NEW = "0d0b54c3-8d3a-48fc-a433-1648b22e7e8d"
+SELLER_APP_CLIENT_NEW = "seller-dashboard-web"
+SELLER_SELLER_ID_HEADER = "x-gr-seller-id"
 
 USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "

@@ -13,6 +13,14 @@ card on an account-selection screen; that selection is *pure client state*
 X-Entity-Type by the app's axios interceptor. Verified 2026-08-04: /v1/* returns
 403 "ERROR_CODE:11 Unauthorised" without those headers and 200 with them, so the
 token alone is not a complete credential — the entity is part of it.
+
+⚠️ 2026-09-29: this only covers accounts still on partnersbiz.com. Blinkit is
+migrating seller accounts to seller.blinkit.com individually (confirmed via
+Dobra's account still working here while Sereko's account has already moved —
+see the note on SELLER_BASE in endpoints.py). Do not repoint this module at the
+new domain wholesale; it needs a browser-based login (Cloudflare bot management
+blocks plain httpx there), and most accounts — Dobra included — are still fine
+right here.
 """
 import json
 from datetime import timedelta

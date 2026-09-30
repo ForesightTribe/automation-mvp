@@ -188,7 +188,9 @@ def login(
 ) -> None:
     """Log in to a marketplace dashboard and store the session.
 
-    No browser is launched for either Blinkit dashboard — login is HTTP only.
+    HTTP only for every platform except blinkit_seller_new, which drives a
+    real (headless) browser — seller.blinkit.com sits behind Cloudflare bot
+    management that blocks plain HTTP entirely, login and data calls alike.
     """
     asyncio.run(_login(platform, tenant_id, email, auto))
 

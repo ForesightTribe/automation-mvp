@@ -15,6 +15,7 @@ are the values already in the table, so nothing needs migrating.
 from platform_auth.errors import PlatformNotWired, UnknownPlatform
 from platform_auth.marketplaces.blinkit import marketing as blinkit_marketing
 from platform_auth.marketplaces.blinkit import seller as blinkit_seller
+from platform_auth.marketplaces.blinkit import seller_new as blinkit_seller_new
 from platform_auth.marketplaces.zepto import console as zepto_console
 from platform_auth.marketplaces.instamart import brand_portal as instamart_portal
 from platform_auth.types import Authenticator, SecretKind
@@ -45,6 +46,27 @@ AUTHENTICATORS: dict[str, Authenticator] = {
         probe=blinkit_seller.probe,
         refresh=blinkit_seller.refresh,
         refreshable=True,
+    ),
+    # Same account family as blinkit_seller, but for accounts Blinkit has
+    # already migrated to seller.blinkit.com (e.g. Sereko). Distinct slug, not
+    # a repoint of blinkit_seller: the old domain still serves most accounts
+    # (Dobra included) and the two need different login mechanics entirely —
+    # plain REST there, browser-only here (Cloudflare bot management blocks
+    # httpx categorically on this domain — see seller_new.py). Wired
+    # 2026-09-30 against the live Sereko account.
+    "blinkit_seller_new": Authenticator(
+        slug="blinkit_seller_new",
+        name="Blinkit Seller (seller.blinkit.com)",
+        marketplace="blinkit",
+        secret_kind=SecretKind.OTP,
+        needs_password=False,          # OTP only, same as blinkit_seller
+        wired=True,
+        start_login=blinkit_seller_new.start_login,
+        complete_login=blinkit_seller_new.complete_login,
+        probe=blinkit_seller_new.probe,
+        # No refresh endpoint has been observed on this domain — see the
+        # module docstring. ensure() falls back to a full (browser) login.
+        refreshable=False,
     ),
     # ONE console, not two: brands.zepto.co.in covers ads and sales alike, so the
     # marketplace needs a single slug where Blinkit needs two.

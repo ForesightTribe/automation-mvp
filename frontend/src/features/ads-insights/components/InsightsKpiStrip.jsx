@@ -7,6 +7,7 @@ import { InfoTooltip } from "../../../components/ui/InfoTooltip";
 import { EChart } from "../../../components/charts/EChart";
 import { miniCompareOption, twoBarOption, SERIES } from "../chartOptions";
 import { usePreviousPerformance, usePreviousRange } from "../hooks";
+import { useMarketplaces } from "../../../context/MarketplaceContext";
 import {
 	formatCurrency,
 	formatDate,
@@ -240,6 +241,12 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 	const cols = useGridColumns();
 	const { data: prev } = usePreviousPerformance(wantPrev);
 	const prevRange = usePreviousRange();
+	// This tile is a BLEND across whatever marketplaces are selected, so it
+	// can only be withheld cleanly when the view is Instamart-only — a mixed
+	// or "all" view still includes Blinkit/Zepto and must keep showing it
+	// exactly as before.
+	const { selected } = useMarketplaces();
+	const instamartOnly = selected?.length === 1 && selected[0] === "instamart";
 
 	const m = (key) => summary?.[key] ?? {};
 	const series = (fn) => performance.map(fn);
@@ -326,9 +333,16 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 	];
 
+	// Filtered only for what renders — `tiles` itself (and Units sold's
+	// definition in it) is untouched, so nothing here is deleted, just not
+	// shown for an Instamart-only view.
+	const visibleTiles = instamartOnly
+		? tiles.filter((t) => t.label !== "Units sold")
+		: tiles;
+
 	return (
 		<div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
-			{tiles.map((t, i) => {
+			{visibleTiles.map((t, i) => {
 				const row = Math.floor(i / cols);
 				return (
 					<Tile
