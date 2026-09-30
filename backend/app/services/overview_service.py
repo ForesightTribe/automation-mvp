@@ -1,12 +1,14 @@
 """Overview-page aggregations that span both data planes. The marketplace
 breakdown reuses the per-window aggregate helpers from analytics_service, scoping
 each metric to a single marketplace."""
+import asyncio
 import uuid
 from datetime import date, timedelta
 
 from sqlalchemy import distinct, func, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import AsyncSessionLocal
 from app.models.zepto_seller import ZeptoGRN, ZeptoPO
 from app.models.blinkit_seller import (
     BlinkitSOH,
@@ -16,6 +18,7 @@ from app.models.blinkit_seller import (
 )
 from app.models.job import JobStatus, ScrapeJob
 from app.models.search import SkuSnapshot
+from app.utils.cache import ttl_cache
 from app.utils.time import now_ist
 from app.services import analytics_service, reference_service, watchlist_service
 from app.services.analytics_service import (
@@ -74,9 +77,14 @@ async def _marketplace_metrics(
     end: date,
     prev_start: date,
     prev_end: date,
+    include_market: bool = True,
 ) -> dict:
     """The metric set for a single (connected) marketplace, current vs previous
-    window. `marketplaces=[slug]` scopes both the private (platform) and public
+    window.
+
+    `include_market=False` drops visibility and average rank. Those are the only
+    two that read `search_listings`, which is by far the largest table here, and
+    a caller showing money has no use for them. `marketplaces=[slug]` scopes both the private (platform) and public
     (mp_slug) queries to just this marketplace.
 
     `data_scope == "public"` means there is no seller-panel integration for this
@@ -86,29 +94,38 @@ async def _marketplace_metrics(
     "not tracked here" apart from "tracked, and happens to be zero."
     """
     mp = [slug]
-    sov, rank = await _market_agg(
-        session, own_brands=own_brands, start=start, end=end, marketplaces=mp
-    )
-    p_sov, p_rank = await _market_agg(
-        session,
-        own_brands=own_brands,
-        start=prev_start,
-        end=prev_end,
-        marketplaces=mp,
-    )
-    metrics = {
-        "visibility": _metric(sov, p_sov),
-        "avg_rank": _metric(rank, p_rank),
-    }
+    metrics: dict = {}
+    if include_market:
+        sov, rank = await _market_agg(
+            session, own_brands=own_brands, start=start, end=end, marketplaces=mp
+        )
+        p_sov, p_rank = await _market_agg(
+            session,
+            own_brands=own_brands,
+            start=prev_start,
+            end=prev_end,
+            marketplaces=mp,
+        )
+        metrics = {
+            "visibility": _metric(sov, p_sov),
+            "avg_rank": _metric(rank, p_rank),
+        }
     if data_scope != "full":
         return metrics
 
-    rev, units, _ = await _sales_agg(
+    rev, units, skus = await _sales_agg(
         session, tenant_id=tenant_id, start=start, end=end, marketplaces=mp
     )
-    p_rev, p_units, _ = await _sales_agg(
+    p_rev, p_units, p_skus = await _sales_agg(
         session, tenant_id=tenant_id, start=prev_start, end=prev_end, marketplaces=mp
     )
+    # No sales rows at all means the feed has not landed for this window, which
+    # is a different fact from a window that sold nothing. `skus` counts the
+    # rows behind the sums, so it separates the two without another query.
+    if not skus:
+        rev = units = None
+    if not p_skus:
+        p_rev = p_units = None
     spend, _, ad_sales = await _ads_agg(
         session, tenant_id=tenant_id, start=start, end=end, marketplaces=mp
     )
@@ -130,6 +147,7 @@ async def _marketplace_metrics(
     return metrics
 
 
+@ttl_cache(10 * 60)
 async def get_marketplace_breakdown(
     session: AsyncSession,
     *,
@@ -138,6 +156,7 @@ async def get_marketplace_breakdown(
     end: date,
     prev_start: date,
     prev_end: date,
+    include_market: bool = True,
 ) -> list[dict]:
     """One row per marketplace. Marketplaces THIS tenant has real data for carry
     metrics; the rest are returned bare (connected=False, metrics None) so the UI
@@ -155,34 +174,52 @@ async def get_marketplace_breakdown(
     )
     tenant_platforms = await _tenant_marketplace_data(session, tenant_id=tenant_id)
 
-    rows: list[dict] = []
-    for mp in marketplaces:
-        connected = mp["connected"] and mp["slug"] in tenant_platforms
-        row = {
+    rows = [
+        {
             "slug": mp["slug"],
             "name": mp["name"],
             "color": mp["color"],
-            "connected": connected,
+            "connected": mp["connected"] and mp["slug"] in tenant_platforms,
             "data_scope": mp["data_scope"],
         }
-        if connected:
-            row.update(
-                await _marketplace_metrics(
-                    session,
-                    tenant_id=tenant_id,
-                    slug=mp["slug"],
-                    data_scope=mp["data_scope"],
-                    own_brands=own,
-                    start=start,
-                    end=end,
-                    prev_start=prev_start,
-                    prev_end=prev_end,
+        for mp in marketplaces
+    ]
+
+    # ⚠️ The marketplaces are measured CONCURRENTLY, each on its own session.
+    #
+    # The cost here is round trips, not query time: one day's figures take ~28
+    # statements against a remote database, and almost all of each statement's
+    # ~230ms is the wire. Run in sequence they add up; run together they cost
+    # about one of them.
+    #
+    # A session cannot be shared across concurrent tasks, so each takes its own
+    # connection. The semaphore bounds that to the marketplace count rather than
+    # letting it grow with anything else, and `DB_POOL_SIZE` (4 by default, no
+    # overflow) is what it draws from — over that, tasks queue rather than fail,
+    # so the worst case is the sequential timing this replaces.
+    async def measure(row: dict) -> None:
+        row.update(
+            await _marketplace_metrics(
+                session,
+                        tenant_id=tenant_id,
+                        slug=row["slug"],
+                        data_scope=row["data_scope"],
+                        own_brands=own,
+                        start=start,
+                        end=end,
+                        prev_start=prev_start,
+                        prev_end=prev_end,
+                        include_market=include_market,
+                    )
                 )
-            )
-        rows.append(row)
+
+    for row in rows:
+        if row["connected"]:
+            await measure(row)
     return rows
 
 
+@ttl_cache(10 * 60)
 async def get_marketplace_trends(
     session: AsyncSession,
     *,

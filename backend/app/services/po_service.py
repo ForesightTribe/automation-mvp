@@ -5,6 +5,7 @@ explicit-only, same convention as `scorecard_service._platform`: leaving it
 unset keeps every existing Blinkit caller unaffected, and Instamart is never
 auto-detected. See `instamart_po_service` for what it can't carry that
 Blinkit's PO data can (booking slots, a separate delivery date, city)."""
+import asyncio
 import uuid
 from datetime import date, datetime, timedelta
 
@@ -15,7 +16,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import Pagination
 from app.models.blinkit_seller import BlinkitPO, BlinkitPOItem, BlinkitPOSnapshot
 from app.models.zepto_seller import ZeptoPO, ZeptoPOItem
+from app.core.database import AsyncSessionLocal
 from app.schemas.common import Page
+from app.utils.cache import ttl_cache
 from app.schemas.purchase_order import (
     POStateCount,
     PODetailOut,
@@ -407,6 +410,7 @@ async def _zepto_po_figures(
     }
 
 
+@ttl_cache(10 * 60)
 async def insights_by_marketplace(
     session: AsyncSession,
     *,
@@ -426,101 +430,127 @@ async def insights_by_marketplace(
     out — nothing ordered and no orders tracked are different facts.
     """
     all_marketplaces = await reference_service.list_marketplaces(session)
-    out: list[dict] = []
-    for mp in all_marketplaces:
-        # ⚠️ Only the marketplaces this module can actually read separately.
-        # Every OTHER branch here tests for "instamart" and falls through to the
-        # Blinkit tables, so an unlisted slug would return BLINKIT's purchase
-        # orders under its name. Zepto gets its own reader above.
-        if mp["slug"] not in ("blinkit", "instamart", "zepto") or not mp["connected"]:
-            continue
-        if marketplaces is not None and mp["slug"] not in marketplaces:
-            continue
-
-        if mp["slug"] == "zepto":
-            now = await _zepto_po_figures(
-                session, tenant_id=tenant_id, start=start, end=end
-            )
-            before = (
-                await _zepto_po_figures(
-                    session, tenant_id=tenant_id, start=prev_start, end=prev_end
-                )
-                if prev_start and prev_end
-                else {}
-            )
-            if not now["po_value"]:
-                continue
-            p_value = before.get("po_value")
-            out.append(
-                {
-                    "slug": mp["slug"],
-                    "name": mp["name"],
-                    "color": mp["color"],
-                    "connected": True,
-                    "po_value": {
-                        "value": now["po_value"],
-                        "prev": p_value,
-                        "delta_pct": (
-                            (now["po_value"] - p_value) / p_value
-                            if p_value
-                            else None
-                        ),
-                    },
-                    "fill_rate": {
-                        "value": now["fill_rate"],
-                        "prev": before.get("fill_rate"),
-                        "delta_pct": None,
-                    },
-                    "value_at_risk": now["value_at_risk"],
-                    "value_missed": now["value_missed"],
-                    "open_pos": now["open_pos"],
-                    "closed_pos": now["closed_pos"],
-                }
-            )
-            continue
-        summary = await insights_summary(
+    async def for_marketplace(mp: dict) -> dict | None:
+        return await _one_marketplace(
             session,
-            tenant_id=tenant_id,
-            start=start,
-            end=end,
-            prev_start=prev_start,
-            prev_end=prev_end,
-            marketplace=mp["slug"],
+            mp=mp,
+                    tenant_id=tenant_id,
+                    start=start,
+                    end=end,
+                    prev_start=prev_start,
+                    prev_end=prev_end,
+                    marketplaces=marketplaces,
+                )
+
+    done = [await for_marketplace(mp) for mp in all_marketplaces]
+    return [r for r in done if r]
+
+
+async def _one_marketplace(
+    session: AsyncSession,
+    *,
+    mp: dict,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    prev_start: date | None,
+    prev_end: date | None,
+    marketplaces: list[str] | None,
+) -> dict | None:
+    """One marketplace's PO figures, or None where it has no orders."""
+    # ⚠️ Only the marketplaces this module can actually read separately.
+    # Every OTHER branch here tests for "instamart" and falls through to the
+    # Blinkit tables, so an unlisted slug would return BLINKIT's purchase
+    # orders under its name. Zepto gets its own reader above.
+    if mp["slug"] not in ("blinkit", "instamart", "zepto") or not mp["connected"]:
+        return None
+    if marketplaces is not None and mp["slug"] not in marketplaces:
+        return None
+
+    if mp["slug"] == "zepto":
+        now = await _zepto_po_figures(
+            session, tenant_id=tenant_id, start=start, end=end
         )
-        if not summary.po_value and not summary.closed_pos:
-            continue
-        out.append(
+        before = (
+            await _zepto_po_figures(
+                session, tenant_id=tenant_id, start=prev_start, end=prev_end
+            )
+            if prev_start and prev_end
+            else {}
+        )
+        if not now["po_value"]:
+            return None
+        p_value = before.get("po_value")
+        return (
             {
                 "slug": mp["slug"],
                 "name": mp["name"],
                 "color": mp["color"],
                 "connected": True,
                 "po_value": {
-                    "value": summary.po_value,
-                    "prev": summary.prev_po_value,
-                    "delta_pct": summary.po_value_delta,
+                    "value": now["po_value"],
+                    "prev": p_value,
+                    "delta_pct": (
+                        (now["po_value"] - p_value) / p_value
+                        if p_value
+                        else None
+                    ),
                 },
                 "fill_rate": {
-                    # Stored as a fraction; the table reads percentages.
-                    "value": (
-                        None
-                        if summary.fill_rate is None
-                        else summary.fill_rate * 100
-                    ),
-                    "prev": (
-                        None
-                        if summary.prev_fill_rate is None
-                        else summary.prev_fill_rate * 100
-                    ),
-                    "delta_pct": summary.fill_rate_delta,
+                    "value": now["fill_rate"],
+                    "prev": before.get("fill_rate"),
+                    # The same helper the other marketplaces use, so one row's
+                    # change cannot mean something different from the next's.
+                    "delta_pct": _delta(now["fill_rate"], before.get("fill_rate")),
                 },
-                "value_at_risk": summary.value_at_risk,
-                "value_missed": summary.value_missed,
-                "open_pos": summary.open_pos,
-                "closed_pos": summary.closed_pos,
+                "value_at_risk": now["value_at_risk"],
+                "value_missed": now["value_missed"],
+                "open_pos": now["open_pos"],
+                "closed_pos": now["closed_pos"],
             }
-        )
-    return out
+    )
+    summary = await insights_summary(
+        session,
+        tenant_id=tenant_id,
+        start=start,
+        end=end,
+        prev_start=prev_start,
+        prev_end=prev_end,
+        marketplace=mp["slug"],
+    )
+    if not summary.po_value and not summary.closed_pos:
+        return None
+    return (
+        {
+            "slug": mp["slug"],
+            "name": mp["name"],
+            "color": mp["color"],
+            "connected": True,
+            "po_value": {
+                "value": summary.po_value,
+                "prev": summary.prev_po_value,
+                "delta_pct": summary.po_value_delta,
+            },
+            "fill_rate": {
+                # Stored as a fraction; the table reads percentages.
+                "value": (
+                    None
+                    if summary.fill_rate is None
+                    else summary.fill_rate * 100
+                ),
+                "prev": (
+                    None
+                    if summary.prev_fill_rate is None
+                    else summary.prev_fill_rate * 100
+                ),
+                "delta_pct": summary.fill_rate_delta,
+            },
+            "value_at_risk": summary.value_at_risk,
+            "value_missed": summary.value_missed,
+            "open_pos": summary.open_pos,
+            "closed_pos": summary.closed_pos,
+        }
+    )
 
 
 async def insights(

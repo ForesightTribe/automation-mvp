@@ -59,36 +59,40 @@ const Row = ({ label, value, delta, unit, note, valueTone, invert }) => (
 
 export const PoPanel = () => {
 	const { data, isLoading, error, refetch } = usePoSummary();
-	const { data: byChannel } = usePoByMarketplace();
+	const { data: byChannel, isPending: channelsPending } =
+		usePoByMarketplace();
 
 	// ⚠️ `usePoSummary` reads BLINKIT when no marketplace is named, so it
 	// answers ₹0 for a tenant whose POs are on Instamart or Zepto. The headline
 	// is totalled from the per-marketplace rows, which cover every channel.
 	const rows = byChannel ?? [];
-	const sum = (pick) => rows.reduce((t, r) => t + (pick(r) ?? 0), 0);
-	const all = rows.length
+
+	// ⚠️ A purchase order is raised BY a marketplace. Its value, its fill rate
+	// and its delivery cycle all belong to that one channel, so nothing here is
+	// added across them — with several channels in view the table below is the
+	// answer and there is no single figure above it. With one, that channel's
+	// own figures are the account's.
+	const single = rows.length === 1 ? rows[0] : null;
+	const all = single
 		? {
-				po_value: sum((r) => r.po_value?.value),
-				value_at_risk: sum((r) => r.value_at_risk),
-				value_missed: sum((r) => r.value_missed),
-				open_pos: sum((r) => r.open_pos),
-				closed_pos: sum((r) => r.closed_pos),
-				// A rate cannot be added up. With one channel its rate IS
-				// the account's; with several, combining them needs the
-				// quantities behind each, which these rows do not carry — so
-				// it is left unstated and the table below gives it per
-				// channel rather than an average that weighs four closed POs
-				// the same as ninety.
+				po_value: single.po_value?.value ?? 0,
+				value_at_risk: single.value_at_risk,
+				value_missed: single.value_missed,
+				open_pos: single.open_pos,
+				closed_pos: single.closed_pos,
+				// The rows carry a rate in points; this block reads a fraction.
 				fill_rate:
-					rows.length === 1 && rows[0].fill_rate?.value != null
-						? rows[0].fill_rate.value / 100
-						: null,
+					single.fill_rate?.value == null
+						? null
+						: single.fill_rate.value / 100,
 				prev_fill_rate:
-					rows.length === 1 && rows[0].fill_rate?.prev != null
-						? rows[0].fill_rate.prev / 100
-						: null,
+					single.fill_rate?.prev == null
+						? null
+						: single.fill_rate.prev / 100,
 			}
-		: data;
+		: rows.length
+			? null
+			: data;
 
 	// Nothing is known about delivery until a PO closes. With none closed, a
 	// missed value of zero is an absence of evidence, not a perfect record — an
@@ -117,24 +121,26 @@ export const PoPanel = () => {
 					<>
 						<div className="grid grid-cols-1 gap-8 lg:grid-cols-5">
 							<div className="flex flex-col gap-4 lg:col-span-2">
-								<div className="flex flex-col gap-1">
-									<p className="text-[11px] font-semibold tracking-wide text-content-subtle">
-										Purchase Orders
-									</p>
+								<p className="text-[11px] font-semibold tracking-wide text-content-subtle">
+									Purchase Orders
+								</p>
+								{/* Only one channel's own figure is ever shown
+								    here; several are read per row below. */}
+								{all && (
 									<p className="font-display text-3xl font-bold text-content tabular-nums">
 										{formatCurrency(all.po_value)}
 									</p>
-								</div>
+								)}
 							</div>
 
 							{/* Only where there is no channel breakdown below to
 							    carry these per channel. */}
-							{rows.length < 2 && (
+							{!channelsPending && rows.length < 2 && (
 								<div className="flex flex-col lg:col-span-3">
 									<Row
 										label="Fill rate"
 										value={
-											judged && all.fill_rate != null
+											judged && all?.fill_rate != null
 												? `${(all.fill_rate * 100).toFixed(1)}%`
 												: "—"
 										}
@@ -152,7 +158,7 @@ export const PoPanel = () => {
 									<Row
 										label="Open and not yet delivered"
 										value={formatCurrency(
-											all.value_at_risk,
+											all?.value_at_risk,
 										)}
 									/>
 									{(data?.open_states ?? []).map((st) => (
@@ -182,7 +188,7 @@ export const PoPanel = () => {
 										value={
 											judged
 												? formatCurrency(
-														all.value_missed,
+														all?.value_missed,
 													)
 												: "—"
 										}

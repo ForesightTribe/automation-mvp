@@ -1,5 +1,7 @@
 """Overview-page composite endpoints. Mounted under /clients/{client_id}/overview,
 so every handler gets `client: ClientDep` (access already enforced)."""
+from datetime import date
+
 from fastapi import APIRouter, Query
 
 from app.dependencies import ClientDep, PeriodDep, SessionDep
@@ -9,8 +11,7 @@ from app.schemas.overview import (
     MarketplaceTrend,
 )
 from app.schemas.insight import Insight
-from app.schemas.overview import SupplyOutlook
-from app.services import insights_service, overview_service, supply_service
+from app.services import insights_service, overview_service
 
 router = APIRouter()
 
@@ -20,14 +21,25 @@ async def marketplaces(
     session: SessionDep,
     client: ClientDep,
     period: PeriodDep,
+    prev_start: date | None = Query(
+        None, description="Compare against this window instead of the preceding one"
+    ),
+    prev_end: date | None = Query(None),
+    market: bool = Query(
+        True, description="false drops visibility/avg rank, the search_listings reads"
+    ),
 ):
+    """`prev_start`/`prev_end` override the window this is measured against, so a
+    caller wanting the same day last week asks once rather than fetching that day
+    as a second request."""
     return await overview_service.get_marketplace_breakdown(
         session,
         tenant_id=client.id,
         start=period.start,
         end=period.end,
-        prev_start=period.prev_start,
-        prev_end=period.prev_end,
+        prev_start=prev_start or period.prev_start,
+        prev_end=prev_end or period.prev_end,
+        include_market=market,
     )
 
 
@@ -67,9 +79,3 @@ async def insights(session: SessionDep, client: ClientDep, period: PeriodDep):
     )
 
 
-@router.get("/supply-outlook", response_model=SupplyOutlook)
-async def supply_outlook(session: SessionDep, client: ClientDep, limit: int = 20):
-    """Stock, velocity and inbound POs per SKU — will it last, and is help coming."""
-    return await supply_service.get_supply_outlook(
-        session, tenant_id=client.id, limit=limit
-    )

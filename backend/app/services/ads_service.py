@@ -20,7 +20,6 @@ from datetime import date, timedelta
 from sqlalchemy import Numeric, case, cast, distinct, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import AsyncSessionLocal
 
 log = logging.getLogger(__name__)
 
@@ -35,6 +34,7 @@ from app.models.blinkit_marketing import (
 )
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
+from app.utils.cache import ttl_cache
 from app.services import instamart_ads, reference_service, zepto_ads
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
@@ -159,7 +159,7 @@ async def get_summary(
     }
 
 
-async def get_campaigns(
+async def _campaigns(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
@@ -171,7 +171,11 @@ async def get_campaigns(
     sort: str = "spend",
     order: str = "desc",
     recent_only: bool = False,
+    max_roas: float | None = None,
 ) -> Page[CampaignRow]:
+    """`max_roas` keeps only campaigns that SPENT and returned under it — the
+    underperformers, so a link can land on exactly the set that was counted
+    rather than the whole account."""
     # Per-campaign rollup of the daily backbone over the window.
     rollups = (
         await session.execute(
@@ -225,6 +229,7 @@ async def get_campaigns(
         {
             "campaign_id": c.campaign_id,
             "name": c.name,
+            "marketplace": c.platform,
             "type": c.type,
             "status": c.status,
             "daily_budget": c.daily_budget,
@@ -245,6 +250,7 @@ async def get_campaigns(
                 {
                     "campaign_id": z["campaign_id"],
                     "name": z["name"],
+                    "marketplace": "zepto",
                     "type": z.get("campaign_type"),
                     "status": z.get("status"),
                     # Whole rupees on Zepto; CampaignRow types it int.
@@ -272,6 +278,7 @@ async def get_campaigns(
                 {
                     "campaign_id": i["campaign_id"],
                     "name": i["name"],
+                    "marketplace": "instamart",
                     "type": i.get("campaign_type"),
                     "status": i.get("status"),
                     "daily_budget": i.get("daily_budget"),
@@ -284,6 +291,13 @@ async def get_campaigns(
                 }
             )
 
+    if max_roas is not None:
+        rows = [
+            r
+            for r in rows
+            if (r["budget_consumed"] or 0) > 0 and (r["roas"] or 0) < max_roas
+        ]
+
     # Campaign count per client is small -> rank + paginate in memory.
     sort_key = _CAMPAIGN_SORTS.get(sort, "budget_consumed")
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
@@ -292,6 +306,78 @@ async def get_campaigns(
     items = [CampaignRow.model_validate(r) for r in page]
     return Page.build(items, total, pagination)
 
+
+
+# ⚠️ `_campaigns`, `_campaigns_settled` and `get_campaigns` carry the SAME
+# parameter list, and a parameter added to one must be added to all three or it
+# is silently dropped on the way through. It is spelled out rather than passed
+# as **kwargs because the cache key is built by binding arguments to the
+# signature: a var-keyword wrapper cannot fill in the defaults a caller omitted,
+# so every call would land on its own entry and nothing would ever hit.
+@ttl_cache(24 * 60 * 60)
+async def _campaigns_settled(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    pagination: Pagination,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    status: str | None = None,
+    sort: str = "spend",
+    order: str = "desc",
+    recent_only: bool = False,
+    max_roas: float | None = None,
+) -> Page[CampaignRow]:
+    """A window that has already closed. Cached: nothing a user does now can
+    change what a campaign spent yesterday."""
+    return await _campaigns(
+        session,
+        tenant_id=tenant_id,
+        pagination=pagination,
+        start=start,
+        end=end,
+        marketplaces=marketplaces,
+        status=status,
+        sort=sort,
+        order=order,
+        recent_only=recent_only,
+        max_roas=max_roas,
+    )
+
+
+async def get_campaigns(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    pagination: Pagination,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    status: str | None = None,
+    sort: str = "spend",
+    order: str = "desc",
+    recent_only: bool = False,
+    max_roas: float | None = None,
+) -> Page[CampaignRow]:
+    """⚠️ A window that includes TODAY is never cached. Budgets and bids are
+    written from the Campaign Manager and the caller invalidates on write, so a
+    cached open window would show someone their own change being ignored. A
+    window that ended before today cannot move."""
+    fn = _campaigns_settled if end < date.today() else _campaigns
+    return await fn(
+        session,
+        tenant_id=tenant_id,
+        pagination=pagination,
+        start=start,
+        end=end,
+        marketplaces=marketplaces,
+        status=status,
+        sort=sort,
+        order=order,
+        recent_only=recent_only,
+        max_roas=max_roas,
+    )
 
 async def get_performance(
     session: AsyncSession,

@@ -1,5 +1,6 @@
 import { useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
+import { useSecondaryReady } from "./priority";
 import { useDateRange } from "../../context/DateRangeContext";
 import { toISODate } from "../../lib/dates";
 import { useMarketplaces } from "../../context/MarketplaceContext";
@@ -34,8 +35,9 @@ const MONTHLY_LOOKBACK = 3;
  */
 export const useOverview = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview", activeClientId, range, selected],
 		queryFn: () =>
@@ -44,7 +46,7 @@ export const useOverview = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
@@ -55,8 +57,9 @@ export const useOverview = () => {
  */
 export const useMarketplaceBreakdown = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-marketplaces", activeClientId, range],
 		queryFn: () =>
@@ -69,15 +72,16 @@ export const useMarketplaceBreakdown = () => {
 		// response serves every selection.
 		select: (rows) =>
 			selected ? rows.filter((m) => selected.includes(m.slug)) : rows,
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 /** Revenue/units time series, keyed on client + date range + marketplace. */
 export const useRevenue = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-revenue", activeClientId, range, selected],
 		queryFn: () =>
@@ -86,7 +90,7 @@ export const useRevenue = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
@@ -103,8 +107,9 @@ export const useRevenue = () => {
  */
 export const useMarketplaceTrends = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: [
 			"overview-marketplace-trends",
@@ -118,14 +123,15 @@ export const useMarketplaceTrends = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 export const useTrends = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-trends", activeClientId, range, selected],
 		queryFn: () =>
@@ -134,17 +140,18 @@ export const useTrends = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 /** Data-freshness chips — client-scoped, independent of date/marketplace. */
 export const useFreshness = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	return useQuery({
 		queryKey: ["overview-freshness", activeClientId],
 		queryFn: () => getFreshness(activeClientId),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && secondaryReady,
 	});
 };
 
@@ -154,7 +161,7 @@ const RECENT_DAYS = 15;
 
 export const useRecentDays = () => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const to = new Date();
 	const from = new Date();
 	from.setDate(from.getDate() - (RECENT_DAYS - 1));
@@ -167,7 +174,7 @@ export const useRecentDays = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -182,6 +189,7 @@ const ATTENTION_DAYS = 7;
  */
 export const useInsights = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const to = new Date();
 	const from = new Date();
 	from.setDate(from.getDate() - (ATTENTION_DAYS - 1));
@@ -191,24 +199,25 @@ export const useInsights = () => {
 		staleTime: INSIGHT_STALE,
 		queryFn: () =>
 			getInsights(activeClientId, { start: range.from, end: range.to }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && secondaryReady,
 	});
 };
 
 /** Weekly availability, for the week-on-week comparison on the KPI. */
 export const useAvailabilityHistory = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	return useQuery({
 		queryKey: ["overview-availability-history", activeClientId],
 		queryFn: () => getAvailabilityHistory(activeClientId, { weeks: 8 }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && secondaryReady,
 	});
 };
 
 /** Campaigns for ONE day — the same day the glance reads, not the picker's window. */
 export const useTopCampaignsForDay = (day) => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-campaigns-day", activeClientId, day, selected],
 		queryFn: () =>
@@ -218,15 +227,16 @@ export const useTopCampaignsForDay = (day) => {
 				limit: 50,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId) && Boolean(day),
+		enabled: Boolean(activeClientId) && ready && Boolean(day),
 	});
 };
 
 /** Top campaigns by attributed revenue over the selected window. */
 export const useTopCampaigns = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-top-campaigns", activeClientId, range, selected],
 		queryFn: () =>
@@ -236,7 +246,7 @@ export const useTopCampaigns = () => {
 				limit: 200,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
@@ -254,6 +264,7 @@ const INSIGHT_STALE = 30 * 60 * 1000; // the bell, on every page
 /** Purchase orders over the selected window. */
 export const usePoSummary = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
 	return useQuery({
 		queryKey: ["overview-po-summary", activeClientId, range],
@@ -262,15 +273,16 @@ export const usePoSummary = () => {
 				start: range.from,
 				end: range.to,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && secondaryReady,
 	});
 };
 
 /** Purchase orders per marketplace, for the channel table under the figures. */
 export const usePoByMarketplace = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-po-marketplaces", activeClientId, range, selected],
 		queryFn: () =>
@@ -279,15 +291,16 @@ export const usePoByMarketplace = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 /** Share of voice over the selected window. */
 export const useShareOfVoice = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-sov", activeClientId, range, selected],
 		staleTime: SCRAPE_STALE,
@@ -297,13 +310,14 @@ export const useShareOfVoice = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 /** The competitor leaderboard for the same window. */
 export const useTopCompetitors = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
 	return useQuery({
 		queryKey: ["overview-competitors", activeClientId, range],
@@ -314,15 +328,16 @@ export const useTopCompetitors = () => {
 				end: range.to,
 				limit: 6,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && secondaryReady,
 	});
 };
 
 /** The competitor leaderboard split by channel, for the Overview table. */
 export const useTopCompetitorsByMarketplace = (limit = 12) => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: [
 			"overview-competitors-marketplaces",
@@ -338,7 +353,7 @@ export const useTopCompetitorsByMarketplace = (limit = 12) => {
 				marketplaces: selected,
 				limit,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
@@ -348,8 +363,9 @@ export const useTopCompetitorsByMarketplace = (limit = 12) => {
  *  another. */
 export const usePricePosition = ({ byMarketplace = false } = {}) => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: [
 			"overview-price-position",
@@ -366,15 +382,16 @@ export const usePricePosition = ({ byMarketplace = false } = {}) => {
 				marketplaces: selected,
 				byMarketplace,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 /** Reach and in-stock rate per SKU over the selected window. */
 export const useDistribution = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["overview-distribution", activeClientId, range, selected],
 		staleTime: DAILY_STALE,
@@ -384,15 +401,16 @@ export const useDistribution = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
 /** Reach per marketplace, for the channel table under the figures. */
 export const useDistributionByMarketplace = () => {
 	const { activeClientId } = useClient();
+	const secondaryReady = useSecondaryReady();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: [
 			"overview-reach-marketplaces",
@@ -406,7 +424,7 @@ export const useDistributionByMarketplace = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready && secondaryReady,
 	});
 };
 
@@ -416,13 +434,24 @@ export const useDistributionByMarketplace = () => {
  * Channels the tenant has no scrape for come back `connected: false` with null
  * metrics, so the caller can show only what exists rather than a row of blanks.
  */
-export const useMarketplacesForDay = (day) => {
+/** `baseline` is the day the change is measured against, asked for in the same
+ *  request rather than as a second fetch of that day. */
+export const useMarketplacesForDay = (day, baseline) => {
 	const { activeClientId } = useClient();
+	const { ready } = useMarketplaces();
 	return useQuery({
-		queryKey: ["overview-marketplaces-day", activeClientId, day],
+		queryKey: ["overview-marketplaces-day", activeClientId, day, baseline],
 		queryFn: () =>
-			getMarketplaceBreakdown(activeClientId, { start: day, end: day }),
-		enabled: Boolean(activeClientId) && Boolean(day),
+			getMarketplaceBreakdown(activeClientId, {
+				start: day,
+				end: day,
+				prevStart: baseline,
+				prevEnd: baseline,
+				// The tiles show money; visibility and rank are the two reads
+				// against `search_listings` and nothing here uses them.
+				market: false,
+			}),
+		enabled: Boolean(activeClientId) && Boolean(day) && ready,
 		staleTime: INSIGHT_STALE,
 	});
 };

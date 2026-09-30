@@ -8,6 +8,8 @@ import { VisibilityPanel } from "./components/VisibilityPanel";
 import { PricePanel } from "./components/PricePanel";
 import { OverviewExport } from "./components/OverviewExport";
 import { Loading } from "../../components/feedback/Loading";
+import { useMarketplaces } from "../../context/MarketplaceContext";
+import { PriorityProvider } from "./priority";
 
 /**
  * Overview — a daily briefing, read top to bottom: how yesterday went, then how
@@ -19,34 +21,43 @@ import { Loading } from "../../components/feedback/Loading";
  */
 export const OverviewPage = () => {
 	const { data: recent, isLoading } = useRecentDays();
+	// ⚠️ Nothing on this page may draw before the marketplace picker resolves.
+	// Until it does, the selection is empty, and every "is this multi-channel?"
+	// test on the page reads that as a tenant with ONE channel — so the whole
+	// page would render its single-channel layout and then swap.
+	const { ready } = useMarketplaces();
 
 	const rows = recent ?? [];
 
+	if (!ready) return <Loading label="Loading overview…" />;
+
 	return (
-		<div className="flex flex-col gap-10">
-			<div className="flex flex-col gap-4">
-				{/* The page as one file, above the sections it covers —
+		<PriorityProvider>
+			<div className="flex flex-col gap-10">
+				<div className="flex flex-col gap-4">
+					{/* The page as one file, above the sections it covers —
 				    it is the whole overview, not yesterday's part of it. */}
-				<div className="flex items-center justify-end">
-					<OverviewExport />
+					<div className="flex items-center justify-end">
+						<OverviewExport />
+					</div>
+
+					{isLoading && <Loading label="Loading overview…" />}
+					{!isLoading && <YesterdayGlance rows={rows} />}
 				</div>
 
-				{isLoading && <Loading label="Loading overview…" />}
-				{!isLoading && <YesterdayGlance rows={rows} />}
+				{/* Follows the date picker, unlike the block above it. */}
+				<RevenuePanel />
+
+				<AdsPanel />
+
+				<PoPanel />
+
+				<ReachPanel />
+
+				<VisibilityPanel />
+
+				<PricePanel />
 			</div>
-
-			{/* Follows the date picker, unlike the block above it. */}
-			<RevenuePanel />
-
-			<AdsPanel />
-
-			<PoPanel />
-
-			<ReachPanel />
-
-			<VisibilityPanel />
-
-			<PricePanel />
-		</div>
+		</PriorityProvider>
 	);
 };

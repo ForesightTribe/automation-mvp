@@ -1,12 +1,17 @@
 """Client-scoped inventory: stock-on-hand (blinkit_soh) and PO fill-rate
 (blinkit_scorecard_facilities)."""
+import asyncio
 import uuid
 from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import Integer, case, cast, distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import AsyncSessionLocal
 from app.utils.cache import ttl_cache
+
+# The public scrape lands once a day, so these answers change once a day.
+_DAY = 24 * 60 * 60
 
 from app.dependencies import Pagination
 from app.utils.time import now_ist
@@ -321,7 +326,7 @@ async def get_availability(
     return Page.build(out, total, pagination)
 
 
-@ttl_cache(3 * 60 * 60)
+@ttl_cache(_DAY)
 async def get_distribution_by_marketplace(
     session: AsyncSession,
     *,
@@ -345,72 +350,98 @@ async def get_distribution_by_marketplace(
     different facts.
     """
     all_marketplaces = await reference_service.list_marketplaces(session)
-    out: list[dict] = []
-    for mp in all_marketplaces:
-        if not mp["connected"]:
-            continue
-        if marketplaces is not None and mp["slug"] not in marketplaces:
-            continue
-        data = await get_distribution(
+    async def for_marketplace(mp: dict) -> dict | None:
+        return await _marketplace_reach(
             session,
-            tenant_id=tenant_id,
-            start=start,
-            end=end,
-            city=city,
-            marketplaces=[mp["slug"]],
-            kind=kind,
-        )
-        skus = data["skus"]
-        covered = data["stores_scraped"]
-        if not skus or not covered:
-            continue
-        listed = sum(r["stores_listed"] or 0 for r in skus)
-        in_stock = sum(r["stores_in_stock"] or 0 for r in skus)
-
-        # DISTINCT stores carrying anything of ours, which is a different
-        # question from the listings summed above: one store stocking six SKUs
-        # is six listings and one store.
-        own = await watchlist_service.get_brands_by_relationship(
-            session, tenant_id, "own"
-        )
-        latest = _latest_per_store(
-            tenant_id, own, _bounds(start, end), city, [mp["slug"]], kind
-        )
-        # `stores_scraped` counts stores that answered FOR OUR BRAND, so every
-        # covered store carries a listing. The in-stock count is the one that
-        # differs from it.
-        stores_stocked = (
-            await session.execute(
-                select(func.count(distinct(latest.c.merchant_id))).where(
-                    latest.c.in_stock.is_(True)
+            mp=mp,
+                    tenant_id=tenant_id,
+                    start=start,
+                    end=end,
+                    city=city,
+                    kind=kind,
+                    marketplaces=marketplaces,
                 )
+
+    done = [await for_marketplace(mp) for mp in all_marketplaces]
+    return [r for r in done if r]
+
+
+async def _marketplace_reach(
+    session: AsyncSession,
+    *,
+    mp: dict,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    city: str | None,
+    kind: str,
+    marketplaces: list[str] | None,
+) -> dict | None:
+    """One marketplace's reach, or None where nothing was scraped for it."""
+    if not mp["connected"]:
+        return None
+    if marketplaces is not None and mp["slug"] not in marketplaces:
+        return None
+    data = await get_distribution(
+        session,
+        tenant_id=tenant_id,
+        start=start,
+        end=end,
+        city=city,
+        marketplaces=[mp["slug"]],
+        kind=kind,
+    )
+    skus = data["skus"]
+    covered = data["stores_scraped"]
+    if not skus or not covered:
+        return None
+    listed = sum(r["stores_listed"] or 0 for r in skus)
+    in_stock = sum(r["stores_in_stock"] or 0 for r in skus)
+
+    # DISTINCT stores carrying anything of ours, which is a different
+    # question from the listings summed above: one store stocking six SKUs
+    # is six listings and one store.
+    own = await watchlist_service.get_brands_by_relationship(
+        session, tenant_id, "own"
+    )
+    latest = _latest_per_store(
+        tenant_id, own, _bounds(start, end), city, [mp["slug"]], kind
+    )
+    # `stores_scraped` counts stores that answered FOR OUR BRAND, so every
+    # covered store carries a listing. The in-stock count is the one that
+    # differs from it.
+    stores_stocked = (
+        await session.execute(
+            select(func.count(distinct(latest.c.merchant_id))).where(
+                latest.c.in_stock.is_(True)
             )
-        ).scalar_one()
-        out.append(
-            {
-                "slug": mp["slug"],
-                "name": mp["name"],
-                "color": mp["color"],
-                "connected": True,
-                "reach": {
-                    "value": listed / (len(skus) * covered) * 100,
-                    "prev": None,
-                    "delta_pct": None,
-                },
-                "in_stock": {
-                    "value": (in_stock / listed * 100) if listed else None,
-                    "prev": None,
-                    "delta_pct": None,
-                },
-                "stores_scraped": covered,
-                "stores_stocked": int(stores_stocked or 0),
-                "skus": len(skus),
-                "listings": listed,
-            }
         )
-    return out
+    ).scalar_one()
+    return (
+        {
+            "slug": mp["slug"],
+            "name": mp["name"],
+            "color": mp["color"],
+            "connected": True,
+            "reach": {
+                "value": listed / (len(skus) * covered) * 100,
+                "prev": None,
+                "delta_pct": None,
+            },
+            "in_stock": {
+                "value": (in_stock / listed * 100) if listed else None,
+                "prev": None,
+                "delta_pct": None,
+            },
+            "stores_scraped": covered,
+            "stores_stocked": int(stores_stocked or 0),
+            "skus": len(skus),
+            "listings": listed,
+        }
+    )
 
 
+@ttl_cache(_DAY)
 async def get_distribution(
     session: AsyncSession,
     *,

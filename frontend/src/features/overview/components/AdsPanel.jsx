@@ -1,10 +1,14 @@
 import { Link } from "react-router-dom";
 import { ArrowRight } from "lucide-react";
+import { useMemo } from "react";
 import {
 	useOverview,
 	useTopCampaigns,
 	useMarketplaceBreakdown,
+	useTrends,
 } from "../hooks";
+import { EChart } from "../../../components/charts/EChart";
+import { adTrendOption } from "../../../components/charts/options";
 import { ChannelSplit } from "./ChannelSplit";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
@@ -52,6 +56,22 @@ export const AdsPanel = () => {
 	const { range } = useDateRange();
 	const { data, isLoading, error, refetch } = useTopCampaigns();
 	const { data: breakdown } = useMarketplaceBreakdown();
+	const { data: trend } = useTrends();
+
+	// `useTrends` names the measure `ad_spend`; the chart reads the ad tables'
+	// own `budget_consumed`.
+	const spendVsRevenue = useMemo(
+		() =>
+			adTrendOption(
+				(trend ?? []).map((r) => ({
+					date: r.date,
+					budget_consumed: r.ad_spend,
+					ad_sales: r.ad_sales,
+					roas: r.ad_spend ? r.ad_sales / r.ad_spend : null,
+				})),
+			),
+		[trend],
+	);
 
 	const all = data?.items ?? [];
 
@@ -82,46 +102,54 @@ export const AdsPanel = () => {
 	const showChannel = new Set(earning.map((c) => c.marketplace)).size > 1;
 	return (
 		<section className="flex flex-col">
-			<div className="grid grid-cols-1 gap-8 rounded-xl border border-border bg-card p-6 lg:grid-cols-5">
-				<div className="flex flex-col gap-5 lg:col-span-2">
-					<div className="flex flex-col gap-1">
-						<p className="text-[11px] font-semibold tracking-[0.1em] text-content-subtle uppercase">
-							Ad revenue
-						</p>
-						<p className="font-display text-3xl font-bold text-content tabular-nums">
-							{formatCurrency(summary?.ad_sales?.value)}
-						</p>
-						<Change
-							delta={summary?.ad_sales?.delta_pct}
-							prev={
-								summary?.ad_sales?.prev == null
-									? `Nothing recorded in ${previousRangeLabel(range)}`
-									: `${formatCurrency(summary.ad_sales.prev)} over ${previousRangeLabel(range)}`
-							}
+			<div className="rounded-xl border border-border bg-card p-6">
+				<div className="grid grid-cols-1 gap-10 lg:grid-cols-5">
+					<div className="flex flex-col gap-5 lg:col-span-2">
+						<div className="flex flex-col gap-1">
+							<p className="text-[11px] font-semibold tracking-[0.1em] text-content-subtle uppercase">
+								Ad revenue
+							</p>
+							<p className="font-display text-3xl font-bold text-content tabular-nums">
+								{formatCurrency(summary?.ad_sales?.value)}
+							</p>
+							<Change
+								delta={summary?.ad_sales?.delta_pct}
+								prev={
+									summary?.ad_sales?.prev == null
+										? `Nothing recorded in ${previousRangeLabel(range)}`
+										: `${formatCurrency(summary.ad_sales.prev)} over ${previousRangeLabel(range)}`
+								}
+							/>
+						</div>
+
+						{/* Which channels the ad revenue above came from. */}
+						<ChannelSplit
+							rows={(breakdown ?? []).filter(
+								(m) => m.connected && m.ad_sales?.value != null,
+							)}
+							metric="ad_sales"
+							label="Ad revenue"
+							extras={[
+								{
+									label: "RoAS",
+									width: "w-14",
+									value: (m) =>
+										m.roas?.value == null
+											? "—"
+											: `${m.roas.value.toFixed(2)}×`,
+								},
+							]}
 						/>
 					</div>
 
-					{/* Which channels the ad revenue above came from. */}
-					<ChannelSplit
-						rows={(breakdown ?? []).filter(
-							(m) => m.connected && m.ad_sales?.value != null,
-						)}
-						metric="ad_sales"
-						label="Ad revenue"
-						extras={[
-							{
-								label: "RoAS",
-								width: "w-14",
-								value: (m) =>
-									m.roas?.value == null
-										? "—"
-										: `${m.roas.value.toFixed(2)}×`,
-							},
-						]}
-					/>
+					<div className="lg:col-span-3">
+						{/* What was spent against what it returned, day by day. */}
+						<EChart option={spendVsRevenue} height={260} />
+					</div>
 				</div>
 
-				<div className="lg:col-span-3">
+				{/* Every campaign that ran, under the shape of the spend above. */}
+				<div className="mt-9 flex flex-col">
 					{isLoading && <Loading label="Loading campaigns…" />}
 					{error && (
 						<ErrorState message={error.message} onRetry={refetch} />

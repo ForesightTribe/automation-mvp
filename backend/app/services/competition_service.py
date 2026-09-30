@@ -10,6 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.cache import ttl_cache
 
+# The public scrape lands once a day, so these answers change once a day.
+_DAY = 24 * 60 * 60
+
 from app.dependencies import Pagination
 from app.models.search import SearchListing, SearchSnapshot
 from app.schemas.common import Page
@@ -58,7 +61,7 @@ _UNIT_MULT = case(
 _UNIT_PRICE = SearchListing.price / func.nullif(SearchListing.pack_size, 0) * _UNIT_MULT
 
 
-@ttl_cache(6 * 60 * 60)
+@ttl_cache(_DAY)
 async def get_share_of_voice(
     session: AsyncSession,
     *,
@@ -266,7 +269,7 @@ async def get_rank_matrix(
 
 # --- Competitor leaderboard --------------------------------------------------
 
-@ttl_cache(6 * 60 * 60)
+@ttl_cache(_DAY)
 async def get_top_competitors(
     session: AsyncSession,
     *,
@@ -356,7 +359,7 @@ async def get_top_competitors(
     }
 
 
-@ttl_cache(6 * 60 * 60)
+@ttl_cache(_DAY)
 async def get_top_competitors_by_marketplace(
     session: AsyncSession,
     *,
@@ -441,7 +444,7 @@ async def get_top_competitors_by_marketplace(
 
 # --- Price positioning (own vs competitor range, per keyword) ----------------
 
-@ttl_cache(6 * 60 * 60)
+@ttl_cache(_DAY)
 async def get_price_position(
     session: AsyncSession,
     *,

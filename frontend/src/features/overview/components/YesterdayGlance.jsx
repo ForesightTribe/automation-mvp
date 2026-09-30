@@ -1,3 +1,4 @@
+import { useEffect } from "react";
 import { Info } from "lucide-react";
 import { HoverHint } from "../../../components/ui/HoverHint";
 import { ChannelTiles, useChannelRows } from "./ChannelTiles";
@@ -5,6 +6,8 @@ import { ChannelShareBar } from "./ChannelShareBar";
 import { HeadlineKpi } from "./HeadlineKpi";
 import { DayCampaigns } from "./DayCampaigns";
 import { EmptyState } from "../../../components/feedback/EmptyState";
+import { useReleaseSecondary } from "../priority";
+import { Loading } from "../../../components/feedback/Loading";
 import {
 	formatCurrency,
 	formatDayLabel as dayLabel,
@@ -98,10 +101,23 @@ export const YesterdayGlance = ({ rows = [] }) => {
 	const prior = i > 0 ? days[i - 1] : null;
 	const sameWeekday = i >= 7 ? days[i - 7] : null;
 
-	const channels = useChannelRows(latest?.date);
+	const { rows: channels, settled } = useChannelRows(
+		latest?.date,
+		sameWeekday?.date,
+	);
+
+	// The panels below hold until this block is served, so it does not queue
+	// behind reads that take tens of seconds and answer a slower question.
+	const release = useReleaseSecondary();
+	useEffect(() => {
+		if (settled) release();
+	}, [settled, release]);
 	const perChannel = channels.length > 1;
 
 	if (!latest) return <EmptyState message="No sales data yet." />;
+	// Holding here rather than drawing the single-channel layout first and
+	// swapping it for the channels a moment later.
+	if (!settled) return <Loading label="Loading yesterday…" />;
 
 	const hasAds = latest.ad_spend != null || latest.ad_sales != null;
 

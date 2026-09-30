@@ -37,7 +37,8 @@ const Row = ({ label, value, note }) => (
 
 export const ReachPanel = () => {
 	const { data, isLoading, error, refetch } = useDistribution();
-	const { data: byChannel } = useDistributionByMarketplace();
+	const { data: byChannel, isPending: channelsPending } =
+		useDistributionByMarketplace();
 
 	const skus = [...(data?.skus ?? [])].sort(
 		(a, b) => a.reach_pct - b.reach_pct,
@@ -90,22 +91,23 @@ export const ReachPanel = () => {
 							{/* In stock and coverage are in the table below, per
 							    channel. This is the fallback for a tenant with no
 							    channel breakdown to show. */}
-							{(byChannel ?? []).length < 2 && (
-								<div className="flex flex-col">
-									<Row
-										label="In stock where listed"
-										value={
-											stocked == null
-												? "—"
-												: `${(stocked * 100).toFixed(1)}%`
-										}
-									/>
-									<Row
-										label="Stores covered"
-										value={formatNumber(covered)}
-									/>
-								</div>
-							)}
+							{!channelsPending &&
+								(byChannel ?? []).length < 2 && (
+									<div className="flex flex-col">
+										<Row
+											label="In stock where listed"
+											value={
+												stocked == null
+													? "—"
+													: `${(stocked * 100).toFixed(1)}%`
+											}
+										/>
+										<Row
+											label="Stores covered"
+											value={formatNumber(covered)}
+										/>
+									</div>
+								)}
 						</>
 					)}
 				</div>

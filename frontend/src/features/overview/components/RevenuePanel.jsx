@@ -82,10 +82,15 @@ const Figure = ({
 };
 
 export const RevenuePanel = () => {
-	const { data: trends, isLoading } = useTrends();
+	const { data: trends, isLoading: trendsLoading } = useTrends();
 	const { data: summary } = useOverview();
-	const { data: channels } = useMarketplaceTrends();
+	const { data: channels, isPending: channelsPending } =
+		useMarketplaceTrends();
 	const { data: breakdown } = useMarketplaceBreakdown();
+	// ⚠️ Both, not just the totals: with the channel series still in flight the
+	// split is empty and the chart draws ONE undivided bar, then restacks into
+	// channels when it lands.
+	const isLoading = trendsLoading || channelsPending;
 	// The channel a reader is pointing at in the table beneath the figures.
 	const [focus, setFocus] = useState(null);
 
@@ -110,8 +115,8 @@ export const RevenuePanel = () => {
 		},
 	};
 
-	// Below two channels the split is the total redrawn, so only the headline
-	// series is kept.
+	// Below two channels the split is the total redrawn, so the bar is left
+	// undivided.
 	const lines =
 		(channels ?? []).length > 1
 			? channels.map((m) => ({
@@ -128,11 +133,11 @@ export const RevenuePanel = () => {
 	const option = useMemo(() => {
 		return trajectoryOption(rows, [], {
 			key: "revenue",
-			color: "#0284c7",
+			color: "#0EA5A4",
 			split: lines,
 			legend: false,
 			focus,
-			kind: lines.length > 1 ? "line" : "bar",
+			kind: "bar",
 			breakdown: [
 				...Object.values(OVERLAYS).map((o) => ({
 					name: o.name,

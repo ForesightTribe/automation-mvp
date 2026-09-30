@@ -20,6 +20,13 @@ const WARNING = "#d97706";
 // Foresight red. Used to mark where the reader is, never to signal a problem.
 const BRAND = "#f42a34";
 
+// Ad spend against ad revenue. Deliberately not the channel palette's yellow,
+// orange or violet — those name a marketplace everywhere else on the page.
+const AD_SPEND = "#D9468B";
+const AD_SPEND_FILL = "#FDE7F3";
+const AD_REVENUE = "#0F9FB5";
+const AD_REVENUE_FILL = "#E5F5F8";
+
 // Category-trend / heatmap series palette (mirrors theme.js PALETTE).
 const SERIES_PALETTE = [
 	"#4f46e5",
@@ -31,6 +38,21 @@ const SERIES_PALETTE = [
 	"#0d9488",
 ];
 
+/** A bar fill that lifts toward its top, in the colour it is given. A flat
+ *  slab of one hue reads as a block; the gradient gives it depth without
+ *  bringing in a second colour. */
+const barFill = (color) => ({
+	type: "linear",
+	x: 0,
+	y: 0,
+	x2: 0,
+	y2: 1,
+	colorStops: [
+		{ offset: 0, color },
+		{ offset: 1, color: `${color}b0` },
+	],
+});
+
 /** Vertical fade fill from a hex color (appends alpha). */
 const fade = (hex) => ({
 	type: "linear",
@@ -39,21 +61,24 @@ const fade = (hex) => ({
 	x2: 0,
 	y2: 1,
 	colorStops: [
-		{ offset: 0, color: `${hex}33` },
-		{ offset: 1, color: `${hex}00` },
+		{ offset: 0, color: `${hex}59` },
+		{ offset: 1, color: `${hex}05` },
 	],
 });
 
-const areaSeries = (name, data, color, yAxisIndex = 0) => ({
+/** `fill` sets a flat tint under the line; without one the area fades from the
+ *  line's own colour. */
+const areaSeries = (name, data, color, { yAxisIndex = 0, fill, z } = {}) => ({
 	name,
 	type: "line",
 	data,
 	yAxisIndex,
+	z,
 	smooth: true,
 	showSymbol: false,
-	lineStyle: { width: 2, color },
+	lineStyle: { width: 2.5, color },
 	itemStyle: { color },
-	areaStyle: { color: fade(color) },
+	areaStyle: { color: fill ?? fade(color) },
 });
 
 const baseGrid = { left: 8, right: 8, top: 24, bottom: 28, containLabel: true };
@@ -79,12 +104,14 @@ export const spendRevenueOption = (rows) => ({
 		areaSeries(
 			"Ad Spend",
 			rows.map((r) => r.ad_spend),
-			PRIMARY,
+			AD_SPEND,
+			{ fill: AD_SPEND_FILL, z: 3 },
 		),
 		areaSeries(
 			"Ad Revenue",
 			rows.map((r) => r.ad_sales),
-			SUCCESS,
+			AD_REVENUE,
+			{ fill: AD_REVENUE_FILL, z: 2 },
 		),
 	],
 });
@@ -99,12 +126,14 @@ export const adTrendOption = (rows, { showRoas = false } = {}) => {
 		areaSeries(
 			"Ad Spend",
 			rows.map((r) => r.budget_consumed),
-			PRIMARY,
+			AD_SPEND,
+			{ fill: AD_SPEND_FILL, z: 3 },
 		),
 		areaSeries(
 			"Ad Revenue",
 			rows.map((r) => r.ad_sales),
-			SUCCESS,
+			AD_REVENUE,
+			{ fill: AD_REVENUE_FILL, z: 2 },
 		),
 	];
 	if (showRoas) {
@@ -120,7 +149,42 @@ export const adTrendOption = (rows, { showRoas = false } = {}) => {
 		});
 	}
 	return {
-		tooltip: { trigger: "axis" },
+		tooltip: {
+			trigger: "axis",
+			// RoAS rides in the tooltip whether or not it is drawn: it is a
+			// ratio, and a second y-scale would let it cross the money lines at
+			// points that mean nothing.
+			formatter: (params) => {
+				const p = Array.isArray(params) ? params : [params];
+				if (!p.length) return "";
+				const idx = p[0].dataIndex;
+				const line = (dot, name, text) =>
+					`<div style="display:flex;align-items:center;gap:6px;margin-top:3px">
+						<span style="width:7px;height:7px;border-radius:50%;background:${dot}"></span>
+						<span style="flex:1;color:#646160">${name}</span>
+						<span style="font-weight:600">${text}</span>
+					</div>`;
+				const roas = rows[idx]?.roas;
+				return (
+					`<div style="font-weight:600;margin-bottom:2px">${p[0].axisValue}</div>` +
+					p
+						.filter((q) => q.seriesName !== "RoAS")
+						.map((q) =>
+							line(
+								q.color,
+								q.seriesName,
+								q.value == null ? "—" : formatCurrency(q.value),
+							),
+						)
+						.join("") +
+					line(
+						WARNING,
+						"RoAS",
+						roas == null ? "—" : `${roas.toFixed(2)}×`,
+					)
+				);
+			},
+		},
 		legend: {
 			data: showRoas
 				? ["Ad Spend", "Ad Revenue", "RoAS"]
@@ -843,11 +907,15 @@ export const trajectoryOption = (
 						data: b.data,
 						barMaxWidth: 18,
 						itemStyle: {
-							color: b.color,
+							color: barFill(b.color),
+							opacity: dim(b.name),
 							borderRadius:
 								idx === split.length - 1 ? [3, 3, 0, 0] : 0,
 						},
-						z: 2,
+						// Solid on hover, so the band being read lifts out of
+						// the column.
+						emphasis: { itemStyle: { color: b.color } },
+						z: focus === b.name ? 4 : 2,
 					}))
 				: []),
 			// On a line chart the same split is a line each, so the channels are
@@ -952,12 +1020,13 @@ export const trajectoryOption = (
 							? values.map((v, i) => ({
 									value: v,
 									itemStyle: {
-										color:
+										color: barFill(
 											i === best?.[0]
 												? SUCCESS
 												: i === worst?.[0]
 													? WARNING
 													: color,
+										),
 										opacity: overlay ? 0.3 : 1,
 										borderRadius: [3, 3, 0, 0],
 									},

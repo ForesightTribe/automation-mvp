@@ -22,9 +22,10 @@ import { useMarketplaces } from "../../../context/MarketplaceContext";
  * everywhere else, so which channel a figure belongs to reads before the
  * label does.
  *
- * The change is measured against the same day last week, matching the total,
- * which is why the baseline day is fetched rather than read off `delta_pct` —
- * that field compares the window with the one immediately before it.
+ * The change is measured against the same day last week, matching the total.
+ * That baseline is asked for in the same request as the day itself, so the
+ * comparison costs no second fetch of an endpoint that aggregates per
+ * marketplace.
  */
 /** One measure inside a channel tile: name left, figure right. */
 const Detail = ({ label, value }) => (
@@ -38,7 +39,11 @@ const money = (m) => (m?.value == null ? "—" : formatCurrency(m.value));
 
 const ChannelTile = ({ row, baseline, was }) => {
 	const color = markColor(row);
-	const change = was ? ((row.revenue.value - was) / was) * 100 : null;
+	// A channel whose feed has not landed for this day. Reported as that rather
+	// than as ₹0, which claims it sold nothing.
+	const reported = row.revenue?.value != null;
+	const change =
+		reported && was ? ((row.revenue.value - was) / was) * 100 : null;
 	const tone =
 		change == null || Math.round(change) === 0
 			? "text-content-muted"
@@ -58,28 +63,34 @@ const ChannelTile = ({ row, baseline, was }) => {
 
 			<div className="flex min-w-0 flex-col gap-0.5">
 				<span className="font-display text-2xl leading-tight font-bold text-content tabular-nums">
-					{formatCurrency(row.revenue.value)}
+					{reported ? formatCurrency(row.revenue.value) : "—"}
 				</span>
-				<span
-					title={
-						was == null
-							? "Nothing recorded the same day last week"
-							: `${row.name}, ${dayLabel(baseline)}: ${formatCurrency(was)}`
-					}
-					className="flex items-baseline gap-1.5 text-xs tabular-nums"
-				>
-					{change == null ? (
-						<span className="text-content-subtle">—</span>
-					) : (
-						<span className={`font-medium ${tone}`}>
-							{change > 0 ? "▲" : "▼"}{" "}
-							{Math.abs(change).toFixed(0)}%
+				{reported ? (
+					<span
+						title={
+							was == null
+								? "Nothing recorded the same day last week"
+								: `${row.name}, ${dayLabel(baseline)}: ${formatCurrency(was)}`
+						}
+						className="flex items-baseline gap-1.5 text-xs tabular-nums"
+					>
+						{change == null ? (
+							<span className="text-content-subtle">—</span>
+						) : (
+							<span className={`font-medium ${tone}`}>
+								{change > 0 ? "▲" : "▼"}{" "}
+								{Math.abs(change).toFixed(0)}%
+							</span>
+						)}
+						<span className="text-content-subtle">
+							{baseline ? `vs ${dayLabel(baseline)}` : ""}
 						</span>
-					)}
-					<span className="text-content-subtle">
-						{baseline ? `vs ${dayLabel(baseline)}` : ""}
 					</span>
-				</span>
+				) : (
+					<span className="text-xs text-content-muted">
+						Not reported yet
+					</span>
+				)}
 			</div>
 
 			<span
@@ -121,37 +132,39 @@ const ChannelTile = ({ row, baseline, was }) => {
  * of the selection has to be dropped here or the tiles would contradict the
  * total above them.
  */
-export const useChannelRows = (day) => {
-	const { data } = useMarketplacesForDay(day);
-	const { selected } = useMarketplaces();
-	return (data ?? [])
+export const useChannelRows = (day, baseline) => {
+	const { data, isPending } = useMarketplacesForDay(day, baseline);
+	const { selected, ready } = useMarketplaces();
+	// `settled` is false until the picker resolves AND the day's rows arrive.
+	// Before that `selected` is empty and the rows are missing, which together
+	// read as a tenant with one channel — so callers hold rather than draw the
+	// single-channel layout and swap it a moment later.
+	const settled = ready && !isPending;
+	if (!settled) return { rows: [], settled };
+	const rows = (data ?? [])
 		.filter(
 			(m) =>
 				m.connected &&
-				m.revenue?.value != null &&
-				(!selected || selected.includes(m.slug)),
+				m.revenue !== undefined &&
+				selected.includes(m.slug),
 		)
-		.sort((a, b) => b.revenue.value - a.revenue.value);
+		.sort((a, b) => (b.revenue?.value ?? -1) - (a.revenue?.value ?? -1));
+	return { rows, settled };
 };
 
 export const ChannelTiles = ({ day, baseline }) => {
-	const rows = useChannelRows(day);
-	const { data: before } = useMarketplacesForDay(baseline);
+	const { rows } = useChannelRows(day, baseline);
 
 	// One channel is the whole business — a split of one only repeats the
 	// total already beside it.
 	if (rows.length < 2) return null;
-
-	const prior = new Map(
-		(before ?? []).map((m) => [m.slug, m.revenue?.value ?? null]),
-	);
 
 	return rows.map((m) => (
 		<ChannelTile
 			key={m.slug}
 			row={{ ...m, day }}
 			baseline={baseline}
-			was={prior.get(m.slug)}
+			was={m.revenue?.prev ?? null}
 		/>
 	));
 };

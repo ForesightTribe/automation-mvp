@@ -37,6 +37,14 @@ class Settings(BaseSettings):
     # loader deliberately holds one long all-or-nothing transaction.
     DB_IDLE_TX_TIMEOUT_S: int = 0
 
+    # Precompute the Overview's expensive reads in the background so a reader
+    # never waits for them. OFF by default: it walks EVERY tenant, and on a small
+    # database that is enough concurrent load to have statements cancelled on
+    # timeout — it has to be turned on deliberately, once there is headroom for
+    # it. `WARM_CACHE_GAP_S` paces it so it yields between reads.
+    WARM_CACHE: bool = False
+    WARM_CACHE_GAP_S: float = 1.0
+
     # --- Job runner (see docs/jobs.md) ---
     # Absolute log root. MUST be absolute: the runner's CWD under systemd is not
     # backend/, so a relative "logs/" would resolve to /logs and fail silently.

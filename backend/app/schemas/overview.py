@@ -77,8 +77,3 @@ class SupplyItem(BaseModel):
     state: str
 
 
-class SupplyOutlook(BaseModel):
-    as_of: str | None = None
-    velocity_days: int = 28
-    low_cover_days: float = 3.0
-    items: list[SupplyItem] = []

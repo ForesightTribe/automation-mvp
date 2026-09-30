@@ -13,7 +13,10 @@ import { markColor } from "../../../components/ui/MarketplaceMark";
  */
 const LABEL_FITS = 12;
 
-export const ChannelShareBar = ({ rows }) => {
+export const ChannelShareBar = ({ rows: all }) => {
+	// Only channels that have reported: a segment of zero width for one whose
+	// feed has not landed reads as a channel that sold nothing.
+	const rows = all.filter((m) => m.revenue?.value != null);
 	const total = rows.reduce((sum, m) => sum + m.revenue.value, 0);
 	if (rows.length < 2 || !total) return null;
 

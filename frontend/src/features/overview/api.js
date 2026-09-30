@@ -19,9 +19,18 @@ export const getOverview = (clientId, { start, end, marketplaces } = {}) =>
 		},
 	});
 
-export const getMarketplaceBreakdown = (clientId, { start, end } = {}) =>
+export const getMarketplaceBreakdown = (
+	clientId,
+	{ start, end, prevStart, prevEnd, market } = {},
+) =>
 	api.get(`/clients/${clientId}/overview/marketplaces`, {
-		params: { start, end },
+		params: {
+			start,
+			end,
+			prev_start: prevStart,
+			prev_end: prevEnd,
+			market,
+		},
 	});
 
 export const getRevenue = (clientId, { start, end, marketplaces } = {}) =>

@@ -110,7 +110,7 @@ export const MarketplacePills = () => {
 						title={
 							mp.connected
 								? mp.name
-								: `${mp.name} — not connected yet`
+								: `${mp.name} — no data for this brand yet`
 						}
 						className={`${PILL} ${on ? PILL_ON : PILL_OFF} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
 					>
