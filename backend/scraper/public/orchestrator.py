@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.public import staging
+from scraper.public import outcome, staging
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
@@ -186,9 +186,69 @@ async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
     )).scalars().all()
 
 
+async def _open_with_retry(provider, browser, wid: int, seed, who: str = "worker") -> dict | None:
+    """Stagger by worker id, then open a session with retries. None = gave up.
+
+    See `_WORKER_STAGGER_S` / `_OPEN_SESSION_RETRY_S` above for the measurements."""
+    if _WORKER_STAGGER_S and wid > 1:
+        await asyncio.sleep(_WORKER_STAGGER_S * (wid - 1))
+    session = None
+    for attempt, wait in enumerate((*_OPEN_SESSION_RETRY_S, None), start=1):
+        session = await provider.open_session(browser, seed[0], seed[1])
+        if session or wait is None:
+            break
+        logger.warning(f"{who} {wid}: could not open session (attempt {attempt}) — "
+                       f"retrying in {wait}s")
+        await asyncio.sleep(wait)
+    return session
+
+
+async def _stage(provider, stg, loc, keyword, brands, competitor_list, res,
+                 tid, job_id, wid) -> tuple[int, int]:
+    """Stage one ANSWERED search — one snapshot per own brand tracking the keyword.
+    Returns (snapshots, rows).
+
+    An answer with no products is still staged, as a snapshot with `total_results = 0`
+    and no listings. Skipping it made "this keyword returns nothing at this store"
+    indistinguishable from "this store was never scraped": a full national run came out
+    603 pairs short of stores x keywords with no way to say which were which. Rank and
+    SoV are left NULL on such a row — an empty page has no share to take — so the read
+    side's averages ignore it.
+    """
+    products = res.get("products") or []
+    got = res.get("merchant_id") or ""
+    # The catalog says this coordinate is served by loc.merchant_id; the response says
+    # otherwise. Free store-moved/closed/opened alarm — the mapping has held on every
+    # location probed so far, so a mismatch is worth a look, not a silent overwrite.
+    # The OBSERVED store is what gets stored; the catalog is the claim.
+    if products and got and got != loc.merchant_id:
+        logger.warning(
+            f"w{wid} {loc.city}/{loc.location_name}: express store is {got}, catalog "
+            f"says {loc.merchant_id} — store moved/closed, or the coordinate drifted?"
+        )
+    snaps = rows = 0
+    for brand_slug, aliases in brands:
+        raw = {
+            "platform": provider.slug, "keyword": keyword, "brand_slug": brand_slug,
+            "city": loc.city, "zone": loc.location_name, "pincode": loc.pincode,
+            "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
+            "competitors": competitor_list or None,
+            "merchant_id": got, "total_results": res.get("total_results"),
+            "products": products,
+        }
+        result = provider.parse(raw)
+        if not products:
+            result["total_results"] = 0
+            result["brand_rank"] = None
+            result["brand_sov_pct"] = None
+        rows += await staging.save_search(stg, result, tid, job_id)
+        snaps += 1
+    return snaps, rows
+
+
 async def _worker(
-    wid, provider, browser, seed, queue, kw_map, competitor_list, done,
-    stg, stats, total, tid, job_id, cap, misses,
+    wid, provider, browser, seed, queue, kw_map, competitor_list, finished, popped,
+    stg, stats, total, tid, job_id, cap,
 ) -> None:
     """One concurrent worker: its own browser context + session, pulling stores off
     the shared queue until it's empty.
@@ -197,23 +257,20 @@ async def _worker(
     pushed to Postgres later by `cli scrape load`. That decoupling is why a Supabase
     blip can no longer kill a multi-hour run. See scraper/public/staging.py.
 
-    `misses` is a shared list (safe to append from any worker without a lock — no
-    `await` happens between the check and the append, so no other task can interleave)
-    collecting every (location, keyword) pair that gave up after both attempts. After
-    every worker has drained the main queue, `run_tenant` runs one more pass over just
-    this list — see the backlog pass there. A keyword that fails there too is genuinely
-    left out of this run, not queued forever.
+    THE BOOKKEEPING IS TWO SHARED COLLECTIONS, and nothing else:
+
+      `popped`    every store this pool took off the queue (appended on pop)
+      `finished`  every (keyword, lat, lon) that got a real answer and was staged
+
+    Both are safe to touch from any worker without a lock — asyncio is single-threaded
+    and no `await` sits between a check and its write. What a run is MISSING is then
+    derived, not tracked: a pair of a popped store that is not in `finished` is a miss,
+    whatever the reason — blocked twice, a plain failure, a store skipped after
+    `_STORE_SKIP_AFTER`, or this worker dying mid-store. The previous version recorded
+    a miss only on the blocked-twice path, so the other three vanished without a count.
+    `run_tenant` gives every miss one more look in the backlog pass.
     """
-    if _WORKER_STAGGER_S and wid > 1:
-        await asyncio.sleep(_WORKER_STAGGER_S * (wid - 1))
-    session = None
-    for attempt, wait in enumerate((*_OPEN_SESSION_RETRY_S, None), start=1):
-        session = await provider.open_session(browser, seed[0], seed[1])
-        if session or wait is None:
-            break
-        logger.warning(f"worker {wid}: could not open session (attempt {attempt}) — "
-                       f"retrying in {wait}s")
-        await asyncio.sleep(wait)
+    session = await _open_with_retry(provider, browser, wid, seed)
     if not session:
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
@@ -225,13 +282,18 @@ async def _worker(
                 loc = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
+            popped.append(loc)
             store_fail = 0
             store_snaps = store_rows = 0
             store_fetch = store_db = 0.0
             for keyword, brands in kw_map.items():
                 if store_fail >= _STORE_SKIP_AFTER:
+                    # The store's remaining keywords stay out of `finished`, so the
+                    # backlog pass picks them up — skipping here only stops this worker
+                    # spending the whole keyword list on a store that is failing now.
                     break
-                if (keyword, loc.lat, loc.lon) in done:
+                key = (keyword, loc.lat, loc.lon)
+                if key in finished:
                     stats["skipped"] += 1
                     continue
 
@@ -287,6 +349,11 @@ async def _worker(
                         await asyncio.sleep(provider.search_gap_s)
 
                     if res.get("blocked") and provider.probe_every_s:
+                        # Counted apart from `errors`: a block we wait out costs
+                        # time, not data, and lumping the two made a healthy run
+                        # look broken. Counted HERE, before the wait, so a worker
+                        # that never recovers still shows the block it died on.
+                        stats["blocked"] += 1
                         waits = 0
                         while waits < provider.max_block_waits:
                             waits += 1
@@ -305,7 +372,6 @@ async def _worker(
                                            f"{waits} waits — exiting")
                             return
                         searches = 0
-                        stats["errors"] += 1
                         if attempt == 0:
                             logger.info(
                                 f"w{wid} {loc.city} '{keyword}' recovered — retrying"
@@ -317,7 +383,6 @@ async def _worker(
                         # own, trip a threshold meant for distinct keyword failures.
                         store_fail += 1
                         give_up = True
-                        misses.append((loc, keyword))
                         break
 
                     break  # a real (non-blocked) response — done with this keyword
@@ -343,36 +408,15 @@ async def _worker(
                     continue
 
                 stale = 0
-                if not res["products"]:
-                    continue
-                # The catalog says this coordinate is served by loc.merchant_id;
-                # the response says otherwise. Free store-moved/closed/opened
-                # alarm — the mapping has held on every location probed so far,
-                # so a mismatch is worth a look, not a silent overwrite. The
-                # OBSERVED store is what gets stored; the catalog is the claim.
-                if res["merchant_id"] and res["merchant_id"] != loc.merchant_id:
-                    logger.warning(
-                        f"w{wid} {loc.city}/{loc.location_name}: express store is "
-                        f"{res['merchant_id']}, catalog says {loc.merchant_id} — "
-                        f"store moved/closed, or the coordinate drifted?"
-                    )
-                for brand_slug, aliases in brands:
-                    raw = {
-                        "platform": provider.slug, "keyword": keyword, "brand_slug": brand_slug,
-                        "city": loc.city, "zone": loc.location_name, "pincode": loc.pincode,
-                        "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
-                        "competitors": competitor_list or None,
-                        "merchant_id": res["merchant_id"], "total_results": res["total_results"],
-                        "products": res["products"],
-                    }
-                    result = provider.parse(raw)
-                    _t = time.monotonic()
-                    n = await staging.save_search(stg, result, tid, job_id)
-                    store_db += time.monotonic() - _t
-                    stats["rows"] += n
-                    store_rows += n
-                    stats["snapshots"] += 1
-                    store_snaps += 1
+                _t = time.monotonic()
+                n_snaps, n_rows = await _stage(provider, stg, loc, keyword, brands,
+                                               competitor_list, res, tid, job_id, wid)
+                store_db += time.monotonic() - _t
+                finished.add(key)
+                stats["rows"] += n_rows
+                store_rows += n_rows
+                stats["snapshots"] += n_snaps
+                store_snaps += n_snaps
 
             stats["processed"] += 1
             logger.info(
@@ -388,72 +432,93 @@ async def _worker(
 
 
 async def _retry_worker(
-    wid, provider, browser, seed, queue, competitor_list, kw_map,
+    wid, provider, browser, seed, queue, kw_map, competitor_list, finished,
     stg, stats, tid, job_id, cap,
 ) -> None:
     """Second-pass worker for the backlog `run_tenant` builds from the main pass's
-    misses. Pulls one (location, keyword) pair at a time instead of a whole
-    location's keyword list — every pair here already failed twice during the main
-    pass, so this gets exactly one more attempt each, not another multi-wait escalation.
-    A pair that fails here too is genuinely left out of this run.
+    misses. Pulls one store at a time with ONLY the keywords it is still missing, and
+    gives each exactly one more attempt — not another multi-wait escalation. A pair
+    that fails here too is genuinely left out of this run, and is named at the end.
+
+    The same `_STORE_SKIP_AFTER` rule applies: a store that fails twice in a row here
+    is not answering, and spending its whole keyword list on it only delays the rest.
     """
-    session = await provider.open_session(browser, seed[0], seed[1])
+    session = await _open_with_retry(provider, browser, wid, seed, who="backlog worker")
     if not session:
         logger.warning(f"backlog worker {wid}: could not open session — exiting")
         return
     try:
         while True:
             try:
-                loc, keyword = queue.get_nowait()
+                loc, keywords = queue.get_nowait()
             except asyncio.QueueEmpty:
                 break
-            brands = kw_map.get(keyword)
-            if not brands:
-                continue
+            store_fail = 0
+            for keyword in keywords:
+                if store_fail >= _STORE_SKIP_AFTER:
+                    break
+                brands = kw_map.get(keyword)
+                if not brands:
+                    continue
 
-            try:
-                res = await provider.search(session, keyword, cap,
-                                            lat=loc.lat, lon=loc.lon,
-                                            merchant_id=loc.merchant_id)
-            except Exception as e:
-                res = {"ok": False, "products": [], "merchant_id": "",
-                       "total_results": 0, "error": f"{type(e).__name__}: {e}"}
-            if provider.search_gap_s:
-                await asyncio.sleep(provider.search_gap_s)
+                try:
+                    res = await provider.search(session, keyword, cap,
+                                                lat=loc.lat, lon=loc.lon,
+                                                merchant_id=loc.merchant_id)
+                except Exception as e:
+                    res = {"ok": False, "products": [], "merchant_id": "",
+                           "total_results": 0, "error": f"{type(e).__name__}: {e}"}
+                if provider.search_gap_s:
+                    await asyncio.sleep(provider.search_gap_s)
 
-            if res.get("blocked") and provider.probe_every_s:
-                # One wait, one look — this pair already had its fair shot in the
-                # main pass. Compounding further waits here just delays the rest
-                # of the backlog for something that's already twice-failed.
-                await asyncio.sleep(_jittered(provider.probe_every_s))
-                await provider.close_session(session)
-                session = await provider.open_session(browser, loc.lat, loc.lon)
-                stats["errors"] += 1
-                if not session:
-                    logger.warning(f"backlog worker {wid}: still blocked — exiting")
-                    return
-                continue
+                if res.get("blocked") and provider.probe_every_s:
+                    # One wait, one look — this pair already had its fair shot in the
+                    # main pass. Compounding further waits here just delays the rest
+                    # of the backlog for something that's already twice-failed.
+                    stats["blocked"] += 1
+                    store_fail += 1
+                    await asyncio.sleep(_jittered(provider.probe_every_s))
+                    await provider.close_session(session)
+                    session = await provider.open_session(browser, loc.lat, loc.lon)
+                    if not session:
+                        logger.warning(f"backlog worker {wid}: still blocked — exiting")
+                        return
+                    continue
 
-            if not res.get("ok") or not res["products"]:
-                stats["errors"] += 1
-                continue
+                if not res.get("ok"):
+                    stats["errors"] += 1
+                    store_fail += 1
+                    continue
 
-            for brand_slug, aliases in brands:
-                raw = {
-                    "platform": provider.slug, "keyword": keyword, "brand_slug": brand_slug,
-                    "city": loc.city, "zone": loc.location_name, "pincode": loc.pincode,
-                    "lat": loc.lat, "lon": loc.lon, "aliases": aliases,
-                    "competitors": competitor_list or None,
-                    "merchant_id": res["merchant_id"], "total_results": res["total_results"],
-                    "products": res["products"],
-                }
-                result = provider.parse(raw)
-                n = await staging.save_search(stg, result, tid, job_id)
-                stats["rows"] += n
-                stats["snapshots"] += 1
-            stats["recovered"] = stats.get("recovered", 0) + 1
+                n_snaps, n_rows = await _stage(provider, stg, loc, keyword, brands,
+                                               competitor_list, res, tid, job_id, wid)
+                finished.add((keyword, loc.lat, loc.lon))
+                stats["rows"] += n_rows
+                stats["snapshots"] += n_snaps
+                stats["recovered"] += 1
     finally:
-        await provider.close_session(session)
+        if session:
+            await provider.close_session(session)
+
+
+def _missing(popped, kw_map, finished) -> list[tuple]:
+    """[(location, [keywords still unanswered])] over the stores this run attempted."""
+    out = []
+    for loc in popped:
+        kws = [kw for kw in kw_map if (kw, loc.lat, loc.lon) not in finished]
+        if kws:
+            out.append((loc, kws))
+    return out
+
+
+def _drain(queue: asyncio.Queue) -> list:
+    """Whatever is still on the queue — the stores no worker lived to take."""
+    left = []
+    while True:
+        try:
+            left.append(queue.get_nowait())
+        except asyncio.QueueEmpty:
+            return left
 
 
 async def run_tenant(
@@ -466,7 +531,11 @@ async def run_tenant(
     `keyword`/`city` narrow the run to a single keyword or city. `resume` continues
     the tenant's last incomplete job for THIS marketplace, skipping already-scraped
     stores. `workers` is the concurrent pool size — N isolated browser contexts on
-    one browser, each pulling stores off a shared queue."""
+    one browser, each pulling stores off a shared queue.
+
+    The summary's `status` is decided from COVERAGE (see scraper/public/outcome.py):
+    `success`, `partial` (stores left unattempted, or under the coverage floor — kept
+    on disk for --resume, never auto-loaded) or `failed` (nothing scraped)."""
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
     provider = get_provider(mp_slug)
     # Precedence: CLI --cap > tenant's configured keyword_cap > the platform's floor.
@@ -483,6 +552,9 @@ async def run_tenant(
         "tenant_id": str(tid), "mp_slug": mp_slug,
         "keywords": len(kw_map), "locations": len(locations),
         "snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "job_id": None,
+        # Nothing to scrape is not a failure — in an --all sweep it is the normal case
+        # for a tenant that is not on this marketplace.
+        "status": outcome.SKIPPED,
     }
     if not kw_map:
         logger.warning(f"orchestrator: tenant {tid} has no own-brand keywords — skipping")
@@ -512,7 +584,8 @@ async def run_tenant(
     job_id = stg["job_id"]
     summary["job_id"] = job_id
     summary["staging_file"] = stg["path"].name
-    stats = {"snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "processed": 0}
+    stats = {"snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "processed": 0,
+             "blocked": 0, "recovered": 0}
     total = len(locations)
     queue: asyncio.Queue = asyncio.Queue()
     for loc in locations:
@@ -520,17 +593,21 @@ async def run_tenant(
     seed = (locations[0].lat, locations[0].lon)
     n_workers = _clamp_workers(workers, total, provider)
 
+    # What this run sets out to do, as pairs, and what is already in the file. A set,
+    # so catalog rows sharing a coordinate count once — they are one request.
+    scope = {(kw, l.lat, l.lon) for l in locations for kw in kw_map}
+    finished: set[tuple] = set(done)
+    done_before = len(scope & finished)
+    popped: list = []          # stores taken off the queue, by any worker
+    unattempted: list = []     # stores nobody lived to take
+    unrecovered: list = []     # (location, [keywords]) still missing after the backlog
+
     # Every DB read is done — the scrape stages to SQLite and touches no database.
     # Release the pooled connection now: held open across a ~1.5h scrape it goes idle,
     # the Supabase pooler / home NAT silently drops it, and closing it later raises a
     # spurious SQLAlchemy error at the end of an otherwise-clean run. `locations` are
     # already-loaded ORM rows and stay readable detached (expire_on_commit=False).
     await db.close()
-
-    # Every (location, keyword) pair that gave up after both main-pass attempts
-    # lands here — shared across workers, appended with no `await` between check
-    # and append so it's safe without a lock. See the backlog pass below.
-    misses: list = []
 
     try:
         async with async_playwright() as pw:
@@ -543,59 +620,123 @@ async def run_tenant(
                 warn_if_co_located(locations, "orchestrator")
                 tasks = [
                     asyncio.create_task(_worker(
-                        w, provider, browser, seed, queue, kw_map, competitor_list, done,
-                        stg, stats, total, tid, job_id, cap, misses,
+                        w, provider, browser, seed, queue, kw_map, competitor_list,
+                        finished, popped, stg, stats, total, tid, job_id, cap,
                     ))
                     for w in range(1, n_workers + 1)
                 ]
                 await asyncio.gather(*tasks)
 
-                # Backlog pass: one more look at everything the main pass gave up
-                # on, now that the main queue is fully drained (so this can't
+                # The pool has returned — which means EITHER the queue is empty OR
+                # every worker gave up. Only the queue can say which.
+                unattempted = _drain(queue)
+                misses = _missing(popped, kw_map, finished)
+                n_missed = sum(len(kws) for _, kws in misses)
+
+                # Backlog pass: one more look at everything the main pass left
+                # unanswered, now that the main queue is fully drained (so this can't
                 # starve stores still waiting their first attempt). Same browser,
                 # so no new launch overhead.
-                if misses:
+                #
+                # NOT run when stores were left unattempted: that means every worker
+                # lost its session, and a backlog pool would open straight into the
+                # same wall. The run ends `partial` and --resume picks all of it up.
+                if misses and unattempted:
+                    logger.warning(
+                        f"orchestrator: the workers stopped with {len(unattempted)} "
+                        f"stores untouched — skipping the backlog pass ({n_missed} "
+                        f"pairs); --resume continues from here"
+                    )
+                elif misses:
                     logger.info(
-                        f"orchestrator: main pass done — {len(misses)} misses, "
-                        f"running one backlog pass to close them"
+                        f"orchestrator: main pass done — {n_missed} pairs missing "
+                        f"across {len(misses)} stores, running one backlog pass"
                     )
                     retry_queue: asyncio.Queue = asyncio.Queue()
                     for item in misses:
                         retry_queue.put_nowait(item)
                     retry_tasks = [
                         asyncio.create_task(_retry_worker(
-                            w, provider, browser, seed, retry_queue, competitor_list,
-                            kw_map, stg, stats, tid, job_id, cap,
+                            w, provider, browser, seed, retry_queue, kw_map,
+                            competitor_list, finished, stg, stats, tid, job_id, cap,
                         ))
                         for w in range(1, min(n_workers, len(misses)) + 1)
                     ]
                     await asyncio.gather(*retry_tasks)
                     logger.info(
                         f"orchestrator: backlog pass done — "
-                        f"{stats.get('recovered', 0)}/{len(misses)} recovered"
+                        f"{stats['recovered']}/{n_missed} recovered"
                     )
+                unrecovered = _missing(popped, kw_map, finished)
             finally:
                 await browser.close()
-        staging.update_stats(stg, stats, total)
-        staging.finish_run(stg, "success")
     except Exception as e:
         staging.update_stats(stg, stats, total)
-        staging.finish_run(stg, "failed", str(e))
+        staging.finish_run(stg, outcome.FAILED, str(e))
+        staging.close(stg)
         logger.error(f"orchestrator: tenant {tid} run failed: {e}")
         raise
+
+    # ── How did it end? Decided from coverage, not from having got this far. ──
+    pairs_done = len(scope & finished)
+    n_unrecovered = sum(len(kws) for _, kws in unrecovered)
+    status = outcome.decide(
+        expected=len(scope), done=pairs_done,
+        done_this_run=pairs_done - done_before,
+        unattempted_stores=len(unattempted),
+    )
+    note = outcome.describe(
+        expected=len(scope), done=pairs_done, unattempted_stores=len(unattempted),
+        stores_total=total, unrecovered=n_unrecovered, unit="keyword-store",
+    )
+    stats.update(pairs_total=len(scope), pairs_done=pairs_done,
+                 unattempted=len(unattempted), unrecovered=n_unrecovered)
+    try:
+        staging.update_stats(stg, stats, total)
+        staging.finish_run(stg, status,
+                           None if status == outcome.SUCCESS else f"{status}: {note}")
     finally:
         staging.close(stg)
 
-    summary.update(snapshots=stats["snapshots"], rows=stats["rows"],
-                   errors=stats["errors"], skipped=stats["skipped"], status="success")
-    logger.info(
-        f"orchestrator: tenant {tid} done — {stats['snapshots']} snapshots, "
-        f"{stats['rows']} rows, {stats['errors']} errors, {stats['skipped']} skipped"
+    summary.update(
+        snapshots=stats["snapshots"], rows=stats["rows"], errors=stats["errors"],
+        skipped=stats["skipped"], status=status, note=note,
+        blocked=stats["blocked"], recovered=stats["recovered"],
+        unattempted=len(unattempted), unrecovered=n_unrecovered,
+        pairs_total=len(scope), pairs_done=pairs_done,
+        coverage_pct=outcome.coverage_pct(pairs_done, len(scope)),
     )
+    # Four numbers, because they mean four different things:
+    #   blocked      we hit a rate limit and waited; costs time, not data
+    #   errors       a request genuinely failed (it may have been recovered later)
+    #   unrecovered  pairs unanswered at stores that were reached <- data missing
+    #   unattempted  stores no worker lived to take               <- data missing
     logger.info(
-        f"orchestrator: staged to {stg['path'].name} — NOT yet in the database. "
-        f"Push it with:  python -m cli scrape load"
+        f"orchestrator: tenant {tid} {status.upper()} — {note} · "
+        f"{stats['snapshots']} snapshots, {stats['rows']} rows, "
+        f"{stats['blocked']} blocked (waited out), {stats['errors']} errors, "
+        f"{stats['skipped']} skipped"
     )
+    # A count is not actionable — name what is missing.
+    if unrecovered:
+        logger.warning(
+            f"orchestrator: {n_unrecovered} (store, keyword) pair(s) got no answer:"
+        )
+        for loc, kws in unrecovered[:20]:
+            logger.warning(f"    {loc.merchant_id}  {loc.city}  {', '.join(kws)}")
+        if len(unrecovered) > 20:
+            logger.warning(f"    ... and {len(unrecovered) - 20} more stores")
+    if status == outcome.SUCCESS:
+        logger.info(
+            f"orchestrator: staged to {stg['path'].name} — NOT yet in the database. "
+            f"Push it with:  python -m cli scrape load"
+        )
+    else:
+        logger.warning(
+            f"orchestrator: {stg['path'].name} is {status} and will NOT be auto-loaded. "
+            f"Continue it with --resume, or load what it has with "
+            f"`python -m cli scrape load --file {staging.ref(stg['path'])}`"
+        )
     return summary
 
 

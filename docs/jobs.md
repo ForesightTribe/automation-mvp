@@ -189,7 +189,7 @@ records **what to run, when, and how it went**, and points at the detail row via
 | `log_path` | path to this run's log file |
 | `peak_rss_mb` | child **and its descendants** — how you size lane slots |
 | `ref_job_id` | → `scrape_jobs.id` / `explorer_runs.id` |
-| `error` | short reason (`auth_expired`, `oom`, `timeout`, `runner_died`, exception head) |
+| `error` | short reason (`auth_expired`, `partial`, `oom`, `timeout`, `runner_died`, exception head). `partial` = a public scrape that ran but left gaps (exit code 4): its data is on disk, not loaded — re-queue with `resume=true`. See [staging.md](staging.md). |
 | `started_at` / `completed_at` / `created_at` | |
 
 **Overlap guard** — the DB refuses to queue a second run of the same job for the same

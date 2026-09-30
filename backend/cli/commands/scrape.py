@@ -1267,14 +1267,24 @@ async def _auto_load(summary: dict, no_load: bool) -> None:
     name = summary.get("staging_file")
     if not name:
         return
-    if summary.get("status") != "success":
-        console.print(
-            f"[yellow]Not auto-loading {name} — the run didn't finish cleanly.[/yellow] "
-            f"Review with [bold]cli scrape staged[/bold], then load or discard it."
-        )
-        return
 
     from scraper.public import loader, staging
+
+    if summary.get("status") != "success":
+        # `partial` = stores left unattempted or coverage under the floor; `failed` =
+        # nothing scraped. Either way the file stays on disk: --resume finishes it,
+        # and only a finished run is pushed without a human looking at it.
+        ref = staging.ref(name)
+        console.print(
+            f"[yellow]Not auto-loading {name}[/yellow] — the run is "
+            f"[bold]{summary.get('status')}[/bold]: {escape(summary.get('note') or '')}"
+        )
+        console.print(
+            f"  continue it : re-run the same command with [bold]--resume[/bold]\n"
+            f"  load as-is  : [bold]python -m cli scrape load --file {ref}[/bold]\n"
+            f"  throw away  : [bold]python -m cli scrape discard --file {ref}[/bold]"
+        )
+        return
 
     try:
         path = staging.resolve(name)
@@ -1334,16 +1344,65 @@ async def _public_run(
     table.add_column("Locations", justify="right")
     table.add_column("Snapshots", justify="right")
     table.add_column("Rows", justify="right")
-    table.add_column("Skipped", justify="right")
-    table.add_column("Errors", justify="right")
+    _public_outcome_columns(table)
     for s in summaries:
         table.add_row(
             s["tenant_id"][:8], s.get("mp_slug", mp_slug),
             str(s["keywords"]), str(s["locations"]),
-            str(s["snapshots"]), str(s["rows"]), str(s.get("skipped", 0)),
-            f"[red]{s['errors']}[/red]" if s["errors"] else "0",
+            str(s["snapshots"]), str(s["rows"]),
+            *_public_outcome_cells(s),
         )
     console.print(table)
+    _exit_on_public_outcome(summaries)
+
+
+def _public_outcome_columns(table: Table) -> None:
+    """The columns that say whether a public scrape is WHOLE — shared by the keyword
+    and own-SKU summaries so the two read the same way."""
+    table.add_column("Coverage", justify="right")
+    table.add_column("Blocked", justify="right")
+    table.add_column("Errors", justify="right")
+    table.add_column("Missing", justify="right")
+    table.add_column("Status")
+
+
+def _public_outcome_cells(s: dict) -> list[str]:
+    """Coverage · blocked · errors · missing · status for one run summary.
+
+    `Missing` is the only column that means data is absent: pairs that failed even
+    after the backlog retry, plus whole stores no worker lived to reach. `Blocked`
+    (rate limits waited out) and `Errors` (failed requests, often recovered by the
+    backlog pass) cost time, not necessarily data."""
+    status = s.get("status") or "?"
+    colour = {"success": "green", "skipped": "dim", "partial": "yellow",
+              "failed": "red"}.get(status, "yellow")
+    cov = s.get("coverage_pct")
+    missing = []
+    if s.get("unrecovered"):
+        missing.append(f"{s['unrecovered']:,} pairs")
+    if s.get("unattempted"):
+        missing.append(f"{s['unattempted']:,} stores")
+    return [
+        "[dim]—[/dim]" if cov is None else f"{cov}%",
+        str(s.get("blocked", 0)),
+        str(s.get("errors", 0)),
+        f"[red]{' + '.join(missing)}[/red]" if missing else "0",
+        f"[{colour}]{status}[/{colour}]",
+    ]
+
+
+def _exit_on_public_outcome(summaries: list[dict]) -> None:
+    """Exit non-zero unless every run was a clean success (or had nothing to do).
+
+    The runner supervises this command as a subprocess and sees ONLY its exit code.
+    Exiting 0 regardless is what let a scrape that reached 0 of 169 stores show green
+    in the jobs table — so no alert, and no overdue-schedule warning either. `partial`
+    gets its own code so the jobs table can say so."""
+    from scraper.public import outcome
+
+    code = outcome.exit_code([s.get("status") for s in summaries])
+    if code:
+        raise typer.Exit(code)
 
 
 @app.command("public-skus")
@@ -1403,16 +1462,16 @@ async def _public_skus(
     table.add_column("Brands", justify="right")
     table.add_column("Locations", justify="right")
     table.add_column("SKU Rows", justify="right")
-    table.add_column("Skipped", justify="right")
-    table.add_column("Errors", justify="right")
+    _public_outcome_columns(table)
     for s in summaries:
         table.add_row(
             s["tenant_id"][:8], s.get("mp_slug", mp_slug),
             str(s["brands"]), str(s["locations"]),
-            str(s["rows"]), str(s.get("skipped", 0)),
-            f"[red]{s['errors']}[/red]" if s["errors"] else "0",
+            str(s["rows"]),
+            *_public_outcome_cells(s),
         )
     console.print(table)
+    _exit_on_public_outcome(summaries)
 
 
 def _print_public_result(platform: str, result: dict) -> None:
@@ -1502,6 +1561,10 @@ def staged_list(
     table.add_column("MP")
     table.add_column("Kind")
     table.add_column("Stores", justify="right")
+    # Pairs answered ÷ pairs the run set out to do. "Stores" alone cannot say a run
+    # is whole — a store counts after ONE keyword. Blank on files staged before the
+    # pair counts existed.
+    table.add_column("Cover", justify="right")
     table.add_column("Rows", justify="right")
     table.add_column("Err", justify="right")
     table.add_column("State")
@@ -1522,10 +1585,15 @@ def staged_list(
         status = {"success": "[green]ok[/green]", "failed": "[red]failed[/red]"} \
             .get(r["status"], f"[yellow]{r['status']}[/yellow]")
         where = "[green]loaded[/green]" if loaded else "[yellow]pending[/yellow]"
+        p_done, p_want = r.get("pairs_done"), r.get("pairs_total")
+        cover = "[dim]—[/dim]"
+        if p_done is not None and p_want:
+            pct = round(p_done / p_want * 100, 1)
+            cover = f"{pct}%" if r["status"] == "success" else f"[yellow]{pct}%[/yellow]"
         table.add_row(
             date, tm[:5], r["mp_slug"],
             r["kind"].replace("public_", ""),
-            stores, f"{r['rows']:,}", err_txt,
+            stores, cover, f"{r['rows']:,}", err_txt,
             f"{status} · {where}",
             staging.ref(r["path"]),
         )
@@ -1537,8 +1605,9 @@ def staged_list(
                       f"Push with [bold]python -m cli scrape load[/bold]")
     if n_bad:
         console.print(
-            f"[red]{n_bad} pending file(s) did not finish cleanly.[/red] Review before "
-            f"loading — drop one with [bold]python -m cli scrape discard --file <name>[/bold]"
+            f"[red]{n_bad} pending file(s) did not finish cleanly.[/red] Finish one by "
+            f"re-running its scrape with [bold]--resume[/bold], or review before loading — "
+            f"drop one with [bold]python -m cli scrape discard --file <name>[/bold]"
         )
 
 

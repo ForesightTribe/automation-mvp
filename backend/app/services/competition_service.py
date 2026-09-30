@@ -44,6 +44,16 @@ def _kind_cond(kind: str) -> list:
     return [SearchListing.is_combo.is_(False)]
 
 
+# Only searches that RETURNED RESULTS. Since 2026-09-30 the keyword scrape also stores a
+# snapshot for a search that came back empty (total_results = 0, rank and SoV NULL), so
+# "this keyword returns nothing at this store" can be told apart from "never scraped".
+# Those rows are an audit record, not a measurement: avg() already skips their NULLs, but
+# a bare count() would include them, and "avg share over N searches" would then quote an
+# N larger than the number of searches the average was taken over. Every snapshot query
+# below that reports a sample count carries this condition.
+_HAS_RESULTS = SearchSnapshot.brand_sov.is_not(None)
+
+
 # Per-row price at the pack's display basis: ₹/100 ml, ₹/100 g, ₹/piece. NULL when
 # the pack is unparseable, heterogeneous (pack_uom ""), or size 0 — so the aggregate
 # bands below ignore exactly the rows that can't be compared, without dropping their
@@ -89,6 +99,7 @@ async def get_share_of_voice(
         SearchSnapshot.brand_slug.in_(own),
         SearchSnapshot.scraped_at >= lo,
         SearchSnapshot.scraped_at < hi,
+        _HAS_RESULTS,
     ]
     if marketplaces:
         conditions.append(SearchSnapshot.mp_slug.in_(marketplaces))
@@ -213,6 +224,7 @@ async def get_rank_matrix(
         SearchSnapshot.brand_slug.in_(own),
         SearchSnapshot.scraped_at >= lo,
         SearchSnapshot.scraped_at < hi,
+        _HAS_RESULTS,
     ]
     if marketplaces:
         cond.append(SearchSnapshot.mp_slug.in_(marketplaces))

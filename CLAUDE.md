@@ -402,6 +402,11 @@ on marketplace). Fully per-tenant and DB-driven. Deep dive + status:
   longer dies with the database, and the scrape phase needs **zero** DB connections.
   A scraped file sitting unloaded is the new failure mode — `cli scrape staged` lists
   them. See [docs/staging.md](docs/staging.md).
+- **A public scrape's status comes from COVERAGE** (`scraper/public/outcome.py`), not
+  from having finished: `success` / `partial` (stores unattempted or under the
+  `PUBLIC_MIN_COVERAGE_PCT` floor — kept on disk, NOT auto-loaded, finish with `--resume`,
+  CLI exit 4) / `failed` (nothing scraped, exit 1). Never stamp a run `success` because
+  the worker pool returned — a pool returns when every worker has died, too.
 - **Orchestrators**: `scraper/public/orchestrator.py` (keyword, `run_tenant`/`run_all`)
     - `scraper/public/targeted.py` (brand, `run_targeted`/`run_all_targeted`) — worker
       pool (`--workers`), `--resume` continues an interrupted run (reads the staging file,

@@ -37,6 +37,13 @@ class Settings(BaseSettings):
     # loader deliberately holds one long all-or-nothing transaction.
     DB_IDLE_TX_TIMEOUT_S: int = 0
 
+    # --- Public scrapes (see scraper/public/outcome.py) ---
+    # Coverage floor: a public scrape that finished fewer than this % of its
+    # (keyword|brand, store) pairs ends `partial` — kept on disk, not auto-loaded,
+    # continued with --resume. Below the floor the data is a hole, not a snapshot;
+    # loading it silently is how a half-scraped run passed for a whole one.
+    PUBLIC_MIN_COVERAGE_PCT: float = 90.0
+
     # --- Job runner (see docs/jobs.md) ---
     # Absolute log root. MUST be absolute: the runner's CWD under systemd is not
     # backend/, so a relative "logs/" would resolve to /logs and fail silently.

@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS run (
     mp_slug       TEXT,
     started_at    TEXT NOT NULL,
     completed_at  TEXT,
-    status        TEXT NOT NULL,      -- running | success | failed
+    status        TEXT NOT NULL,      -- running | success | partial | failed
     error         TEXT,
     loaded_at     TEXT,               -- NULL until pushed to Postgres
     -- Quality signals, so `cli scrape staged` can show whether a run is worth
@@ -64,7 +64,15 @@ CREATE TABLE IF NOT EXISTS run (
     stores_total  INTEGER,
     stores_done   INTEGER,
     errors        INTEGER,
-    skipped       INTEGER
+    skipped       INTEGER,
+    -- Coverage, in PAIRS — (keyword, store) or (brand, store). `stores_done` alone
+    -- cannot say whether a run is whole: a store counts as done after ONE keyword.
+    -- See scraper/public/outcome.py.
+    pairs_total   INTEGER,            -- what the run set out to do
+    pairs_done    INTEGER,            -- got a real answer (incl. "nothing here")
+    unattempted   INTEGER,            -- stores never taken off the queue
+    unrecovered   INTEGER,            -- pairs that failed the main pass AND the retry
+    blocked       INTEGER             -- rate-limit blocks waited out (time, not data)
 );
 
 CREATE TABLE IF NOT EXISTS search_snapshots (
@@ -108,7 +116,21 @@ CREATE TABLE IF NOT EXISTS sku_snapshots (
     variant_id    TEXT
 );
 
--- Resume reads these: (keyword, lat, lon) for the keyword scrape, (lat, lon) for skus.
+-- Own-SKU scrape only: every (brand, store) pair that got a real answer, WITH OR
+-- WITHOUT products. `sku_snapshots` cannot serve as that record on its own — a store
+-- that does not list the brand writes no rows, so it looked identical to a store that
+-- was never scraped, and --resume re-scraped every one of them. (The keyword scrape
+-- needs no such table: it writes a snapshot row even for an empty search.)
+-- Local bookkeeping; never loaded into Postgres.
+CREATE TABLE IF NOT EXISTS pairs_done (
+    key   TEXT NOT NULL,              -- brand_slug
+    lat   REAL NOT NULL,
+    lon   REAL NOT NULL,
+    n_rows INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (key, lat, lon)
+);
+
+-- Resume reads these: (keyword, lat, lon) for the keyword scrape, (brand, lat, lon) for skus.
 CREATE INDEX IF NOT EXISTS ix_snap_resume ON search_snapshots(keyword, lat, lon);
 CREATE INDEX IF NOT EXISTS ix_sku_resume  ON sku_snapshots(lat, lon);
 CREATE INDEX IF NOT EXISTS ix_listing_snap ON search_listings(snapshot_local_id);
@@ -133,7 +155,10 @@ def _connect(path: Path) -> sqlite3.Connection:
     _add_missing(conn, "run",
                  [("stores_total", "INTEGER"), ("stores_done", "INTEGER"),
                   ("errors", "INTEGER"), ("skipped", "INTEGER"),
-                  ("mp_slug", "TEXT")])
+                  ("mp_slug", "TEXT"),
+                  ("pairs_total", "INTEGER"), ("pairs_done", "INTEGER"),
+                  ("unattempted", "INTEGER"), ("unrecovered", "INTEGER"),
+                  ("blocked", "INTEGER")])
     _pack_cols = [("pack_raw", "TEXT"), ("pack_size", "REAL"),
                   ("pack_uom", "TEXT"), ("pack_count", "INTEGER")]
     _add_missing(conn, "search_listings", _pack_cols)
@@ -203,11 +228,18 @@ def open_run(path: Path | str) -> dict:
 
 def update_stats(stg: dict, stats: dict, stores_total: int | None = None) -> None:
     """Record run progress on the file so `scrape staged` can show whether it went
-    well. Safe to call repeatedly; the orchestrators call it once at the end."""
+    well. Safe to call repeatedly; the orchestrators call it once at the end.
+
+    The pair counts are what say whether the run is WHOLE — see outcome.py. They are
+    None on a run that raised before its accounting ran."""
     stg["conn"].execute(
-        "UPDATE run SET stores_total=?, stores_done=?, errors=?, skipped=? WHERE job_id=?",
+        "UPDATE run SET stores_total=?, stores_done=?, errors=?, skipped=?, "
+        "pairs_total=?, pairs_done=?, unattempted=?, unrecovered=?, blocked=? "
+        "WHERE job_id=?",
         (stores_total, stats.get("processed"), stats.get("errors"),
-         stats.get("skipped"), stg["job_id"]),
+         stats.get("skipped"), stats.get("pairs_total"), stats.get("pairs_done"),
+         stats.get("unattempted"), stats.get("unrecovered"), stats.get("blocked"),
+         stg["job_id"]),
     )
     stg["conn"].commit()
 
@@ -306,12 +338,21 @@ async def save_search(stg: dict, result: dict, tenant_id, job_id=None) -> int:
 async def save_skus(stg: dict, listings: list[dict], brand_slug: str, tenant_id,
                     job_id=None, *, merchant_id: str = "", city: str = "",
                     lat: float | None = None, lon: float | None = None) -> int:
-    """Stage one store's own-brand listings. Mirrors `bl_sku_storage.save_skus`."""
+    """Stage one store's own-brand listings. Mirrors `bl_sku_storage.save_skus`.
+
+    Called for EVERY answered (brand, store) pair, including one with no listings:
+    the `pairs_done` marker written alongside is what records "this store was
+    scraped and does not list the brand", in the same transaction as the rows."""
     scraped_at = now_ist().isoformat()
     tid, jid = str(tenant_id), str(job_id or stg["job_id"])
 
     async with stg["lock"]:
         conn = stg["conn"]
+        if lat is not None and lon is not None:
+            conn.execute(
+                "INSERT OR REPLACE INTO pairs_done (key, lat, lon, n_rows) VALUES (?,?,?,?)",
+                (brand_slug, lat, lon, len(listings)),
+            )
         conn.executemany(
             """INSERT INTO sku_snapshots
                (tenant_id, job_id, mp_slug, brand_slug, platform_product_id,
@@ -351,9 +392,23 @@ def done_pairs(stg: dict) -> set[tuple]:
 
 
 def done_stores(stg: dict) -> set[tuple]:
-    """(lat, lon) already staged — the targeted scrape's resume set."""
+    """(lat, lon) with own-SKU rows staged. Kept for callers that only want "which
+    stores have data"; resume uses `done_sku_pairs`."""
     return {(r["lat"], r["lon"]) for r in
             stg["conn"].execute("SELECT DISTINCT lat, lon FROM sku_snapshots")}
+
+
+def done_sku_pairs(stg: dict) -> set[tuple]:
+    """(brand_slug, lat, lon) already answered — the own-SKU scrape's resume set.
+
+    The markers, plus any pair that has rows: a file staged before `pairs_done`
+    existed has rows and no markers, and must still resume without redoing them."""
+    c = stg["conn"]
+    out = {(r["key"], r["lat"], r["lon"]) for r in
+           c.execute("SELECT key, lat, lon FROM pairs_done")}
+    out |= {(r["brand_slug"], r["lat"], r["lon"]) for r in
+            c.execute("SELECT DISTINCT brand_slug, lat, lon FROM sku_snapshots")}
+    return out
 
 
 # ── discovery / retention ────────────────────────────────────────────────────

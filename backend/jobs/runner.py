@@ -33,6 +33,7 @@ from app.utils.logger import logger
 from jobs import queue as job_queue
 from jobs.types import label_for, spec_for
 from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE
+from scraper.public.outcome import PARTIAL_EXIT_CODE
 
 try:
     import psutil
@@ -55,6 +56,7 @@ _TAIL_LINES = 8
 
 _REASON_TEXT = {
     "auth_expired": "could not log in to the platform",
+    "partial": "finished with gaps — kept on disk, not loaded; re-run it with resume=true",
     "oom": "ran out of memory and was killed",
     "timeout": "ran past its time limit and was stopped",
     "runner_died": "the runner was killed while this was running",
@@ -233,6 +235,10 @@ def _classify_failure(returncode: int | None, timed_out: bool, interrupted: bool
     # another anonymous exit_1.
     if returncode == AUTH_EXPIRED_EXIT_CODE:
         return "auth_expired"
+    # A public scrape that ran but left gaps — stores never attempted, or coverage
+    # under the floor. Its data is on disk, not loaded. See scraper/public/outcome.py.
+    if returncode == PARTIAL_EXIT_CODE:
+        return "partial"
     return f"exit_{returncode}"
 
 
