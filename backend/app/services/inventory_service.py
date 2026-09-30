@@ -10,8 +10,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import AsyncSessionLocal
 from app.utils.cache import ttl_cache
 
-# The public scrape lands once a day, so these answers change once a day.
-_DAY = 24 * 60 * 60
+# Public-scrape aggregates. Long enough to carry a reading session, short
+# enough that a scrape landing is reflected the same working day.
+_TTL = 3 * 60 * 60
 
 from app.dependencies import Pagination
 from app.utils.time import now_ist
@@ -326,7 +327,7 @@ async def get_availability(
     return Page.build(out, total, pagination)
 
 
-@ttl_cache(_DAY)
+@ttl_cache(_TTL)
 async def get_distribution_by_marketplace(
     session: AsyncSession,
     *,
@@ -441,7 +442,7 @@ async def _marketplace_reach(
     )
 
 
-@ttl_cache(_DAY)
+@ttl_cache(_TTL)
 async def get_distribution(
     session: AsyncSession,
     *,

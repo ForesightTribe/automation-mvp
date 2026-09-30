@@ -400,7 +400,11 @@ async def get_campaigns_daily(
 # because the cache key is built by binding arguments to the signature: a
 # var-keyword wrapper cannot fill in defaults a caller omitted, so every call
 # would land on its own entry and nothing would ever hit.
-@ttl_cache(24 * 60 * 60)
+# ⚠️ Short despite the window being closed. A user cannot change what a
+# campaign spent yesterday, but the MARKETING SCRAPE re-scrapes the last seven
+# days, so those figures are revised overnight. A day-long entry would serve
+# the pre-revision numbers well past the correction.
+@ttl_cache(30 * 60)
 async def _campaigns_settled(
     session: AsyncSession,
     *,
