@@ -75,7 +75,7 @@ const PILL_OFF =
  */
 const automationBlock = (mp) =>
 	!mp.connected
-		? `${mp.name} — not connected yet`
+		? `${mp.name} — no data for this brand yet`
 		: !mp.automations
 			? `Automations aren't available on ${mp.name} yet`
 			: null;
@@ -98,8 +98,7 @@ export const MarketplacePills = () => {
 	// the pages' own choice, leaving the global selection untouched.
 	const { pathname } = useLocation();
 	const single = SINGLE_MARKETPLACE_PATHS.includes(pathname);
-	const allowAll =
-		!single && !NO_ALL.some((p) => pathname.startsWith(p));
+	const allowAll = !single && !NO_ALL.some((p) => pathname.startsWith(p));
 	useEffect(() => {
 		if (single && !isLoading) enterAutomationPage();
 		// Entry only — re-running on every selection change would override the pill the
@@ -133,7 +132,7 @@ export const MarketplacePills = () => {
 					? automationBlock(mp)
 					: mp.connected
 						? null
-						: `${mp.name} — not connected yet`;
+						: `${mp.name} — no data for this brand yet`;
 				const on = single
 					? mp.slug === automation
 					: !allSelected && selected.includes(mp.slug);
