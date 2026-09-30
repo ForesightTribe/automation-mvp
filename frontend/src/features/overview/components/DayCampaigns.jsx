@@ -24,7 +24,7 @@ const ROWS_SHOWN = 5;
 
 /** RoAS and budget use are ratios the row carries rather than the API. */
 const VALUE = {
-	marketplace: (c) => c.marketplace ?? "",
+	marketplace: (c) => c.platform ?? "",
 	name: (c) => (c.name ?? String(c.campaign_id)).toLowerCase(),
 	ad_sales: (c) => c.ad_sales ?? 0,
 	budget_consumed: (c) => c.budget_consumed ?? 0,
@@ -84,7 +84,7 @@ export const DayCampaigns = ({ day }) => {
 
 	// The channel column earns its width only where campaigns run on more than
 	// one — otherwise it repeats the same word down every row.
-	const showChannel = new Set(all.map((c) => c.marketplace)).size > 1;
+	const showChannel = new Set(all.map((c) => c.platform)).size > 1;
 
 	if (!all.length) return null;
 
@@ -159,15 +159,13 @@ export const DayCampaigns = ({ day }) => {
 								<span className="flex w-24 min-w-0 items-center gap-1.5 text-sm text-content">
 									<MarketplaceMark
 										marketplace={{
-											slug: c.marketplace,
-											name: marketplaceName(
-												c.marketplace,
-											),
+											slug: c.platform,
+											name: marketplaceName(c.platform),
 										}}
 										size={16}
 									/>
 									<span className="truncate">
-										{marketplaceName(c.marketplace)}
+										{marketplaceName(c.platform)}
 									</span>
 								</span>
 							)}

@@ -19,10 +19,104 @@ scraped_at) match the Blinkit tables so both behave the same for re-runs.
 import uuid
 from datetime import date, datetime
 
-from sqlalchemy import Index
+from sqlalchemy import JSON, Column, Index
 
 from app.utils.time import now_ist
 from sqlmodel import Field, SQLModel
+
+
+class ZeptoAdCampaign(SQLModel, table=True):
+    """The campaign CATALOGUE — one row per campaign, its CURRENT configuration.
+
+    Zepto's answer to `blinkit_ad_campaigns`, and filled the same way: the daily ads scrape
+    reads each product-ads campaign's full detail (`GET /ads-bff/api/v1/campaigns/pla/{id}`),
+    and the campaign manager's Refresh (`cm.sync_campaigns -m zepto`) re-reads the cheap
+    list fields in between. Upserted in place — a current-state table, NOT a time series.
+
+    Why it exists: every automation surface needs a campaign's setup — status, budget,
+    cities, keywords — and `zepto_ad_campaign_daily` is metrics. Its `status` is a
+    scrape-time snapshot stamped on each day's row (ZC-A11), never a campaign's history, so
+    nothing here is ever derived from it.
+
+    Two groups of columns, refreshed by different callers:
+      * LIST fields (name, status, type, budgets, dates) — the campaign list returns them
+        for EVERY campaign, Display and auto-bid included; both the scrape and the Refresh
+        write them.
+      * DETAIL fields (targeting, products) — only from the per-campaign detail, only for
+        PLA campaigns, only by the scrape. `detail_scraped_at` says when; a list-only
+        refresh must never blank them (the Blinkit V7 lesson, `repo.upsert_campaign_catalog`).
+    """
+
+    __tablename__ = "zepto_ad_campaigns"
+
+    __table_args__ = (Index("idx_zac_tenant", "tenant_id"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    campaign_id: int
+    campaign_name: str | None = None
+    brand_id: str | None = None
+    # Zepto's own word, CURRENT (ACTIVE | PAUSED | DAILY_BUDGET_EXHAUSTED |
+    # INSUFFICIENT_WALLET_BALANCE | ENDED). Canonicalise with marketplaces.canonical_status.
+    status: str | None = None
+    campaign_type: str | None = None          # PLA | Display
+    campaign_sub_type: str | None = None      # AUCTION_UP_SELL | PCA | PDA
+    bid_targeting_type: str | None = None     # KEYWORD | AUTO | NOT_SET — automations: KEYWORD only
+    daily_budget: int | None = None
+    lifetime_budget: int | None = None        # None when Zepto says -1 (no lifetime budget)
+    campaign_start_date: datetime | None = None
+    campaign_end_date: datetime | None = None
+
+    # ── DETAIL fields (PLA only, scrape only) ─────────────────────────────────
+    city_targeting: str | None = None         # ALL | MANUAL
+    # MANUAL: [{"id": <zepto city uuid>, "name": "Bengaluru", "included": true}]; ALL: null.
+    # Names come from targeting-options; the canonical `cities.id` is resolved at READ time
+    # (`repo.resolve_city_ids(platform="zepto")`), exactly as Blinkit's `cities` column is.
+    cities: list | None = Field(default=None, sa_column=Column(JSON))
+    store_targeting: str | None = None        # ALL | … (a store-targeted campaign is unseen)
+    product_variant_ids: list | None = Field(default=None, sa_column=Column(JSON))
+    detail_scraped_at: datetime | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoAdCampaignKeyword(SQLModel, table=True):
+    """A campaign's configured keywords — one row per (campaign, keyword, match_type).
+
+    Zepto's answer to `blinkit_ad_campaign_keywords`. That is exactly the bid write's key
+    (`adapter.apply_bid(campaign, keyword, cpm, match_type)`), so a write-back lands on one
+    row. Current state, not a time series; a campaign's rows are replaced whole on each
+    detail read, so a keyword removed in the dashboard does not linger here.
+
+    Needed because `zepto_ad_keyword_daily` is BRAND grain — its rows carry no campaign id
+    at all — so nothing else says which campaign bids on what.
+
+    `is_negative` rows carry no bid (Zepto reports 0). `min_bid` is Zepto's own floor from
+    `POST /ads-bff/api/v1/keyword/config` — published for EXACT, PHRASE and BROAD (verified
+    2026-09-21); None when Zepto omits a keyword, which means "unknown", never "no floor".
+    """
+
+    __tablename__ = "zepto_ad_campaign_keywords"
+
+    __table_args__ = (Index("idx_zackw_tenant_campaign", "tenant_id", "campaign_id"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    campaign_id: int
+    keyword: str
+    match_type: str                           # EXACT | PHRASE | BROAD
+    is_negative: bool = False
+    bid_value: int | None = None              # the live bid (CPC, ₹); None on a negative
+    min_bid: int | None = None
+    scraped_at: datetime = Field(default_factory=now_ist)
 
 
 class ZeptoSellerSalesSummary(SQLModel, table=True):

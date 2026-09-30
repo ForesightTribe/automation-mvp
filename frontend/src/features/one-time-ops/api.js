@@ -4,10 +4,11 @@ import { api } from "../../lib/axios";
  * One-time ops — its own thin API layer over the SAME Campaign Manager endpoints the
  * Automations page uses. Deliberately not imported from features/automations: a feature
  * never reaches into another, so one page's changes can never break the other.
- *
- * No backend changes. Every call here already existed and is already used elsewhere.
  */
-const cm = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1) — and none here: every call takes `mp`, the navbar's one-marketplace
+// choice for this page (`useAutomationMarketplace`).
+const cm = (clientId, mp) => `/clients/${clientId}/campaign-manager/${mp}`;
 
 /**
  * Every campaign on the account, not just the recent ones.
@@ -17,9 +18,12 @@ const cm = (clientId) => `/clients/${clientId}/campaign-manager`;
  * the opposite — a stopped campaign is exactly what someone came to start — so the list
  * has to show everything and let status say what state each is in.
  */
-export const getCampaigns = (clientId, { days = 30 } = {}) =>
+export const getCampaigns = (clientId, mp, { days = 30 } = {}) =>
 	api.get(`/clients/${clientId}/ads/campaigns`, {
 		params: {
+			// Only this marketplace's campaigns: the list merges marketplaces server-side,
+			// and an action on the other one's id would be refused (a different namespace).
+			marketplaces: mp,
 			days,
 			limit: 500,
 			sort: "spend",
@@ -39,9 +43,9 @@ export const ONE_TIME_OPS = "one-time-ops";
 const fromHere = { params: { source: ONE_TIME_OPS } };
 
 // Pushes a budget to one campaign immediately. Enqueues a VM job, returns `{job_id}`.
-export const setBudgetNow = (clientId, campaignId, budget) =>
+export const setBudgetNow = (clientId, mp, campaignId, budget) =>
 	api.post(
-		`${cm(clientId)}/set-budget`,
+		`${cm(clientId, mp)}/set-budget`,
 		{ campaign_id: campaignId, budget },
 		fromHere,
 	);
@@ -51,17 +55,17 @@ export const setBudgetNow = (clientId, campaignId, budget) =>
  * re-submits the campaign and sets its budget, so a resume always carries one. Omitted,
  * the VM resolves it from a fresh read rather than guessing here.
  */
-export const setActivationNow = (clientId, campaignId, status, budget) =>
+export const setActivationNow = (clientId, mp, campaignId, status, budget) =>
 	api.post(
-		`${cm(clientId)}/campaigns/${campaignId}/activation`,
+		`${cm(clientId, mp)}/campaigns/${campaignId}/activation`,
 		{ status, ...(budget == null ? {} : { budget }) },
 		fromHere,
 	);
 
-// Re-reads the account's campaigns and statuses from Blinkit into the catalogue. A
-// read-only job, and the only way a campaign created today becomes visible here.
-export const refreshCampaigns = (clientId) =>
-	api.post(`${cm(clientId)}/campaigns/refresh`, null, fromHere);
+// Re-reads the account's campaigns and statuses from the marketplace into the catalogue.
+// A read-only job, and the only way a campaign created today becomes visible here.
+export const refreshCampaigns = (clientId, mp) =>
+	api.post(`${cm(clientId, mp)}/campaigns/refresh`, null, fromHere);
 
 /**
  * One campaign's targets, for the detail drawer.
@@ -70,9 +74,14 @@ export const refreshCampaigns = (clientId) =>
  * Roughly 5s for a campaign's 60-odd rows, so it is fetched only when a drawer opens
  * rather than with the list.
  */
+//
+// ⚠️ Blinkit only — `/ads/keywords` is Blinkit's per-campaign keyword performance. Zepto
+// has none (brand-grain keyword metrics), so its drawer lists the catalogue instead
+// (`getCatalogKeywords`).
 export const getCampaignTargets = (clientId, campaignId, { days = 30 } = {}) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {
+			marketplaces: "blinkit",
 			campaign_id: campaignId,
 			days,
 			limit: 100,
@@ -80,6 +89,13 @@ export const getCampaignTargets = (clientId, campaignId, { days = 30 } = {}) =>
 			order: "desc",
 		},
 	});
+
+/**
+ * Every keyword a marketplace's campaign catalogue holds, with the live bid and floor. The
+ * drawer's target list where there is no per-campaign keyword performance (Zepto).
+ */
+export const getCatalogKeywords = (clientId, mp) =>
+	api.get(`${cm(clientId, mp)}/keywords`);
 
 // Operation progress and outcomes: lib/actions.js, shared with Ad Automation. An outcome is
 // read by the operation's own `run_id` — the lookup this replaced read "the newest row for

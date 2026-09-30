@@ -99,7 +99,7 @@ export const AdsPanel = () => {
 
 	// The channel column earns its width only where campaigns run on more than
 	// one — otherwise it repeats the same word down every row.
-	const showChannel = new Set(earning.map((c) => c.marketplace)).size > 1;
+	const showChannel = new Set(earning.map((c) => c.platform)).size > 1;
 	return (
 		<section className="flex flex-col">
 			<div className="rounded-xl border border-border bg-card p-6">
@@ -185,16 +185,16 @@ export const AdsPanel = () => {
 											<span className="flex w-24 min-w-0 items-center gap-1.5 text-sm text-content">
 												<MarketplaceMark
 													marketplace={{
-														slug: c.marketplace,
+														slug: c.platform,
 														name: marketplaceName(
-															c.marketplace,
+															c.platform,
 														),
 													}}
 													size={16}
 												/>
 												<span className="truncate">
 													{marketplaceName(
-														c.marketplace,
+														c.platform,
 													)}
 												</span>
 											</span>

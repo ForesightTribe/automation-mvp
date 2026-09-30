@@ -135,6 +135,72 @@ async def complete(
     await db.commit()
 
 
+# ── The running runner's self-check (2026-09-25) ────────────────────────────
+#
+# `reap_stale` below only runs at startup and only frees rows whose runner PID has died.
+# Neither covers the case that stopped Dobra's bidding for ~8 h on 2026-09-24: the RUNNER
+# was alive, but the task driving one job had died (a DB write failed right after the
+# claim), leaving the row `running` with no argv — and the overlap guard then refused
+# every later fire of that (job_type, tenant) as a duplicate. The runner now re-checks its
+# own rows every few minutes while it runs.
+
+ORPHANED = "runner_lost_track"
+PAST_TIMEOUT = "stuck_past_timeout"
+
+
+def orphan_verdicts(rows, active_ids, now: datetime, *, grace_s: float,
+                    timeout_for, margin_s: float) -> list[tuple[Job, str]]:
+    """Which of THIS runner's `running` rows are stuck, and why. Pure.
+
+    `rows` must already be only this process's running jobs (`locked_by == worker id`);
+    `active_ids` is the set of job ids the process is actually driving right now.
+
+      * not being driven and claimed more than `grace_s` ago → `runner_lost_track`: the
+        task died, or the claim committed but the runner never got the row back. Grace
+        covers the moment between a claim and its task registering.
+      * being driven but claimed longer ago than its type's time limit + `margin_s` →
+        `stuck_past_timeout`: the subprocess watchdog kills a child at its limit, so a
+        job still open well past it is wedged in the runner itself (a DB write hanging).
+
+    `timeout_for(job_type)` returns seconds, or None for an unknown type (never judged by
+    time). Conservative by design: another process's rows are never touched here.
+    """
+    out = []
+    for job in rows:
+        since = job.locked_at or job.started_at
+        if since is None:
+            continue
+        age = (now - since).total_seconds()
+        if job.id not in active_ids:
+            if age > grace_s:
+                out.append((job, ORPHANED))
+            continue
+        limit = timeout_for(job.job_type)
+        if limit is not None and age > limit + margin_s:
+            out.append((job, PAST_TIMEOUT))
+    return out
+
+
+async def fail_orphans(db, worker_id: str, active_ids, *, grace_s: float, timeout_for,
+                       margin_s: float) -> list[tuple[Job, str]]:
+    """Mark this runner's stuck `running` rows failed (see `orphan_verdicts`), freeing the
+    overlap guard so the next fire of that job can run. Returns what it failed."""
+    rows = (
+        await db.execute(
+            select(Job).where(Job.status == JobStatus.running, Job.locked_by == worker_id)
+        )
+    ).scalars().all()
+    verdicts = orphan_verdicts(rows, set(active_ids), now_ist(), grace_s=grace_s,
+                               timeout_for=timeout_for, margin_s=margin_s)
+    for job, why in verdicts:
+        job.status = JobStatus.failed
+        job.error = why
+        job.completed_at = now_ist()
+    if verdicts:
+        await db.commit()
+    return verdicts
+
+
 async def reap_stale(db, hostname: str, pid_alive) -> int:
     """Fail any `running` job this host owns whose runner PID is gone.
 

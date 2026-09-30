@@ -98,6 +98,10 @@ MIN_BID = 10
 STATUS_ACTIVE = "ACTIVE"
 STATUS_PAUSED = "PAUSED"
 STATUS_BUDGET_EXHAUSTED = "DAILY_BUDGET_EXHAUSTED"
+# Seen in the scraped campaign table (2026-09-19), never mapped until then: 7 campaigns
+# held for an empty prepaid wallet, 2 finished.
+STATUS_WALLET_EMPTY = "INSUFFICIENT_WALLET_BALANCE"
+STATUS_ENDED = "ENDED"
 
 # The AWS WAF challenge token lives ~5 minutes (measured: alive at 4 min, dead at 6).
 # Never cached across runs — every job interval we have is longer than that, so a

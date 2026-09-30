@@ -25,10 +25,10 @@ import { usePoSummary, usePoInsights, usePoSkus, usePoExport } from "./hooks";
 
 /**
  * Purchase orders — what was ordered, how much of it arrived, and which POs still
- * have money sitting undelivered. Blinkit-only until now; Instamart is reachable by
- * picking it explicitly in the navbar's marketplace pills (see hooks.js's
- * `usePoMarketplace` — there's no blended PO view across marketplaces, so "All" or
- * a multi-select falls back to Blinkit, this page's original and default platform).
+ * have money sitting undelivered. Blinkit is the default; Instamart and Zepto are
+ * reachable by picking either explicitly in the navbar's marketplace pills (see
+ * hooks.js's `usePoMarketplace` — there's no blended PO view across marketplaces,
+ * so "All" or a multi-select falls back to Blinkit, this page's original platform).
  *
  * "Undelivered value" is short units × landing rate. On an open PO that is value still
  * to come; on a closed one it is value missed. The two are counted separately

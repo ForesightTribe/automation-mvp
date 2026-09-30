@@ -10,6 +10,8 @@ import { AutomationsTable } from "./components/AutomationsTable";
 import { AutomationWizard } from "./components/AutomationWizard";
 import { ChangeLogsModal } from "./components/ChangeLogsModal";
 import { ConfirmDialog } from "../../components/ui/ConfirmDialog";
+import { WalletBanner } from "./components/WalletBanner";
+import { useAutomationMarketplace } from "../../context/MarketplaceContext";
 import { formatCurrency, formatMeasuredAt } from "../../lib/format";
 import {
 	useBudgetSchedules,
@@ -24,6 +26,13 @@ import {
 } from "./hooks";
 import { useActiveActionFor } from "../../lib/actions";
 
+/**
+ * What each confirmation says, per action and per kind of automation.
+ *
+ * Kept together and out of the component because the wording is the point of the
+ * dialog: the two kinds of automation share four verbs, and every one of them means
+ * something different on a budget schedule than on a bid rule.
+ */
 const confirmCopy = (action, row) => {
 	const who =
 		row.kind === "campaign"
@@ -77,7 +86,8 @@ const confirmCopy = (action, row) => {
 		return {
 			title: "Put the bid back to the minimum?",
 			confirmLabel: "Reset bid",
-
+			// The engine refuses this while the rule is running and says why. Saying the
+			// same thing here saves a request that is going to come back a 409.
 			blocked:
 				row.status === "running"
 					? "This automation is running right now. Pause it first, or the next check will bid it straight back up."
@@ -120,8 +130,10 @@ const confirmCopy = (action, row) => {
  * Anything else keeps the server's own message, which is more specific than a generic
  * sentence would be.
  */
+// `lib/axios` rejects with `{ status, data }`, not axios's `response` — reading
+// `err.response.status` here never matched, so a 409 surfaced as the raw server sentence.
 const conflictMessage = (err, what) =>
-	err?.response?.status === 409
+	err?.status === 409
 		? `Another action is already running, so this one was not queued. Wait for it to finish, then try to ${what} again.`
 		: (err?.message ?? `Could not ${what}.`);
 
@@ -134,6 +146,9 @@ const conflictMessage = (err, what) =>
  * controls, and a full-screen change-log overlay. Campaign Manager's own
  * page is untouched; this is a second, first-class way to reach the same
  * automations. No row-selection/bulk actions — that isn't built yet.
+ *
+ * ONE marketplace at a time, the navbar's choice (ZC-E1): lists, the wizard, the logs, the
+ * activity list and Refresh all act on it, and switching marketplace switches all of them.
  */
 export const AutomationsPage = () => {
 	const {
@@ -147,7 +162,14 @@ export const AutomationsPage = () => {
 		error: bidRulesError,
 	} = useBidRules();
 
-	const [channel, setChannel] = useState("");
+	// Which marketplace this page acts on is the NAVBAR's choice (one at a time here — see
+	// MarketplaceContext); every list and action below is already scoped to it. The page's
+	// own channel pills are gone: two controls for one question could disagree.
+	const {
+		marketplace,
+		name: mpName,
+		keywordBiddingOff,
+	} = useAutomationMarketplace();
 	const [type, setType] = useState("");
 	const [status, setStatus] = useState("");
 	const [wizardKind, setWizardKind] = useState(null); // null | "campaign" | "keyword"
@@ -199,12 +221,11 @@ export const AutomationsPage = () => {
 			kind: "keyword",
 		}));
 		return [...campaignRows, ...keywordRows].filter((r) => {
-			if (channel && r.platform !== channel) return false;
 			if (type && r.kind !== type) return false;
 			if (status && r.status !== status) return false;
 			return true;
 		});
-	}, [schedules, bidRules, channel, type, status]);
+	}, [schedules, bidRules, type, status]);
 
 	// Cheap enough to derive on every render, and it keeps the header honest as rows change.
 	const total = (schedules?.length ?? 0) + (bidRules?.length ?? 0);
@@ -214,9 +235,10 @@ export const AutomationsPage = () => {
 		keyword: bidRules?.length ?? 0,
 	};
 
-	const platformOf = (campaignId) =>
-		schedules?.find((s) => s.campaign_id === campaignId)?.platform ??
-		bidRules?.find((b) => b.campaign_id === campaignId)?.platform;
+	// Every row the logs show is this marketplace's: the history is read from its address.
+	// This used to look the campaign up among the automations on screen, so a row for a
+	// campaign with no automation left (or an account-level wallet note) had no channel.
+	const platformOf = () => marketplace;
 
 	/**
 	 * The store a bid rule measures position at, looked up from the rules already
@@ -268,6 +290,8 @@ export const AutomationsPage = () => {
 			setActionJob(res.job_id);
 			setActionError(null);
 		} catch (err) {
+			// Shown inside the wizard too — this toggle lives behind its overlay, where a line
+			// on the page is invisible.
 			setActionError(conflictMessage(err, "start or stop a campaign"));
 		}
 	};
@@ -329,7 +353,8 @@ export const AutomationsPage = () => {
 						Automations
 					</h1>
 					<p className="text-sm text-content-muted">
-						Budget and bid automations across channels.
+						Budget and bid automations on {mpName}. Switch
+						marketplace in the bar above.
 					</p>
 				</div>
 				<div className="flex items-center gap-2">
@@ -345,7 +370,7 @@ export const AutomationsPage = () => {
 						size="sm"
 						disabled={refreshCampaigns.isPending}
 						onClick={handleRefreshCampaigns}
-						title="Re-read the campaign list from Blinkit"
+						title={`Re-read the campaign list from ${mpName}`}
 					>
 						<RefreshCw size={14} /> Refresh Campaigns
 					</Button>
@@ -362,6 +387,8 @@ export const AutomationsPage = () => {
 					</Button>
 				</div>
 			</header>
+
+			<WalletBanner />
 
 			{/* A refusal to QUEUE, which is different from a write that was refused: nothing
 			    reached the marketplace, so there is no run to look up and the activity list
@@ -411,14 +438,22 @@ export const AutomationsPage = () => {
 								{c.blurb}
 							</p>
 						</div>
-						<Button
-							variant="brandSolid"
-							size="md"
-							className="mt-auto"
-							onClick={() => setWizardKind(c.kind)}
-						>
-							{c.cta}
-						</Button>
+						{/* Keyword automations can be switched off per marketplace (Zepto, for
+						    now): the card stays, so the option is visible, with the reason. */}
+						{c.kind === "keyword" && keywordBiddingOff ? (
+							<p className="mt-auto rounded-md bg-muted px-3 py-2 text-xs leading-relaxed text-content-muted">
+								{keywordBiddingOff}
+							</p>
+						) : (
+							<Button
+								variant="brandSolid"
+								size="md"
+								className="mt-auto"
+								onClick={() => setWizardKind(c.kind)}
+							>
+								{c.cta}
+							</Button>
+						)}
 					</div>
 				))}
 			</div>
@@ -427,8 +462,6 @@ export const AutomationsPage = () => {
 			    section as a whole sits well clear of the create CTAs above it. */}
 			<section className="mt-10 space-y-4">
 				<AutomationsFilterBar
-					channel={channel}
-					onChannel={setChannel}
 					type={type}
 					onType={setType}
 					status={status}
@@ -481,6 +514,7 @@ export const AutomationsPage = () => {
 				/* The toggle lives inside this overlay, so its result has to be reported
 				   inside it too — the page behind is not visible while it is open. */
 				activationJobId={actionJob}
+				activationError={actionError}
 				onClose={() => {
 					setWizardKind(null);
 					setEditRow(null);

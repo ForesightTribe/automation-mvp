@@ -13,6 +13,8 @@ import {
 	formatPercent,
 } from "../../../lib/format";
 import { useCampaignTargets } from "../hooks";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { bidUnit, holdReason, isLiveState } from "../../../lib/marketplaces";
 
 /**
  * Everything the account knows about one campaign, with the page's three operations
@@ -31,10 +33,20 @@ const TITLE_CASE = (s) =>
 		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
 		.join(" ");
 
-export const CampaignDrawer = ({ open, campaign, onClose, onAct, canAct }) => {
+export const CampaignDrawer = ({
+	open,
+	campaign,
+	onClose,
+	onAct,
+	canAct,
+	canSetBudget = () => true,
+	refusalOf = () => null,
+}) => {
 	const { data: targets, isLoading } = useCampaignTargets(
 		open ? campaign?.campaign_id : null,
 	);
+	const { marketplace, name: mpName } = useAutomationMarketplace();
+	const unit = bidUnit(marketplace);
 
 	if (!campaign) return null;
 
@@ -43,9 +55,45 @@ export const CampaignDrawer = ({ open, campaign, onClose, onAct, canAct }) => {
 	// ACoS is the inverse of ROAS and the number most people actually budget against, so
 	// it is derived here rather than leaving the reader to do it.
 	const acos = sales > 0 ? (spend / sales) * 100 : null;
-	const live = ["active", "running"].includes(
-		(campaign.status ?? "").toLowerCase(),
-	);
+	// On `state`, not the raw word — a held campaign (out of budget / wallet) is live.
+	const live = isLiveState(campaign.state);
+	const held =
+		campaign.state === "held" ? holdReason(campaign.status, mpName) : null;
+	const refused = refusalOf(campaign);
+	// Catalogue rows (Zepto): what the campaign bids on, no performance to show.
+	const catalog = targets?.[0]?.catalog === true;
+
+	const catalogColumns = [
+		{
+			key: "target",
+			label: "Keyword",
+			render: (t) => (
+				<div className="min-w-0">
+					<div className="truncate text-content" title={t.target}>
+						{t.target || "—"}
+					</div>
+					<div className="text-[11px] text-content-subtle">
+						{TITLE_CASE(t.match_type)}
+					</div>
+				</div>
+			),
+		},
+		{
+			key: "bid",
+			label: `Current bid (${unit.code})`,
+			align: "right",
+			sortValue: (t) => t.bid ?? 0,
+			render: (t) => (t.bid != null ? formatCurrency(t.bid) : "—"),
+		},
+		{
+			key: "min_bid",
+			label: `Min bid (${unit.code})`,
+			align: "right",
+			sortValue: (t) => t.min_bid ?? 0,
+			render: (t) =>
+				t.min_bid != null ? formatCurrency(t.min_bid) : "—",
+		},
+	];
 
 	const columns = [
 		{
@@ -109,6 +157,13 @@ export const CampaignDrawer = ({ open, campaign, onClose, onAct, canAct }) => {
 					<Button
 						size="xs"
 						variant="secondary"
+						disabled={Boolean(refused)}
+						title={
+							refused ??
+							(canSetBudget(campaign)
+								? undefined
+								: "Not accepted in this state — the dialog says why")
+						}
 						onClick={() => onAct("budget", campaign)}
 					>
 						<IndianRupee size={12} /> Set budget
@@ -123,16 +178,23 @@ export const CampaignDrawer = ({ open, campaign, onClose, onAct, canAct }) => {
 									: "Start this campaign"
 							}
 							title={
-								live
-									? "Stop this campaign now"
-									: "Start this campaign now"
+								refused ??
+								(held
+									? `${held} Stop it now to halt it completely.`
+									: live
+										? "Stop this campaign now"
+										: "Start this campaign now")
 							}
 							onChange={() =>
 								onAct(live ? "stop" : "start", campaign)
 							}
 						/>
 						<span className="text-xs text-content-muted">
-							{live ? "Running" : "Not running"}
+							{held
+								? "On hold"
+								: live
+									? "Running"
+									: "Not running"}
 						</span>
 					</div>
 				</div>
@@ -175,26 +237,38 @@ export const CampaignDrawer = ({ open, campaign, onClose, onAct, canAct }) => {
 				</div>
 			</Section>
 
+			{refused && (
+				<p className="mb-4 rounded-md border border-border bg-muted px-3 py-2 text-xs text-content-muted">
+					{refused}
+				</p>
+			)}
+
 			<Section
-				title="Targets"
+				title={catalog ? "Keywords it bids on" : "Targets"}
 				hint={targets?.length ? `${targets.length} shown` : null}
 			>
 				{isLoading && <Loading label="Loading targets…" />}
 				{!isLoading && !targets?.length && (
 					<EmptyState
 						title="No targets"
-						message="Nothing was recorded for this campaign in the selected window."
+						message={
+							marketplace === "blinkit"
+								? "Nothing was recorded for this campaign in the selected window."
+								: "The catalogue holds no keywords for this campaign yet."
+						}
 					/>
 				)}
 				{!isLoading && targets?.length > 0 && (
 					<div className="overflow-hidden rounded-lg border border-border">
 						<DataTable
-							columns={columns}
+							columns={catalog ? catalogColumns : columns}
 							rows={targets}
-							rowKey={(t, i) => `${t.target}-${i}`}
+							rowKey={(t, i) =>
+								`${t.target}-${t.match_type}-${i}`
+							}
 							maxHeight={340}
-							minWidth={620}
-							defaultSort="budget_consumed"
+							minWidth={catalog ? 420 : 620}
+							defaultSort={catalog ? "bid" : "budget_consumed"}
 						/>
 					</div>
 				)}

@@ -268,6 +268,11 @@ cli monitor heartbeat --disk-pct 90   # only complain about disk at 90%+
 | `cm_ops`      | `cm.budget_scheduler`, `cm.set_budget`, `cm.set_activation`, `cm.sync_campaigns` | latency-tolerant CM writes + the catalogue refresh |
 | `cm_bid`      | `cm.bid_optimizer`                                              | latency **is** the product |
 
+Every `cm.*` job must carry `marketplace=blinkit|zepto` — there is no default, and one without it
+fails to start (2026-09-24). Because `cm_ops` and `cm_bid` run in parallel, Zepto's budget and bid
+writes (both whole-campaign saves) are serialised per campaign by a Postgres advisory lock inside the
+adapter, so one cannot overwrite the other.
+
 Lanes run **in parallel**; each is sequential inside itself. So a 5-hour public scrape
 delays the _next public scrape_, but never the dashboard scrapes or the heartbeat.
 
@@ -484,7 +489,14 @@ scrapes from your home IP.**
 
 ### 2. A crashed job is failed, not resumed
 
-The runner's own state always recovers (reaper on startup). But a scrape killed mid-run
+The runner's own state always recovers: the reaper on startup, and — since 2026-09-25 — a
+**self-check every 3 minutes while it runs**, which fails any of its own `running` rows that
+nothing is driving any more (`error='runner_lost_track'`) or that stayed open 10 min past
+their type's time limit (`stuck_past_timeout`). Every write to a job row is retried (~14 s),
+and a job whose handling still breaks is marked `failed` (`runner_error: …`), never left
+`running`. A failed claim is logged and retried at the next poll rather than killing the
+runner. (Why: on 2026-09-24 one bid job was stranded `running` after a failed write and the
+overlap guard refused Dobra's bidding for ~8 h, until a restart.) But a scrape killed mid-run
 is marked `failed` — it is **not** auto-re-queued. Public scrapes support `--resume`
 (skips already-scraped stores), so re-queue with `-p resume=true`. Auto-retry is not
 built.
@@ -587,5 +599,8 @@ by the small pool — public scrapes stage to SQLite, and the loader uses a sing
 | Logs written to `/logs/...` or vanish   | `WorkingDirectory` unset, or `LOG_DIR` not absolute                                             |
 | Everything `failed` with `auth_expired` | Auto-recovery failed → `cli auth status -t <id>` (see #3)                                                                 |
 | Schedule never fires                    | It's `disabled`, or `SCHEDULER_ENABLED=false`, or `next_run_at` is NULL (re-`enable` to re-arm) |
-| `DuplicateActiveJob` on `jobs run`      | A job of that (type, tenant) is already pending/running — check `cli jobs list`                 |
+| `DuplicateActiveJob` on `jobs run`      | A job of that (type, tenant, marketplace) is already pending/running — check `cli jobs list`    |
+| `cm.*` job `failed`: `unresolvable: campaign-manager job has no marketplace` | It was queued without `marketplace=blinkit\|zepto`. Since 2026-09-24 there is no default — the runner refuses rather than guess an ad account. Re-queue with the param (`cli jobs run cm.set_budget -t <id> marketplace=blinkit …`); the API and the reconciler always add it |
 | Jobs run but from the wrong IP          | A local runner is stealing from the queue (see #1)                                              |
+| `released a stuck job — runner_lost_track` in runner.log | The runner lost a job mid-handling (a DB write failed even after retries). The row was failed so the next fire can run; the job itself may not have run — check the run before it. Several in a row = the DB/pooler is struggling |
+| `could not claim from the … lane` in runner.log | A DB error while claiming. Harmless once — the runner retries at the next poll. Continuous = DB/pooler down |

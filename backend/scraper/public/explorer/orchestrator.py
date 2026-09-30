@@ -33,7 +33,6 @@ from app.schemas.explorer import ExplorerSpec
 from app.utils.logger import logger
 from app.utils.time import now_ist
 from scraper.public.explorer.providers import Provider, get_provider
-from scraper.utils.browser import PLAYWRIGHT_ARGS
 from scraper.utils.pack import pack_fields, combo_from_pack
 from scraper.utils.search_result import classify_products, slugify
 
@@ -401,7 +400,7 @@ async def run_explorer(db: AsyncSession, spec: ExplorerSpec,
 
     try:
         async with async_playwright() as pw:
-            browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
+            browser = await provider.launch_browser(pw)
             ticker = asyncio.create_task(_progress_ticker(run.id, stats, total, on_progress))
             try:
                 logger.info(

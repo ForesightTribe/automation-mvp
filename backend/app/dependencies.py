@@ -6,6 +6,7 @@ Import the `*Dep` Annotated aliases into routes for clean signatures, e.g.:
     async def handler(session: SessionDep, user: CurrentUserDep):
         ...
 """
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import date, timedelta
@@ -91,6 +92,14 @@ AccountDep = Annotated[str, Depends(get_account_id)]
 
 # --- Active client (the access wall) ---------------------------------------
 
+# How long a passed access check is remembered, per process. Every client-scoped request
+# runs this check, and without the memory each one spent a database round trip — and a
+# pooled connection — on it before doing any real work. The cost: removing an account's
+# access to a client takes up to this long to bite in a running API process.
+CLIENT_CHECK_TTL_S = 60.0
+_client_checks: dict[tuple[uuid.UUID, uuid.UUID], tuple[float, Tenant]] = {}
+
+
 async def get_client(
     client_id: uuid.UUID,        # bound to the {client_id} path segment
     account_id: AccountDep,
@@ -99,14 +108,36 @@ async def get_client(
     """Resolve {client_id} from the URL, but only if it belongs to the caller's
     account. Any other client (or a bogus id) returns 404 — so one account can
     never reach another's data. Hands the route a validated Client (Tenant).
+
+    ⚠️ Two rules keep this from eating the connection pool (diagnosed 2026-09-25):
+
+    * The read's transaction is ENDED here. The session autobegins one on the first query
+      and would otherwise sit "idle in transaction" on a pooled connection for the whole
+      request — while the campaign-manager code opens its own sessions for the real work.
+      Two connections per request, and a burst of such requests deadlocked the pool: each
+      held one and waited for a second (reproduced: 5 of 9 Automations requests failed
+      after 30 s on a pool of 6). The route can still use `session`; its next query simply
+      checks out a connection again.
+    * A passed check is remembered for `CLIENT_CHECK_TTL_S`, so most requests make no
+      database trip for it at all. Only passes are remembered — a refusal is re-checked.
+      The cached Tenant is detached and read-only (routes use `.id` / `.name`).
     """
+    key = (uuid.UUID(account_id), client_id)
+    hit = _client_checks.get(key)
+    if hit and time.monotonic() - hit[0] < CLIENT_CHECK_TTL_S:
+        return hit[1]
+
     client = await client_service.get_client_for_account(
         session, client_id, uuid.UUID(account_id)
     )
+    if client is not None:
+        session.expunge(client)
+    await session.commit()          # end the read transaction; release the connection
     if not client:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND, detail="Client not found"
         )
+    _client_checks[key] = (time.monotonic(), client)
     return client
 
 

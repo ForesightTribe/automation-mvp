@@ -364,19 +364,18 @@ def desired_schedules(tenant: str, platform: str, budget_schedules, bid_rules,
     # ── Every schedule must SAY which marketplace it is for ──────────────────
     #
     # The schedule NAME carries the platform, but the runner never reads the name — it
-    # builds argv from `params`, and `jobs/types.py` fills in `_DEFAULT_MP` ("blinkit")
-    # when `marketplace` is absent. So without this stamp a Zepto reconcile produced
-    # rows called `auto:cm:bid:<tenant>:zepto:opt` that fired
-    # `cm bid-optimizer --marketplace blinkit` — Zepto's rules driving Blinkit's
-    # account, and once armed, writing real money to the wrong marketplace.
+    # builds argv from `params`. `jobs/types.py` once filled in "blinkit" when
+    # `marketplace` was absent, so without this stamp a Zepto reconcile produced rows
+    # called `auto:cm:bid:<tenant>:zepto:opt` that fired `cm bid-optimizer --marketplace
+    # blinkit` — Zepto's rules driving Blinkit's account. Since ZC-D1 (2026-09-24) an
+    # unstamped cm.* job is refused outright, so this stamp is also what makes it RUN.
     #
     # It also matters to the uniqueness guard: `uq_jobs_active` keys on
     # COALESCE(params->>'marketplace','blinkit'), so an unstamped Zepto job would
     # collide with a running Blinkit one and be refused as a duplicate.
     #
-    # Stamped LAST so it covers the cleanup row too. Blinkit rows gain an explicit
-    # `marketplace=blinkit`, which resolves to the same argv the default produced — so
-    # existing schedules keep behaving identically, just stated rather than assumed.
+    # Stamped LAST so it covers the cleanup row too. Blinkit rows carry an explicit
+    # `marketplace=blinkit` — the same argv the old default produced, now required.
     for x in d:
         x.params = {**x.params, "marketplace": platform}
 
@@ -460,7 +459,7 @@ async def _apply(db, tenant_id: uuid.UUID, platform: str, desired: list[Desired]
 # ── Orchestration ────────────────────────────────────────────────────────────
 
 async def reconcile(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
-                    platform: str = "blinkit", run_id: str | None = None) -> dict:
+                    platform: str, run_id: str | None = None) -> dict:
     dry_run = config.DRY_RUN_DEFAULT if dry_run is None else dry_run
     run_id = run_id or logs.new_run_id()
     logs.run_start(run_id, "reconcile", tenant_id, dry_run=dry_run, platform=platform,

@@ -94,7 +94,7 @@ def _po_section(
     return Section(
         key="purchase_orders",
         title="Purchase Orders",
-        description="What Blinkit ordered, what arrived, and what is still undelivered.",
+        description="What was ordered, what arrived, and what is still undelivered.",
         context=f"{start:%d %b %Y} to {end:%d %b %Y} · {scope_label} · {len(out)} POs",
         kpis=[
             Kpi(label="PO Value", value=summary.po_value, type="money",

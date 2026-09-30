@@ -76,7 +76,13 @@ export const CampaignDrawer = ({ campaignId, open, onClose }) => {
 
 	// A fraction, because formatPercent multiplies by 100 on the way out.
 	const acos = c?.ad_sales ? c.budget_consumed / c.ad_sales : null;
-	const aov = c?.quantities_sold ? c.ad_sales / c.quantities_sold : null;
+	// Instamart's units-sold figure is unreliable (confirmed 2026-09-30), so
+	// AOV — derived from it — is withheld for Instamart rows only; Blinkit
+	// and Zepto keep the exact calculation below, unchanged.
+	const aov =
+		!isInstamart && c?.quantities_sold
+			? c.ad_sales / c.quantities_sold
+			: null;
 	const cpm = c?.impressions
 		? (c.budget_consumed / c.impressions) * 1000
 		: null;
@@ -113,13 +119,26 @@ export const CampaignDrawer = ({ campaignId, open, onClose }) => {
 				<dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
 					{[
 						["ACoS", acos == null ? "—" : formatPercent(acos)],
-						[
-							"Average order value",
-							aov == null ? "—" : formatCurrency(aov),
-						],
+						// Instamart: both rows below are omitted rather than shown
+						// wrong. Blinkit/Zepto keep them exactly as before.
+						...(isInstamart
+							? []
+							: [
+									[
+										"Average order value",
+										aov == null ? "—" : formatCurrency(aov),
+									],
+								]),
 						["Impressions", formatNumber(c?.impressions ?? 0)],
 						["Add to cart", formatNumber(c?.atc ?? 0)],
-						["Units sold", formatNumber(c?.quantities_sold ?? 0)],
+						...(isInstamart
+							? []
+							: [
+									[
+										"Units sold",
+										formatNumber(c?.quantities_sold ?? 0),
+									],
+								]),
 						[
 							"Average CPM",
 							cpm == null ? "—" : formatCurrency(cpm),

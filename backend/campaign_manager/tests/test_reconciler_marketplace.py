@@ -1,9 +1,9 @@
 """Every reconciler-made schedule must SAY which marketplace it is for.
 
 The bug this pins: schedule NAMES were platform-scoped, but `params` were not — and
-the runner builds argv from params, never from the name. `jobs/types.py` fills in
-`_DEFAULT_MP` ("blinkit") when `marketplace` is missing, so a Zepto reconcile produced
-rows called `auto:cm:bid:<tenant>:zepto:opt` that fired
+the runner builds argv from params, never from the name. `jobs/types.py` used to fill in
+"blinkit" when `marketplace` was missing (since ZC-D1 it refuses instead), so a Zepto
+reconcile produced rows called `auto:cm:bid:<tenant>:zepto:opt` that fired
 
     cm bid-optimizer --tenant <t> --marketplace blinkit
 
@@ -67,16 +67,23 @@ def test_zepto_schedules_actually_run_zepto():
         assert argv[argv.index("--marketplace") + 1] == "zepto", argv
 
 
-def test_blinkit_argv_is_unchanged_by_the_stamp():
-    """Existing Blinkit rows gain an explicit `marketplace=blinkit`, which resolves to
-    exactly what the missing-param default produced. Stated, not altered."""
+def test_blinkit_schedules_name_blinkit_and_an_unnamed_one_is_refused():
+    """Every Blinkit row the reconciler writes names `marketplace=blinkit`. Without the
+    stamp the job used to fall back to Blinkit silently; since ZC-D1 there is no fallback —
+    building its argv REFUSES, so an unnamed cm.* job fails instead of guessing an account."""
+    from jobs.types import MissingMarketplace
+
     for d in _plan("blinkit"):
         argv = _argv(d)
         assert argv[argv.index("--marketplace") + 1] == "blinkit"
         stripped = dict(d.params)
         stripped.pop("marketplace")
-        assert _argv(rc.Desired(d.name, d.job_type, d.cron, d.repeat,
-                                d.next_run_at, params=stripped)) == argv
+        try:
+            _argv(rc.Desired(d.name, d.job_type, d.cron, d.repeat, d.next_run_at,
+                             params=stripped))
+        except MissingMarketplace:
+            continue
+        raise AssertionError(f"{d.name}: a cm.* job without a marketplace must not build")
 
 
 # ── the stamp must not clobber the other params ──────────────────────────────

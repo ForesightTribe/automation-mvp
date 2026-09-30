@@ -57,6 +57,9 @@ export const invalidateCampaignData = (queryClient, clientId) => {
  */
 export const RUN_LOG_KEYS = [
 	"auto-history", // features/automations — Execution logs
+	// features/automations — the page's one-request overview: its automation list, the header's
+	// recent history and the wallet note all come from the run log too.
+	"auto-overview",
 	"cm-history", // features/campaign-manager (deprecated)
 ];
 

@@ -6,6 +6,7 @@ import {
 } from "@tanstack/react-query";
 import { api } from "./axios";
 import { useClient } from "../context/ClientContext";
+import { useAutomationMarketplace } from "../context/MarketplaceContext";
 import { formatCurrency, parseIst } from "./format";
 import { invalidateAfterWrite } from "./campaignData";
 import { resultOf } from "./runLog";
@@ -27,7 +28,17 @@ import { resultOf } from "./runLog";
  *     never set a non-zero exit code, so a refused write settles exactly like an accepted one.
  */
 
-const base = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the server
+// (ZC-D1): each marketplace's actions and runs are its own. Both pages that read this file —
+// Ad Automation and One-time Ops — work on ONE marketplace at a time, the navbar's
+// automation choice (`useAutomationMarketplace`), so the hooks below read it themselves.
+const base = (clientId, mp) => `/clients/${clientId}/campaign-manager/${mp}`;
+
+const useScope = () => {
+	const { activeClientId } = useClient();
+	const { marketplace: mp } = useAutomationMarketplace();
+	return { activeClientId, mp, ready: Boolean(activeClientId && mp) };
+};
 
 export const ACTIVE_JOB_STATUSES = new Set(["pending", "running"]);
 export const isActive = (action) => ACTIVE_JOB_STATUSES.has(action?.status);
@@ -41,8 +52,8 @@ const RECENT_ACTIONS = "recent-actions";
 // One page: `{ items, has_more }`. `before` pages BACK by keyset — the `created_at` of the
 // oldest item already shown — so a new action arriving at the top can never shift a page and
 // show a row twice, which offset paging would do to a live list.
-const getRecentActions = (clientId, source, before) =>
-	api.get(`${base(clientId)}/actions`, {
+const getRecentActions = (clientId, mp, source, before) =>
+	api.get(`${base(clientId, mp)}/actions`, {
 		params: {
 			...(source ? { source } : {}),
 			...(before ? { before } : {}),
@@ -51,8 +62,8 @@ const getRecentActions = (clientId, source, before) =>
 
 // `include_unchanged` is required: a refusal is a `skip` and a write that was not needed is
 // a `no-op`, and "nothing changed, and here is why" is exactly the answer being looked for.
-const getRunOutcome = (clientId, runId) =>
-	api.get(`${base(clientId)}/history`, {
+const getRunOutcome = (clientId, mp, runId) =>
+	api.get(`${base(clientId, mp)}/history`, {
 		params: { run_id: runId, limit: 100, include_unchanged: true },
 	});
 
@@ -70,6 +81,7 @@ const getRunOutcome = (clientId, runId) =>
  * answers, so the queue already knows. Campaign data only changes once the job finishes,
  * which is why that is invalidated on settle instead (`invalidateAfterWrite`).
  */
+// The prefix — every marketplace's and every source's list for this client at once.
 export const invalidateRecentActions = (queryClient, clientId) =>
 	queryClient.invalidateQueries({ queryKey: [RECENT_ACTIONS, clientId] });
 
@@ -143,15 +155,19 @@ export const pollInterval = (items, now = Date.now()) => {
  * as new on first mount — refetching all campaign data on every page load for nothing.
  */
 export const useRecentActions = ({ source } = {}) => {
-	const { activeClientId } = useClient();
+	const { activeClientId, mp, ready } = useScope();
 	const qc = useQueryClient();
-	const key = [RECENT_ACTIONS, activeClientId, source ?? "all"];
+	const key = [RECENT_ACTIONS, activeClientId, mp, source ?? "all"];
 	return useQuery({
 		queryKey: key,
 		queryFn: async () => {
 			// The RAW cached page, not the `select`ed list — `getQueryData` sees the cache.
 			const before = qc.getQueryData(key);
-			const page = (await getRecentActions(activeClientId, source)) ?? {
+			const page = (await getRecentActions(
+				activeClientId,
+				mp,
+				source,
+			)) ?? {
 				items: [],
 				has_more: false,
 			};
@@ -160,7 +176,7 @@ export const useRecentActions = ({ source } = {}) => {
 			return page;
 		},
 		select: (page) => page?.items ?? [],
-		enabled: Boolean(activeClientId),
+		enabled: ready,
 		refetchInterval: (query) => pollInterval(query.state.data?.items),
 	});
 };
@@ -179,17 +195,23 @@ export const useRecentActions = ({ source } = {}) => {
  * `useRecentActions` reading the very same newest page: two identical requests per tick.
  */
 export const useActionHistory = ({ source, enabled = true } = {}) => {
-	const { activeClientId } = useClient();
+	const { activeClientId, mp, ready } = useScope();
 	return useInfiniteQuery({
-		queryKey: [RECENT_ACTIONS, activeClientId, source ?? "all", "history"],
+		queryKey: [
+			RECENT_ACTIONS,
+			activeClientId,
+			mp,
+			source ?? "all",
+			"history",
+		],
 		queryFn: ({ pageParam }) =>
-			getRecentActions(activeClientId, source, pageParam),
+			getRecentActions(activeClientId, mp, source, pageParam),
 		initialPageParam: null,
 		getNextPageParam: (last) =>
 			last?.has_more && last.items.length
 				? last.items[last.items.length - 1].created_at
 				: undefined,
-		enabled: Boolean(activeClientId) && enabled,
+		enabled: ready && enabled,
 		refetchInterval: (query) =>
 			pollInterval(query.state.data?.pages?.[0]?.items),
 	});
@@ -253,11 +275,11 @@ export const useLatestActionFor = ({ source } = {}) => {
  * would otherwise have been answered from this one's cache.)
  */
 export const useRunOutcome = (runId, enabled) => {
-	const { activeClientId } = useClient();
+	const { activeClientId, mp, ready } = useScope();
 	return useQuery({
-		queryKey: ["run-outcome", activeClientId, runId],
-		queryFn: () => getRunOutcome(activeClientId, runId),
-		enabled: Boolean(activeClientId && runId && enabled),
+		queryKey: ["run-outcome", activeClientId, mp, runId],
+		queryFn: () => getRunOutcome(activeClientId, mp, runId),
+		enabled: Boolean(ready && runId && enabled),
 		select: (page) => page?.items ?? [],
 		staleTime: Infinity,
 	});

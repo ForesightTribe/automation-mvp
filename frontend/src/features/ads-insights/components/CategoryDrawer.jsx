@@ -44,7 +44,7 @@ const Stat = ({ label, value }) => (
  * The two breakdowns answer the questions the row itself cannot: whether the category is
  * growing or shrinking across the window, and whether its revenue is one city or many.
  */
-export const CategoryDrawer = ({ row, range, open, onClose }) => {
+export const CategoryDrawer = ({ row, range, open, onClose, instamartOnly = false }) => {
 	const category = row?.category;
 	const { data: trend, isLoading: loadingTrend } = useCategoryTrend();
 	const { data: cells, isLoading: loadingCities } = useCityCategory();
@@ -86,10 +86,12 @@ export const CategoryDrawer = ({ row, range, open, onClose }) => {
 						label="Revenue"
 						value={formatCurrency(row.revenue ?? 0)}
 					/>
-					<Stat
-						label="Units"
-						value={formatNumber(row.units_sold ?? 0)}
-					/>
+					{!instamartOnly && (
+						<Stat
+							label="Units"
+							value={formatNumber(row.units_sold ?? 0)}
+						/>
+					)}
 					<Stat
 						label="Share of revenue"
 						value={
@@ -104,10 +106,16 @@ export const CategoryDrawer = ({ row, range, open, onClose }) => {
 			<Section title="Performance">
 				<dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
 					{[
-						[
-							"Revenue per unit",
-							row.aov == null ? dash : formatCurrency(row.aov),
-						],
+						...(instamartOnly
+							? []
+							: [
+									[
+										"Revenue per unit",
+										row.aov == null
+											? dash
+											: formatCurrency(row.aov),
+									],
+								]),
 						[
 							"Days with sales",
 							daily.length ? formatNumber(daily.length) : dash,
@@ -181,9 +189,11 @@ export const CategoryDrawer = ({ row, range, open, onClose }) => {
 									<td className="py-1.5 pr-2 text-content">
 										{c.city}
 									</td>
-									<td className="py-1.5 text-right tabular-nums text-content-muted">
-										{formatNumber(c.units_sold ?? 0)}
-									</td>
+									{!instamartOnly && (
+										<td className="py-1.5 text-right tabular-nums text-content-muted">
+											{formatNumber(c.units_sold ?? 0)}
+										</td>
+									)}
 									<td className="py-1.5 text-right tabular-nums text-content">
 										{formatCurrency(c.revenue ?? 0)}
 									</td>

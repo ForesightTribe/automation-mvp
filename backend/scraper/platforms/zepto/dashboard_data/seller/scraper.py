@@ -744,3 +744,84 @@ async def fetch_ads_tabular(
 
     logger.info(f"Zepto ads {view} [{date_from}..{date_to}]: {len(out)} rows")
     return out
+
+
+# ── Campaign CATALOGUE ──────────────────────────────────────────────────────
+#
+# What every campaign is configured to do NOW — for `zepto_ad_campaigns` /
+# `zepto_ad_campaign_keywords`, the campaign manager's catalogue. Zepto's answer to what
+# Blinkit's marketing scrape does for `blinkit_ad_campaigns`.
+#
+# Goes through the campaign manager's Zepto calls rather than its own copies, so one
+# definition of each endpoint serves both: the list's paging, `targeting-options`' required
+# params (ZC-A12), the detail read the write path verifies against.
+
+CATALOG_WINDOW_DAYS = 90          # the list is date-scoped; same window `cm sync` uses
+_CATALOG_GAP_S = 0.4              # between per-campaign detail reads
+
+
+async def fetch_campaign_catalog(client) -> dict:
+    """The whole account's configuration. Read-only.
+
+    1. the campaign list (all pages) — every campaign, with its CURRENT status;
+    2. for each PLA campaign, its detail — targeting, products, keywords — and one
+       `keyword/config` call for its bidding keywords' minimum bids;
+    3. `targeting-options` per campaign type, for city names.
+
+    ~2 requests per PLA campaign. A detail read that fails is retried once after the rest;
+    what still fails is returned in `failed` (the caller decides — the scrape fails the run
+    so it alerts). Such a campaign still gets its LIST row, and keeps whatever detail the
+    last good read stored.
+    """
+    from campaign_manager.marketplaces.zepto import client as zc
+    from campaign_manager.marketplaces.zepto import translate
+
+    campaigns = await zc.get_campaigns(client, days=CATALOG_WINDOW_DAYS)
+    pla = [c for c in campaigns
+           if (c.get("campaign_type") or "").upper() == "PLA" and c.get("campaign_id")]
+
+    details: dict[int, dict] = {}
+    floors: dict[int, dict] = {}
+    city_names: dict[str, str] = {}
+    seen_types: set[tuple[str, str]] = set()
+
+    async def _one(cid: int) -> None:
+        detail = await zc.get_campaign_detail(client, cid)
+        pairs = sorted(translate.bids_from_detail(detail))
+        floors[cid] = await zc.get_keyword_floors(client, pairs) if pairs else {}
+        key = (detail.get("campaign_type") or "PLA",
+               detail.get("campaign_sub_type") or "AUCTION_UP_SELL")
+        if key not in seen_types:
+            seen_types.add(key)
+            opts = await zc.get_targeting_options(client, campaign_type=key[0],
+                                                  campaign_sub_type=key[1])
+            for c in (opts.get("data", opts) or {}).get("cities") or []:
+                if c.get("id"):
+                    city_names[c["id"]] = c.get("name")
+        details[cid] = detail
+
+    failed: list[int] = []
+    for raw in pla:
+        try:
+            await _one(int(raw["campaign_id"]))
+        except Exception as e:
+            logger.warning(f"Zepto catalogue: campaign {raw['campaign_id']} detail failed ({e})")
+            failed.append(int(raw["campaign_id"]))
+        await asyncio.sleep(_CATALOG_GAP_S)
+
+    if failed:
+        await asyncio.sleep(10)
+        still = []
+        for cid in failed:
+            try:
+                await _one(cid)
+            except Exception as e:
+                logger.warning(f"Zepto catalogue: campaign {cid} detail failed again ({e})")
+                still.append(cid)
+            await asyncio.sleep(_CATALOG_GAP_S)
+        failed = still
+
+    logger.info(f"Zepto catalogue: {len(campaigns)} campaign(s), {len(details)} with detail, "
+                f"{len(failed)} detail read(s) failed")
+    return {"campaigns": campaigns, "details": details, "floors": floors,
+            "city_names": city_names, "failed": failed}

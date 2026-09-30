@@ -6,16 +6,29 @@ import { api } from "../../lib/axios";
  * catalogue). Deliberately NOT imported from features/campaign-manager/api.js:
  * this feature owns its own thin API layer, the same way zepto_ads.py stays a
  * separate module from ads.py so one page's changes can never affect the
- * other. No backend changes — every call below hits an endpoint that already
- * exists and is already used by the Campaign Manager page.
+ * other.
  */
-const base = (clientId) => `/clients/${clientId}/campaign-manager`;
+// The marketplace is part of every campaign-manager address, with no default on the
+// server (ZC-D1) — and none here either: every call takes `mp`, the one marketplace the
+// navbar has chosen for the automation pages (`useAutomationMarketplace`).
+const base = (clientId, mp) => `/clients/${clientId}/campaign-manager/${mp}`;
 
 // ── Reads ────────────────────────────────────────────────────────────────────
-export const getBudgetSchedules = (clientId) =>
-	api.get(`${base(clientId)}/budget-schedules`);
 
-export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
+/**
+ * Everything the page reads on open, in ONE request: budget schedules, bid rules, page 1 of
+ * History (the header's status line), the newest wallet note and the live switch. It used
+ * to be five requests fired together, each holding a pooled API connection (2026-09-25).
+ * The single-purpose reads below stay for the CLI and anything that refreshes one part.
+ */
+export const getOverview = (clientId, mp) =>
+	api.get(`${base(clientId, mp)}/overview`);
+
+export const getBudgetSchedules = (clientId, mp) =>
+	api.get(`${base(clientId, mp)}/budget-schedules`);
+
+export const getBidRules = (clientId, mp) =>
+	api.get(`${base(clientId, mp)}/bid-rules`);
 
 // Every filter here is applied BY THE SERVER, so paging and the total stay honest.
 // `campaign_id` + `keyword` is one keyword automation; `kind` may list several
@@ -26,6 +39,7 @@ export const getBidRules = (clientId) => api.get(`${base(clientId)}/bid-rules`);
 // is not buried in them.
 export const getHistory = (
 	clientId,
+	mp,
 	{
 		page = 1,
 		limit = 20,
@@ -37,7 +51,7 @@ export const getHistory = (
 		includeUnchanged = false,
 	} = {},
 ) =>
-	api.get(`${base(clientId)}/history`, {
+	api.get(`${base(clientId, mp)}/history`, {
 		params: {
 			page,
 			limit,
@@ -50,29 +64,37 @@ export const getHistory = (
 		},
 	});
 
-export const getJob = (clientId, jobId) =>
-	api.get(`${base(clientId)}/jobs/${jobId}`);
+export const getJob = (clientId, mp, jobId) =>
+	api.get(`${base(clientId, mp)}/jobs/${jobId}`);
 
-export const getAdvertiser = (clientId) =>
-	api.get(`${base(clientId)}/advertiser`);
+export const getAdvertiser = (clientId, mp) =>
+	api.get(`${base(clientId, mp)}/advertiser`);
 
-// The Blinkit advertiser account every write goes through. Read + write, because the
+// The marketplace's advertiser account every write goes through. Read + write, because the
 // engine cannot act at all until one is bound.
-export const setAdvertiser = (clientId, advertiserId) =>
-	api.put(`${base(clientId)}/advertiser`, { advertiser_id: advertiserId });
+export const setAdvertiser = (clientId, mp, advertiserId) =>
+	api.put(`${base(clientId, mp)}/advertiser`, {
+		advertiser_id: advertiserId,
+	});
 
-// Blinkit's published bid range per keyword + the campaign's city targeting, from the
-// daily scrape (V7.4). Never 404s: an unscraped campaign returns empty fields, so the
-// form falls back to free text rather than blocking.
-export const getBidContext = (clientId, campaignId) =>
-	api.get(`${base(clientId)}/campaigns/${campaignId}/bid-context`);
+// The marketplace's published bid floor per keyword, the campaign's city targeting and the
+// bid unit (CPM on Blinkit, CPC on Zepto), from the daily scrape (V7.4, ZC-D4). Never
+// 404s: an unscraped campaign returns empty fields, so the form falls back to free text
+// rather than blocking.
+export const getBidContext = (clientId, mp, campaignId) =>
+	api.get(`${base(clientId, mp)}/campaigns/${campaignId}/bid-context`);
 
 // Reuses the Ads campaign catalogue, same as Campaign Manager's own picker —
 // see that feature's api.js for why (recent_only excludes a stale pre-migration
 // account's dead campaigns from being selectable).
-export const getCampaigns = (clientId) =>
+//
+// `marketplaces: mp` — the picker offers only the chosen marketplace's campaigns. The list
+// is merged across marketplaces server-side, and a campaign of the other one would be
+// refused on save (its id is another marketplace's namespace).
+export const getCampaigns = (clientId, mp) =>
 	api.get(`/clients/${clientId}/ads/campaigns`, {
 		params: {
+			marketplaces: mp,
 			days: 365,
 			limit: 250,
 			sort: "spend",
@@ -94,9 +116,10 @@ export const getCampaigns = (clientId) =>
 // "Campaign 362427" is worse than one labelled with the name it actually had.
 // One campaign's performance over the window the user has actually selected, so the detail
 // view agrees with the date picker in the navbar instead of quietly reporting a year.
-export const getCampaignsForRange = (clientId, days) =>
+export const getCampaignsForRange = (clientId, mp, days) =>
 	api.get(`/clients/${clientId}/ads/campaigns`, {
 		params: {
+			marketplaces: mp,
 			days,
 			limit: 500,
 			sort: "spend",
@@ -105,9 +128,10 @@ export const getCampaignsForRange = (clientId, days) =>
 		},
 	});
 
-export const getCampaignNames = (clientId) =>
+export const getCampaignNames = (clientId, mp) =>
 	api.get(`/clients/${clientId}/ads/campaigns`, {
 		params: {
+			marketplaces: mp,
 			days: 365,
 			limit: 500,
 			sort: "spend",
@@ -128,9 +152,14 @@ export const getCampaignNames = (clientId) =>
 // `recent_only` drops the pre-migration account's campaigns on the SERVER. The picker also
 // filters them client-side, but only once `/ads/campaigns` has loaded — keywords usually
 // land first, so for that moment every campaign showed twice under the same name.
+//
+// ⚠️ BLINKIT ONLY. `/ads/keywords` is Blinkit's per-campaign keyword performance; Zepto has
+// no such thing (its keyword metrics are brand grain, with no campaign id), so the Zepto
+// picker reads the campaign catalogue instead — `getCatalogKeywords` below.
 export const getKeywordMetricsPage = (clientId, page) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {
+			marketplaces: "blinkit",
 			target_type: "keyword",
 			sort: "spend",
 			order: "desc",
@@ -153,6 +182,7 @@ export const getKeywordMetricsRest = async (clientId, pages) => {
 export const getKeywordMetrics = (clientId, campaignId) =>
 	api.get(`/clients/${clientId}/ads/keywords`, {
 		params: {
+			marketplaces: "blinkit",
 			campaign_id: campaignId,
 			target_type: "keyword",
 			sort: "spend",
@@ -161,59 +191,79 @@ export const getKeywordMetrics = (clientId, campaignId) =>
 		},
 	});
 
+/**
+ * Every keyword the marketplace's campaign catalogue holds — (campaign, keyword, match
+ * type) with the live bid and the marketplace's floor, no performance numbers. The keyword
+ * picker's list on Zepto, where no per-campaign keyword metrics exist. Negatives are left
+ * out server-side; campaigns automations may not touch come back flagged, not hidden.
+ */
+export const getCatalogKeywords = (clientId, mp) =>
+	api.get(`${base(clientId, mp)}/keywords`);
+
+/**
+ * Whether automations on this marketplace write for real (`live_armed`), straight from
+ * the engine's switch. Replaces inferring it from the last run's `dry_run`.
+ */
+export const getLive = (clientId, mp) => api.get(`${base(clientId, mp)}/live`);
+
 // ── Budget schedules + rules (campaign automations) ─────────────────────────
-export const createBudgetSchedule = (clientId, body) =>
-	api.post(`${base(clientId)}/budget-schedules`, body);
+export const createBudgetSchedule = (clientId, mp, body) =>
+	api.post(`${base(clientId, mp)}/budget-schedules`, body);
 
-export const updateBudgetSchedule = (clientId, scheduleId, body) =>
-	api.patch(`${base(clientId)}/budget-schedules/${scheduleId}`, body);
+export const updateBudgetSchedule = (clientId, mp, scheduleId, body) =>
+	api.patch(`${base(clientId, mp)}/budget-schedules/${scheduleId}`, body);
 
-export const deleteBudgetSchedule = (clientId, scheduleId) =>
-	api.delete(`${base(clientId)}/budget-schedules/${scheduleId}`);
+export const deleteBudgetSchedule = (clientId, mp, scheduleId) =>
+	api.delete(`${base(clientId, mp)}/budget-schedules/${scheduleId}`);
 
-export const addBudgetRule = (clientId, scheduleId, body) =>
-	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/rules`, body);
+export const addBudgetRule = (clientId, mp, scheduleId, body) =>
+	api.post(
+		`${base(clientId, mp)}/budget-schedules/${scheduleId}/rules`,
+		body,
+	);
 
-export const updateBudgetRule = (clientId, ruleId, body) =>
-	api.patch(`${base(clientId)}/budget-rules/${ruleId}`, body);
+export const updateBudgetRule = (clientId, mp, ruleId, body) =>
+	api.patch(`${base(clientId, mp)}/budget-rules/${ruleId}`, body);
 
-export const deleteBudgetRule = (clientId, ruleId) =>
-	api.delete(`${base(clientId)}/budget-rules/${ruleId}`);
+export const deleteBudgetRule = (clientId, mp, ruleId) =>
+	api.delete(`${base(clientId, mp)}/budget-rules/${ruleId}`);
 
 // Stops the schedule and puts the campaign back on its default budget. On a
 // stop-after-window schedule it also restarts the campaign. Returns `{job_id}`.
-export const resetBudgetSchedule = (clientId, scheduleId) =>
-	api.post(`${base(clientId)}/budget-schedules/${scheduleId}/reset`);
+export const resetBudgetSchedule = (clientId, mp, scheduleId) =>
+	api.post(`${base(clientId, mp)}/budget-schedules/${scheduleId}/reset`);
 
 // ── Bid rules (keyword automations) ─────────────────────────────────────────
-export const createBidRule = (clientId, body) =>
-	api.post(`${base(clientId)}/bid-rules`, body);
+export const createBidRule = (clientId, mp, body) =>
+	api.post(`${base(clientId, mp)}/bid-rules`, body);
 
-export const updateBidRule = (clientId, ruleId, body) =>
-	api.patch(`${base(clientId)}/bid-rules/${ruleId}`, body);
+export const updateBidRule = (clientId, mp, ruleId, body) =>
+	api.patch(`${base(clientId, mp)}/bid-rules/${ruleId}`, body);
 
 // `reset` also puts the keyword's bid back to the rule's min_bid before the rule goes.
 // Without it the bid stays wherever the optimizer left it and no rule remains to lower it.
-export const deleteBidRule = (clientId, ruleId, { reset = false } = {}) =>
-	api.delete(`${base(clientId)}/bid-rules/${ruleId}`, { params: { reset } });
+export const deleteBidRule = (clientId, mp, ruleId, { reset = false } = {}) =>
+	api.delete(`${base(clientId, mp)}/bid-rules/${ruleId}`, {
+		params: { reset },
+	});
 
 // pause | resume, and nothing else — anything else 404s. The engine holds exactly two
 // states for a bid rule, active and paused, so there is no "stop" to send (the lifecycle
 // block in campaign_manager_service.py is the contract).
-export const setBidState = (clientId, ruleId, action) =>
-	api.post(`${base(clientId)}/bid-rules/${ruleId}/${action}`);
+export const setBidState = (clientId, mp, ruleId, action) =>
+	api.post(`${base(clientId, mp)}/bid-rules/${ruleId}/${action}`);
 
 // Bid back to the rule's min_bid. Enqueues a write and returns `{job_id}`; the engine
 // refuses with 409 while the rule is running, because the next tick would undo it.
-export const resetBidRule = (clientId, ruleId) =>
-	api.post(`${base(clientId)}/bid-rules/${ruleId}/reset`);
+export const resetBidRule = (clientId, mp, ruleId) =>
+	api.post(`${base(clientId, mp)}/bid-rules/${ruleId}/reset`);
 
 // ── On-demand actions (enqueue → poll) ───────────────────────────────────────
-export const setActivationNow = (clientId, campaignId, body) =>
-	api.post(`${base(clientId)}/campaigns/${campaignId}/activation`, body);
+export const setActivationNow = (clientId, mp, campaignId, body) =>
+	api.post(`${base(clientId, mp)}/campaigns/${campaignId}/activation`, body);
 
-export const refreshCampaigns = (clientId) =>
-	api.post(`${base(clientId)}/campaigns/refresh`);
+export const refreshCampaigns = (clientId, mp) =>
+	api.post(`${base(clientId, mp)}/campaigns/refresh`);
 
 // Recent actions and run outcomes: lib/actions.js, shared with One-time Ops.
 

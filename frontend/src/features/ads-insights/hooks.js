@@ -7,13 +7,13 @@
  */
 export * from "../ads/hooks";
 
-import { useEffect, useMemo, useRef, useState } from "react";
-import { useQueries, useQuery } from "@tanstack/react-query";
+import { useMemo } from "react";
+import { useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { getCampaigns, getPerformance, getBudgetSplit } from "../ads/api";
-import { getKeywordRowsPage } from "./api";
+import { getCampaignsDaily, getKeywordRowsPage } from "./api";
 import { fetchAllPages } from "../../lib/exportTable";
 
 /**
@@ -110,21 +110,32 @@ export const usePreviousBudgetSplit = (enabled = false) => {
 import { useMutation } from "@tanstack/react-query";
 import { setCampaignActivation, setCampaignBudget } from "./api";
 
-/** Start or stop one campaign now. Returns the job id to poll. */
+/**
+ * Start or stop one campaign now. Returns the job id to poll.
+ *
+ * `marketplace` is the row's own (`CampaignRow.platform`) and is required: this page shows
+ * every selected marketplace at once, so the action goes to whichever one the campaign
+ * belongs to — never to a default.
+ */
 export const useSetCampaignActivation = () => {
 	const { activeClientId } = useClient();
 	return useMutation({
-		mutationFn: ({ campaignId, status }) =>
-			setCampaignActivation(activeClientId, campaignId, status),
+		mutationFn: ({ campaignId, marketplace, status }) =>
+			setCampaignActivation(
+				activeClientId,
+				marketplace,
+				campaignId,
+				status,
+			),
 	});
 };
 
-/** Push a budget to one campaign now. Also returns a job id. */
+/** Push a budget to one campaign now. Also returns a job id. Same `marketplace` rule. */
 export const useSetCampaignBudget = () => {
 	const { activeClientId } = useClient();
 	return useMutation({
-		mutationFn: ({ campaignId, budget }) =>
-			setCampaignBudget(activeClientId, campaignId, budget),
+		mutationFn: ({ campaignId, marketplace, budget }) =>
+			setCampaignBudget(activeClientId, marketplace, campaignId, budget),
 	});
 };
 
@@ -152,17 +163,6 @@ const isoDay = (d) => d.toISOString().slice(0, 10);
  * 5 Sep from both paths.
  */
 export const MAX_BU_DAYS = 31;
-
-/**
- * How many day-queries may be in flight at once.
- *
- * ⚠️ Not a nicety. `useQueries` fires every query the moment it is enabled, so an unstaged
- * 31-day drawer opens 31 requests at once against an API whose connection pool holds 10.
- * That exhausts the pool: every later request, `/auth/me` included, queues and then fails
- * with "QueuePool limit of size 10 reached". A read-only chart must not be able to take the
- * API down, so the days are drawn a few at a time.
- */
-const BU_CONCURRENCY = 4;
 
 /** Every date in the selected range, oldest first, capped so a 90-day view cannot fan out. */
 const rangeDates = (from, to) => {
@@ -197,6 +197,15 @@ const lastNDates = (to, n) => {
 	return out;
 };
 
+/**
+ * Budget utilisation per day, and per campaign per day, over the window.
+ *
+ * ⚠️ ONE request (`/ads/campaigns/daily`), not one per day. This used to ask `/ads/campaigns`
+ * once per date — up to 31 requests, walked four at a time so they would not exhaust the
+ * API's connection pool — and each still held a pooled connection. The server now returns
+ * every campaign's spend per day in one go, row for row what the per-day calls returned
+ * (verified 2026-09-25: 2,926 rows, 0 differences), and the derivation below is unchanged.
+ */
 export const useDailyBudgetUtilisation = ({
 	enabled = true,
 	days = null,
@@ -215,67 +224,35 @@ export const useDailyBudgetUtilisation = ({
 		? lastNDates(range.to, days + 3)
 		: rangeDates(range.from, range.to);
 
-	// How many days have come back. Each batch that settles releases the next, so the
-	// requests walk the window instead of arriving all at once.
-	//
-	// ⚠️ The counter resets whenever the QUESTION changes — a different client, a different
-	// marketplace filter, a different window. It only climbs while one set of days loads,
-	// so carrying its previous high into a new set makes the gate
-	// `i < settled + BU_CONCURRENCY` release every day at once: a dozen requests against a
-	// pool of ten, where the days that lose the race come back empty.
-	const [settled, setSettled] = useState(0);
-	const question = `${activeClientId}|${selected.join(",")}|${dates.join(",")}|${enabled}`;
-	const asked = useRef(question);
-	// ⚠️ The gate is recomputed DURING render, not reset in an effect. `useQueries` fires on
-	// commit, so an effect that zeroes the counter afterwards runs too late: the render that
-	// first sees the new question has already enabled every day against the old high-water
-	// mark and sent them. Reading 0 for that render is what actually holds the batch.
-	const gate = asked.current === question ? settled : 0;
-	useEffect(() => {
-		asked.current = question;
-		setSettled(0);
-	}, [question]);
-
-	const results = useQueries({
-		queries: dates.map((date, i) => ({
-			queryKey: ["ads-bu-day", activeClientId, selected, date],
-			queryFn: () =>
-				getCampaigns(activeClientId, {
-					start: date,
-					end: date,
-					marketplaces: selected,
-					page: 1,
-					// The account's whole campaign list, which is what a day's spend is spread over.
-					limit: 500,
-				}),
-			enabled:
-				enabled && Boolean(activeClientId) && i < gate + BU_CONCURRENCY,
-			// A past day never changes once its scrape has landed, so this is cheap to hold.
-			staleTime: 15 * 60 * 1000,
-		})),
+	const query = useQuery({
+		queryKey: [
+			"ads-bu-days",
+			activeClientId,
+			selected,
+			dates[0],
+			dates[dates.length - 1],
+		],
+		queryFn: () =>
+			getCampaignsDaily(activeClientId, {
+				start: dates[0],
+				end: dates[dates.length - 1],
+				marketplaces: selected,
+			}),
+		enabled: enabled && Boolean(activeClientId) && dates.length > 0,
+		// A past day never changes once its scrape has landed, so this is cheap to hold.
+		staleTime: 15 * 60 * 1000,
 	});
 
-	/**
-	 * ⚠️ Memoised on the queries' own update stamps, not left to rebuild each render.
-	 *
-	 * Consumers feed these arrays to ECharts, and EChart re-applies its option whenever the
-	 * option's identity changes. A fresh array on every render restarts the draw-in on every
-	 * render, so the chart snaps to its final frame instead of animating. The stamps change
-	 * only when data actually lands, which is exactly when the derivation should run again.
-	 */
-	const stamp = results.map((r) => r.dataUpdatedAt ?? 0).join(",");
-	const done = results.filter((r) => r.isSuccess || r.isError).length;
-	useEffect(() => {
-		if (asked.current !== question) return;
-		setSettled((n) => (done > n ? done : n));
-	}, [done, question]);
-
 	const dateKey = dates.join(",");
-	// eslint-disable-next-line react-hooks/exhaustive-deps
-	const allSettled = done === dates.length;
+	const allSettled = query.isSuccess || query.isError;
 	const derived = useMemo(() => {
-		const all = dates.map((date, i) => {
-			const items = results[i].data?.items ?? [];
+		// The rows for each date, in the shape the per-day calls used to return.
+		const byDate = new Map(dates.map((d) => [d, []]));
+		for (const r of query.data ?? []) byDate.get(r.date)?.push(r);
+		const itemsOn = (date) => byDate.get(date) ?? [];
+
+		const all = dates.map((date) => {
+			const items = itemsOn(date);
 			const live = items.filter(
 				(c) => (c.budget_consumed ?? 0) > 0 && c.daily_budget,
 			);
@@ -291,11 +268,8 @@ export const useDailyBudgetUtilisation = ({
 		});
 
 		// Trailing days with nothing in them are days the scrape has not reached, not days of
-		// zero spend, so they are dropped rather than drawn as a floor.
-		//
-		// ⚠️ Only once every day has answered. The requests arrive in batches, so mid-flight
-		// the newest days look empty simply because they have not returned yet; trimming then
-		// left a "7 day" strip rendering five dots that grew as the data landed.
+		// zero spend, so they are dropped rather than drawn as a floor. Only once the answer
+		// is in — before that every day looks empty.
 		let end = all.length;
 		if (allSettled) {
 			while (end > 0 && all[end - 1].campaigns === 0) end -= 1;
@@ -307,15 +281,13 @@ export const useDailyBudgetUtilisation = ({
 		/**
 		 * The same figures at campaign × day grain, which is what a per-campaign view needs.
 		 *
-		 * Built from the responses already in hand, so it costs no extra request. A campaign
-		 * appears if it spent on ANY day in the window; days it did not run stay null rather
-		 * than zero, because "did not run" and "ran and spent nothing" are different facts
-		 * and only one of them is a utilisation failure.
+		 * A campaign appears if it spent on ANY day in the window; days it did not run stay
+		 * null rather than zero, because "did not run" and "ran and spent nothing" are
+		 * different facts and only one of them is a utilisation failure.
 		 */
 		const byCampaign = new Map();
 		kept.forEach((date, di) => {
-			const items = results[start + di].data?.items ?? [];
-			for (const c of items) {
+			for (const c of itemsOn(date)) {
 				if (!((c.budget_consumed ?? 0) > 0) || !c.daily_budget)
 					continue;
 				if (!byCampaign.has(c.campaign_id)) {
@@ -360,10 +332,11 @@ export const useDailyBudgetUtilisation = ({
 				(a, b) => b.total - a.total,
 			),
 		};
-		// `stamp` and `dateKey` ARE the dependencies: `results` and `dates` are rebuilt on
-		// every render by useQueries, so depending on them would defeat the memo entirely.
+		// `dataUpdatedAt` and `dateKey` ARE the dependencies: `dates` is rebuilt every render,
+		// so depending on it would defeat the memo — and a fresh array on every render makes
+		// the ECharts consumers restart their draw-in.
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [stamp, dateKey, days, allSettled]);
+	}, [query.dataUpdatedAt, dateKey, days, allSettled]);
 
 	const { rows, campaigns } = derived;
 
@@ -372,9 +345,9 @@ export const useDailyBudgetUtilisation = ({
 		campaigns,
 		dates: derived.dates,
 		truncated: !days && dates.length >= MAX_BU_DAYS,
-		isLoading: results.some((r) => r.isLoading),
-		error: results.find((r) => r.error)?.error ?? null,
-		refetch: () => results.forEach((r) => r.refetch()),
+		isLoading: query.isLoading,
+		error: query.error ?? null,
+		refetch: () => query.refetch(),
 	};
 };
 

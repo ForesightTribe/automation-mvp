@@ -23,6 +23,27 @@ PAGE_SIZE = 100
 LINE_ITEM_CONCURRENCY = 1
 LINE_ITEM_GAP_S = 0.3
 
+# ── searchPurchaseOrder pagination is NON-DETERMINISTIC (verified live
+# 2026-09-28) ────────────────────────────────────────────────────────────────
+# The endpoint honours NO sort key — passing sort_by=created_at (or any other
+# field) returns rows in an undefined, unstable order, so page N is not a fixed
+# slice: across a full 22-page sweep, ~27% of rows come back as duplicates of a
+# PO already seen on an earlier page, and the same count of DISTINCT POs never
+# appear on ANY page. The total record count stays rock-stable (2133 on every
+# page, unchanged for the whole sweep), so this is not live data mutating under
+# us — it is the server slicing an unordered set differently each request.
+#
+# A single sweep therefore silently drops ~25% of POs. The fix is to sweep
+# REPEATEDLY with a rotating sort hint and UNION the results by id: each sweep
+# returns a different ~75-95% random subset, so the union converges on the full
+# set fast. Measured live: 4 sweeps -> 2133/2133, zero missing. The rotation
+# order below is the one that converged fastest in that test (pending_qty alone
+# already yields ~96% in one sweep).
+SORT_ROTATION = ("pending_qty", "created_at", "purchase_order_id",
+                 "expiry_date", None, "po_date", "id")
+MAX_SWEEPS = 10          # safety cap; convergence is typically 4
+STALL_LIMIT = 2          # consecutive sweeps adding zero new POs -> give up early
+
 
 class SupplyFetchError(RuntimeError):
     """A Supply Portal call failed after retries."""
@@ -69,41 +90,82 @@ async def fetch_purchase_metrics(client: httpx.AsyncClient, token: str, brand_co
     })
 
 
-async def fetch_all_purchase_orders(client: httpx.AsyncClient, token: str,
-                                     brand_company_id: str) -> list[dict]:
-    """Every PO the account has ever raised (paging until a short page comes
-    back) — no date filter, matching the "get everything, window at read
-    time" pattern the rest of this codebase's PO/GRN tables follow.
-
-    Sorted by `created_at`, not the captured request's `pending_qty`.
-    Verified live 2026-09-25: cross-checking a bulk CSV export from the
-    portal against a `pending_qty`-sorted scrape found 4 real POs missing
-    (of 108 checked) — `pending_qty` changes in real time as POs get
-    received, and paginating by a mutating sort key over a ~24-minute, 22-page
-    fetch lets a PO's rank shift across a page boundary mid-fetch, dropping
-    it from every page (the same instability also produced the 69 duplicate
-    rows collapsed at save time — a PO fetched twice on the way to a
-    different slot). `created_at` never changes once a PO exists.
-    """
+async def _sweep_purchase_orders(client: httpx.AsyncClient, token: str,
+                                  brand_company_id: str, sort_key: str | None,
+                                  ) -> tuple[list[dict], int]:
+    """One full page-by-page sweep of searchPurchaseOrder with a given sort
+    hint. Returns (rows, total). The rows may contain duplicates and be an
+    incomplete subset — see SORT_ROTATION's note; the caller unions sweeps."""
     from scraper.platforms.instamart.dashboard_data.supply.parser import parse_purchase_orders
 
-    out: list[dict] = []
+    rows: list[dict] = []
+    total = 0
     page_no = 1
     while True:
-        raw = await _post(client, token, ep.SEARCH_PURCHASE_ORDER, {
+        body = {
             "filters": {"brand_company_id": brand_company_id, "selling_party.id": ""},
             "pagination": {"page_number": page_no, "size": PAGE_SIZE},
-            "sort": [{"sort_by": "created_at", "sort_order": "DESC"}],
             "query": {"id": "", "ship_to_party.name": ""},
-        })
+        }
+        if sort_key:
+            body["sort"] = [{"sort_by": sort_key, "sort_order": "DESC"}]
+        raw = await _post(client, token, ep.SEARCH_PURCHASE_ORDER, body)
         page = parse_purchase_orders(raw)
-        out.extend(page)
-        total = (raw.get("data") or {}).get("total_number_of_purchase_order_records") or 0
-        logger.info(f"Instamart PO: page {page_no} -> {len(page)} row(s) ({len(out)}/{total})")
-        if len(page) < PAGE_SIZE or len(out) >= total:
+        rows.extend(page)
+        total = (raw.get("data") or {}).get("total_number_of_purchase_order_records") or total
+        if len(page) < PAGE_SIZE:
             break
         page_no += 1
-    return out
+    return rows, total
+
+
+async def fetch_all_purchase_orders(client: httpx.AsyncClient, token: str,
+                                     brand_company_id: str) -> list[dict]:
+    """Every PO the account has ever raised — no date filter, matching the
+    "get everything, window at read time" pattern the rest of this codebase's
+    PO/GRN tables follow.
+
+    ⚠️ searchPurchaseOrder's pagination is NON-DETERMINISTIC (it honours no
+    sort key), so a single sweep silently drops ~25% of POs — see the
+    SORT_ROTATION note above for the full diagnosis. This unions REPEATED
+    sweeps with a rotating sort hint until the collected set reaches the
+    server's reported total (measured live: 4 sweeps -> complete), keeping the
+    freshest copy of each PO. It stops early if two sweeps in a row add nothing
+    new (converged), and hard-caps at MAX_SWEEPS so a permanently-unreachable
+    PO can't loop forever — in which case it returns what it has and logs the
+    gap rather than raising, so the rest of the scrape (line items, export
+    sync) still runs on the POs we did get.
+    """
+    collected: dict[str, dict] = {}
+    target = 0
+    stall = 0
+    for sweep_no in range(1, MAX_SWEEPS + 1):
+        sort_key = SORT_ROTATION[(sweep_no - 1) % len(SORT_ROTATION)]
+        rows, total = await _sweep_purchase_orders(client, token, brand_company_id, sort_key)
+        target = max(target, total)          # count can drift 2131<->2133; aim at the high-water mark
+        before = len(collected)
+        for po in rows:
+            collected[po["purchase_order_id"]] = po   # last write wins = freshest copy
+        added = len(collected) - before
+        logger.info(
+            f"Instamart PO sweep {sweep_no} (sort={sort_key or 'none'}): "
+            f"{len(rows)} row(s) -> {len(collected)}/{target} unique (+{added})"
+        )
+        if target and len(collected) >= target:
+            break
+        stall = stall + 1 if added == 0 else 0
+        if stall >= STALL_LIMIT:
+            logger.warning(
+                f"Instamart PO: {STALL_LIMIT} sweeps added no new POs; stopping at "
+                f"{len(collected)}/{target} — {target - len(collected)} PO(s) unreachable this run"
+            )
+            break
+    else:
+        logger.warning(
+            f"Instamart PO: hit MAX_SWEEPS={MAX_SWEEPS} at {len(collected)}/{target} — "
+            f"{target - len(collected)} PO(s) not collected this run"
+        )
+    return list(collected.values())
 
 
 async def submit_po_export(client: httpx.AsyncClient, token: str, brand_company_id: str) -> None:

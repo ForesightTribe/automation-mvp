@@ -36,9 +36,9 @@ _LIVE = typer.Option(
 # commands move real budget. Being made to say `-m blinkit` is cheap; discovering
 # you paused Zepto campaigns when you meant Blinkit is not.
 #
-# Existing SCHEDULES are unaffected: jobs/types.py fills in `blinkit` when a stored
-# schedule has no marketplace param, so nothing already in job_schedules has to be
-# rewritten. The requirement binds humans typing commands, not rows in the DB.
+# The same rule binds the job layer (ZC-D1, 2026-09-24): jobs/types.py no longer fills in
+# `blinkit` for a cm.* job without a marketplace — it refuses to build it. Every stored
+# schedule already names one (the reconciler stamps it), and so does every job the API queues.
 #
 # `--platform` stays accepted as an alias so older scripts and muscle memory keep
 # working; `--marketplace` matches the public scrape commands and is the name to use.
@@ -423,7 +423,7 @@ def _days(csv: str | None) -> list:
 @rules_app.command("add-budget-schedule")
 def add_budget_schedule(
     tenant: str = _TENANT,
-    campaign: int = typer.Option(..., "--campaign", help="Blinkit campaign id"),
+    campaign: int = typer.Option(..., "--campaign", help="Campaign id on the --marketplace given"),
     default_budget: float = typer.Option(..., "--default-budget", help="Fallback budget when no rule matches (₹)"),
     name: str = typer.Option(None, "--name", help="Human label"),
     campaign_name: str = typer.Option("", "--campaign-name", help="Campaign name (for logs/UI)"),
@@ -453,6 +453,9 @@ def add_budget_schedule(
                 uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
                 default_budget, name, stop_after_window=stop_after_window,
             )
+        except (repo.NotAutomatable, repo.DuplicateBidRule) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
         except repo.DuplicateSchedule as e:
             console.print(f"[red]{e}[/red]")
             if e.schedule_id:
@@ -506,7 +509,7 @@ def add_budget_rule(
 @rules_app.command("add-bid")
 def add_bid(
     tenant: str = _TENANT,
-    campaign: int = typer.Option(..., "--campaign", help="Blinkit campaign id"),
+    campaign: int = typer.Option(..., "--campaign", help="Campaign id on the --marketplace given"),
     keyword: str = typer.Option(..., "--keyword", help="Search keyword to chase"),
     target: int = typer.Option(..., "--target", help="Target sponsored position (e.g. 3)"),
     min_bid: int = typer.Option(..., "--min-bid", help="Floor CPM (₹)"),
@@ -559,14 +562,24 @@ def add_bid(
             console.print(f"[dim]measuring at {rloc} ({rlat}, {rlon}) — {store.source}"
                           f"{follows}[/dim]")
 
-        r = await repo.create_bid_rule(
-            uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
-            keyword, target, min_bid, max_bid, match_type=match_type,
-            type="once" if once else "recurring", date=date, days=_days(days),
-            start_time=start_time, stop_time=stop_time, start_date=start_date,
-            stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
-            city_id=rcity,
-        )
+        try:
+            r = await repo.create_bid_rule(
+                uuid.UUID(tenant), platform, campaign, campaign_name or f"campaign {campaign}",
+                keyword, target, min_bid, max_bid, match_type=match_type,
+                type="once" if once else "recurring", date=date, days=_days(days),
+                start_time=start_time, stop_time=stop_time, start_date=start_date,
+                stop_date=stop_date, lat=rlat, lon=rlon, location_name=rloc, brand_name=brand,
+                city_id=rcity,
+            )
+        except (repo.NotAutomatable, repo.DuplicateBidRule) as e:
+            console.print(f"[red]{e}[/red]")
+            raise typer.Exit(1)
+        if rlat is None and r.lat is not None:
+            # The marketplace needs a store and none was given, so it was chosen from the
+            # campaign's own targeting (ZC-C14) — say where, and never silently.
+            console.print(f"[dim]no --city given → measuring at "
+                          f"{r.location_name or 'the chosen store'} ({r.lat}, {r.lon}) "
+                          f"· follows that city's frozen store[/dim]")
         shape = f"once {date}" if once else "recurring"
         band = f"{min_bid}–{max_bid}" if max_bid else f"{min_bid}+ (no ceiling)"
         console.print(f"[green]Bid rule {r.id} created[/green] — {keyword!r} → pos {target} "
@@ -800,8 +813,10 @@ def stores_set(
     city: str = _CITY,
     store: str = typer.Option(..., "--store", help="merchant_id (from `cm stores show --city …`)"),
     rank: int = typer.Option(1, "--rank",
-                             help="1 = the anchor store; 2-3 = validation stores. Bids aim for "
-                                  "target at every ranked store where the campaign is in stock"),
+                             help="1 = the anchor store; 2-3 = more stores. Blinkit aims for "
+                                  "target at every ranked store where the campaign is in stock; "
+                                  "Zepto measures at one at a time and moves down the ranks when "
+                                  "that one can't sell it"),
     platform: str = _MARKETPLACE,
     tenant: str = _STORE_TENANT,
     global_: bool = _GLOBAL,

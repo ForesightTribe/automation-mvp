@@ -2,21 +2,20 @@
 
 `marketplace=` on `insights_summary`/`insights`/`sku_insights`/`get_po` is
 explicit-only, same convention as `scorecard_service._platform`: leaving it
-unset keeps every existing Blinkit caller unaffected, and Instamart is never
-auto-detected. See `instamart_po_service` for what it can't carry that
-Blinkit's PO data can (booking slots, a separate delivery date, city)."""
-import asyncio
+unset keeps every existing Blinkit caller unaffected, and neither Instamart
+nor Zepto is ever auto-detected. See `instamart_po_service` for what it can't
+carry that Blinkit's PO data can (booking slots, a separate delivery date,
+city); see `zepto_po_service` for why IT reads from line items instead of its
+own PO header (the header's own received/asn totals are always null)."""
 import uuid
 from datetime import date, datetime, timedelta
 
-from sqlalchemy import case, func, text
+from sqlalchemy import func, text
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.dependencies import Pagination
 from app.models.blinkit_seller import BlinkitPO, BlinkitPOItem, BlinkitPOSnapshot
-from app.models.zepto_seller import ZeptoPO, ZeptoPOItem
-from app.core.database import AsyncSessionLocal
 from app.schemas.common import Page
 from app.utils.cache import ttl_cache
 from app.schemas.purchase_order import (
@@ -29,7 +28,7 @@ from app.schemas.purchase_order import (
     POSnapshotOut,
     PurchaseOrderOut,
 )
-from app.services import reference_service, instamart_po_service
+from app.services import instamart_po_service, reference_service, zepto_po_service
 
 # A PO whose delivery window has not closed: the undelivered part is still to come,
 # not lost.
@@ -91,6 +90,10 @@ async def get_po(
 ) -> PODetailOut | None:
     if marketplace == "instamart":
         return await instamart_po_service.get_po(
+            session, tenant_id=tenant_id, po_number=po_number
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.get_po(
             session, tenant_id=tenant_id, po_number=po_number
         )
     po = (
@@ -178,6 +181,11 @@ async def insights_summary(
     """
     if marketplace == "instamart":
         return await instamart_po_service.insights_summary(
+            session, tenant_id=tenant_id, start=start, end=end,
+            prev_start=prev_start, prev_end=prev_end,
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.insights_summary(
             session, tenant_id=tenant_id, start=start, end=end,
             prev_start=prev_start, prev_end=prev_end,
         )
@@ -296,120 +304,6 @@ async def insights_summary(
     return out
 
 
-# Zepto's terminal PO states — the set a fill rate can be computed over. The
-# rest (PENDING_*, ASN_CREATED, PO_ACKNOWLEDGED) are still open, and counting
-# them would report an unfinished delivery as a shortfall.
-_ZEPTO_SETTLED = ("COMPLETED", "GRN_DONE", "EXPIRED")
-
-
-async def _zepto_po_figures(
-    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
-) -> dict:
-    """The headline PO figures for Zepto over one window.
-
-    Read straight off the Zepto tables rather than through `insights_summary`:
-    every branch in that function is Blinkit-shaped, and routing Zepto through
-    it returns Blinkit's rows under Zepto's name.
-
-    ⚠️ Received quantity comes from the ITEMS, not the PO header:
-    `zepto_po.total_grn_qty` is NULL on every row scraped so far, so a fully
-    delivered PO would read 0% filled. `zepto_po_items` carries the real
-    `grn_qty`. Fill rate is over settled POs only, the same definition
-    Blinkit's uses; it is None, never 0, when nothing is receipted.
-    """
-    value = (
-        await session.execute(
-            select(func.coalesce(func.sum(ZeptoPO.total_value), 0.0)).where(
-                ZeptoPO.tenant_id == tenant_id,
-                ZeptoPO.po_date >= start,
-                ZeptoPO.po_date <= end,
-            )
-        )
-    ).scalar_one()
-
-    qty, grn = (
-        await session.execute(
-            select(
-                func.coalesce(func.sum(ZeptoPOItem.po_qty), 0),
-                func.sum(ZeptoPOItem.grn_qty),
-            )
-            .select_from(ZeptoPOItem)
-            .join(ZeptoPO, ZeptoPO.po_id == ZeptoPOItem.po_id)
-            .where(
-                ZeptoPOItem.tenant_id == tenant_id,
-                ZeptoPO.tenant_id == tenant_id,
-                ZeptoPO.po_date >= start,
-                ZeptoPO.po_date <= end,
-                ZeptoPO.status.in_(_ZEPTO_SETTLED),
-            )
-        )
-    ).one()
-
-    fill = float(grn) / float(qty) * 100 if grn is not None and qty else None
-
-    # Undelivered value still open, and the shortfall on what has settled. The
-    # shortfall is priced off the line's own unit price, so a PO short on a
-    # cheap line and one short on an expensive line are not counted alike.
-    at_risk = (
-        await session.execute(
-            select(func.coalesce(func.sum(ZeptoPO.total_value), 0.0)).where(
-                ZeptoPO.tenant_id == tenant_id,
-                ZeptoPO.po_date >= start,
-                ZeptoPO.po_date <= end,
-                ZeptoPO.status.notin_(_ZEPTO_SETTLED),
-            )
-        )
-    ).scalar_one()
-
-    missed = (
-        await session.execute(
-            select(
-                func.coalesce(
-                    func.sum(
-                        func.greatest(
-                            ZeptoPOItem.po_qty - func.coalesce(ZeptoPOItem.grn_qty, 0),
-                            0,
-                        )
-                        * func.coalesce(ZeptoPOItem.unit_price, 0.0)
-                    ),
-                    0.0,
-                )
-            )
-            .select_from(ZeptoPOItem)
-            .join(ZeptoPO, ZeptoPO.po_id == ZeptoPOItem.po_id)
-            .where(
-                ZeptoPOItem.tenant_id == tenant_id,
-                ZeptoPO.tenant_id == tenant_id,
-                ZeptoPO.po_date >= start,
-                ZeptoPO.po_date <= end,
-                ZeptoPO.status.in_(_ZEPTO_SETTLED),
-            )
-        )
-    ).scalar_one()
-
-    counts = (
-        await session.execute(
-            select(
-                func.count().filter(ZeptoPO.status.notin_(_ZEPTO_SETTLED)),
-                func.count().filter(ZeptoPO.status.in_(_ZEPTO_SETTLED)),
-            ).where(
-                ZeptoPO.tenant_id == tenant_id,
-                ZeptoPO.po_date >= start,
-                ZeptoPO.po_date <= end,
-            )
-        )
-    ).one()
-
-    return {
-        "po_value": float(value),
-        "fill_rate": fill,
-        "value_at_risk": float(at_risk),
-        "value_missed": float(missed),
-        "open_pos": int(counts[0]),
-        "closed_pos": int(counts[1]),
-    }
-
-
 @ttl_cache(10 * 60)
 async def insights_by_marketplace(
     session: AsyncSession,
@@ -426,131 +320,63 @@ async def insights_by_marketplace(
 
     Asked per marketplace rather than grouped in SQL: purchase orders for the
     three marketplaces live in three different tables, and `insights_summary`
-    already knows how to read each. A marketplace with no PO feed at all is left
-    out — nothing ordered and no orders tracked are different facts.
+    already dispatches to the right reader for each. A marketplace with no
+    orders at all is left out — nothing ordered and no orders tracked are
+    different facts.
     """
-    all_marketplaces = await reference_service.list_marketplaces(session)
-    async def for_marketplace(mp: dict) -> dict | None:
-        return await _one_marketplace(
+    out: list[dict] = []
+    for mp in await reference_service.list_marketplaces(session):
+        # ⚠️ Only the marketplaces `insights_summary` can read separately. It
+        # falls through to the Blinkit tables for anything it does not name, so
+        # an unlisted slug would return BLINKIT's orders under its own name.
+        if mp["slug"] not in ("blinkit", "instamart", "zepto"):
+            continue
+        if not mp["connected"]:
+            continue
+        if marketplaces is not None and mp["slug"] not in marketplaces:
+            continue
+
+        summary = await insights_summary(
             session,
-            mp=mp,
-                    tenant_id=tenant_id,
-                    start=start,
-                    end=end,
-                    prev_start=prev_start,
-                    prev_end=prev_end,
-                    marketplaces=marketplaces,
-                )
-
-    done = [await for_marketplace(mp) for mp in all_marketplaces]
-    return [r for r in done if r]
-
-
-async def _one_marketplace(
-    session: AsyncSession,
-    *,
-    mp: dict,
-    tenant_id: uuid.UUID,
-    start: date,
-    end: date,
-    prev_start: date | None,
-    prev_end: date | None,
-    marketplaces: list[str] | None,
-) -> dict | None:
-    """One marketplace's PO figures, or None where it has no orders."""
-    # ⚠️ Only the marketplaces this module can actually read separately.
-    # Every OTHER branch here tests for "instamart" and falls through to the
-    # Blinkit tables, so an unlisted slug would return BLINKIT's purchase
-    # orders under its name. Zepto gets its own reader above.
-    if mp["slug"] not in ("blinkit", "instamart", "zepto") or not mp["connected"]:
-        return None
-    if marketplaces is not None and mp["slug"] not in marketplaces:
-        return None
-
-    if mp["slug"] == "zepto":
-        now = await _zepto_po_figures(
-            session, tenant_id=tenant_id, start=start, end=end
+            tenant_id=tenant_id,
+            start=start,
+            end=end,
+            prev_start=prev_start,
+            prev_end=prev_end,
+            marketplace=mp["slug"],
         )
-        before = (
-            await _zepto_po_figures(
-                session, tenant_id=tenant_id, start=prev_start, end=prev_end
-            )
-            if prev_start and prev_end
-            else {}
-        )
-        if not now["po_value"]:
-            return None
-        p_value = before.get("po_value")
-        return (
+        if not summary.po_value and not summary.closed_pos:
+            continue
+        out.append(
             {
                 "slug": mp["slug"],
                 "name": mp["name"],
                 "color": mp["color"],
                 "connected": True,
                 "po_value": {
-                    "value": now["po_value"],
-                    "prev": p_value,
-                    "delta_pct": (
-                        (now["po_value"] - p_value) / p_value
-                        if p_value
-                        else None
-                    ),
+                    "value": summary.po_value,
+                    "prev": summary.prev_po_value,
+                    "delta_pct": summary.po_value_delta,
                 },
                 "fill_rate": {
-                    "value": now["fill_rate"],
-                    "prev": before.get("fill_rate"),
-                    # The same helper the other marketplaces use, so one row's
-                    # change cannot mean something different from the next's.
-                    "delta_pct": _delta(now["fill_rate"], before.get("fill_rate")),
+                    # Stored as a fraction; the table reads percentages.
+                    "value": (
+                        None if summary.fill_rate is None else summary.fill_rate * 100
+                    ),
+                    "prev": (
+                        None
+                        if summary.prev_fill_rate is None
+                        else summary.prev_fill_rate * 100
+                    ),
+                    "delta_pct": summary.fill_rate_delta,
                 },
-                "value_at_risk": now["value_at_risk"],
-                "value_missed": now["value_missed"],
-                "open_pos": now["open_pos"],
-                "closed_pos": now["closed_pos"],
+                "value_at_risk": summary.value_at_risk,
+                "value_missed": summary.value_missed,
+                "open_pos": summary.open_pos,
+                "closed_pos": summary.closed_pos,
             }
-    )
-    summary = await insights_summary(
-        session,
-        tenant_id=tenant_id,
-        start=start,
-        end=end,
-        prev_start=prev_start,
-        prev_end=prev_end,
-        marketplace=mp["slug"],
-    )
-    if not summary.po_value and not summary.closed_pos:
-        return None
-    return (
-        {
-            "slug": mp["slug"],
-            "name": mp["name"],
-            "color": mp["color"],
-            "connected": True,
-            "po_value": {
-                "value": summary.po_value,
-                "prev": summary.prev_po_value,
-                "delta_pct": summary.po_value_delta,
-            },
-            "fill_rate": {
-                # Stored as a fraction; the table reads percentages.
-                "value": (
-                    None
-                    if summary.fill_rate is None
-                    else summary.fill_rate * 100
-                ),
-                "prev": (
-                    None
-                    if summary.prev_fill_rate is None
-                    else summary.prev_fill_rate * 100
-                ),
-                "delta_pct": summary.fill_rate_delta,
-            },
-            "value_at_risk": summary.value_at_risk,
-            "value_missed": summary.value_missed,
-            "open_pos": summary.open_pos,
-            "closed_pos": summary.closed_pos,
-        }
-    )
+        )
+    return out
 
 
 async def insights(
@@ -572,6 +398,11 @@ async def insights(
     """
     if marketplace == "instamart":
         return await instamart_po_service.insights(
+            session, tenant_id=tenant_id, pagination=pagination, start=start,
+            end=end, scope=scope, search=search, status=status,
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.insights(
             session, tenant_id=tenant_id, pagination=pagination, start=start,
             end=end, scope=scope, search=search, status=status,
         )
@@ -718,6 +549,11 @@ async def sku_insights(
     """
     if marketplace == "instamart":
         return await instamart_po_service.sku_insights(
+            session, tenant_id=tenant_id, pagination=pagination, start=start,
+            end=end, search=search,
+        )
+    if marketplace == "zepto":
+        return await zepto_po_service.sku_insights(
             session, tenant_id=tenant_id, pagination=pagination, start=start,
             end=end, search=search,
         )

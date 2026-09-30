@@ -7,16 +7,33 @@ Field names below are exactly what a live capture returned on 2026-09-25 (see
 `app/models/instamart_po.py`'s module docstring for the full context); fields
 the models don't need (reference_purchase_order_id, sample_po, business_type,
 delivery_mode, hsn, tax breakdowns, ...) are read from `raw` but dropped here.
+
+`appointment_start_date` and the four booking-status flags below were added
+2026-09-28 — they were present in every capture since day one, just never
+parsed. Confirmed live: this is the exact data the Supply Portal's own
+"PO Booking" tab renders (its "MOQ"/"PDP"/"Multi-GRN" badges and delivery
+slot), not a separate endpoint.
+
+`_epoch_ms_to_date` was fixed 2026-09-28 to convert via IST, not UTC — a
+timestamp near midnight IST used to land on the wrong calendar day (e.g.
+`expiry_date` showing 28 Sept when Instamart's own UI showed 29 Sept for
+the same PO, confirmed live). `instamart_po_service.py` already works
+around this for `po_date` specifically via `_RAISED_DATE` (computed from
+`created_at`, bypassing this column); that workaround is now redundant
+but harmless. `expiry_date` and `completed_date` had no such workaround,
+so this is the real fix for those two.
 """
 import csv
 import io
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
+
+_IST_OFFSET = timedelta(hours=5, minutes=30)
 
 
 def _epoch_ms_to_date(ms) -> date | None:
     if not ms:
         return None
-    return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).date()
+    return (datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc) + _IST_OFFSET).date()
 
 
 def _epoch_ms_to_dt(ms) -> datetime | None:
@@ -56,6 +73,12 @@ def parse_purchase_orders(raw: dict) -> list[dict]:
             "pending_quantity": int(po.get("pending_quantity") or 0),
             "grn_quantity": int(po.get("grn_quantity") or 0),
             "created_at": _epoch_ms_to_dt(po.get("created_at")),
+            # 0 means "not booked yet" — same sentinel as completed_date's 0.
+            "appointment_start_date": _epoch_ms_to_dt(po.get("appointment_start_date")),
+            "po_min_order_qty_fulfilled": bool(po.get("po_min_order_qty_fulfilled")),
+            "po_min_order_value_fulfilled": bool(po.get("po_min_order_value_fulfilled")),
+            "supplier_multi_grn_enabled": bool(po.get("supplier_multi_grn_enabled")),
+            "pdp_enabled": bool(po.get("pdp_enabled")),
         })
     return out
 

@@ -45,8 +45,13 @@ real cost on both marketplaces. In particular:
   anyone looked (docs §8.2b). Blinkit has exactly ONE write endpoint —
   `PUT /adservice/v3/campaigns`, full body, `campaign_request_type` as the discriminator —
   so every Blinkit write carries the same whole-campaign blast radius Zepto's does.
-- Position lookup is a *session* on both, but Blinkit's costs a browser warm-up and
-  a per-keyword search; Zepto's shape is still being determined.
+- Position lookup is a *session* on both: one browser warm-up per run, then a plain
+  request per (keyword, store). Blinkit picks the store by coordinate; Zepto by
+  `merchant_id` (a coordinate would spend its much scarcer store-lookup allowance), and
+  Zepto's session runs the FULL Chromium headless — its firewall refuses Playwright's
+  default headless shell (`scraper/platforms/zepto/public_data/endpoints.BROWSER_CHANNEL`).
+  Zepto's anonymous search allows only a few requests a minute, which is why it measures
+  at one store a tick (`campaign_manager/rotation.py`) where Blinkit reads every store.
 
 ## What is NOT in this contract
 
@@ -118,15 +123,18 @@ class CampaignAdapter(Protocol):
         """
 
     async def read_store_catalog(self, session, query: str, lat: float, lon: float, *,
-                                 cap: int, names) -> dict:
+                                 cap: int, names, merchant_id: str | None = None) -> dict:
         """OPTIONAL. Our products at one store, with availability, for the stock check.
 
         `{"ok": False, "error"}`, or `{"ok": True, "complete", "served_by",
         "products": [{pid, name, in_stock, inventory}]}` — `pid` in the SAME id space as
         `read_products`, or the join to a campaign silently finds nothing.
 
-        Blinkit: one capped brand search on the position session (a few requests).
-        Zepto:   not implemented — stock stays unknown, and every store counts.
+        Blinkit: one capped brand search on the position session (a few requests); read up
+                 front for every store, hourly. `merchant_id` ignored.
+        Zepto:   the same brand search, bound to the store by `merchant_id`; read only when
+                 our ad is missing (the rotation, campaign_manager/rotation.py). Sold-out
+                 products are hidden, so a product not returned is not sellable there.
         """
 
     # ── writes (guarded; only reached via writes.py) ─────────────────────────
@@ -180,8 +188,18 @@ class CampaignAdapter(Protocol):
         """
 
     async def fetch_positions(self, session: dict, keyword: str,
-                              lat: float, lon: float) -> list[dict]:
-        """Search results for one keyword at one store, ad-flagged."""
+                              lat: float, lon: float, *,
+                              merchant_id: str | None = None) -> list[dict]:
+        """Search results for one keyword at one store, ad-flagged.
+
+        `merchant_id` is the store the engine means, when it knows it (every catalogue
+        store does). Passed always, so the engine needs no per-marketplace branch.
+
+        Blinkit: ignored — its store is chosen by the lat/lon headers.
+        Zepto:   REQUIRED in practice. Zepto binds a search to a store by HEADER; without
+                 the id the scraper resolves the coordinate through `get_page`, a separate
+                 and scarce allowance, on every search.
+        """
 
     def locate_position(self, results: list[dict], keyword: str,
                         lat: float, lon: float, *, products: list[dict],

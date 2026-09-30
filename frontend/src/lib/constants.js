@@ -6,8 +6,21 @@ export const STORAGE_KEYS = {
 	activeClientId: "foresight.activeClientId",
 	dateRange: "foresight.dateRange",
 	marketplaces: "foresight.marketplaces",
+	automationMarketplace: "foresight.automationMarketplace",
 	sidebarCollapsed: "foresight.sidebarCollapsed",
 };
+
+/**
+ * Pages that act on ONE marketplace at a time — the campaign-manager surfaces, where every
+ * address names its marketplace and there is no "All" to send a write to. On these the
+ * navbar pills drop "All" and pick a single marketplace, held apart from the global
+ * selection so visiting them never changes what the rest of the dashboard shows.
+ */
+export const SINGLE_MARKETPLACE_PATHS = [
+	"/ads/automation",
+	"/automations",
+	"/ads/one-time-ops",
+];
 
 // Default `?days=` window for dashboard endpoints.
 export const DEFAULT_DAYS = 30;

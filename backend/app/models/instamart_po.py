@@ -70,6 +70,17 @@ class InstamartPO(SQLModel, table=True):
     pending_quantity: int = 0
     grn_quantity: int = 0                     # received — fill rate is grn_quantity / total_quantity
 
+    # ── Booking-slot fields — CONFIRMED LIVE 2026-09-28 to exist on this same
+    # `searchPurchaseOrder` response, mirroring what the Supply Portal's own
+    # "PO Booking" tab renders (see instamart_po_service.py's module docstring,
+    # which previously — wrongly — claimed no booking concept exists here at
+    # all). None/False until the vendor actually books a slot for the PO.
+    appointment_start_date: datetime | None = None   # the booked delivery slot, if any — Blinkit's schedule_date equivalent
+    po_min_order_qty_fulfilled: bool = False          # the portal's "MOQ" badge
+    po_min_order_value_fulfilled: bool = False
+    supplier_multi_grn_enabled: bool = False          # the portal's "Multi-GRN" badge
+    pdp_enabled: bool = False                         # the portal's "PDP" badge
+
     created_at: datetime | None = None
     scraped_at: datetime = Field(default_factory=now_ist)
 
