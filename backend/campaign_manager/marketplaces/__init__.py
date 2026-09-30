@@ -96,6 +96,23 @@ def min_daily_budget(slug: str | None) -> float | None:
     return None
 
 
+def keyword_bidding_refusal(slug: str | None) -> str | None:
+    """Why keyword-bid automations are off on this marketplace, or None when they are on.
+
+    Zepto: OFF for now (2026-09-29, Deepansh — "option C"). The bid engine reads our rank
+    from Zepto's shopper site, and Zepto's firewall refuses the VM's data-centre address;
+    a residential proxy works but was judged not worth its per-GB cost yet. Budget
+    automations, start/stop and one-time ops do not touch the shopper site and stay on.
+    Everything bidding needs (adapter, rotation, stock check) is still here — turning it
+    back on is `CM_ZEPTO_KEYWORD_BIDDING=1` (e.g. for a supervised test from a home IP).
+    API-safe: config is constants only."""
+    from campaign_manager import config
+    if (slug or "").lower() == "zepto" and not config.ZEPTO_KEYWORD_BIDDING:
+        return ("Keyword automations aren't available on Zepto yet. Budget automations, "
+                "start/stop and one-time changes are.")
+    return None
+
+
 def supported() -> list[str]:
     """Marketplaces the campaign manager can drive. Used by CLI help and errors."""
     return sorted(_ADAPTERS)

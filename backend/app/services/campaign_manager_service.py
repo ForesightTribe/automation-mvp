@@ -22,7 +22,8 @@ from app.utils.time import now_ist
 # `window` is the same pure module the engines decide with, so the status the UI shows is
 # the logic the engines act on — and it pulls in no Playwright (the app-layer rule holds).
 from campaign_manager import repo, window
-from campaign_manager.marketplaces import match_types, min_daily_budget
+from campaign_manager.marketplaces import (keyword_bidding_refusal, match_types,
+                                           min_daily_budget)
 from jobs.queue import enqueue
 
 # ⚠️ There is deliberately NO default marketplace (ZC-D1, Deepansh 2026-09-24: "only the
@@ -716,6 +717,11 @@ async def resume_bid_rule(session, tenant_id: uuid.UUID, marketplace: str,
         raise StateError("This automation is already running.")
     if _bid_ended(r):
         raise StateError("This automation has already ended — change its dates to run it again.")
+    # Keyword bidding switched off on this marketplace (Zepto, for now) — refused before
+    # anything is touched. `set_bid_state` refuses too, for callers that skip this service.
+    off = keyword_bidding_refusal(marketplace)
+    if off:
+        raise StateError(f"{off} It stays paused.")
     # If `set_bid_state` then refuses (a duplicate live rule, ZC-C9), the runtime has
     # already been cleared — harmless: a paused rule's learned state is stale anyway.
     await repo.clear_bid_runtime(rule_id)

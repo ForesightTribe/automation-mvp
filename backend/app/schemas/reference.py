@@ -31,3 +31,6 @@ class MarketplaceOut(BaseModel):
     # The marketplace's published minimum daily budget (Zepto ₹500), or None when it
     # publishes none (Blinkit). Shown as a hint; the API refuses below it either way.
     min_daily_budget: float | None = None
+    # Keyword-bid automations on this marketplace: None = available, else why not (Zepto,
+    # for now). The wizard greys out "Keyword Automation" with this sentence.
+    keyword_bidding_off: str | None = None

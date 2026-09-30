@@ -165,7 +165,11 @@ export const AutomationsPage = () => {
 	// Which marketplace this page acts on is the NAVBAR's choice (one at a time here — see
 	// MarketplaceContext); every list and action below is already scoped to it. The page's
 	// own channel pills are gone: two controls for one question could disagree.
-	const { marketplace, name: mpName } = useAutomationMarketplace();
+	const {
+		marketplace,
+		name: mpName,
+		keywordBiddingOff,
+	} = useAutomationMarketplace();
 	const [type, setType] = useState("");
 	const [status, setStatus] = useState("");
 	const [wizardKind, setWizardKind] = useState(null); // null | "campaign" | "keyword"
@@ -434,14 +438,22 @@ export const AutomationsPage = () => {
 								{c.blurb}
 							</p>
 						</div>
-						<Button
-							variant="brandSolid"
-							size="md"
-							className="mt-auto"
-							onClick={() => setWizardKind(c.kind)}
-						>
-							{c.cta}
-						</Button>
+						{/* Keyword automations can be switched off per marketplace (Zepto, for
+						    now): the card stays, so the option is visible, with the reason. */}
+						{c.kind === "keyword" && keywordBiddingOff ? (
+							<p className="mt-auto rounded-md bg-muted px-3 py-2 text-xs leading-relaxed text-content-muted">
+								{keywordBiddingOff}
+							</p>
+						) : (
+							<Button
+								variant="brandSolid"
+								size="md"
+								className="mt-auto"
+								onClick={() => setWizardKind(c.kind)}
+							>
+								{c.cta}
+							</Button>
+						)}
 					</div>
 				))}
 			</div>

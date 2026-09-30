@@ -430,7 +430,10 @@ async def create_bid_rule(tenant_id: uuid.UUID, platform: str, campaign_id: int,
     Raises `NotAutomatable` for an ineligible campaign, or a rule with nowhere to measure on
     a marketplace that needs one (ZC-C3, C14)."""
     from app.models.campaign_manager_v2 import CmBidRule
-    from campaign_manager.marketplaces import rule_needs_location
+    from campaign_manager.marketplaces import keyword_bidding_refusal, rule_needs_location
+    refused = keyword_bidding_refusal(platform)
+    if refused:
+        raise NotAutomatable(f"{refused} Nothing was created.")
     await require_automatable(tenant_id, platform, campaign_id)
     # Nowhere to measure, on a marketplace where the coordinate fallback is not a store
     # (ZC-C14): choose from the campaign's own targeting rather than refusing — and refuse
@@ -1744,11 +1747,15 @@ async def set_bid_state(rule_id: str, state: str):
     Raises `DuplicateBidRule` rather than resuming into a bid fight.
     """
     from app.models.campaign_manager_v2 import CmBidRule
+    from campaign_manager.marketplaces import keyword_bidding_refusal
     async with AsyncSessionLocal() as db:
         r = await db.get(CmBidRule, rule_id)
         if not r:
             return None
         if state == "active" and not r.active:
+            refused = keyword_bidding_refusal(r.platform)
+            if refused:
+                raise NotAutomatable(f"{refused} It stays paused.")
             await require_no_live_bid_rule(r.tenant_id, r.platform, r.campaign_id, r.keyword,
                                            r.match_type, exclude_id=r.id)
         r.state = state

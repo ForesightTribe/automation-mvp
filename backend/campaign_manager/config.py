@@ -142,6 +142,10 @@ BID_GIVE_UP_TICKS: int = int(os.getenv("CM_BID_GIVE_UP_TICKS", "2"))
 # quietly running on fewer stores. Warning, not error: it is not an outage.
 STORE_PROBLEM_WARN_TICKS: int = int(os.getenv("CM_STORE_PROBLEM_WARN_TICKS", "2"))
 
+# Zepto keyword-bid automations: OFF by default (2026-09-29) — see
+# `marketplaces.keyword_bidding_refusal`. `1` turns them back on (a supervised test).
+ZEPTO_KEYWORD_BIDDING: bool = _flag("CM_ZEPTO_KEYWORD_BIDDING", False)
+
 # ── Prepaid ad wallet (wallet.py, ZC-C12) ───────────────────────────────────
 #
 # Zepto ads spend from a prepaid wallet; when it runs dry every campaign stops delivering
