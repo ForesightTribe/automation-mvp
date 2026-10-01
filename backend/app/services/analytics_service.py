@@ -12,7 +12,8 @@ from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchSnapshot
 from app.services import (
-    instamart_ads, instamart_analytics, watchlist_service, zepto_ads, zepto_analytics,
+    blinkit_seller_hub_analytics, instamart_ads, instamart_analytics, watchlist_service,
+    zepto_ads, zepto_analytics,
 )
 
 Sale = BlinkitSellerSale
@@ -85,6 +86,15 @@ async def _sales_agg(
             session, tenant_id=tenant_id, start=start, end=end
         )
         rev, units, skus = rev + i_rev, units + i_units, skus + i_skus
+
+    # Sereko and any future seller-hub account: same "blinkit" slug as the old
+    # table (see blinkit_seller_hub_analytics docstring), summed in the same
+    # additive way — a tenant is on one Blinkit domain or the other, never both.
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h_rev, h_units, h_skus = await blinkit_seller_hub_analytics.sales_agg(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        rev, units, skus = rev + h_rev, units + h_units, skus + h_skus
 
     return rev, units, skus
 
@@ -272,6 +282,11 @@ async def get_revenue_series(
             session, tenant_id=tenant_id, start=start, end=end
         )
         series = _merge_series(series, i, "date", ("revenue", "units_sold"))
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        series = _merge_series(series, h, "date", ("revenue", "units_sold"))
     return series
 
 
@@ -367,6 +382,16 @@ async def get_trends(
                 prev[1] + row["units_sold"],
             )
 
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        for row in await blinkit_seller_hub_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        ):
+            prev = sale_map.get(row["date"], (0.0, 0))
+            sale_map[row["date"]] = (
+                prev[0] + row["revenue"],
+                prev[1] + row["units_sold"],
+            )
+
     out = []
     day = start
     while day <= end:
@@ -434,6 +459,11 @@ async def get_top_skus(
             session, tenant_id=tenant_id, start=start, end=end, limit=limit
         )
         skus = sorted([*skus, *i], key=lambda r: r["revenue"], reverse=True)[:limit]
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.top_skus(
+            session, tenant_id=tenant_id, start=start, end=end, limit=limit
+        )
+        skus = sorted([*skus, *h], key=lambda r: r["revenue"], reverse=True)[:limit]
     return skus
 
 
@@ -498,6 +528,17 @@ async def get_sales_by_city(
         )
         out.sort(key=lambda r: r["revenue"], reverse=True)
 
+    # Sereko and any future seller-hub account — real city names from the
+    # same Cities filter the live dashboard uses, so no reconciliation with
+    # the old table's city spelling is needed (both are "Blinkit's own" names).
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        out.extend(
+            await blinkit_seller_hub_analytics.sales_by_city(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        )
+        out.sort(key=lambda r: r["revenue"], reverse=True)
+
     return out
 
 
@@ -540,6 +581,12 @@ async def get_sales_by_category(
             session, tenant_id=tenant_id, start=start, end=end
         )
         cats = _merge_series(cats, i, "category", ("revenue", "units_sold"))
+        cats.sort(key=lambda r: r["revenue"], reverse=True)
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.sales_by_category(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        cats = _merge_series(cats, h, "category", ("revenue", "units_sold"))
         cats.sort(key=lambda r: r["revenue"], reverse=True)
     return cats
 
@@ -591,6 +638,11 @@ async def get_category_trend(
             session, tenant_id=tenant_id, start=start, end=end
         )
         trend = _merge_series(trend, i, ("date", "category"), ("revenue", "units_sold"))
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.category_trend(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        trend = _merge_series(trend, h, ("date", "category"), ("revenue", "units_sold"))
     return trend
 
 

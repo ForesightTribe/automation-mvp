@@ -80,6 +80,8 @@ from scraper.platforms.blinkit.dashboard_data.seller_hub import scraper as selle
 from scraper.platforms.blinkit.dashboard_data.seller_hub.parser import (
     parse_sales_daily as parse_seller_hub_sales_daily,
     parse_sales_by_product as parse_seller_hub_sales_by_product,
+    parse_sales_city_daily as parse_seller_hub_sales_city_daily,
+    parse_sales_category_daily as parse_seller_hub_sales_category_daily,
 )
 from scraper.platforms.blinkit.dashboard_data.seller_hub.storage import (
     save_sales_results as save_seller_hub_sales_results,
@@ -727,14 +729,25 @@ async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: boo
             by_product = parse_seller_hub_sales_by_product(
                 raw["products"], raw["window_label"], tenant_id, job_id
             )
+            by_city = []
+            for city, histogram in (raw.get("by_city") or {}).items():
+                by_city.extend(parse_seller_hub_sales_city_daily(histogram, city, tenant_id, job_id))
+            by_category = []
+            for category, histogram in (raw.get("by_category") or {}).items():
+                by_category.extend(
+                    parse_seller_hub_sales_category_daily(histogram, category, tenant_id, job_id)
+                )
 
             if save:
-                written = await save_seller_hub_sales_results(db, daily, by_product)
+                written = await save_seller_hub_sales_results(
+                    db, daily, by_product, by_city, by_category
+                )
                 await complete_scrape_job(db, job_id, written)
 
             console.print(
                 f"[green]Seller-hub sales: {len(daily)} daily row(s), "
-                f"{len(by_product)} product row(s) (window: {raw['window_label']!r})[/green]"
+                f"{len(by_product)} product row(s), {len(by_city)} city-day row(s), "
+                f"{len(by_category)} category-day row(s) (window: {raw['window_label']!r})[/green]"
             )
         except Exception as e:
             if job_id:

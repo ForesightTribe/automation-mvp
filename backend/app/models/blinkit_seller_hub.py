@@ -42,6 +42,75 @@ class BlinkitSellerHubSalesDailyRO(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
+class BlinkitSellerHubSalesCityDailyRO(SQLModel, table=True):
+    """Day-grain, PER CITY — same endpoint as the plain daily table
+    (seller-hub/api/sales/performance/metrics), called once per city with
+    `filters.city_filter: [<city>]`.
+
+    The response carries no city field of its own — verified live (Sereko,
+    2026-10-01): filtering to "Bengaluru" dropped the day totals from
+    Rs 1,17,568/264u (all cities) to Rs 24,339/57u, and the 7-day histogram
+    summed back to that same filtered total. So each row here is tagged with
+    whichever city was REQUESTED, same pattern as Zepto's per-city scrape —
+    not a field Blinkit returns itself.
+
+    Real calendar date, one city's total per day — safe to sum across any
+    date range or across cities, unlike the rolling-window by-product table.
+    """
+    __tablename__ = "blinkit_seller_hub_sales_city_daily_ro"
+
+    __table_args__ = (
+        Index("idx_bshscd_tenant_date", "tenant_id", "date"),
+        Index("idx_bshscd_tenant_city", "tenant_id", "city"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    city: str
+    date: date
+    sales_amount: float = 0.0
+    units_sold: int = 0
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class BlinkitSellerHubSalesCategoryDailyRO(SQLModel, table=True):
+    """Day-grain, PER BUSINESS CATEGORY — same endpoint as the plain daily
+    table, called once per category with `filters.business_category_filter:
+    [<category_id>]`.
+
+    Verified live (Sereko, 2026-10-01): filtering to category_id 4766
+    ("Beauty - Face Care") dropped the day totals from Rs 1,17,568/264u (all
+    categories) to Rs 1,14,968/259u, matching the by-product table's own
+    category breakdown for the same category exactly — two independent
+    sources agreeing. Only 3 categories for Sereko (vs 29 cities), so this
+    scrape has none of the rate-limit handling the city table's scraper
+    needed.
+
+    Real calendar date, one category's total per day — safe to sum across any
+    date range, unlike the rolling-window by-product table's category field.
+    """
+    __tablename__ = "blinkit_seller_hub_sales_category_daily_ro"
+
+    __table_args__ = (
+        Index("idx_bshscatd_tenant_date", "tenant_id", "date"),
+        Index("idx_bshscatd_tenant_category", "tenant_id", "category"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    category: str
+    date: date
+    sales_amount: float = 0.0
+    units_sold: int = 0
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
 class BlinkitSellerHubSalesByProductRO(SQLModel, table=True):
     """Item-grain, ROLLING WINDOW total — seller-hub/api/sales/products/performance.
 

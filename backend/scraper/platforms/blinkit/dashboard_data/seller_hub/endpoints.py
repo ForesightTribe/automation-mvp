@@ -11,3 +11,7 @@ SALES_PERFORMANCE_PAGE = "/dashboard/performance?performance=sales_performance"
 # ── Sales API endpoints (response URLs, matched by substring) ──────────────────
 SALES_METRICS_PATH = "seller-hub/api/sales/performance/metrics"
 SALES_BY_PRODUCT_PATH = "seller-hub/api/sales/products/performance"
+# Lists this seller's filter options, including city_filter — the full city
+# list for the per-city sales pass (confirmed live, 2026-10-01: 29 cities for
+# Sereko; the UI's Cities dropdown reads from this same response).
+SALES_FILTERS_PATH = "seller-hub/api/sales/performance/filters"

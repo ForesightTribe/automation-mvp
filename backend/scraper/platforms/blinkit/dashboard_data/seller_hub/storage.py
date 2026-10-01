@@ -9,18 +9,31 @@ from sqlmodel.sql.sqltypes import AutoString
 from app.models.blinkit_seller_hub import (
     BlinkitSellerHubSalesDailyRO,
     BlinkitSellerHubSalesByProductRO,
+    BlinkitSellerHubSalesCityDailyRO,
+    BlinkitSellerHubSalesCategoryDailyRO,
 )
 from app.utils.logger import logger
 
 
 async def save_sales_results(
-    session: AsyncSession, daily: list[dict], by_product: list[dict]
+    session: AsyncSession,
+    daily: list[dict],
+    by_product: list[dict],
+    by_city: list[dict] | None = None,
+    by_category: list[dict] | None = None,
 ) -> int:
     await _upsert(session, BlinkitSellerHubSalesDailyRO, daily)
     await _upsert(session, BlinkitSellerHubSalesByProductRO, by_product)
+    if by_city:
+        await _upsert(session, BlinkitSellerHubSalesCityDailyRO, by_city)
+    if by_category:
+        await _upsert(session, BlinkitSellerHubSalesCategoryDailyRO, by_category)
     await session.commit()
-    logger.info(f"Blinkit seller-hub sales saved — daily:{len(daily)} by_product:{len(by_product)}")
-    return len(daily) + len(by_product)
+    logger.info(
+        f"Blinkit seller-hub sales saved — daily:{len(daily)} by_product:{len(by_product)} "
+        f"by_city:{len(by_city or [])} by_category:{len(by_category or [])}"
+    )
+    return len(daily) + len(by_product) + len(by_city or []) + len(by_category or [])
 
 
 # Identical to scraper/platforms/blinkit/dashboard_data/seller/storage.py's

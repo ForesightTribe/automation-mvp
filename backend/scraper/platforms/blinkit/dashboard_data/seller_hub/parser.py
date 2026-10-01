@@ -50,6 +50,67 @@ def parse_sales_daily(histogram: list[dict], tenant_id: str, scrape_job_id: str)
     return rows
 
 
+def parse_sales_city_daily(
+    histogram: list[dict], city: str, tenant_id: str, scrape_job_id: str
+) -> list[dict]:
+    """Same shape as `parse_sales_daily`, tagged with the city that was
+    REQUESTED — the API returns no city field of its own, see
+    `BlinkitSellerHubSalesCityDailyRO`'s docstring."""
+    as_of = now_ist().date()
+    by_title = {h["title"]: h for h in histogram}
+    inr = by_title.get("Sales (in INR)", {}).get("bucket_data", [])
+    units = by_title.get("Sales (in Units)", {}).get("bucket_data", [])
+    unit_by_label = {b["bucket_title"]: b["bucket_value"] for b in units}
+
+    rows = []
+    for b in inr:
+        label = b["bucket_title"]
+        day = _resolve_bucket_date(label, as_of)
+        rows.append({
+            "upsert_key": make_upsert_key(
+                tenant_id, "blinkit", "seller_hub_sales_city_daily", city, day
+            ),
+            "tenant_id": tenant_id,
+            "scrape_job_id": scrape_job_id,
+            "city": city,
+            "date": day,
+            "sales_amount": b.get("bucket_value", 0.0),
+            "units_sold": unit_by_label.get(label, 0),
+            "scraped_at": now_ist(),
+        })
+    return rows
+
+
+def parse_sales_category_daily(
+    histogram: list[dict], category: str, tenant_id: str, scrape_job_id: str
+) -> list[dict]:
+    """Same shape as `parse_sales_daily`, tagged with the category that was
+    REQUESTED — see `BlinkitSellerHubSalesCategoryDailyRO`'s docstring."""
+    as_of = now_ist().date()
+    by_title = {h["title"]: h for h in histogram}
+    inr = by_title.get("Sales (in INR)", {}).get("bucket_data", [])
+    units = by_title.get("Sales (in Units)", {}).get("bucket_data", [])
+    unit_by_label = {b["bucket_title"]: b["bucket_value"] for b in units}
+
+    rows = []
+    for b in inr:
+        label = b["bucket_title"]
+        day = _resolve_bucket_date(label, as_of)
+        rows.append({
+            "upsert_key": make_upsert_key(
+                tenant_id, "blinkit", "seller_hub_sales_category_daily", category, day
+            ),
+            "tenant_id": tenant_id,
+            "scrape_job_id": scrape_job_id,
+            "category": category,
+            "date": day,
+            "sales_amount": b.get("bucket_value", 0.0),
+            "units_sold": unit_by_label.get(label, 0),
+            "scraped_at": now_ist(),
+        })
+    return rows
+
+
 def parse_sales_by_product(
     products: list[dict], window_label: str, tenant_id: str, scrape_job_id: str
 ) -> list[dict]:
