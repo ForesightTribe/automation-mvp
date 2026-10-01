@@ -850,6 +850,71 @@ there starts the rest. Freeze three stores per city (`cm stores set -m zepto`) t
 and writes an `error` History row per automation saying so — for every marketplace. It used to escape the
 run with no History at all.
 
+#### Zepto's shopper search through a proxy (2026-09-30)
+
+**Why.** Zepto's firewall refuses the VM's own address outright (a data-centre range: the warm-up gets
+a hard 403). So on the VM, and only there, the bid engine's shopper session goes out through a
+consumer-line proxy. Through a proxy Zepto also refuses our usual **replayed** search, so a proxied
+session instead **types the keyword into Zepto's own search box** and reads the page's own answer
+(`scraper/platforms/zepto/public_data/typed_search.py`). Measured on the VM through the proxy: 10/10,
+about 6 s per search. The test log is `backend/zepto-cm-exp/PROXY-TESTS.md` (local).
+
+**The switch.** One switch selects both the proxy and typed search. It is off by default; with it off,
+the code path is exactly as before.
+
+| Setting                            | Default | Meaning                                                             |
+| ---------------------------------- | ------- | ------------------------------------------------------------------- |
+| `CM_ZEPTO_SHOPPER_PROXY_ON`        | off     | Zepto's shopper session goes through the proxy, with typed search    |
+| `CM_ZEPTO_SHOPPER_PROXY`           | —       | `http://user:pass@host:port`. **A secret:** only in that machine's `.env`, never in git, never logged (only `host:port` is printed) |
+| `CM_ZEPTO_SHOPPER_WAIT_BUDGET_S`   | 180     | the most one proxied run spends waiting out refused searches         |
+
+- **Scope:** only the bid engine's Zepto shopper session (`zepto/adapter.open_position_session`),
+  used for rank checks and stock reads. The scrapes, the Explorer, the Zepto ads API and Blinkit never
+  go through it.
+- **Switch on without a usable address** (missing, not http, SOCKS5): every bid is held with a reason
+  naming the setting. It never quietly goes direct.
+- **Proxy not connecting** (seen 2026-09-30: `503` on every connection, for hours): every bid is held,
+  and History says "the connection Zepto's search runs through was not available; it is retried next
+  check".
+- Zepto keyword bidding also needs `CM_ZEPTO_KEYWORD_BIDDING=1`. The two switches are independent.
+  On the VM, keyword bidding without the proxy just holds every run.
+
+**Rules typed search depends on** (each one learned from a wrong or failed live run):
+
+- **One answer per search, and only the right one.** After Enter the page sends up to three results
+  calls: the previous keyword re-sent, ours, and a copy of ours without a search id. Only ours leaves the
+  browser, and an answer counts only if its own request asked for our keyword. Reading "the first
+  answer" once reported the previous keyword's list. The as-you-type calls never leave either, so a
+  search costs Zepto's allowance **one call**, the same as a replay.
+- **The store is bound by header**, swapped onto that one call. An answer containing any other store's
+  products is a failure, not a result.
+- **A refusal looks like a failed request.** Zepto's "login to search" (HTTP 299) comes from CloudFront
+  without the cross-site header, so the browser blocks it. It is read at the network layer and
+  reported as the usual `gate`. On a proxied session it is retried every 60 s for as long as the
+  run's `CM_ZEPTO_SHOPPER_WAIT_BUDGET_S` lasts, not just once: right after a warm-up a refusal spell
+  has lasted ~2 minutes (2026-10-01), and one retry gave up on a search the next minute answered.
+  Once the budget is spent, refused searches fail at once and their bids are held.
+- **One page.** A typed search reads the first page (~30 rows). A full page is marked `capped_at`, so the
+  stock check does not treat products beyond it as "not sold here" (agreed 2026-09-30).
+- **No coordinate lookup.** Every search names its store (`merchant_id`); resolving a coordinate would
+  be a replayed request.
+- **Dead weight is never downloaded:** images, fonts, video, Google Tag Manager/Analytics, the Facebook
+  pixel and Zepto's analytics uploads. Zepto's firewall challenge (`*.awswaf.com`) is never blocked.
+
+**Cost.** The proxy bills per megabyte. Measured direct from a laptop with the blocking on:
+
+- warm-up ≈ 2.3 MB, almost all of it Zepto's own JavaScript;
+- ≈ 75 KB per search (Zepto's answer itself is ~35 KB);
+- ≈ 1 MB extra if a run passes 4 minutes (re-minting the firewall pass).
+
+For 10 keyword automations, 4 runs an hour, 12 hours a day, that is about 4.5 GB a month. Every
+proxied run logs one line, `Zepto: shopper search through the proxy used N searches, N calls reached
+Zepto, N refused, N MB`, so the real figure can be read off the logs.
+
+**Turning it on (VM).** Add both settings to `backend/.env`, then run
+`sudo systemctl restart foresight-runner`. Before trusting it with live bids, do a dry-run on the
+test campaign.
+
 ### 7.7 Bounds are invariants
 
 `min_bid` / `max_bid` are enforced **every tick** against the live bid, not merely clamped onto a
