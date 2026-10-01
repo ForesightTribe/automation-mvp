@@ -15,3 +15,10 @@ SALES_BY_PRODUCT_PATH = "seller-hub/api/sales/products/performance"
 # list for the per-city sales pass (confirmed live, 2026-10-01: 29 cities for
 # Sereko; the UI's Cities dropdown reads from this same response).
 SALES_FILTERS_PATH = "seller-hub/api/sales/performance/filters"
+
+# A different endpoint family — the "Download sales sheet" order-level
+# report. POST to start generating (report_type: SALES_SUMMARY), GET poll
+# repeatedly until a document_url appears, then a plain (non-Blinkit) S3
+# download for the real file. See scraper.fetch_sales_order_report.
+REPORTS_DOWNLOAD_PATH = "seller-hub/api/reports/download"
+REPORTS_POLL_PATH = "seller-hub/api/reports/poll"

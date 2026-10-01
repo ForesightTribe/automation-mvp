@@ -12,13 +12,16 @@ from sqlmodel import Field, SQLModel
 # brand — so the next brand Blinkit migrates lands in these same tables,
 # scoped by tenant_id, with no rename needed.
 #
-# NOT reused from blinkit_seller.py's BlinkitSellerSale/BlinkitSellerSalesSummary:
-# the new dashboard's sales API cannot produce that table's grain (item x city x
-# day on one row) — one endpoint gives a day total with every item summed
-# together, the other gives an item total for a rolling window with no real day
-# attached, and neither ever carries a city. Confirmed against the live API,
-# not assumed from field names — see docs/platform-auth.md's note on
-# blinkit_seller_new for the auth side of this split.
+# NOT reused from blinkit_seller.py's BlinkitSellerSale/BlinkitSellerSalesSummary
+# for the chart-backed tables below (Daily/CityDaily/CategoryDaily/ByProduct):
+# those four come from the dashboard's own CHART endpoints, which never put
+# item + city + day on one row. CORRECTED 2026-10-01: that grain DOES exist on
+# this domain after all — see BlinkitSellerHubSalesOrderRO below, from the
+# separate "Download sales sheet" REPORT export (reports/download, a different
+# endpoint family entirely), which is genuine order-level data: item, real
+# date, AND both supply/customer city on one row. Verified live: its total
+# matched BlinkitSellerHubSalesDailyRO's total for the same range to the rupee
+# (Rs 3,36,604, September 2026).
 
 
 class BlinkitSellerHubSalesDailyRO(SQLModel, table=True):
@@ -146,4 +149,69 @@ class BlinkitSellerHubSalesByProductRO(SQLModel, table=True):
     sales_contribution_pct: float | None = None
     is_transitioned: bool | None = None
     transition_date: str | None = None
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class BlinkitSellerHubSalesOrderRO(SQLModel, table=True):
+    """Order-level grain — seller-hub/api/reports/download (report_type
+    SALES_SUMMARY), a DIFFERENT endpoint family from the chart-backed tables
+    above: POST to start generating, poll reports/poll until SUCCESS, GET the
+    resulting presigned S3 link for the real XLSX. One row per (order_id,
+    item_id) pair — an order with 2 different items is 2 rows.
+
+    This is the real item x city x day grain the chart endpoints can't give —
+    discovered 2026-10-01 after wrongly concluding twice that it didn't exist
+    on this domain at all. Verified live: its total for September 2026
+    matched BlinkitSellerHubSalesDailyRO's total for the same month to the
+    rupee (Rs 3,36,604), confirming it's the same real sales, not a different
+    number needing reconciliation.
+
+    Kept at full order grain rather than pre-aggregated to item x city x day —
+    aggregation is a query away from here and never recoverable the other
+    direction, and `order_id` is itself useful (e.g. matching a customer
+    complaint to the exact sale).
+    """
+    __tablename__ = "blinkit_seller_hub_sales_order_ro"
+
+    __table_args__ = (
+        Index("idx_bshso_tenant_date", "tenant_id", "order_date"),
+        Index("idx_bshso_tenant_item", "tenant_id", "item_id"),
+        Index("idx_bshso_tenant_city", "tenant_id", "supply_city"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    order_id: str
+    order_date: date
+    item_id: str
+    product_name: str | None = None
+    brand_name: str | None = None
+    upc: str | None = None
+    variant_description: str | None = None
+    consumer_app_mapping: str | None = None
+    business_category: str | None = None
+    expansion_level: str | None = None
+    supply_city: str | None = None
+    supply_state: str | None = None
+    supply_state_gst: str | None = None
+    customer_city: str | None = None
+    customer_state: str | None = None
+    order_status: str | None = None
+    hsn_code: str | None = None
+    igst_pct: float | None = None
+    cgst_pct: float | None = None
+    sgst_pct: float | None = None
+    cess_pct: float | None = None
+    quantity: int = 0
+    mrp: float = 0.0
+    selling_price: float = 0.0
+    igst_value: float = 0.0
+    cgst_value: float = 0.0
+    sgst_value: float = 0.0
+    cess_value: float = 0.0
+    total_tax: float = 0.0
+    total_gross_amount: float = 0.0
     scraped_at: datetime = Field(default_factory=now_ist)
