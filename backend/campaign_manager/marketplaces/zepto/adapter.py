@@ -46,8 +46,10 @@ passes through unchanged so a guardrail can refuse it by name rather than silent
 coercing it into something writable.
 """
 import json
+from urllib.parse import unquote, urlsplit
 
 from app.utils.logger import logger
+from campaign_manager import config
 from campaign_manager.marketplaces.zepto import client as zc
 from campaign_manager.marketplaces.zepto import eligibility
 from campaign_manager.marketplaces.zepto import endpoints as ep
@@ -264,6 +266,46 @@ async def read_products(client, campaign_id: int) -> list[dict]:
 # than reimplemented, so a Zepto payload change gets fixed once. It manages its own
 # AWS WAF pass in-session (`_ensure_pass`, ~4-6 min, re-minted by re-navigating the
 # same page) — do NOT wrap a second pass lifecycle around it.
+#
+# THROUGH A PROXY (`config.ZEPTO_SHOPPER_PROXY_ON`, off by default). Where Zepto refuses the
+# machine's own address — the VM — this session, and nothing else, goes out through a proxy,
+# and the scraper searches by typing into Zepto's page instead of replaying (`typed_search.py`
+# says why). Nothing below this adapter knows: same session dict, same `fetch_positions`,
+# same results.
+
+def shopper_proxy() -> dict | None:
+    """Playwright's proxy setting for the shopper session, or None when the switch is off.
+
+    Raises RuntimeError when the switch is ON without a usable address. Going direct instead
+    would look like it worked on a laptop and fail on the VM in a way that reads as Zepto
+    blocking us — so it holds the run and names the setting.
+
+    ⚠️ The address carries the login. Nothing here may put it in a message or a log:
+    `proxy_label` is the only printable form.
+    """
+    if not config.ZEPTO_SHOPPER_PROXY_ON:
+        return None
+    raw = config.ZEPTO_SHOPPER_PROXY
+    try:
+        u = urlsplit(raw)
+        scheme, host, port = u.scheme, u.hostname, u.port
+    except ValueError:
+        scheme = host = port = None
+    # http(s) only: Chromium cannot log in to a SOCKS5 proxy.
+    if scheme not in ("http", "https") or not host or not port:
+        raise RuntimeError(
+            "Zepto shopper proxy is switched on (CM_ZEPTO_SHOPPER_PROXY_ON) but "
+            "CM_ZEPTO_SHOPPER_PROXY is not a usable http://user:pass@host:port address")
+    proxy = {"server": f"{scheme}://{host}:{port}"}
+    if u.username:
+        proxy.update(username=unquote(u.username), password=unquote(u.password or ""))
+    return proxy
+
+
+def proxy_label(proxy: dict | None) -> str:
+    """host:port — the only part of a proxy setting that may be printed."""
+    return (proxy or {}).get("server", "").split("://")[-1]
+
 
 async def open_position_session(pw, lat: float | None = None,
                                 lon: float | None = None) -> dict:
@@ -281,17 +323,36 @@ async def open_position_session(pw, lat: float | None = None,
 
     lat = _DEFAULT_LAT if lat is None else float(lat)
     lon = _DEFAULT_LON if lon is None else float(lon)
+    proxy = shopper_proxy()            # raises before a browser is started
     driver = await async_playwright().start()
+    why: dict = {}
     try:
-        session = await zs.open_session(driver, lat, lon)
+        if proxy:
+            session = await zs.open_session(driver, lat, lon, proxy=proxy, typed=True,
+                                            why=why)
+        else:
+            session = await zs.open_session(driver, lat, lon)
     except Exception:
         await driver.stop()
         raise
     if not session:
         await driver.stop()
-        raise RuntimeError(
-            f"Zepto: could not open a consumer search session at ({lat}, {lon})")
+        if not proxy:
+            raise RuntimeError(
+                f"Zepto: could not open a consumer search session at ({lat}, {lon})")
+        reason = why.get("nav_error") or "Zepto did not answer the warm-up search"
+        if "ERR_PROXY" in reason or "ERR_TUNNEL" in reason:
+            # The proxy itself: down, out of data, or the login refused (seen 2026-09-30,
+            # 503 on every connection). Said first and plainly — see bid._PLAIN_CAUSES.
+            raise RuntimeError(f"Zepto shopper proxy did not connect "
+                               f"({proxy_label(proxy)}: {reason})")
+        raise RuntimeError(f"Zepto: could not open a consumer search session through the "
+                           f"proxy {proxy_label(proxy)} ({reason})")
     session["_pw"] = driver
+    if proxy:
+        session["_wait_budget_s"] = config.ZEPTO_SHOPPER_WAIT_BUDGET_S
+        logger.info(f"Zepto: shopper search is going through the proxy {proxy_label(proxy)}, "
+                    f"searching by typed search")
     return session
 
 
@@ -302,6 +363,11 @@ async def close_position_session(session: dict) -> None:
 
     if not session:
         return
+    if session.get("typed") is not None:
+        # What the proxy is billed on. One line a run, so a month's cost can be read off the
+        # logs instead of the provider's dashboard.
+        from scraper.platforms.zepto.public_data import typed_search
+        logger.info(f"Zepto: shopper search through the proxy used {typed_search.usage(session)}")
     try:
         await zs.close_session(session)
     except Exception as e:
@@ -337,6 +403,12 @@ async def fetch_positions(session: dict, keyword: str, lat: float,
     scraper itself publishes. Both are transient and shared — 299 is documented as
     self-clearing in about a minute — so losing a whole 15-minute tick to one is
     wasteful when we know how long to wait. Anything still blocked after that raises.
+
+    A session with a wait budget (`_wait_budget_s`, set on a proxied one) instead keeps
+    waiting and retrying for as long as the budget lasts, then stops. Through a proxy a
+    refusal spell has lasted ~2 minutes right after the warm-up (2026-10-01) — one retry gave
+    up while the very next search was answered — and the address is shared with strangers,
+    so the budget is what keeps one bad spell from eating the whole 15-minute tick.
     """
     import asyncio
 
@@ -348,13 +420,25 @@ async def fetch_positions(session: dict, keyword: str, lat: float,
                                merchant_id=merchant_id or session.get("_merchant_id") or None)
 
     res = await _once()
-    kind = res.get("kind")
-    if res.get("blocked") and kind in ("gate", "rate"):
+    budget = session.get("_wait_budget_s")
+    retries = 0
+    while res.get("blocked") and res.get("kind") in ("gate", "rate"):
+        kind = res["kind"]
         pause = pub_ep.GATE_PAUSE_S if kind == "gate" else pub_ep.RATE_PAUSE_S
+        waited = session.get("_waited_s", 0.0)
+        if budget is None and retries:
+            break                                   # no budget: one retry, as always
+        if budget is not None and waited + pause > budget:
+            logger.warning(
+                f"Zepto {kind} on {keyword!r} ({res.get('error')}) — not waiting: this run "
+                f"has already waited {waited:g}s of the {budget:g}s it may")
+            break
         logger.warning(
             f"Zepto {kind} on {keyword!r} ({res.get('error')}) — waiting {pause:g}s and "
-            f"retrying once; this throttle is shared and self-clearing")
+            f"retrying; this throttle is shared and self-clearing")
         await asyncio.sleep(pause)
+        session["_waited_s"] = waited + pause
+        retries += 1
         res = await _once()
 
     if res.get("blocked"):

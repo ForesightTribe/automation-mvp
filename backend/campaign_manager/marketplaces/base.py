@@ -52,6 +52,10 @@ real cost on both marketplaces. In particular:
   default headless shell (`scraper/platforms/zepto/public_data/endpoints.BROWSER_CHANNEL`).
   Zepto's anonymous search allows only a few requests a minute, which is why it measures
   at one store a tick (`campaign_manager/rotation.py`) where Blinkit reads every store.
+  Where Zepto refuses the machine's address (the VM), `CM_ZEPTO_SHOPPER_PROXY_ON` sends
+  that session through a proxy, and each search is then TYPED into Zepto's page (~6 s)
+  rather than replayed, because replaying is refused through a proxy. Same session dict,
+  same `fetch_positions`, same results (`zepto/adapter.py`, `typed_search.py`).
 
 ## What is NOT in this contract
 

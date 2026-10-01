@@ -140,6 +140,18 @@ themselves, and a daily `auth.refresh` job keeps sessions warm so they never exp
 Logins stay **lazy and never scheduled** — repeated logins from one datacenter IP look
 like a bot. See [platform-auth.md](platform-auth.md).
 
+**Zepto's shopper search needs a proxy here** (off by default). Zepto refuses this box's
+own address, so the bid engine's Zepto rank checks only work through a consumer-line proxy.
+To turn it on, add these to the box's `.env` and restart the runner:
+
+```
+CM_ZEPTO_SHOPPER_PROXY_ON=1
+CM_ZEPTO_SHOPPER_PROXY=http://USER:PASS@host:port
+```
+
+The second line is a secret: it belongs in `.env` only, never in git or a message. See
+[campaign-manager.md](campaign-manager.md), "Zepto's shopper search through a proxy".
+
 `AUTH_ALLOW_LOGIN` should stay **true** here and be set **false on Render**: Blinkit is
 India-geo, and a login from a US IP minutes before the same account is used from Mumbai
 is exactly what fraud heuristics watch for.

@@ -125,6 +125,20 @@ Playwright ≥ 1.49 and `playwright install chromium` on the machine. Pinned by
 Nothing noticed this for days: the last Zepto scrape had run on 1 Sept and there is
 no schedule, so a daily "can a session open?" check is on the list.
 
+### A fifth: the VM's address, and replaying through a proxy (2026-09-28/30)
+
+The GCP VM's own address is refused outright: the warm-up gets a 202 challenge and then a
+CloudFront 403. That is why public scrapes run on a residential laptop, not the VM.
+
+The bid engine's rank checks have to run on the VM, so they can go through a consumer-line
+proxy. Through a proxy, the **replayed** search this scraper is built on is refused (429, and
+the proxy's address stayed flagged afterwards), while the page's own requests are answered.
+So a session opened with `typed=True` searches by typing into Zepto's search box instead
+(`public_data/typed_search.py`), and `search()` hands such a session over transparently.
+
+Only the bid engine opens one; the scrapes never do. The switch, the rules and the cost are
+in [campaign-manager.md](campaign-manager.md), "Zepto's shopper search through a proxy".
+
 ---
 
 ## Tunables, and the measurements behind them
