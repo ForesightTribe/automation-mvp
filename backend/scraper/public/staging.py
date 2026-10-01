@@ -130,6 +130,23 @@ CREATE TABLE IF NOT EXISTS pairs_done (
     PRIMARY KEY (key, lat, lon)
 );
 
+-- Every rate-limit block a run met, one row each — which mechanism (`kind`), Zepto's own
+-- words for it (`detail`, e.g. its LOGIN_REQUIRED body), where, and how many in a row.
+-- "The scrape is unstable" cannot be diagnosed after the fact without this: the log only
+-- ever said BLOCKED. Local bookkeeping; never loaded into Postgres.
+CREATE TABLE IF NOT EXISTS blocks (
+    id         INTEGER PRIMARY KEY AUTOINCREMENT,
+    at         TEXT NOT NULL,
+    phase      TEXT,                  -- main | backlog
+    worker     INTEGER,
+    merchant_id TEXT,
+    city       TEXT,
+    query      TEXT,
+    kind       TEXT,                  -- rate | gate | challenge | open_failed | ...
+    detail     TEXT,
+    streak     INTEGER                -- blocks in a row for this worker, this one included
+);
+
 -- Resume reads these: (keyword, lat, lon) for the keyword scrape, (brand, lat, lon) for skus.
 CREATE INDEX IF NOT EXISTS ix_snap_resume ON search_snapshots(keyword, lat, lon);
 CREATE INDEX IF NOT EXISTS ix_sku_resume  ON sku_snapshots(lat, lon);
@@ -381,6 +398,24 @@ async def save_skus(stg: dict, listings: list[dict], brand_slug: str, tenant_id,
         )
         conn.commit()
     return len(listings)
+
+
+async def record_block(stg: dict, *, phase: str, worker: int, merchant_id: str,
+                       city: str, query: str, kind: str, detail: str | None,
+                       streak: int) -> None:
+    """Log one block to the run's `blocks` table. Never raises: a bookkeeping failure
+    must not be the thing that stops a scrape."""
+    try:
+        async with stg["lock"]:
+            stg["conn"].execute(
+                "INSERT INTO blocks (at, phase, worker, merchant_id, city, query, kind, "
+                "detail, streak) VALUES (?,?,?,?,?,?,?,?,?)",
+                (now_ist().isoformat(), phase, worker, merchant_id, city, query, kind,
+                 (detail or "")[:300], streak),
+            )
+            stg["conn"].commit()
+    except Exception as e:
+        logger.debug(f"staging: could not record a block ({e})")
 
 
 # ── resume ───────────────────────────────────────────────────────────────────

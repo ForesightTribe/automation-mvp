@@ -24,8 +24,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.public import outcome, staging
-from scraper.public.orchestrator import _clamp_workers, _drain, warn_if_co_located
+from scraper.public import outcome, pacing, staging
+from scraper.public.orchestrator import (
+    _clamp_workers, _drain, _handles_blocks, _kinds, _note_block, _recover,
+    warn_if_co_located,
+)
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 from scraper.utils.search_result import classify_products
 
@@ -179,6 +182,9 @@ async def _worker(
         logger.warning(f"worker {wid}: could not open session — exiting")
         return
     stale = 0
+    pacer = pacing.new(provider)
+    streak = 0          # blocks in a row; reset by the first answer that is not one
+    blocked_since = 0.0
     try:
         while True:
             try:
@@ -200,51 +206,52 @@ async def _worker(
                     # The rest stay out of `finished`; the backlog pass takes them.
                     break
                 query = _brand_query(brand_slug, aliases)
-                _t = time.monotonic()
-                res = await _search(provider, session, loc, query, brand_cap)
-                store_fetch += time.monotonic() - _t
 
-                # Unconditional, and BEFORE the failure branch: a marketplace that
-                # rate-limits per connection counts the blocked request too, so
-                # skipping the gap on a failure is how a run digs itself deeper.
-                if provider.search_gap_s:
-                    await asyncio.sleep(provider.search_gap_s)
-
-                # A BLOCK IS NOT A FAILURE — it means "come back shortly". Without
-                # this the run treats a rate limit exactly like a 404: counts an
-                # error, moves to the next store, and keeps hammering. That is how
-                # a Zepto run produced 95 errors across 169 stores in one minute —
-                # every request after the first block was doomed and sent anyway.
-                # Mirrors the keyword orchestrator: wait, rebuild, retry once.
-                if res.get("blocked") and provider.probe_every_s:
-                    # Counted before the wait, so a worker that never recovers
-                    # still shows the block it died on.
-                    stats["blocked"] += 1
-                    waits = 0
-                    while waits < provider.max_block_waits:
-                        waits += 1
-                        logger.warning(
-                            f"w{wid} {loc.city} brand '{query}' BLOCKED — waiting "
-                            f"{provider.probe_every_s}s "
-                            f"({waits}/{provider.max_block_waits})"
-                        )
-                        await asyncio.sleep(provider.probe_every_s)
-                        await provider.close_session(session)
-                        session = await provider.open_session(browser, loc.lat, loc.lon)
-                        if session:
-                            break
-                    if not session:
-                        logger.warning(f"worker {wid}: still blocked after {waits} "
-                                       f"waits — exiting")
-                        return
-                    stale = 0
-                    # Rebuilding the session reset its bound store, so the retry
-                    # must re-bind explicitly (`_search` passes merchant_id) —
-                    # without it the retry would silently target whatever the fresh
-                    # session resolved from the seed coordinate.
+                # Up to 2 attempts: the plain search, plus — only if it came back
+                # BLOCKED — one retry once the block has been waited out. A BLOCK IS
+                # NOT A FAILURE, it means "come back shortly". Without this the run
+                # treated a rate limit exactly like a 404: counted an error, moved to
+                # the next store, and kept hammering. That is how a Zepto run produced
+                # 95 errors across 169 stores in one minute. Mirrors the keyword
+                # orchestrator.
+                blocked_twice = False
+                for attempt in range(2):
+                    # Unconditional, and before the request: a marketplace that
+                    # rate-limits per connection counts the blocked request too.
+                    await pacing.before(pacer, session)
+                    _t = time.monotonic()
+                    # `_search` passes merchant_id, so a retry on a REBUILT session is
+                    # still bound to this store, not whatever the new session resolved.
                     res = await _search(provider, session, loc, query, brand_cap)
-                    if provider.search_gap_s:
-                        await asyncio.sleep(provider.search_gap_s)
+                    store_fetch += time.monotonic() - _t
+                    await pacing.after(pacer)
+
+                    if res.get("blocked") and _handles_blocks(provider):
+                        streak += 1
+                        if streak == 1:
+                            blocked_since = time.monotonic()
+                        await _note_block(stg, stats, "main", wid, loc, query, res, streak)
+                        pacing.on_block(pacer)
+                        session = await _recover(provider, browser, session, loc,
+                                                 res.get("kind") or "", streak,
+                                                 blocked_since, f"worker {wid}",
+                                                 stg=stg, wid=wid)
+                        if not session:
+                            return
+                        stale = 0
+                        if attempt == 0:
+                            continue
+                        blocked_twice = True
+                        break
+                    streak = 0
+                    pacing.on_clean(pacer)
+                    break
+
+                if blocked_twice:
+                    # One store failure, not two — and the pair stays out of
+                    # `finished`, so the backlog pass gets it.
+                    store_fail += 1
+                    continue
 
                 if not res.get("ok"):
                     store_fail += 1
@@ -300,6 +307,9 @@ async def _retry_worker(
     if not session:
         logger.warning(f"backlog worker {wid}: could not open session — exiting")
         return
+    pacer = pacing.new(provider)
+    streak = 0
+    blocked_since = 0.0
     try:
         while True:
             try:
@@ -313,22 +323,28 @@ async def _retry_worker(
                 query = _brand_query(brand_slug, aliases)
                 # Bind by store id and collapse ad slots, same as the main pass —
                 # see `_search`.
+                await pacing.before(pacer, session)
                 res = await _search(provider, session, loc, query, brand_cap)
-                if provider.search_gap_s:
-                    await asyncio.sleep(provider.search_gap_s)
+                await pacing.after(pacer)
 
-                if res.get("blocked") and provider.probe_every_s:
-                    # One wait, one look — this pair already had its fair shot.
-                    # Compounding waits here just delays the rest of the backlog.
-                    stats["blocked"] += 1
+                if res.get("blocked") and _handles_blocks(provider):
+                    # Wait it out so the NEXT pair gets a working session, but do not
+                    # retry this one — it already had its fair shot in the main pass.
+                    streak += 1
+                    if streak == 1:
+                        blocked_since = time.monotonic()
+                    await _note_block(stg, stats, "backlog", wid, loc, query, res, streak)
+                    pacing.on_block(pacer)
                     store_fail += 1
-                    await asyncio.sleep(provider.probe_every_s)
-                    await provider.close_session(session)
-                    session = await provider.open_session(browser, loc.lat, loc.lon)
+                    session = await _recover(provider, browser, session, loc,
+                                             res.get("kind") or "", streak, blocked_since,
+                                             f"backlog worker {wid}", stg=stg,
+                                             phase="backlog", wid=wid)
                     if not session:
-                        logger.warning(f"backlog worker {wid}: still blocked — exiting")
                         return
                     continue
+                streak = 0
+                pacing.on_clean(pacer)
 
                 if not res.get("ok"):
                     stats["errors"] += 1
@@ -413,7 +429,7 @@ async def run_targeted(
     summary["job_id"] = job_id
     summary["staging_file"] = stg["path"].name
     stats = {"rows": 0, "errors": 0, "skipped": 0, "processed": 0,
-             "blocked": 0, "recovered": 0, "mismatched": 0}
+             "blocked": 0, "recovered": 0, "mismatched": 0, "blocks_by_kind": {}}
     total = len(locations)
     queue: asyncio.Queue = asyncio.Queue()
     for loc in locations:
@@ -527,6 +543,7 @@ async def run_targeted(
     summary.update(
         rows=stats["rows"], errors=stats["errors"], skipped=stats["skipped"],
         status=status, note=note, blocked=stats["blocked"],
+        blocks_by_kind=stats["blocks_by_kind"],
         recovered=stats["recovered"], mismatched=stats["mismatched"],
         unattempted=len(unattempted), unrecovered=n_unrecovered,
         pairs_total=len(scope), pairs_done=pairs_done,
@@ -542,7 +559,7 @@ async def run_targeted(
     #   mismatched   the marketplace answered for a different store (catalogue drift)
     logger.info(
         f"targeted: tenant {tid} {status.upper()} — {note} · {stats['rows']} sku rows, "
-        f"{stats['blocked']} blocked (waited out), {stats['errors']} errors, "
+        f"{stats['blocked']} blocked (waited out{_kinds(stats)}), {stats['errors']} errors, "
         f"{stats['mismatched']} wrong-store answers dropped, {stats['skipped']} skipped"
     )
     # An error COUNT is not actionable: "95 errors across 169 stores" does not say

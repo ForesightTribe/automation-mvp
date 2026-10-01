@@ -1444,6 +1444,12 @@ def _public_outcome_cells(s: dict) -> list[str]:
     colour = {"success": "green", "skipped": "dim", "partial": "yellow",
               "failed": "red"}.get(status, "yellow")
     cov = s.get("coverage_pct")
+    blocked = str(s.get("blocked", 0))
+    by_kind = s.get("blocks_by_kind") or {}
+    if by_kind:
+        # Which mechanism, not just how many — the three want different remedies.
+        blocked += " (" + ", ".join(
+            f"{k} {n}" for k, n in sorted(by_kind.items(), key=lambda kv: -kv[1])) + ")"
     missing = []
     if s.get("unrecovered"):
         missing.append(f"{s['unrecovered']:,} pairs")
@@ -1451,7 +1457,7 @@ def _public_outcome_cells(s: dict) -> list[str]:
         missing.append(f"{s['unattempted']:,} stores")
     return [
         "[dim]—[/dim]" if cov is None else f"{cov}%",
-        str(s.get("blocked", 0)),
+        blocked,
         str(s.get("errors", 0)),
         f"[red]{' + '.join(missing)}[/red]" if missing else "0",
         f"[{colour}]{status}[/{colour}]",

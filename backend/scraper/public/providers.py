@@ -124,6 +124,24 @@ class Provider:
     # sleep wastes 10 minutes of every block.
     probe_every_s: int = 0
     max_block_waits: int = 0         # consecutive block waits before giving up
+    # How to meet a block, when one remedy does not fit all: `(kind, streak) -> (wait
+    # seconds, rebuild the session?)` for the `streak`-th block in a row. Zepto's three
+    # mechanisms want three different things (see zepto scraper.block_remedy). None = the
+    # generic remedy above — wait `probe_every_s`, rebuild, up to `max_block_waits` times.
+    block_remedy: Callable[[str, int], tuple[float, bool]] | None = None
+    # With a `block_remedy`: a worker that has seen nothing but blocks for this long stops,
+    # and the run ends `partial`. Replaces the `max_block_waits` count, which gave up on an
+    # ordinary bad patch and lost the rest of the run.
+    block_give_up_s: float = 0
+    # Adaptive pacing. None = fixed: `search_gap_s` slept after every search, as always.
+    # Set, the pace is START-to-START, from `gap_floor_s` up to `gap_max_s`: x`gap_backoff`
+    # after every block, /`gap_ease` after `gap_ease_after` clean searches in a row. See
+    # scraper/public/pacing.py.
+    gap_max_s: float | None = None
+    gap_floor_s: float = 0.0
+    gap_backoff: float = 1.5
+    gap_ease_after: int = 20
+    gap_ease: float = 1.25
     # How to start this marketplace's browser. The worker pools (keyword scrape, own-SKU
     # scrape, Explorer) all launch through this, so a marketplace that needs a different
     # browser changes it in ONE place. Zepto needs the full Chromium — its WAF blocks the
@@ -190,6 +208,16 @@ _PROVIDERS: dict[str, Provider] = {
         max_block_waits=len(ze_ep.RECOVERY_WAITS_S),
         max_workers=ze_ep.MAX_WORKERS,
         launch_browser=ze_scraper.launch_browser,
+        # 2026-10-01: a block is met by its kind, not by one reflex, and the pace adapts —
+        # the 2026-09-29 run spent 8.4 h bouncing between blocks at a fixed 2 s. See
+        # zepto endpoints.py, "Adaptive pacing".
+        block_remedy=ze_scraper.block_remedy,
+        block_give_up_s=ze_ep.BLOCK_GIVE_UP_S,
+        gap_floor_s=ze_ep.PACE_FLOOR_S,
+        gap_max_s=ze_ep.GAP_MAX_S,
+        gap_backoff=ze_ep.GAP_BACKOFF,
+        gap_ease_after=ze_ep.GAP_EASE_AFTER,
+        gap_ease=ze_ep.GAP_EASE,
     ),
 }
 

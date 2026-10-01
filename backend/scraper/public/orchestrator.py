@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.public import outcome, staging
+from scraper.public import outcome, pacing, staging
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
@@ -102,6 +102,86 @@ def _jittered(base_s: float) -> float:
 # Pacing moved onto Provider — it is per-marketplace, not global. Blinkit has no
 # volume cap and runs 5 workers at 0.05 s between stores; Zepto enforces one and
 # dies after a single search at that rate. See scraper/public/providers.py.
+
+
+def _handles_blocks(provider) -> bool:
+    """Does this marketplace report blocks for us to wait out? (Blinkit does not yet.)"""
+    return bool(provider.block_remedy or provider.probe_every_s)
+
+
+async def _note_block(stg, stats, phase: str, wid: int, loc, query: str, res: dict,
+                      streak: int) -> None:
+    """Count, log and record one block — WHICH mechanism, in the marketplace's own words.
+
+    The log used to say only "BLOCKED", so a run that spent hours blocked could not say
+    whether it was the rate limit, the login gate or the firewall — three things with
+    three different remedies. Now each block names its kind in the log, and lands in the
+    staging file's `blocks` table for after-the-fact diagnosis."""
+    kind = res.get("kind") or "blocked"
+    stats["blocked"] += 1
+    stats["blocks_by_kind"][kind] = stats["blocks_by_kind"].get(kind, 0) + 1
+    logger.warning(f"w{wid} {loc.city} '{query}' BLOCKED · {kind} · "
+                   f"{(res.get('error') or '').strip()[:160]}")
+    await staging.record_block(stg, phase=phase, worker=wid, merchant_id=loc.merchant_id,
+                               city=loc.city, query=query, kind=kind,
+                               detail=res.get("error"), streak=streak)
+
+
+async def _recover(provider, browser, session, loc, kind: str, streak: int,
+                   blocked_since: float, who: str, stg=None, phase: str = "main",
+                   wid: int = 0) -> dict | None:
+    """Meet a block. Returns the session to carry on with — the same one, or a new one —
+    or None when the worker should stop (the run then ends `partial`).
+
+    With a marketplace `block_remedy` (Zepto) the KIND decides: wait on the same session,
+    or rebuild. A worker stops only after `block_give_up_s` with nothing but blocks,
+    measured from `blocked_since` (the first block of the current streak). Without one
+    (Instamart) the generic remedy: wait `probe_every_s`, rebuild, up to
+    `max_block_waits` times.
+    """
+    if provider.block_remedy is None:
+        waits = 0
+        while waits < provider.max_block_waits:
+            waits += 1
+            logger.warning(f"{who} {loc.city}: waiting {provider.probe_every_s}s, then a "
+                           f"new session ({waits}/{provider.max_block_waits})")
+            await asyncio.sleep(_jittered(provider.probe_every_s))
+            await provider.close_session(session)
+            session = await provider.open_session(browser, loc.lat, loc.lon)
+            if session:
+                return session
+        logger.warning(f"{who}: still blocked after {waits} waits — stopping")
+        return None
+
+    n = streak
+    while True:
+        blocked_for = time.monotonic() - blocked_since
+        if blocked_for >= provider.block_give_up_s:
+            logger.warning(
+                f"{who}: nothing but blocks for {blocked_for / 60:.0f} min — stopping. "
+                f"That is not a rate limit (those clear in about a minute); the run ends "
+                f"partial and --resume continues it")
+            if session:
+                await provider.close_session(session)
+            return None
+        wait, rebuild = provider.block_remedy(kind, n)
+        logger.info(f"{who} {loc.city}: {kind} block, {n} in a row — waiting {wait:.0f}s "
+                    f"on {'a NEW session' if rebuild else 'the same session'}")
+        if wait:
+            await asyncio.sleep(_jittered(wait))
+        if not rebuild:
+            return session
+        await provider.close_session(session)
+        session = await provider.open_session(browser, loc.lat, loc.lon)
+        if session:
+            return session
+        if stg is not None:
+            await staging.record_block(stg, phase=phase, worker=wid,
+                                       merchant_id=loc.merchant_id, city=loc.city,
+                                       query="", kind="open_failed",
+                                       detail="could not open a new session", streak=n)
+        n += 1
+        kind = "open_failed"
 
 
 async def _own_keyword_map(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, list[tuple[str, list[str]]]]:
@@ -276,6 +356,9 @@ async def _worker(
         return
     stale = 0
     searches = 0        # since this worker's last rest, for provider.pause_every
+    pacer = pacing.new(provider)
+    streak = 0          # blocks in a row; reset by the first answer that is not one
+    blocked_since = 0.0
     try:
         while True:
             try:
@@ -324,6 +407,14 @@ async def _worker(
                 # this one keyword further only delays the rest of the queue.
                 give_up = False
                 for attempt in range(2):
+                    # Pace HERE, before the request, and unconditionally (see
+                    # scraper/public/pacing.py). Every branch below can
+                    # `continue`/`break` out early, and an empty result is the
+                    # commonest of them — on Zepto 'sourdough bread loaf' returns
+                    # 0-6 products at most stores. Pacing only after those branches
+                    # meant the thinnest keywords fired back to back with no gap at
+                    # all, which is what blocked five workers in 37 seconds.
+                    await pacing.before(pacer, session)
                     _t = time.monotonic()
                     try:
                         # merchant_id as well as the coordinate: marketplaces bind in
@@ -338,38 +429,23 @@ async def _worker(
                                "total_results": 0, "error": f"{type(e).__name__}: {e}"}
                     store_fetch += time.monotonic() - _t
                     searches += 1
+                    await pacing.after(pacer)
 
-                    # Pace HERE, not at the end of the loop. Every branch below can
-                    # `continue`/`break` out early, and an empty result is the
-                    # commonest of them — on Zepto 'sourdough bread loaf' returns
-                    # 0-6 products at most stores. Pacing after those branches means
-                    # the thinnest keywords fire back to back with no gap at all,
-                    # which is what blocked five workers in 37 seconds.
-                    if provider.search_gap_s:
-                        await asyncio.sleep(provider.search_gap_s)
-
-                    if res.get("blocked") and provider.probe_every_s:
+                    if res.get("blocked") and _handles_blocks(provider):
                         # Counted apart from `errors`: a block we wait out costs
                         # time, not data, and lumping the two made a healthy run
-                        # look broken. Counted HERE, before the wait, so a worker
-                        # that never recovers still shows the block it died on.
-                        stats["blocked"] += 1
-                        waits = 0
-                        while waits < provider.max_block_waits:
-                            waits += 1
-                            logger.warning(
-                                f"w{wid} {loc.city} '{keyword}' BLOCKED — waiting "
-                                f"{provider.probe_every_s // 60} min "
-                                f"({waits}/{provider.max_block_waits})"
-                            )
-                            await asyncio.sleep(_jittered(provider.probe_every_s))
-                            await provider.close_session(session)
-                            session = await provider.open_session(browser, loc.lat, loc.lon)
-                            if session:
-                                break
+                        # look broken. Counted and recorded HERE, before the wait, so
+                        # a worker that never recovers still shows the block it died on.
+                        streak += 1
+                        if streak == 1:
+                            blocked_since = time.monotonic()
+                        await _note_block(stg, stats, "main", wid, loc, keyword, res, streak)
+                        pacing.on_block(pacer)
+                        session = await _recover(provider, browser, session, loc,
+                                                 res.get("kind") or "", streak,
+                                                 blocked_since, f"worker {wid}",
+                                                 stg=stg, wid=wid)
                         if not session:
-                            logger.warning(f"worker {wid}: still blocked after "
-                                           f"{waits} waits — exiting")
                             return
                         searches = 0
                         if attempt == 0:
@@ -385,6 +461,8 @@ async def _worker(
                         give_up = True
                         break
 
+                    streak = 0
+                    pacing.on_clean(pacer)
                     break  # a real (non-blocked) response — done with this keyword
 
                 if give_up:
@@ -447,6 +525,9 @@ async def _retry_worker(
     if not session:
         logger.warning(f"backlog worker {wid}: could not open session — exiting")
         return
+    pacer = pacing.new(provider)
+    streak = 0
+    blocked_since = 0.0
     try:
         while True:
             try:
@@ -461,6 +542,7 @@ async def _retry_worker(
                 if not brands:
                     continue
 
+                await pacing.before(pacer, session)
                 try:
                     res = await provider.search(session, keyword, cap,
                                                 lat=loc.lat, lon=loc.lon,
@@ -468,22 +550,26 @@ async def _retry_worker(
                 except Exception as e:
                     res = {"ok": False, "products": [], "merchant_id": "",
                            "total_results": 0, "error": f"{type(e).__name__}: {e}"}
-                if provider.search_gap_s:
-                    await asyncio.sleep(provider.search_gap_s)
+                await pacing.after(pacer)
 
-                if res.get("blocked") and provider.probe_every_s:
-                    # One wait, one look — this pair already had its fair shot in the
-                    # main pass. Compounding further waits here just delays the rest
-                    # of the backlog for something that's already twice-failed.
-                    stats["blocked"] += 1
+                if res.get("blocked") and _handles_blocks(provider):
+                    # Wait it out so the NEXT pair gets a working session, but do not
+                    # retry this one — it already had its fair shot in the main pass.
+                    streak += 1
+                    if streak == 1:
+                        blocked_since = time.monotonic()
+                    await _note_block(stg, stats, "backlog", wid, loc, keyword, res, streak)
+                    pacing.on_block(pacer)
                     store_fail += 1
-                    await asyncio.sleep(_jittered(provider.probe_every_s))
-                    await provider.close_session(session)
-                    session = await provider.open_session(browser, loc.lat, loc.lon)
+                    session = await _recover(provider, browser, session, loc,
+                                             res.get("kind") or "", streak, blocked_since,
+                                             f"backlog worker {wid}", stg=stg,
+                                             phase="backlog", wid=wid)
                     if not session:
-                        logger.warning(f"backlog worker {wid}: still blocked — exiting")
                         return
                     continue
+                streak = 0
+                pacing.on_clean(pacer)
 
                 if not res.get("ok"):
                     stats["errors"] += 1
@@ -499,6 +585,13 @@ async def _retry_worker(
     finally:
         if session:
             await provider.close_session(session)
+
+
+def _kinds(stats: dict) -> str:
+    """': gate 30, rate 8' — the block breakdown for a summary line, or ''."""
+    by = stats.get("blocks_by_kind") or {}
+    return (": " + ", ".join(f"{k} {n}" for k, n in sorted(by.items(), key=lambda kv: -kv[1]))
+            if by else "")
 
 
 def _missing(popped, kw_map, finished) -> list[tuple]:
@@ -585,7 +678,7 @@ async def run_tenant(
     summary["job_id"] = job_id
     summary["staging_file"] = stg["path"].name
     stats = {"snapshots": 0, "rows": 0, "errors": 0, "skipped": 0, "processed": 0,
-             "blocked": 0, "recovered": 0}
+             "blocked": 0, "recovered": 0, "blocks_by_kind": {}}
     total = len(locations)
     queue: asyncio.Queue = asyncio.Queue()
     for loc in locations:
@@ -701,7 +794,8 @@ async def run_tenant(
     summary.update(
         snapshots=stats["snapshots"], rows=stats["rows"], errors=stats["errors"],
         skipped=stats["skipped"], status=status, note=note,
-        blocked=stats["blocked"], recovered=stats["recovered"],
+        blocked=stats["blocked"], blocks_by_kind=stats["blocks_by_kind"],
+        recovered=stats["recovered"],
         unattempted=len(unattempted), unrecovered=n_unrecovered,
         pairs_total=len(scope), pairs_done=pairs_done,
         coverage_pct=outcome.coverage_pct(pairs_done, len(scope)),
@@ -714,8 +808,8 @@ async def run_tenant(
     logger.info(
         f"orchestrator: tenant {tid} {status.upper()} — {note} · "
         f"{stats['snapshots']} snapshots, {stats['rows']} rows, "
-        f"{stats['blocked']} blocked (waited out), {stats['errors']} errors, "
-        f"{stats['skipped']} skipped"
+        f"{stats['blocked']} blocked (waited out{_kinds(stats)}), "
+        f"{stats['errors']} errors, {stats['skipped']} skipped"
     )
     # A count is not actionable — name what is missing.
     if unrecovered:

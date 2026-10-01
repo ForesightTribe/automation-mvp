@@ -100,6 +100,40 @@ re-mints on a 4-minute timer rather than discovering expiry as a wall of 202s.
 > invents a plausible, well-formed, wrong answer — a store that stocks the brand
 > reported as not stocking it.
 
+### How the scrapes meet a block (2026-10-01)
+
+Until 1 Oct every block got one reflex — wait a minute, then open a **new session** —
+and a worker quit after 4 failed waits, losing the rest of the run. A new session
+loads the homepage, fires a warm-up search and a store lookup: three requests sent
+straight into a 429 or 299, which are about the *connection*, not the session. On
+2026-09-29 a Brik Oven keyword run took **8.4 h** for what had taken ~1 h: 48 streaks
+of block → recover → block, a median of **7** searches between blocks.
+
+Now `scraper.block_remedy(kind, streak)` decides, and the orchestrators follow it:
+
+| Block | First time | Again and again |
+|---|---|---|
+| `rate` (429) | wait 30 s, **same session** | walk 60/60/120/180 s; from the 4th in a row, also a new session |
+| `gate` (299) | wait 60 s, **same session** | same ladder |
+| `challenge` (202) | `search()` re-mints once; if that fails, **new session at once** | ladder wait, new session |
+
+- **Adaptive pacing** (`scraper/public/pacing.py`). The pace is measured start-to-start
+  from a floor of `PACE_FLOOR_S` (2.3 s — what the clean 2 s runs actually did,
+  request time included). Each block multiplies it by 1.5, up to `GAP_MAX_S` (8 s); 20
+  clean searches in a row ease it back a step. Mornings allow about half the
+  afternoon's rate, so a fixed pace that is clean at 15:00 overshoots at 11:00.
+- **A worker stops only after `BLOCK_GIVE_UP_S` (30 min) of nothing but blocks.** That
+  is a wall, not a rate limit (those clear in about a minute). The run then ends
+  `partial` and `--resume` continues it.
+- **Every block is recorded** — the log line names the kind and Zepto's own words
+  (e.g. `LOGIN_REQUIRED`), and the staging file's `blocks` table keeps one row per
+  block (time, store, keyword, kind, detail, how many in a row). The run summary
+  breaks Blocked down by kind.
+- **Pool sessions skip the store lookup** (`get_page`) at open — the pools name the
+  store on every search, so the answer was never read.
+
+The Explorer still uses the old fixed pacing and its own block handling.
+
 ### A fourth block: the browser itself (2026-09-24)
 
 From 24 Sept every session failed before its first search: the warm-up's
@@ -165,8 +199,18 @@ Throughput vs pacing, 4-minute arms, riding through blocks:
 | `MAX_WORKERS` | 1 | 4 workers = 1.02× of 1, wasting 76% of requests |
 | `RESULT_CAP` | 30 | One page. Only 1.9% of own-brand placements sit deeper |
 | `PAUSE_EVERY` | None | No volume quota exists to rest before |
-| `GATE_PAUSE_S` | 60 | Measured recovery |
+| `GATE_PAUSE_S` | 60 | Measured recovery, after a first 299 |
+| `RATE_PAUSE_S` | 30 | After a first 429 |
+| `RECOVERY_WAITS_S` | 60/60/120/180 | Blocks that keep coming; a new session from the 4th |
+| `BLOCK_GIVE_UP_S` | 1800 | Half an hour of only blocks is a wall, not a limit |
+| `PACE_FLOOR_S` | 2.3 | Adaptive pace floor, start-to-start (= the clean 2 s + request time) |
+| `GAP_MAX_S` | 8.0 | Widest adaptive pace — the slowest arm still worth its time |
+| `GAP_BACKOFF` / `GAP_EASE` / `GAP_EASE_AFTER` | 1.5 / 1.25 / 20 | Widen per block; ease back after 20 clean |
 | `PASS_REFRESH_S` | 240 | Pass lives 4-6 min |
+
+`SEARCH_GAP_S` (2.0, slept after each search) still paces the Explorer; the keyword and
+own-SKU scrapes use the adaptive pace above. Lowering `PACE_FLOOR_S` needs a measurement
+first: 1.0 s measured 21% clean, 2.0 s 99%, and nothing in between has been tried.
 
 `--workers` is inert on Zepto: any value runs single-worker, logged once at INFO.
 Blinkit is unaffected (`max_workers=None` means no ceiling).

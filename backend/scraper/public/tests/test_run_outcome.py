@@ -17,6 +17,7 @@ Run:  python -m scraper.public.tests.test_run_outcome
 """
 import asyncio
 import contextlib
+import dataclasses
 import sqlite3
 import tempfile
 import uuid
@@ -24,7 +25,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from scraper.platforms.blinkit.public_data import parser as bl_parser
-from scraper.public import orchestrator, outcome, staging, targeted
+from scraper.public import orchestrator, outcome, providers, staging, targeted
 
 TENANT = uuid.UUID("a870fd8d-7373-47ec-ad69-5dd08ce35542")
 
@@ -55,15 +56,18 @@ BLOCK = {"ok": False, "products": [], "merchant_id": "", "total_results": 0,
          "error": "HTTP 429", "blocked": True, "kind": "rate"}
 
 
-def _provider(answer, *, opens=None, probe_every_s=0.0, max_block_waits=2):
+def _provider(answer, *, opens=None, probe_every_s=0.0, max_block_waits=2, **extra):
     """A scripted marketplace. `answer(keyword, merchant_id, nth_call)` returns the
     search result; `opens` is an iterator of bools deciding whether each session
-    open succeeds (default: always)."""
+    open succeeds (default: always). `extra` overrides any Provider field — the
+    defaults below are Provider's own (no block remedy, fixed pacing)."""
     calls: dict[tuple, int] = {}
+    opened: list = []
 
     async def open_session(browser, lat, lon):
         if opens is not None and not next(opens, False):
             return None
+        opened.append((lat, lon))
         return {"id": object()}
 
     async def search(session, keyword, cap, lat=None, lon=None, merchant_id=None,
@@ -84,8 +88,18 @@ def _provider(answer, *, opens=None, probe_every_s=0.0, max_block_waits=2):
         search_gap_s=0.0, store_gap_s=0.0, max_workers=None,
         pause_every=None, pause_s=0,
         probe_every_s=probe_every_s, max_block_waits=max_block_waits,
-        calls=calls,
+        **{**_PROVIDER_DEFAULTS, **extra},
+        calls=calls, opened=opened,
     )
+
+
+# Provider's own defaults for the fields the fake does not script, read off the real
+# dataclass so a field added there can never silently go missing here.
+_PROVIDER_DEFAULTS = {
+    f.name: f.default for f in dataclasses.fields(providers.Provider)
+    if f.name in ("block_remedy", "block_give_up_s", "gap_max_s", "gap_floor_s",
+                  "gap_backoff", "gap_ease_after", "gap_ease")
+}
 
 
 async def _anoop(*a, **k):

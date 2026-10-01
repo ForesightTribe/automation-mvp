@@ -215,6 +215,9 @@ async def _fetch(session: dict, url: str, headers: dict, body: dict) -> dict:
     for delay in (0.0,) + ep.RETRY_DELAYS:
         if delay:
             await asyncio.sleep(delay)
+        # When the last request LEFT — what pacing measures from (`_pace`, and the
+        # orchestrators' pacer through the session). A transport retry is a request too.
+        session["last_request_at"] = time.monotonic()
         try:
             r = await asyncio.wait_for(
                 session["context"].request.post(
@@ -349,13 +352,19 @@ async def _ensure_pass(session: dict) -> None:
 
 
 async def _make_session(browser, lat: float, lon: float, *, typed: bool = False,
-                        why: dict | None = None) -> dict | None:
+                        why: dict | None = None,
+                        resolve_store: bool = True) -> dict | None:
     """Isolated context on `browser`, warmed up, headers captured, coordinate
     resolved to a store. Returns the session dict or None.
 
     `typed` makes it a typed-search session (`typed_search.py`): same warm-up, then the
     page's requests are taken over and every `search()` goes through the search box.
-    `why` receives the reason when None is returned (see `_capture`)."""
+    `why` receives the reason when None is returned (see `_capture`).
+
+    `resolve_store=False` skips the coordinate -> store lookup. The worker pools name the
+    store on every search (`merchant_id`), so for them the lookup was one `get_page` per
+    session open spent on an answer nobody read. A search that does arrive with only a
+    coordinate still resolves it — `coord` is left unset so the first one does."""
     ctx = await browser.new_context(
         user_agent=HEADERS_COMMON["User-Agent"], locale="en-IN")
     page = await ctx.new_page()
@@ -391,6 +400,10 @@ async def _make_session(browser, lat: float, lon: float, *, typed: bool = False,
         # exists to avoid. Every search names its store.
         session.update(store_id="", secondary_ids=(), coord=(lat, lon))
         await typed_search.arm(session)
+        return session
+
+    if not resolve_store:
+        session.update(store_id="", secondary_ids=(), coord=None)
         return session
 
     # Best effort only. A caller that passes merchant_id per search never needs
@@ -441,8 +454,55 @@ async def open_session(pw, lat: float, lon: float, *, proxy: dict | None = None,
 
 async def open_context_session(browser, lat: float, lon: float) -> dict | None:
     """One session as an isolated context on a SHARED browser (the worker pool).
-    Does NOT own the browser — close_session only closes the context."""
-    return await _make_session(browser, lat, lon)
+    Does NOT own the browser — close_session only closes the context.
+
+    No store lookup at open: see `_make_session(resolve_store=False)`."""
+    return await _make_session(browser, lat, lon, resolve_store=False)
+
+
+def block_remedy(kind: str, streak: int) -> tuple[float, bool]:
+    """How to meet a block: (seconds to wait, rebuild the session?).
+
+    `streak` is how many blocks in a row this worker has hit, this one included. The
+    provider hands this to the orchestrators (`providers.Provider.block_remedy`); it is
+    the single place that knows Zepto's three mechanisms want three different things —
+    see endpoints.py:
+
+        rate (429)       connection-wide, ~60 s   wait, SAME session
+        gate (299)       connection-wide, ~60 s   wait, SAME session
+        challenge (202)  this session only        rebuild now (search() already re-minted once)
+
+    Rebuilding on a 429 or a 299 was the old reflex. It fires a homepage, a warm-up search
+    and a `get_page` into a block that is about the connection, not the session — more
+    requests at exactly the moment Zepto is saying there have been too many.
+
+    A block that keeps coming back walks RECOVERY_WAITS_S, and from the end of the ladder
+    the session is rebuilt as well, in case it is the session after all.
+    """
+    ladder = ep.RECOVERY_WAITS_S
+    step = float(ladder[min(streak - 1, len(ladder) - 1)])
+    worn = streak >= len(ladder)
+    if kind == "rate":
+        return (ep.RATE_PAUSE_S if streak == 1 else step), worn
+    if kind == "gate":
+        return (ep.GATE_PAUSE_S if streak == 1 else step), worn
+    if kind == "challenge":
+        return (0.0 if streak == 1 else step), True
+    # Anything else that came back marked blocked: wait, and start clean.
+    return step, True
+
+
+async def _pace(session: dict) -> None:
+    """Hold the next request until `gap_s` after the last one LEFT (start to start).
+
+    `gap_s` is set on the session by the orchestrators' adaptive pacer; a caller that
+    sets nothing gets the floor, PACE_FLOOR_S."""
+    last = session.get("last_request_at")
+    if last is None:
+        return
+    wait = last + session.get("gap_s", ep.PACE_FLOOR_S) - time.monotonic()
+    if wait > 0:
+        await asyncio.sleep(wait)
 
 
 async def close_session(session: dict) -> None:
@@ -576,7 +636,9 @@ async def search(
             page_no = None
         else:
             page_no += 1
-            await asyncio.sleep(ep.SEARCH_GAP_S)
+            # The next page is another request against the same limiter: same pace,
+            # measured from when this one left.
+            await _pace(session)
 
     products = products[:cap]
     # Fall back to running order where Zepto gave no position.
