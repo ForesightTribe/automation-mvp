@@ -20,7 +20,12 @@ async def list_clients(session: AsyncSession, account_id: uuid.UUID) -> list[Ten
 async def get_client_for_account(
     session: AsyncSession, client_id: uuid.UUID, account_id: uuid.UUID
 ) -> Tenant | None:
-    """Return the client only if it belongs to this account — the access wall."""
+    """Return the client only if it belongs to this account — the access wall.
+
+    Deliberately NOT cached here: `dependencies.get_client` already remembers a
+    passed check and detaches the row, and a second cache in front of it would
+    hand that caller an instance its session never held.
+    """
     client = await session.get(Tenant, client_id)
     if not client or client.account_id != account_id:
         return None

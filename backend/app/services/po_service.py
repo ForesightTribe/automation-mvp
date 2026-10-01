@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.dependencies import Pagination
 from app.models.blinkit_seller import BlinkitPO, BlinkitPOItem, BlinkitPOSnapshot
 from app.schemas.common import Page
+from app.utils.cache import ttl_cache
 from app.schemas.purchase_order import (
     POStateCount,
     PODetailOut,
@@ -27,7 +28,7 @@ from app.schemas.purchase_order import (
     POSnapshotOut,
     PurchaseOrderOut,
 )
-from app.services import instamart_po_service, zepto_po_service
+from app.services import instamart_po_service, reference_service, zepto_po_service
 
 # A PO whose delivery window has not closed: the undelivered part is still to come,
 # not lost.
@@ -300,6 +301,81 @@ async def insights_summary(
         out.po_value_delta = _delta(out.po_value, before.po_value)
         out.fill_rate_delta = _delta(out.fill_rate, before.fill_rate)
         out.value_missed_delta = _delta(out.value_missed, before.value_missed)
+    return out
+
+
+@ttl_cache(10 * 60)
+async def insights_by_marketplace(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    prev_start: date | None = None,
+    prev_end: date | None = None,
+    marketplaces: list[str] | None = None,
+) -> list[dict]:
+    """`insights_summary` once per marketplace, shaped like the Overview's
+    marketplace rows so one table component can render it.
+
+    Asked per marketplace rather than grouped in SQL: purchase orders for the
+    three marketplaces live in three different tables, and `insights_summary`
+    already dispatches to the right reader for each. A marketplace with no
+    orders at all is left out — nothing ordered and no orders tracked are
+    different facts.
+    """
+    out: list[dict] = []
+    for mp in await reference_service.list_marketplaces(session):
+        # ⚠️ Only the marketplaces `insights_summary` can read separately. It
+        # falls through to the Blinkit tables for anything it does not name, so
+        # an unlisted slug would return BLINKIT's orders under its own name.
+        if mp["slug"] not in ("blinkit", "instamart", "zepto"):
+            continue
+        if not mp["connected"]:
+            continue
+        if marketplaces is not None and mp["slug"] not in marketplaces:
+            continue
+
+        summary = await insights_summary(
+            session,
+            tenant_id=tenant_id,
+            start=start,
+            end=end,
+            prev_start=prev_start,
+            prev_end=prev_end,
+            marketplace=mp["slug"],
+        )
+        if not summary.po_value and not summary.closed_pos:
+            continue
+        out.append(
+            {
+                "slug": mp["slug"],
+                "name": mp["name"],
+                "color": mp["color"],
+                "connected": True,
+                "po_value": {
+                    "value": summary.po_value,
+                    "prev": summary.prev_po_value,
+                    "delta_pct": summary.po_value_delta,
+                },
+                "fill_rate": {
+                    # Stored as a fraction; the table reads percentages.
+                    "value": (
+                        None if summary.fill_rate is None else summary.fill_rate * 100
+                    ),
+                    "prev": (
+                        None
+                        if summary.prev_fill_rate is None
+                        else summary.prev_fill_rate * 100
+                    ),
+                    "delta_pct": summary.fill_rate_delta,
+                },
+                "value_at_risk": summary.value_at_risk,
+                "value_missed": summary.value_missed,
+                "open_pos": summary.open_pos,
+                "closed_pos": summary.closed_pos,
+            }
+        )
     return out
 
 

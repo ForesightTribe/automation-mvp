@@ -10,6 +10,7 @@ import { useQuery } from "@tanstack/react-query";
 import { api } from "../lib/axios";
 import { STORAGE_KEYS } from "../lib/constants";
 import { useAuth } from "./AuthContext";
+import { useClient } from "./ClientContext";
 
 /**
  * Owns the global marketplace selection. Same split as ClientContext: the *list*
@@ -53,10 +54,14 @@ export const MarketplaceProvider = ({ children }) => {
 	const [selected, setSelected] = useState(loadSelection);
 	const [automationChoice, setAutomationChoice] = useState(loadAutomation);
 
+	const { activeClientId } = useClient();
 	const { data: marketplaces = [], isLoading } = useQuery({
-		queryKey: ["marketplaces"],
-		queryFn: () => api.get("/reference/marketplaces"),
-		enabled: isAuthenticated,
+		queryKey: ["marketplaces", activeClientId],
+		queryFn: () =>
+			api.get("/reference/marketplaces", {
+				params: { client_id: activeClientId },
+			}),
+		enabled: isAuthenticated && Boolean(activeClientId),
 		staleTime: Infinity, // reference data; rarely changes
 	});
 
@@ -113,6 +118,12 @@ export const MarketplaceProvider = ({ children }) => {
 		[connected, persist],
 	);
 
+	// ⚠️ Until the marketplace list arrives, `connected` is empty and so is
+	// `effectiveSelected` — which reads as "no channels", not "every channel".
+	// Queries scoped by marketplace must wait for this rather than run twice and
+	// show a channel-less page in between.
+	const ready = !isLoading && effectiveSelected.length > 0;
+
 	// ── The automation pages' single marketplace ────────────────────────────────
 	//
 	// Selectable = connected AND driven by the campaign manager (`automations`, from the
@@ -162,6 +173,7 @@ export const MarketplaceProvider = ({ children }) => {
 	const value = {
 		marketplaces, // full list incl. unconnected, for the picker
 		selected: effectiveSelected, // connected + selected slugs (for queryKeys)
+		ready,
 		isLoading,
 		allSelected,
 		toggle,

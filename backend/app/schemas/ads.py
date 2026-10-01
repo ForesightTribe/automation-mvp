@@ -74,7 +74,7 @@ class CampaignDayRow(BaseModel):
     `daily_budget` is the campaign's current setting, as on `/ads/campaigns`."""
 
     date: date
-    campaign_id: int
+    campaign_id: int | str
     platform: str
     name: str | None
     type: str | None

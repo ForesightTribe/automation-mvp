@@ -3,6 +3,13 @@ import { useLocation } from "react-router-dom";
 import { useMarketplaces } from "../context/MarketplaceContext";
 import { SINGLE_MARKETPLACE_PATHS } from "../lib/constants";
 
+// ⚠️ A second, unrelated reason to drop "All": these pages cannot ANSWER it.
+// Purchase orders are read one marketplace at a time — the service returns
+// BLINKIT's when none is named — so an "All" pill offers a blended view that
+// does not exist. Distinct from SINGLE_MARKETPLACE_PATHS above, which is about
+// writes the campaign manager can only address to one marketplace.
+const NO_ALL = ["/purchase-orders"];
+
 /**
  * The marketplace filter, as a row of pills in the navbar.
  *
@@ -68,7 +75,7 @@ const PILL_OFF =
  */
 const automationBlock = (mp) =>
 	!mp.connected
-		? `${mp.name} — not connected yet`
+		? `${mp.name} — no data for this brand yet`
 		: !mp.automations
 			? `Automations aren't available on ${mp.name} yet`
 			: null;
@@ -91,6 +98,7 @@ export const MarketplacePills = () => {
 	// the pages' own choice, leaving the global selection untouched.
 	const { pathname } = useLocation();
 	const single = SINGLE_MARKETPLACE_PATHS.includes(pathname);
+	const allowAll = !single && !NO_ALL.some((p) => pathname.startsWith(p));
 	useEffect(() => {
 		if (single && !isLoading) enterAutomationPage();
 		// Entry only — re-running on every selection change would override the pill the
@@ -106,7 +114,7 @@ export const MarketplacePills = () => {
 			aria-label="Marketplace"
 			className="flex items-center gap-1 rounded-xl border border-border bg-card p-1"
 		>
-			{!single && (
+			{allowAll && (
 				<button
 					type="button"
 					onClick={selectAll}
@@ -124,7 +132,7 @@ export const MarketplacePills = () => {
 					? automationBlock(mp)
 					: mp.connected
 						? null
-						: `${mp.name} — not connected yet`;
+						: `${mp.name} — no data for this brand yet`;
 				const on = single
 					? mp.slug === automation
 					: !allSelected && selected.includes(mp.slug);

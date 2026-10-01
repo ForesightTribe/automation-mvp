@@ -48,3 +48,32 @@ export const presetKeyForRange = (range) => {
 	});
 	return match ? match.key : CUSTOM_RANGE_KEY;
 };
+
+/**
+ * The window of equal length immediately before `range`, and a phrase naming it.
+ *
+ * "vs previous period" is unreadable without the dates behind it — a 7-day view
+ * and a 90-day view both say the same words. `label` spells the window out so
+ * the comparison can be checked.
+ */
+export const previousRange = ({ from, to }) => {
+	const start = new Date(from);
+	const end = new Date(to);
+	const days = Math.max(1, Math.round((end - start) / 86400000) + 1);
+	const prevTo = new Date(start);
+	prevTo.setDate(prevTo.getDate() - 1);
+	const prevFrom = new Date(prevTo);
+	prevFrom.setDate(prevFrom.getDate() - (days - 1));
+	return { from: toISODate(prevFrom), to: toISODate(prevTo), days };
+};
+
+/** "the 30 days to 24 Aug 2026 (26 Jul – 24 Aug)" */
+export const previousRangeLabel = (range) => {
+	const prev = previousRange(range);
+	const show = (iso) =>
+		new Date(`${iso}T00:00:00`).toLocaleDateString("en-IN", {
+			day: "numeric",
+			month: "short",
+		});
+	return `the ${prev.days} day${prev.days === 1 ? "" : "s"} before this one: ${show(prev.from)} – ${show(prev.to)}`;
+};

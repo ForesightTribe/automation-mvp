@@ -43,6 +43,13 @@ class Settings(BaseSettings):
     # continued with --resume. Below the floor the data is a hole, not a snapshot;
     # loading it silently is how a half-scraped run passed for a whole one.
     PUBLIC_MIN_COVERAGE_PCT: float = 90.0
+    # Precompute the Overview's expensive reads in the background so a reader
+    # never waits for them. OFF by default: it walks EVERY tenant, and on a small
+    # database that is enough concurrent load to have statements cancelled on
+    # timeout — it has to be turned on deliberately, once there is headroom for
+    # it. `WARM_CACHE_GAP_S` paces it so it yields between reads.
+    WARM_CACHE: bool = False
+    WARM_CACHE_GAP_S: float = 1.0
 
     # --- Job runner (see docs/jobs.md) ---
     # Absolute log root. MUST be absolute: the runner's CWD under systemd is not

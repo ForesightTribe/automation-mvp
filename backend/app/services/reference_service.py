@@ -1,10 +1,13 @@
 """Global reference data for frontend filter dropdowns (bounded, fetch-all)."""
+import uuid
+
 from sqlmodel import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.brand import Brand, Marketplace
 from app.models.job import JobStatus, ScrapeJob
 from app.models.search import MarketplaceLocation, SearchSnapshot
+from app.utils.cache import ttl_cache
 from campaign_manager.marketplaces import min_daily_budget as cm_min_daily_budget
 from campaign_manager.marketplaces import keyword_bidding_refusal as cm_keyword_bidding_off
 from campaign_manager.marketplaces import supported as cm_supported
@@ -14,7 +17,10 @@ async def list_brands(session: AsyncSession) -> list[Brand]:
     return (await session.execute(select(Brand).order_by(Brand.name))).scalars().all()
 
 
-async def list_marketplaces(session: AsyncSession) -> list[dict]:
+@ttl_cache(10 * 60)
+async def list_marketplaces(
+    session: AsyncSession, tenant_id: uuid.UUID | None = None
+) -> list[dict]:
     """List marketplaces, flagging which have real data (`connected`) and what
     plane of data they can supply (`data_scope`). Returns dicts so both flags can
     ride alongside the ORM columns.
@@ -23,12 +29,11 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
     because it drifts from the database the moment a marketplace's real
     capability changes without a matching code deploy. Both are derived instead:
 
-    `connected` — is there *any* real scraped row for this marketplace, anywhere.
-    This is not client-scoped (see the route's docstring), so it means "some
-    tenant has data for it" — the global picker's job is only to decide whether a
-    marketplace is selectable at all, not whether the CURRENT client has data for
-    it (that's a separate, tenant-scoped check — see
-    overview_service.get_marketplace_breakdown).
+    `connected` — is there *any* real scraped row for this marketplace. With a
+    `tenant_id` it narrows to THAT client: a marketplace nobody has scraped for
+    this brand is not one the brand can be shown, and the picker greys it out
+    rather than offering a channel whose every figure would be empty. Without
+    one it stays global ("some tenant has data for it").
 
     `data_scope` — "full" if any successful scrape_jobs row for this platform is
     a PRIVATE job (seller/marketing/scorecard — dashboard values like
@@ -47,21 +52,18 @@ async def list_marketplaces(session: AsyncSession) -> list[dict]:
     # already documents: `scrape_jobs` is written by both planes, so it is the
     # signal that holds for every `data_scope`. Union, never subtraction — no
     # marketplace that used to be connected can lose the flag here.
-    connected = set(
-        (await session.execute(select(SearchSnapshot.mp_slug).distinct()))
-        .scalars()
-        .all()
-    ) | set(
-        (
-            await session.execute(
-                select(ScrapeJob.platform)
-                .where(ScrapeJob.status == JobStatus.success)
-                .distinct()
-            )
-        )
-        .scalars()
-        .all()
+    snap = select(SearchSnapshot.mp_slug).distinct()
+    jobs = (
+        select(ScrapeJob.platform)
+        .where(ScrapeJob.status == JobStatus.success)
+        .distinct()
     )
+    if tenant_id is not None:
+        snap = snap.where(SearchSnapshot.tenant_id == tenant_id)
+        jobs = jobs.where(ScrapeJob.tenant_id == tenant_id)
+    connected = set(
+        (await session.execute(snap)).scalars().all()
+    ) | set((await session.execute(jobs)).scalars().all())
     full_scope = set(
         (
             await session.execute(

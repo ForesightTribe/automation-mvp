@@ -12,6 +12,7 @@ from app.schemas.purchase_order import (
     PODetailOut,
     POInsightRow,
     POInsightsSummary,
+    POMarketplaceRow,
     POSkuRow,
     POSnapshotOut,
     PurchaseOrderOut,
@@ -48,6 +49,28 @@ async def insights_summary(
         prev_start=period.prev_start,
         prev_end=period.prev_end,
         marketplace=marketplace,
+    )
+
+
+@router.get("/insights/by-marketplace", response_model=list[POMarketplaceRow])
+async def insights_by_marketplace(
+    session: SessionDep, client: ClientDep, period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated slugs; omitted = every one readable"
+    ),
+):
+    """The same headline figures, one row per marketplace whose POs this service
+    can read separately."""
+    return await po_service.insights_by_marketplace(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        prev_start=period.prev_start,
+        prev_end=period.prev_end,
+        marketplaces=(
+            [m for m in marketplaces.split(",") if m] if marketplaces else None
+        ),
     )
 
 

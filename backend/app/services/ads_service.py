@@ -35,6 +35,7 @@ from app.models.blinkit_marketing import (
 )
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
+from app.utils.cache import ttl_cache
 from app.services import instamart_ads, reference_service, zepto_ads
 # The pure status vocabularies — NOT the adapters, which pull in Playwright.
 from campaign_manager import repo as cm_repo
@@ -163,7 +164,7 @@ async def get_summary(
     }
 
 
-async def get_campaigns(
+async def _campaigns(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
@@ -388,9 +389,85 @@ async def get_campaigns_daily(
         out.extend(
             await zepto_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
         )
+    if instamart_ads.wants_instamart(marketplaces):
+        out.extend(
+            await instamart_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
+        )
     out.sort(key=lambda r: (r["date"], -r["budget_consumed"]))
     return out
 
+
+
+# ⚠️ `_campaigns`, `_campaigns_settled` and `get_campaigns` carry the SAME
+# parameter list, and a parameter added to one must be added to all three or it
+# is silently dropped on the way through. Spelled out rather than **kwargs
+# because the cache key is built by binding arguments to the signature: a
+# var-keyword wrapper cannot fill in defaults a caller omitted, so every call
+# would land on its own entry and nothing would ever hit.
+# ⚠️ Short despite the window being closed. A user cannot change what a
+# campaign spent yesterday, but the MARKETING SCRAPE re-scrapes the last seven
+# days, so those figures are revised overnight. A day-long entry would serve
+# the pre-revision numbers well past the correction.
+@ttl_cache(30 * 60)
+async def _campaigns_settled(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    pagination: Pagination,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    status: str | None = None,
+    sort: str = "spend",
+    order: str = "desc",
+    recent_only: bool = False,
+) -> Page[CampaignRow]:
+    """A window that has already closed. Cached: nothing a user does now can
+    change what a campaign spent yesterday."""
+    return await _campaigns(
+        session,
+        tenant_id=tenant_id,
+        pagination=pagination,
+        start=start,
+        end=end,
+        marketplaces=marketplaces,
+        status=status,
+        sort=sort,
+        order=order,
+        recent_only=recent_only,
+    )
+
+
+async def get_campaigns(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    pagination: Pagination,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    status: str | None = None,
+    sort: str = "spend",
+    order: str = "desc",
+    recent_only: bool = False,
+) -> Page[CampaignRow]:
+    """⚠️ A window that includes TODAY is never cached. Budgets and bids are
+    written from the Campaign Manager and the caller invalidates on write, so a
+    cached open window would show someone their own change being ignored. A
+    window that ended before today cannot move."""
+    fn = _campaigns_settled if end < date.today() else _campaigns
+    return await fn(
+        session,
+        tenant_id=tenant_id,
+        pagination=pagination,
+        start=start,
+        end=end,
+        marketplaces=marketplaces,
+        status=status,
+        sort=sort,
+        order=order,
+        recent_only=recent_only,
+    )
 
 async def get_performance(
     session: AsyncSession,
