@@ -132,6 +132,12 @@ def _scorecard(tenant_id, p):
     return a
 
 
+def _seller_hub(tenant_id, p):
+    a = ["scrape", "blinkit-seller-hub", "--tenant", str(tenant_id)]
+    _flag(a, "--sales", p.get("sales"))
+    return a
+
+
 
 def _zepto(tenant_id, p):
     """Sales + PO + ads in ONE run.
@@ -333,6 +339,18 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
         Lane.dashboard, 30 * 60, _scorecard,
         param_keys=("week",),
         label="Blinkit scorecard scrape",
+    ),
+    # seller.blinkit.com (seller-hub) — for tenants Blinkit has migrated off
+    # partnersbiz.com, Sereko first (see platform_auth/marketplaces/blinkit/
+    # seller_new.py). Separate job type, not a flag on scrape.blinkit_seller:
+    # the two domains need different auth (blinkit_seller_new, browser-only —
+    # Cloudflare blocks httpx even with valid cookies) and write to different
+    # tables (blinkit_seller_hub_sales_*, not blinkit_seller_sales — the APIs
+    # return incompatible grains, confirmed against the live API).
+    "scrape.blinkit_seller_hub": JobTypeSpec(
+        Lane.dashboard, 30 * 60, _seller_hub,
+        param_keys=("sales",),
+        label="Blinkit seller-hub scrape",
     ),
     # ── Zepto, mirroring Blinkit's three ────────────────────────────────────
     # Data calls are plain HTTP, but each run still launches headless Chromium

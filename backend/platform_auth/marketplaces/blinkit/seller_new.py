@@ -79,9 +79,15 @@ _LAUNCH_ARGS = ["--no-sandbox", "--disable-blink-features=AutomationControlled"]
 _VIEWPORT = {"width": 1280, "height": 900}
 
 
-def _profile_dir(email: str) -> str:
+def profile_dir(email: str) -> str:
     """One persistent Chrome profile per email, so a shared mailbox across
-    tenants (if that ever happens) never collides on device identity."""
+    tenants (if that ever happens) never collides on device identity.
+
+    Public: this is the actual credential for this domain (see module
+    docstring), so any data scraper driving the same account's browser session
+    — e.g. scraper/platforms/blinkit/dashboard_data/seller_hub/ — must resolve
+    the SAME path, not a parallel copy that could drift from this one.
+    """
     safe = re.sub(r"[^a-zA-Z0-9_.@-]", "_", email)
     d = _PROFILE_ROOT / safe
     d.mkdir(parents=True, exist_ok=True)
@@ -105,7 +111,7 @@ async def start_login(credentials: Credentials) -> LoginChallenge:
     email = credentials.email
     p = await async_playwright().start()
     context = await p.chromium.launch_persistent_context(
-        _profile_dir(email),
+        profile_dir(email),
         headless=True,
         args=_LAUNCH_ARGS,
         viewport=_VIEWPORT,
@@ -238,7 +244,7 @@ async def probe(session: AuthSession) -> bool:
     p = await async_playwright().start()
     try:
         context = await p.chromium.launch_persistent_context(
-            _profile_dir(email),
+            profile_dir(email),
             headless=True,
             args=_LAUNCH_ARGS,
             viewport=_VIEWPORT,
