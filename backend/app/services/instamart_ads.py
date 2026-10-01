@@ -291,6 +291,66 @@ async def campaigns(
     ]
 
 
+async def campaigns_daily(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> list[dict]:
+    """`campaigns()` at campaign x DAY grain, shaped like `zepto_ads.campaigns_daily` so
+    `ads_service.get_campaigns_daily` can append these rows the same way — this is what
+    feeds the Insights page's budget-utilisation column, which had no Instamart rows at
+    all until this was added (that endpoint never called into this module).
+
+    Summed from `instamart_ad_product_daily`, same real per-day, per-campaign source
+    `campaigns()` uses above (see module docstring) — not `instamart_ad_campaigns`,
+    whose own spend is lifetime-cumulative regardless of date filter. `daily_budget`
+    comes from the catalogue (`instamart_ad_campaigns`), a current snapshot rather than
+    history, same limitation every other marketplace's budget-utilisation figure has.
+    """
+    from app.models.instamart_ads import InstamartAdProductDaily as PD
+
+    rows = (
+        await session.execute(
+            select(
+                PD.date,
+                PD.campaign_id,
+                func.coalesce(func.sum(PD.spend), 0.0),
+                func.coalesce(func.sum(PD.gmv), 0.0),
+            )
+            .where(
+                PD.tenant_id == tenant_id, PD.date >= start, PD.date <= end,
+                PD.campaign_id.is_not(None),
+            )
+            .group_by(PD.date, PD.campaign_id)
+            .having(func.coalesce(func.sum(PD.spend), 0.0) > 0)
+        )
+    ).all()
+    catalogue = {
+        c.campaign_id: c
+        for c in (
+            await session.execute(select(Ad).where(Ad.tenant_id == tenant_id))
+        ).scalars().all()
+    }
+    out = []
+    for day, cid, spend, gmv in rows:
+        cat = catalogue.get(cid)
+        out.append(
+            {
+                "date": day,
+                "campaign_id": cid,
+                "platform": "instamart",
+                "name": cat.name if cat else None,
+                "type": _type_label(cat.campaign_type) if cat else None,
+                "budget_consumed": round(float(spend), 2),
+                "daily_budget": (
+                    int(cat.daily_budget)
+                    if cat and cat.daily_budget is not None
+                    else None
+                ),
+                "ad_sales": round(float(gmv), 2),
+            }
+        )
+    return out
+
+
 async def budget_split(
     session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
 ) -> list[dict]:

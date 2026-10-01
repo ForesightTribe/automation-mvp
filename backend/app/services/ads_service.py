@@ -389,6 +389,10 @@ async def get_campaigns_daily(
         out.extend(
             await zepto_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
         )
+    if instamart_ads.wants_instamart(marketplaces):
+        out.extend(
+            await instamart_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
+        )
     out.sort(key=lambda r: (r["date"], -r["budget_consumed"]))
     return out
 
