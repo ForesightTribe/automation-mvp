@@ -573,6 +573,7 @@ async def search(
     products: list[dict] = []
     seen: set[tuple[str, bool]] = set()   # (product id, is_ad) — see the loop below
     ok, error, blocked, kind = False, "", False, "ok"
+    truncated = False
     page_no: int | None = 0
 
     while page_no is not None and len(products) < cap:
@@ -589,6 +590,9 @@ async def search(
             kind = resp["kind"]
             error = resp.get("error") or f"HTTP {resp.get('status')}"
             blocked = kind in ("gate", "rate", "challenge")
+            # A page AFTER the first failed: `products` is the head of the list only,
+            # and storing it as the result would state rank and SoV over a cut list.
+            truncated = ok
             logger.debug(f"Zepto search '{keyword}': {error}")
             break
 
@@ -656,6 +660,7 @@ async def search(
         # to be read back off the products because one response spans several.
         "merchant_id": session.get("store_id", ""),
         "ok": ok, "error": error, "blocked": blocked, "kind": kind,
+        "truncated": truncated,
     }
 
 

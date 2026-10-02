@@ -164,6 +164,11 @@ _PROVIDERS: dict[str, Provider] = {
         result_cap=bl_ep.RESULT_CAP,
         brand_cap=bl_ep.BRAND_RESULT_CAP,
         page_size=bl_ep.PAGE_SIZE,
+        # 2026-10-02: Cloudflare's blocks are recognised and met by kind instead of
+        # re-sent at once (see blinkit scraper.block_remedy). Pacing stays fixed and
+        # the pool stays 5 wide — those want measuring on the laptop first (B2/B3).
+        block_remedy=bl_scraper.block_remedy,
+        block_give_up_s=bl_ep.BLOCK_GIVE_UP_S,
     ),
     "instamart": Provider(
         slug="instamart",

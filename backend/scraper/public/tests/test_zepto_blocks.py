@@ -71,10 +71,12 @@ def test_zepto_provider_carries_the_remedy_and_adaptive_pacing():
     assert p.block_remedy is zs.block_remedy
     assert p.block_give_up_s == ep.BLOCK_GIVE_UP_S
     assert p.gap_floor_s == ep.PACE_FLOOR_S and p.gap_max_s == ep.GAP_MAX_S
-    # Blinkit and Instamart are untouched: no remedy, fixed pacing.
+    # Fixed pacing everywhere else. Blinkit has its OWN remedy since 2026-10-02 (see
+    # blinkit public_data/tests/test_blocks.py); Instamart keeps the generic one.
     for slug in ("blinkit", "instamart"):
-        q = get_provider(slug)
-        assert q.block_remedy is None and q.gap_max_s is None
+        assert get_provider(slug).gap_max_s is None
+    assert get_provider("blinkit").block_remedy is not zs.block_remedy
+    assert get_provider("instamart").block_remedy is None
 
 
 # ── the orchestrators meet each kind correctly ───────────────────────────────
@@ -140,9 +142,12 @@ def test_a_long_bad_patch_does_not_stop_the_worker():
 def test_a_wall_stops_the_worker_and_the_run_is_partial():
     """Nothing but blocks for block_give_up_s: not a rate limit — stop, leave the rest
     for --resume."""
+    # Each wait (0.03 s) is a real fraction of the give-up (0.05 s), so the worker stops
+    # after the 2nd-3rd block whatever the machine's speed — with near-zero waits a fast
+    # machine could get through every store before the clock ran out.
     p = _provider(lambda kw, mid, n: GATE if mid != "m0" else _ok(mid),
-                  block_remedy=_fast_remedy, block_give_up_s=0.05)
-    with _patched(p, locations=[_loc(i) for i in range(5)], keywords=["soda"]):
+                  block_remedy=lambda kind, n: (0.03, False), block_give_up_s=0.05)
+    with _patched(p, locations=[_loc(i) for i in range(8)], keywords=["soda"]):
         s = _keyword_run()
     assert s["status"] == "partial"
     assert s["pairs_done"] == 1 and s["unattempted"] >= 1

@@ -461,7 +461,10 @@ async def _worker(
                 if give_up:
                     continue
 
-                if not res.get("ok"):
+                # A search whose later page failed (`truncated`) holds the head of the
+                # list only. Stored, it would state rank and share over 12 of 36 products
+                # as if they were all of them — so it is a failure here, and retried.
+                if not res.get("ok") or res.get("truncated"):
                     store_fail += 1
                     stale += 1
                     stats["errors"] += 1
@@ -564,7 +567,10 @@ async def _retry_worker(
                 streak = 0
                 pacing.on_clean(pacer)
 
-                if not res.get("ok"):
+                # A search whose later page failed (`truncated`) holds the head of the
+                # list only. Stored, it would state rank and share over 12 of 36 products
+                # as if they were all of them — so it is a failure here, and retried.
+                if not res.get("ok") or res.get("truncated"):
                     stats["errors"] += 1
                     store_fail += 1
                     continue
