@@ -88,8 +88,8 @@ standard).
 ## Commands
 
 ```bash
-python -m cli scrape public-run  --tenant <uuid> [--resume]   # → staging file
-python -m cli scrape public-skus --tenant <uuid> [--resume]   # → staging file
+python -m cli scrape public-run -m <mp>  --tenant <uuid> [--resume]   # → staging file
+python -m cli scrape public-skus -m <mp> --tenant <uuid> [--resume]   # → staging file
 
 python -m cli scrape staged [--pending]      # what's on disk, what's unpushed
 python -m cli scrape load --dry-run          # what would be pushed

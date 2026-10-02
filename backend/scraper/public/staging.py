@@ -39,7 +39,9 @@ KIND_SEARCH = "public_search"
 KIND_SKUS = "public_skus"
 
 # Files staged before the multi-marketplace refactor carry no `mp_slug`; every
-# reader resolves that NULL to this, so a pre-existing staged run still loads.
+# reader resolves that NULL to this, so a pre-existing staged run still loads. It is a
+# fact about OLD FILES (they were all Blinkit), never a default for a new run — every
+# writer below takes the marketplace explicitly.
 DEFAULT_MP = "blinkit"
 
 STAGING_DIR = Path(__file__).resolve().parents[2] / "staging"
@@ -202,7 +204,7 @@ def _add_missing(conn: sqlite3.Connection, table: str, cols: list[tuple[str, str
             conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {typ}")
 
 
-def new_run(tenant_id, kind: str, mp_slug: str = DEFAULT_MP,
+def new_run(tenant_id, kind: str, mp_slug: str,
             job_id: str | None = None) -> dict:
     """Create a staging file for a new run and return its handle.
 
@@ -502,7 +504,7 @@ def all_runs(kind: str | None = None, tenant_id=None,
     return _runs(kind, tenant_id, mp_slug)
 
 
-def resumable(kind: str, tenant_id, mp_slug: str = DEFAULT_MP) -> dict | None:
+def resumable(kind: str, tenant_id, mp_slug: str) -> dict | None:
     """The newest unloaded, unfinished run for this tenant+kind+marketplace — what
     --resume continues. Mirrors the old `_latest_incomplete_job` DB query.
 
@@ -550,7 +552,7 @@ def mark_loaded(path: Path | str) -> None:
     conn.close()
 
 
-def prune(tenant_id, kind: str, mp_slug: str = DEFAULT_MP,
+def prune(tenant_id, kind: str, mp_slug: str,
           keep: int = KEEP_PER_KIND) -> list[Path]:
     """Delete the oldest LOADED files beyond `keep`, per (tenant, kind, marketplace).
     Unloaded files are never touched — losing one would lose an unpushed scrape.

@@ -635,8 +635,13 @@ async def search(
             products.append(p)
 
         # The results ended inside this page — anything further is the "Similar
-        # Products" carousel, so there is no next page of search results.
-        if hit_break or page_no + 1 >= ep.MAX_PAGES or len(products) >= cap:
+        # Products" carousel, so there is no next page of search results. Or Zepto
+        # says so itself: `hasReachedEnd`. Without it a list that ended exactly here
+        # cost one more request for an empty page. NOT "the page came back short":
+        # short pages with plenty behind them are normal — see endpoints.py.
+        reached_end = bool((resp["body"] or {}).get(ep.REACHED_END_KEY))
+        if (hit_break or reached_end or page_no + 1 >= ep.MAX_PAGES
+                or len(products) >= cap):
             page_no = None
         else:
             page_no += 1
@@ -652,9 +657,9 @@ async def search(
 
     return {
         "products": products,
-        # The rows we KEPT, not a total: Zepto reports no count of matches. Blinkit's
-        # `total_results` is its own count, so the two never compare — see
-        # app/models/search.py SearchSnapshot.total_results.
+        # The rows we KEPT. Zepto does send `totalProductCount`, but it counts its
+        # Similar Products tail as well, so it is not "how many matched" either — see
+        # endpoints.TOTAL_COUNT_KEY and app/models/search.py SearchSnapshot.total_results.
         "total_results": len(products),
         # The session's store IS the merchant here — unlike Blinkit, where it has
         # to be read back off the products because one response spans several.

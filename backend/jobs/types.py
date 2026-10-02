@@ -178,14 +178,22 @@ def _instamart(tenant_id, p):
 
 
 
-# Public scrapes are READS of public search, not campaign operations, and stored schedules
-# predate the param — so they keep a Blinkit fallback. The cm.* builders below do not.
-_PUBLIC_DEFAULT_MP = "blinkit"
+# Public scrapes name their marketplace too (2026-10-02). They used to fall back to Blinkit
+# "because stored schedules predate the param" — but no public schedule exists, and a job
+# queued without one would quietly scrape Blinkit and stage its rows as a Blinkit run. Same
+# rule as the cm.* builders below: no marketplace, no job.
+def _public_marketplace(p) -> str:
+    mp = (p or {}).get("marketplace")
+    if not mp:
+        raise MissingMarketplace(
+            "public-scrape job has no `marketplace` param — refusing to guess one. Add "
+            "marketplace=blinkit|zepto|instamart.")
+    return mp
 
 
 def _public_keyword(tenant_id, p):
     a = ["scrape", "public-run", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _PUBLIC_DEFAULT_MP)
+    _opt(a, "--marketplace", _public_marketplace(p))
     _opt(a, "--city", p.get("city"))
     _opt(a, "--keyword", p.get("keyword"))
     _opt(a, "--cap", p.get("cap"))
@@ -196,7 +204,7 @@ def _public_keyword(tenant_id, p):
 
 def _public_skus(tenant_id, p):
     a = ["scrape", "public-skus", "--tenant", str(tenant_id)]
-    _opt(a, "--marketplace", p.get("marketplace") or _PUBLIC_DEFAULT_MP)
+    _opt(a, "--marketplace", _public_marketplace(p))
     _opt(a, "--city", p.get("city"))
     _opt(a, "--brand-cap", p.get("brand_cap"))
     _opt(a, "--workers", p.get("workers"))
@@ -223,8 +231,8 @@ def _public_skus(tenant_id, p):
 
 
 class MissingMarketplace(ValueError):
-    """A cm.* job with no `marketplace` param. Raised while BUILDING argv, so the runner
-    fails the job before anything starts — never guesses one."""
+    """A cm.* or public-scrape job with no `marketplace` param. Raised while BUILDING argv,
+    so the runner fails the job before anything starts — never guesses one."""
 
 
 def _cm_marketplace(p) -> str:

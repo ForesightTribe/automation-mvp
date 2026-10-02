@@ -44,7 +44,9 @@ class SearchSnapshot(SQLModel, table=True):
     # ⚠️ NOT the same measure on every marketplace — never compare it across them:
     #   blinkit, instamart  the marketplace's OWN count of matches for the search, when it
     #                       reports one (Blinkit: `search_count` in next_url); else rows kept
-    #   zepto               the rows we kept (at most the cap) — Zepto reports no total
+    #   zepto               the rows we kept (at most the cap). Zepto's own
+    #                       `totalProductCount` is not stored: it counts the Similar
+    #                       Products tail too, so it is not a match count either
     #   any                 0 = the search answered with nothing (rank/SoV are then NULL)
     # Nothing in the app reads it today. If something ever needs "how many results", it
     # needs a per-marketplace definition first.

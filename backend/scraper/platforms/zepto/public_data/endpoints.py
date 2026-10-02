@@ -110,6 +110,20 @@ SECTION_BREAK_WIDGETS = frozenset({"HEADER_WIDGET"})
 # Always `data.get("layout") or []`.
 LAYOUT_KEY = "layout"
 
+# Zepto's own "no more pages" flag on every search response, alongside `currentPage`,
+# `pageProductCount` and `totalProductCount`. Paging stops on it.
+#
+# ⚠️ A SHORT PAGE IS NOT THE END. Checked on 20 saved page-0 responses (2026-10-02):
+# `almonds` 27 rows of 220, `butter` 24 of 177, `sourdough` 18 of 212 — every one with
+# hasReachedEnd false and more behind it. "Stop when fewer than PAGE_SIZE came back" would
+# have thrown real results away; only this flag (or the Similar Products break) says
+# the list is over.
+#
+# `totalProductCount` is NOT the number of search matches: it counts the Similar
+# Products tail too (`mozzarella` 79, where the real results end at 26 with a break).
+REACHED_END_KEY = "hasReachedEnd"
+TOTAL_COUNT_KEY = "totalProductCount"
+
 # Prices are in PAISE. mrp 11000 = Rs 110.00.
 PRICE_DIVISOR = 100
 

@@ -183,8 +183,8 @@ Config-driven (Blinkit only). Fill `config.xlsx`, sync it, then run per tenant:
 
 ```bash
 python -m cli sync --file config.xlsx                 # locations + watchlist + caps (per marketplace) + coverage → DB
-python -m cli scrape public-run   --tenant <id>       # keyword scrape: SoV/rank + competitors → search_snapshots/listings
-python -m cli scrape public-skus  --tenant <id>       # targeted own-SKU scrape: price/stock/inventory → sku_snapshots
+python -m cli scrape public-run -m <mp>   --tenant <id>       # keyword scrape: SoV/rank + competitors → search_snapshots/listings
+python -m cli scrape public-skus -m <mp>  --tenant <id>       # targeted own-SKU scrape: price/stock/inventory → sku_snapshots
 
 # ad-hoc single scrape (quick check); --save needs --tenant
 python -m cli scrape public --keyword "cola" --brand "dobra" --platform blinkit --city delhi

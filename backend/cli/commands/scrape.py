@@ -1291,7 +1291,7 @@ def _validate_marketplace(mp: str) -> str:
 def public_run(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape: blinkit | zepto"),
+    marketplace: str = typer.Option(..., "--marketplace", "-m", help="Marketplace to scrape: blinkit | zepto | instamart (required — never assumed)"),
     cap: int = typer.Option(None, "--cap", help="Max products per search (default: tenant keyword_cap, else the platform floor)"),
     keyword: str = typer.Option(None, "--keyword", "-k", help="Only this keyword (subset of the watchlist)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
@@ -1313,7 +1313,7 @@ def public_run(
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
     mp = _validate_marketplace(marketplace)
-    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers, no_load, mp))
+    asyncio.run(_public_run(tenant_id, all_tenants, cap, keyword, city, resume, workers, no_load, mp_slug=mp))
 
 
 async def _auto_load(summary: dict, no_load: bool) -> None:
@@ -1380,7 +1380,7 @@ async def _auto_load(summary: dict, no_load: bool) -> None:
 async def _public_run(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
     keyword: str | None, city: str | None, resume: bool, workers: int,
-    no_load: bool = False, mp_slug: str = "blinkit",
+    no_load: bool = False, *, mp_slug: str,
 ) -> None:
     from scraper.public import orchestrator
 
@@ -1482,7 +1482,7 @@ def _exit_on_public_outcome(summaries: list[dict]) -> None:
 def public_skus(
     tenant_id: str = typer.Option(None, "--tenant", "-t", help="Tenant (client) UUID — omit with --all"),
     all_tenants: bool = typer.Option(False, "--all", help="Run every active tenant"),
-    marketplace: str = typer.Option("blinkit", "--marketplace", "-m", help="Marketplace to scrape: blinkit | zepto"),
+    marketplace: str = typer.Option(..., "--marketplace", "-m", help="Marketplace to scrape: blinkit | zepto | instamart (required — never assumed)"),
     cap: int = typer.Option(None, "--brand-cap", help="Override brand_cap for this run (default: per-tenant, else the platform floor)"),
     city: str = typer.Option(None, "--city", "-c", help="Only locations in this city slug"),
     resume: bool = typer.Option(False, "--resume", help="Continue this tenant's last incomplete run on this marketplace (skip scraped stores)"),
@@ -1502,13 +1502,13 @@ def public_skus(
         console.print("[red]--resume works with a single --tenant, not --all.[/red]")
         raise typer.Exit(1)
     mp = _validate_marketplace(marketplace)
-    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers, no_load, mp))
+    asyncio.run(_public_skus(tenant_id, all_tenants, cap, city, resume, workers, no_load, mp_slug=mp))
 
 
 async def _public_skus(
     tenant_id: str | None, all_tenants: bool, cap: int | None,
     city: str | None, resume: bool, workers: int, no_load: bool = False,
-    mp_slug: str = "blinkit",
+    *, mp_slug: str,
 ) -> None:
     from scraper.public import targeted
 

@@ -231,9 +231,6 @@ _PROVIDERS: dict[str, Provider] = {
     ),
 }
 
-DEFAULT_MARKETPLACE = "blinkit"
-
-
 def get_provider(slug: str) -> Provider:
     """The wired provider for `slug`, or a clear error if unknown / not yet wired."""
     p = _PROVIDERS.get((slug or "").lower())

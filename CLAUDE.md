@@ -449,8 +449,8 @@ python -m cli scrape blinkit-scorecard --tenant <uuid>
 python -m cli sync --file config.xlsx [--dry-run] [--prune]   # apply config workbook → DB
 python -m cli locations list [--city <slug>] [--tenant <uuid>]
 python -m cli watchlist list --tenant <uuid>
-python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors → STAGING FILE
-python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → STAGING FILE
+python -m cli scrape public-run -m <mp> --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors → STAGING FILE
+python -m cli scrape public-skus -m <mp> --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → STAGING FILE
 
 # Public scrapes land in a local SQLite file — push them to Postgres afterwards:
 python -m cli scrape staged [--pending]                  # review; Stores/Err flag a bad run

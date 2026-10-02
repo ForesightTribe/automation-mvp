@@ -29,7 +29,7 @@ from scraper.public.orchestrator import (
     _clamp_workers, _drain, _handles_blocks, _kinds, _note_block, _recover,
     warn_if_co_located,
 )
-from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
+from scraper.public.providers import get_provider
 from scraper.utils.search_result import classify_products
 
 # Start-up pacing for the worker pool — the SAME two rules as orchestrator.py,
@@ -384,7 +384,7 @@ def _missing(popped, brands, finished) -> list[tuple]:
 async def run_targeted(
     db: AsyncSession, tenant_id, cap: int | None = None,
     city: str | None = None, resume: bool = False, workers: int = 5,
-    mp_slug: str = DEFAULT_MARKETPLACE,
+    *, mp_slug: str,
 ) -> dict:
     """Scrape a tenant's own catalog (brand query) across its `mp_slug` locations,
     writing `sku_snapshots`. `cap` overrides every brand's brand_cap for this run.
@@ -600,7 +600,7 @@ async def run_targeted(
 
 async def run_all_targeted(
     db: AsyncSession, cap: int | None = None, city: str | None = None, workers: int = 5,
-    on_tenant_done=None, mp_slug: str = DEFAULT_MARKETPLACE,
+    on_tenant_done=None, *, mp_slug: str,
 ) -> list[dict]:
     """Run the targeted own-SKU scrape for every active tenant.
 

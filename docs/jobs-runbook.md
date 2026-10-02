@@ -46,7 +46,7 @@ cli jobs run scrape.public_keyword -t a870fd8d-… city=bengaluru workers=5
 …tells the runner to eventually execute:
 
 ```bash
-python -m cli scrape public-run --tenant a870fd8d-… --city bengaluru --workers 5
+python -m cli scrape public-run -m blinkit --tenant a870fd8d-… --city bengaluru --workers 5
 ```
 
 `cli jobs list` shows you that exact command in the `argv` column — copy-paste it to

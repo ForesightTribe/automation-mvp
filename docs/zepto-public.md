@@ -430,10 +430,16 @@ whose real result set was 11 items.
 
 **Prices are in PAISE.** `mrp: 11000` is ₹110.00.
 
-**`total_results` is not Blinkit's `total_results`.** Zepto reports no count of matches,
-so a Zepto snapshot's `total_results` is the number of rows we kept (at most the cap);
-Blinkit's is Blinkit's own count. Never compare or sum it across marketplaces. Nothing
-reads it today.
+**`total_results` is not Blinkit's `total_results`.** A Zepto snapshot's `total_results`
+is the number of rows we kept (at most the cap); Blinkit's is Blinkit's own count. Zepto
+does send a `totalProductCount`, but it includes the Similar Products tail (`mozzarella`:
+79, where the real results end at 26), so it is not a match count and is not stored.
+Never compare or sum `total_results` across marketplaces. Nothing reads it today.
+
+**A short page is not the end of the results.** Page 0 often comes back with fewer than
+30 rows and plenty behind it (`almonds` 27 of 220, `sourdough` 18 of 212, all with
+`hasReachedEnd: false`). Paging stops on Zepto's own `hasReachedEnd`, or on the Similar
+Products break — never on the row count.
 
 **`position` is 0-based** in the payload; the shared contract is 1-based.
 

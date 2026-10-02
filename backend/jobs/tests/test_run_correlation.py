@@ -97,10 +97,21 @@ def test_the_named_marketplace_reaches_the_command_line():
         assert argv[argv.index("--marketplace") + 1] == mp
 
 
-def test_public_scrapes_keep_their_blinkit_fallback():
-    """Reads of public search, not campaign operations — deliberately out of ZC-D1."""
-    argv = _argv("scrape.public_keyword", {})
-    assert argv[argv.index("--marketplace") + 1] == "blinkit"
+def test_public_scrapes_refuse_to_build_without_a_marketplace_too():
+    """Public scrapes used to keep a Blinkit fallback ("stored schedules predate the
+    param"). No public schedule exists, and an unnamed job quietly scraped Blinkit and
+    staged it as a Blinkit run — so since 2026-10-02 they follow ZC-D1 as well."""
+    from jobs.types import MissingMarketplace
+
+    for t in ("scrape.public_keyword", "scrape.public_skus"):
+        try:
+            _argv(t, {})
+        except MissingMarketplace:
+            pass
+        else:
+            raise AssertionError(f"{t} built without a marketplace")
+        argv = _argv(t, {"marketplace": "zepto"})
+        assert argv[argv.index("--marketplace") + 1] == "zepto"
 
 
 # ── params ───────────────────────────────────────────────────────────────────

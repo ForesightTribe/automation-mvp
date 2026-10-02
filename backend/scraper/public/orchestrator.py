@@ -30,7 +30,7 @@ from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
 from scraper.public import caps, outcome, pacing, staging
-from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
+from scraper.public.providers import get_provider
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
 _REFRESH_AFTER = 8      # consecutive failed fetches across stores → session likely stale, re-open
@@ -617,7 +617,7 @@ async def run_tenant(
     db: AsyncSession, tenant_id, cap: int | None = None,
     keyword: str | None = None, city: str | None = None,
     resume: bool = False, workers: int = 5,
-    mp_slug: str = DEFAULT_MARKETPLACE,
+    *, mp_slug: str,
 ) -> dict:
     """Scrape a tenant's whole watchlist across its selected locations on `mp_slug`.
     `keyword`/`city` narrow the run to a single keyword or city. `resume` continues
@@ -836,7 +836,7 @@ async def run_tenant(
 async def run_all(
     db: AsyncSession, cap: int | None = None,
     keyword: str | None = None, city: str | None = None, workers: int = 5,
-    on_tenant_done=None, mp_slug: str = DEFAULT_MARKETPLACE,
+    on_tenant_done=None, *, mp_slug: str,
 ) -> list[dict]:
     """Run every active tenant, each into its own staging file.
 

@@ -349,14 +349,14 @@ store → SoV/rank + declared competitors. Stages rows destined for `search_snap
 `search_listings`.
 
 ```bash
-python -m cli scrape public-run --tenant <id>                  # full run (new staging file)
-python -m cli scrape public-run --tenant <id> -m blinkit       # pick the marketplace (default blinkit)
-python -m cli scrape public-run --tenant <id> --resume         # continue an interrupted run
-python -m cli scrape public-run --tenant <id> --city delhi     # one city
-python -m cli scrape public-run --tenant <id> --keyword "soda" # one keyword
-python -m cli scrape public-run --tenant <id> --cap 30         # override keyword_cap (Blinkit pages 12 at a time)
-python -m cli scrape public-run --tenant <id> --workers 5      # concurrent pool size (default 5)
-python -m cli scrape public-run --all                          # every active tenant
+python -m cli scrape public-run -m <mp> --tenant <id>                  # full run (new staging file)
+python -m cli scrape public-run --tenant <id> -m blinkit       # -m is REQUIRED: blinkit | zepto | instamart (no default)
+python -m cli scrape public-run -m <mp> --tenant <id> --resume         # continue an interrupted run
+python -m cli scrape public-run -m <mp> --tenant <id> --city delhi     # one city
+python -m cli scrape public-run -m <mp> --tenant <id> --keyword "soda" # one keyword
+python -m cli scrape public-run -m <mp> --tenant <id> --cap 30         # override keyword_cap (Blinkit pages 12 at a time)
+python -m cli scrape public-run -m <mp> --tenant <id> --workers 5      # concurrent pool size (default 5)
+python -m cli scrape public-run -m <mp> --all                          # every active tenant
 ```
 
 **2b. Targeted own-SKU scrape — `cli scrape public-skus`.** Searches the tenant's
@@ -366,13 +366,13 @@ _guarantees_ coverage of every own SKU's price/stock/inventory, closing the gap
 where an own product doesn't rank in a category-keyword search.
 
 ```bash
-python -m cli scrape public-skus --tenant <id>                 # full run (new scrape_job)
-python -m cli scrape public-skus --tenant <id> -m blinkit      # pick the marketplace (default blinkit)
-python -m cli scrape public-skus --tenant <id> --resume        # continue an interrupted run
-python -m cli scrape public-skus --tenant <id> --city delhi    # one city
-python -m cli scrape public-skus --tenant <id> --brand-cap 48  # override brand_cap
-python -m cli scrape public-skus --tenant <id> --workers 5     # concurrent pool size (default 5)
-python -m cli scrape public-skus --all                         # every active tenant
+python -m cli scrape public-skus -m <mp> --tenant <id>                 # full run (new scrape_job)
+python -m cli scrape public-skus --tenant <id> -m blinkit      # -m is REQUIRED: blinkit | zepto | instamart (no default)
+python -m cli scrape public-skus -m <mp> --tenant <id> --resume        # continue an interrupted run
+python -m cli scrape public-skus -m <mp> --tenant <id> --city delhi    # one city
+python -m cli scrape public-skus -m <mp> --tenant <id> --brand-cap 48  # override brand_cap
+python -m cli scrape public-skus -m <mp> --tenant <id> --workers 5     # concurrent pool size (default 5)
+python -m cli scrape public-skus -m <mp> --all                         # every active tenant
 ```
 
 **2c. Push to Postgres — `cli scrape staged` / `load` / `discard`.**
