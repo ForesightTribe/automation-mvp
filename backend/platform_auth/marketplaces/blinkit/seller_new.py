@@ -35,24 +35,36 @@ Login, through the browser:
     3. verify_otp returns access_token/refresh_token, and cookies land:
        access_token, refresh_token, user_id, seller_id, device_id.
 
-**The real credential is the on-disk browser profile, not the token pair.** A
-persistent Playwright profile (kept under `_seller_new_profiles/<email>/`,
-gitignored) is what lets Cloudflare treat repeat runs as the same returning
-device rather than a new bot login every time. `AuthSession.raw` carries the
-token pair for bookkeeping, but reopening the SAME profile is what actually
-keeps this working without burning a fresh OTP on every call — see `probe`.
+**CORRECTED 2026-10-01 — `storage_state` IS a usable credential after all,
+just not over plain httpx.** This module used to claim the on-disk persistent
+profile itself was the real credential, because Phase B's httpx replay of
+real cookies still got 403'd. That test never tried a real (even if freshly
+launched) browser context — only plain httpx. Live-tested directly: cookies
+lifted from the working profile, injected into a brand-new never-used
+profile, reached `/dashboard` with no OTP needed. So what Cloudflare actually
+trusts is the cookie set, not this specific folder's accumulated history —
+`probe` and the seller-hub scraper now launch a FRESH, non-persistent
+context seeded with `session.storage_state` instead of reopening
+`_seller_new_profiles/<email>/`, which means they no longer require running
+from this one laptop. (Untested caveat: that test ran on the same
+machine/network as the original login, not a genuinely different one.)
+
+`start_login`/`complete_login` still use the persistent profile — the
+initial OTP handshake is unchanged and still needs a real browser session to
+clear Cloudflare's first-contact challenge.
 
 **No known refresh endpoint.** Unlike partnersbiz.com's `/tokens/rotate`, no
 equivalent has been observed on this domain. `refresh` is not implemented and
 the registry marks this `refreshable=False`; `ensure()` falls back to a full
-browser login (a new OTP) whenever the profile's own session goes stale.
+browser login (a new OTP) whenever the stored session goes stale.
 Revisit if a rotate/refresh call is ever seen in the dashboard's own traffic.
 
 **`probe` is the ONLY cheap-ish path, and it still costs a browser launch.**
 Phase B ruled out a plain httpx liveness check entirely: Cloudflare 403s it
-regardless of cookie validity. So `probe` reopens the persistent profile
-headless and checks whether it lands on a dashboard route without hitting the
-login form. Real, but not free — there is no cheaper option on this domain.
+regardless of cookie validity. So `probe` launches a fresh context seeded
+with the stored cookies and checks whether it lands on a dashboard route
+without hitting the login form. Real, but not free — there is no cheaper
+option on this domain.
 """
 import re
 from datetime import timedelta
@@ -220,12 +232,9 @@ def _build(email: str, cookies: list[dict], by_name: dict) -> AuthSession:
             "seller_id": by_name.get("seller_id"),
             "device_id": by_name.get("device_id"),
         },
-        # Best-effort projection for anything that inspects cookies directly.
-        # It is NOT a complete credential on its own — a fresh browser cannot
-        # bootstrap from these cookies alone, because Cloudflare's pass/fail
-        # signal lives in the connection, not in anything cookie-shaped
-        # (Phase B, 2026-09-30). The actual credential is the profile
-        # directory these cookies were harvested from.
+        # IS a usable credential, in a fresh browser context — corrected
+        # 2026-10-01, see module docstring. `probe`/the seller-hub scraper
+        # seed a new context with exactly this dict via `new_context(storage_state=...)`.
         storage_state={"cookies": cookies, "origins": []},
         # No known-good header set works outside a real browser (Phase B), so
         # there is nothing useful to hand a direct-API consumer.
@@ -235,32 +244,53 @@ def _build(email: str, cookies: list[dict], by_name: dict) -> AuthSession:
 
 
 async def probe(session: AuthSession) -> bool:
-    """Reopen the persistent profile and check it is still on a dashboard
-    route. The only liveness check this domain allows — see module docstring
-    for why a plain httpx call can't answer this instead."""
-    email = session.email
-    if not email:
+    """Fresh, non-persistent browser context seeded with the session's own
+    `storage_state`, checked against a dashboard route.
+
+    Rewritten 2026-10-01 — the DOCSTRING above called `storage_state`
+    "NOT a complete credential" based on Phase B's plain-httpx test; that was
+    about requests made WITHOUT a browser at all, never actually tested with
+    a real (if freshly-launched) browser context. Live-tested directly: cookies
+    lifted from the working persistent profile and injected into a brand-new,
+    never-used profile reached /dashboard with no OTP, no Cloudflare block. So
+    what Cloudflare trusts is the cookies, not this specific folder's history —
+    this no longer needs `profile_dir`/the persistent profile at all, which
+    means it also no longer needs to run from this one laptop. (One caveat
+    that test didn't cover: same machine/network as the original login, not a
+    genuinely different one — worth confirming before relying on this from a
+    different server.)
+    """
+    if not session.storage_state or not session.storage_state.get("cookies"):
+        logger.warning(
+            "Seller (seller.blinkit.com) probe: no storage_state on this session "
+            "— was it ever logged in via this module?"
+        )
         return False
     p = await async_playwright().start()
     try:
-        context = await p.chromium.launch_persistent_context(
-            profile_dir(email),
-            headless=True,
-            args=_LAUNCH_ARGS,
-            viewport=_VIEWPORT,
-            user_agent=ep.USER_AGENT,
-        )
+        browser = await p.chromium.launch(headless=True, args=_LAUNCH_ARGS)
         try:
-            page = context.pages[0] if context.pages else await context.new_page()
-            await page.goto(
-                f"{ep.SELLER_BASE_NEW}/dashboard", wait_until="networkidle", timeout=_NAV_TIMEOUT_MS
+            context = await browser.new_context(
+                storage_state=session.storage_state,
+                viewport=_VIEWPORT,
+                user_agent=ep.USER_AGENT,
             )
-            alive = "/dashboard" in page.url
-            if not alive:
-                logger.info(f"Seller (seller.blinkit.com) probe for {email}: profile session is dead.")
-            return alive
+            try:
+                page = await context.new_page()
+                await page.goto(
+                    f"{ep.SELLER_BASE_NEW}/dashboard", wait_until="networkidle", timeout=_NAV_TIMEOUT_MS
+                )
+                alive = "/dashboard" in page.url
+                if not alive:
+                    logger.info(
+                        f"Seller (seller.blinkit.com) probe for {session.email}: "
+                        "stored session is dead."
+                    )
+                return alive
+            finally:
+                await context.close()
         finally:
-            await context.close()
+            await browser.close()
     except Exception as e:                                   # noqa: BLE001
         logger.warning(f"Seller (seller.blinkit.com) probe error: {e}")
         return False
