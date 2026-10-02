@@ -34,12 +34,11 @@ BlinkitSellerHubSalesOrderRO (order-level — the real item x city x day grain,
 from a DIFFERENT endpoint family: the "Download sales sheet" REPORT export,
 not a chart endpoint). The daily/city/category chart-histogram sweep that
 used to live here (metrics/filters endpoints, per-city and per-category
-fetch loops) has been removed — `BlinkitSellerHubSalesDailyRO`,
-`..CityDailyRO`, `..CategoryDailyRO` are all fully derivable from
-BlinkitSellerHubSalesOrderRO now (`SUM(...) GROUP BY order_date` /
-`supply_city` / `business_category`), so scraping them separately only ever
-added request volume, not new information. Their tables and rows from past
-runs are left in the database untouched; nothing new writes to them.
+fetch loops) has been removed: day, city-day and category-day totals are all
+a `SUM(...) GROUP BY order_date` / `supply_city` / `business_category` on
+BlinkitSellerHubSalesOrderRO, so scraping them separately only ever added
+request volume, not new information. Their tables were dropped in migration
+4b7e2c91d0a3.
 """
 import io
 import json

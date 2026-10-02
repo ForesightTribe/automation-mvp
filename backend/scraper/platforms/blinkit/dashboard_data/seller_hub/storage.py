@@ -12,12 +12,6 @@ from app.models.blinkit_seller_hub import (
 )
 from app.utils.logger import logger
 
-# BlinkitSellerHubSalesDailyRO / CityDailyRO / CategoryDailyRO are no longer
-# written here (scope narrowed 2026-10-01 — see scraper.py's module
-# docstring: they're fully derivable from BlinkitSellerHubSalesOrderRO now).
-# Their tables and any rows from past runs are left in the database
-# untouched; this module just doesn't import or upsert into them anymore.
-
 
 async def save_sales_results(
     session: AsyncSession, by_product: list[dict], orders: list[dict] | None = None,
