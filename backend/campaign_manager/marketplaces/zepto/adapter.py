@@ -210,9 +210,21 @@ async def read_bids_by_match(client, campaign_id: int) -> dict[tuple[str, str], 
 
 def bids_from_detail(detail: dict) -> dict[str, int]:
     """Bids off an already-fetched detail, saving a call. Same lossiness as
-    `read_bids`."""
+    `read_bids` — for display only. The bid engine reads `bids_by_match_from_detail`."""
     return {text: value
             for (text, _match), value in translate.bids_from_detail(detail).items()}
+
+
+def bids_by_match_from_detail(detail: dict) -> dict[tuple[str, str], int]:
+    """Bids off an already-fetched detail, keyed by (text, match_type) — the real grain on
+    Zepto, and what the bid engine reads (`bid._bid_lookup`).
+
+    ⚠️ Found live 2026-10-02: the engine used to read `bids_from_detail`, keyed by text only.
+    A campaign bidding "sour dough" under EXACT ₹10 / PHRASE ₹15 / BROAD ₹15 reported ₹15
+    for an EXACT rule — so the floor written at window open never "read back", every tick
+    re-floored (refused as "no change", the guard working), the window never opened and
+    not one position was searched."""
+    return translate.bids_from_detail(detail)
 
 
 async def read_bid_floors(client, campaign_id: int, detail: dict | None = None

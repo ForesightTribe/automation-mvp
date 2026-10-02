@@ -349,8 +349,15 @@ def status(
 
         # Keyword bids come from the adapter, which both marketplaces implement —
         # the raw detail shapes differ completely.
-        for kw, bid in (adapter.bids_from_detail(detail) or {}).items():
-            t.add_row(f"  bid · {kw}", f"₹{bid}")
+        # Per match type where the marketplace bids that way (Zepto) — one keyword can
+        # carry EXACT ₹10 and PHRASE ₹15, and the text-keyed view shows only one of them.
+        by_match = getattr(adapter, "bids_by_match_from_detail", None)
+        if by_match is not None:
+            for (kw, match), bid in sorted((by_match(detail) or {}).items()):
+                t.add_row(f"  bid · {kw} ({match})", f"₹{bid}")
+        else:
+            for kw, bid in (adapter.bids_from_detail(detail) or {}).items():
+                t.add_row(f"  bid · {kw}", f"₹{bid}")
 
         if platform == "blinkit":
             from campaign_manager.marketplaces.blinkit import restart as restart_mod
