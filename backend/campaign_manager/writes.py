@@ -323,7 +323,7 @@ def not_needed(outcome: dict | None) -> bool:
 # ── Live-write arming (B3 account guardrail) ────────────────────────────────
 
 async def arm_live(adapter, client, run_id: str,
-                   advertiser: int | str | None) -> int | str:
+                   advertiser: int | str | None, *, announce: bool = True) -> int | str:
     """Gate a LIVE run on the account guardrail. Never called in dry-run.
 
     The tenant's stored ad account must exist, and the adapter decides what to do
@@ -343,7 +343,8 @@ async def arm_live(adapter, client, run_id: str,
             "(Blinkit: the integer advertiser id from a dashboard PUT; "
             "Zepto: the brand UUID from `cm advertiser`). Refusing live write.")
     adapter.set_advertiser(client, advertiser)
-    logs.live_armed(run_id, advertiser=advertiser)
+    # `announce=False`: the caller says it in its own line (the bid engine's `ready`).
+    logs.live_armed(run_id, advertiser=advertiser, quiet=not announce)
     return advertiser
 
 

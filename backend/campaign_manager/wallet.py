@@ -44,8 +44,7 @@ async def check(adapter, client, *, tenant_id, platform: str, run_id: str,
         wallet = await reader(client)
         balance = (wallet or {}).get("current_balance")
     except Exception as e:
-        logs.note(run_id, f"could not read the {platform.title()} ad wallet ({e}) — "
-                          f"carrying on without it", dry_run=dry_run, level="warning")
+        logs.note(run_id, f"wallet unreadable ({e})", dry_run=dry_run, level="warning")
         return None
 
     verdict = assess(balance, warn_below=config.WALLET_WARN_BELOW)
@@ -53,7 +52,11 @@ async def check(adapter, client, *, tenant_id, platform: str, run_id: str,
         logs.note(run_id, f"ad wallet ₹{balance:,.0f}", dry_run=dry_run, level="debug")
         return balance
     level, said = verdict
-    logs.note(run_id, said, dry_run=dry_run, level=level)
+    # The run log gets the number; History keeps the full sentence for the client.
+    logs.note(run_id, (f"wallet EMPTY: ₹{balance:,.0f} · ads not delivering — recharge on "
+                       f"{platform.title()}") if level == "error" else
+              f"wallet low: ₹{balance:,.0f} (warns below ₹{config.WALLET_WARN_BELOW:,.0f})",
+              dry_run=dry_run, level=level)
     await _history_note(tenant_id, platform, run_id, level, said, balance, dry_run)
     return balance
 

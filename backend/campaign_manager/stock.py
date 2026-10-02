@@ -18,6 +18,32 @@ from datetime import datetime, timedelta
 from campaign_manager import config, coverage, logs, repo
 
 
+def _short_name(name: str, brand_names=()) -> str:
+    """`Brik Oven Sour Cream` → `Sour Cream` when the brand is already understood."""
+    low = (name or "").lower()
+    for b in sorted((b for b in brand_names if b), key=len, reverse=True):
+        if low.startswith(b.lower() + " "):
+            return name[len(b) + 1:]
+    return name
+
+
+def _stock_said(where: str, products: list[dict], available: int, complete: bool,
+                brand_names=()) -> str:
+    """The store-level stock line. It covers the client's WHOLE brand at the store, so it names
+    what is listed — whether a particular campaign's products are among them is said per
+    automation, right after: `stock at J. P. Nagar: brand has 2 (Sour Cream, Whey Ricotta
+    Cheese) · 2 in stock`."""
+    if not products:
+        said = "brand has nothing listed"
+    else:
+        names = [_short_name(p.get("name") or p.get("pid") or "", brand_names)
+                 for p in products]
+        shown = ", ".join(names[:3]) + (f" +{len(names) - 3} more" if len(names) > 3 else "")
+        said = f"brand has {len(products)} ({shown}) · {available} in stock"
+    return (f"stock at {where}: {said}"
+            + ("" if complete else " · partial read"))
+
+
 def _fresh(stock: coverage.StoreStock | None, now: datetime) -> bool:
     return bool(stock and stock.checked_at
                 and now - stock.checked_at < timedelta(minutes=config.STOCK_MAX_AGE_MINUTES))
@@ -39,8 +65,8 @@ async def cached(tenant_id: uuid.UUID, platform: str, stores, *,
 
 
 async def load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *,
-               now: datetime, run_id: str,
-               dry_run: bool) -> tuple[dict[str, coverage.StoreStock], int]:
+               now: datetime, run_id: str, dry_run: bool,
+               indent: bool = False) -> tuple[dict[str, coverage.StoreStock], int]:
     """`({merchant_id: StoreStock}, brand searches made)` for the stores a run measures at —
     cached where fresh, re-read where stale. A store absent from the dict has no known stock.
 
@@ -48,16 +74,16 @@ async def load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *,
     know nothing: every store then counts, exactly as before stock existed."""
     try:
         return await _load(adapter, session, tenant_id, platform, stores,
-                           now=now, run_id=run_id, dry_run=dry_run)
+                           now=now, run_id=run_id, dry_run=dry_run, indent=indent)
     except Exception as e:
-        logs.note(run_id, f"stock check failed ({e}) — every store counts this run",
-                  dry_run=dry_run, level="warning")
+        logs.note(run_id, f"stock check failed ({e}) · every store counts",
+                  dry_run=dry_run, level="warning", indent=indent)
         return {}, 0
 
 
 async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *,
-                now: datetime, run_id: str,
-                dry_run: bool) -> tuple[dict[str, coverage.StoreStock], int]:
+                now: datetime, run_id: str, dry_run: bool,
+                indent: bool = False) -> tuple[dict[str, coverage.StoreStock], int]:
     by_id: dict[str, object] = {}
     for s in stores:
         if getattr(s, "merchant_id", "") and s.merchant_id not in by_id:
@@ -67,8 +93,8 @@ async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *
 
     reader = getattr(adapter, "read_store_catalog", None)
     if reader is None:
-        logs.note(run_id, f"stock isn't checked on {platform.title()} — every store counts",
-                  dry_run=dry_run)
+        logs.note(run_id, f"stock not checked on {platform.title()} · every store counts",
+                  dry_run=dry_run, indent=indent)
         return {}, 0
 
     cached = await repo.get_store_stock(tenant_id, platform, set(by_id))
@@ -78,8 +104,8 @@ async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *
 
     brands = await repo.get_own_brands(tenant_id) if stale else []
     if stale and not brands:
-        logs.note(run_id, "no own brand is configured for this client, so stock can't be "
-                          "checked", dry_run=dry_run, level="warning")
+        logs.note(run_id, "no own brand configured · stock not checked",
+                  dry_run=dry_run, level="warning", indent=indent)
         stale = []
 
     rows, searches = [], 0
@@ -103,19 +129,19 @@ async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *
             complete = complete and bool(res["complete"])
             served_by = served_by or res.get("served_by") or ""
         if error is not None:
-            logs.note(run_id, f"could not check stock at {store.label or store.merchant_id} — "
-                              f"{error}; it still counts this run",
-                      dry_run=dry_run, level="warning")
+            logs.note(run_id, f"stock at {store.label or store.merchant_id}: unreadable — "
+                              f"{error} · still counts",
+                      dry_run=dry_run, level="warning", indent=indent)
             continue
 
         in_stock = {p["pid"]: bool(p["in_stock"]) for p in products}
         out[store.merchant_id] = coverage.StoreStock(complete=complete, in_stock=in_stock,
                                                      checked_at=now)
         available = sum(1 for v in in_stock.values() if v)
-        logs.note(run_id, f"stock at {store.label or store.merchant_id}: {available} of "
-                          f"{len(in_stock)} of our products available"
-                          + ("" if complete else " (partial read — only what it saw counts)"),
-                  dry_run=dry_run)
+        brand_names = {n for _, _, ns in brands for n in ns}
+        logs.note(run_id, _stock_said(store.label or store.merchant_id, products, available,
+                                      complete, brand_names),
+                  dry_run=dry_run, indent=indent)
         rows.append({"merchant_id": store.merchant_id, "served_by": served_by,
                      "complete": complete, "products": products, "checked_at": now})
 
@@ -133,7 +159,8 @@ async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *
     unknown = len(by_id) - len(out)
     if unknown:
         parts.append(f"{unknown} unknown, counted anyway")
+    # DEBUG unless something is unknown: the per-store lines above already say what was read.
     logs.note(run_id, f"stock for {len(by_id)} store{'s' if len(by_id) != 1 else ''}: "
                       + ", ".join(parts),
-              dry_run=dry_run, level="warning" if unknown else "info")
+              dry_run=dry_run, level="warning" if unknown else "debug", indent=indent)
     return out, searches

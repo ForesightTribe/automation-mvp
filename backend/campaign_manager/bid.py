@@ -41,10 +41,46 @@ _DEFAULT_LAT, _DEFAULT_LON = 12.9767, 77.5713   # Bengaluru fallback when a rule
 RESET_LOOKAHEAD_MINUTES = 2
 
 # Said when an automation is paused or deleted while a tick is mid-flight (see
-# `_still_active`). One sentence, in the client's language, because it lands in the log
-# beside the decision it is cancelling.
-_PAUSED_MIDRUN = ("this automation was paused or deleted while the run was in progress — "
-                  "leaving the bid alone")
+# `_still_active`) — in the run log, beside the decision it is cancelling.
+_PAUSED_MIDRUN = "skip · automation paused or deleted mid-run · bid left alone"
+
+
+def _outcome(ok: bool, write_error, outcome: dict | None, dry_run: bool, mp: str) -> str:
+    """How a write ended, as the tail of its one log line (logs.py: decision + outcome on one
+    line). History keeps the full sentence (`_write_verdict`)."""
+    if ok:
+        return "DRY RUN, not sent" if dry_run else "applied"
+    if write_error is not None:
+        return "NOT applied — " + _plain(write_error, f"could not be sent to {mp}")
+    return "NOT applied — " + ((outcome or {}).get("reason") or f"{mp} rejected it")
+
+
+def _decision_line(*, current: int, new: int | None, position: float, target: int,
+                   absent: bool, escalated: bool, recovering: bool, drift_pct: float,
+                   drift_paused: bool, last_pos: float | None, minutes: float | None) -> str:
+    """Pure. The decision in a few words for the run log — `raise ₹10 → ₹12 (+₹2) · #2 vs
+    target #1`. Mirrors `compute_bid`'s branches from the same facts it decided on; the full
+    sentence it returned stays the History reason."""
+    where = "ad missing" if absent else f"#{position:g}"
+    if new is not None:
+        if recovering:
+            return f"recover ₹{current} → ₹{new} · dropped to #{position:g} after trimming"
+        if position > target:
+            step = f"+₹{new - current}" + (", step grew" if escalated else "")
+            return f"raise ₹{current} → ₹{new} ({step}) · {where} vs target #{target}"
+        return f"trim ₹{current} → ₹{new} · holding #{position:g} (target #{target})"
+    if position > target:
+        waited = f" · last change {minutes:.0f} min ago" if minutes is not None else ""
+        return f"hold ₹{current} · {where} vs target #{target}{waited}, waiting"
+    if drift_pct <= 0:
+        why = "trimming off"
+    elif last_pos is None or last_pos > target:
+        why = "confirming before trimming"
+    elif drift_paused:
+        why = "trimming paused"
+    else:
+        why = "at floor"
+    return f"hold ₹{current} · at #{position:g} (target #{target}) · {why}"
 
 
 # ── Pure decision logic (unit-tested) ────────────────────────────────────────
@@ -393,7 +429,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
               if _in_window(_rule_dict(r), now)
               and _in_window(_rule_dict(r), soon)]
     if not active:
-        logs.note(run_id, "No keyword automations are in window right now", dry_run=dry_run)
+        logs.note(run_id, "no automations in window", dry_run=dry_run)
         logs.run_summary(run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
                          processed=0, applied=0, skipped=0, errors=0)
         return {"processed": 0, "applied": 0, "skipped": 0, "errors": 0}
@@ -415,8 +451,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             since=now - timedelta(hours=26), dry_run=dry_run)
     except Exception as e:
         store_history = {}
-        logs.note(run_id, f"could not load recent store readings ({e}) — no store is given up "
-                          f"this run", dry_run=dry_run, level="warning")
+        logs.note(run_id, f"store history unavailable ({e}) · nothing given up this run",
+                  dry_run=dry_run, level="warning")
 
     adapter = get_adapter(platform)
     mp = platform.title()          # what a human reads in the log lines below
@@ -441,10 +477,13 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                        run_id=run_id, dry_run=dry_run)
 
     # Live runs must pass the account guardrail (B3) before any write.
+    advertiser = None
     if not dry_run:
         try:
-            await writes.arm_live(adapter, client, run_id,
-                                  await repo.get_advertiser(tenant_id, platform))
+            # Said in the `ready` line below, not on its own.
+            advertiser = await writes.arm_live(adapter, client, run_id,
+                                               await repo.get_advertiser(tenant_id, platform),
+                                               announce=False)
         except RuntimeError as e:
             logs.live_refused(run_id, reason=str(e))
             await _record_run_blocked(
@@ -483,20 +522,22 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     # Blinkit see a dozen cold clients from one IP within minutes.
     # The warm-up uses the first rule's store so the session is established somewhere real;
     # every search then overrides lat/lon in the headers anyway.
-    logs.note(run_id, f"{len(active)} keyword automations active in this window",
-              dry_run=dry_run)
+    logs.ready(run_id, dry_run=dry_run, automations=len(active), advertiser=advertiser)
     _anchor0 = rule_stores[active[0][0].id][0]
+    opening = now_ist()
     try:
         pos_session = await adapter.open_position_session(pw, float(_anchor0.lat),
                                                           float(_anchor0.lon))
+        how = getattr(adapter, "position_session_note", lambda s: None)(pos_session)
+        logs.note(run_id, f"shopper search · {how or 'direct'} · "
+                          f"{(now_ist() - opening).total_seconds():.0f}s to open", dry_run=dry_run)
     except Exception as e:
         # No shopper search = no position to act on, for any rule. Hold every bid and say so
         # (C6 plan, point 5: rank unreadable → hold, never raise blind). This used to escape
         # the run entirely — no History row, no summary, and on Blinkit the browser from
         # `setup()` left open. Zepto's WAF refusing our browser (2026-09-24) went unnoticed
         # for days partly because of that silence.
-        logs.note(run_id, f"could not open {mp}'s shopper search ({e}) — no position can be "
-                          f"read, so no bids are changed this run", dry_run=dry_run,
+        logs.note(run_id, f"shopper search failed: {e} · all bids held", dry_run=dry_run,
                   level="error")
         await _record_run_blocked(
             tenant_id, platform, run_id, [r for r, _ in active],
@@ -534,7 +575,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             cid, kw = rule.campaign_id, rule.keyword
             logs.blank(run_id, dry_run=dry_run)
             logs.rule_header(run_id, dry_run=dry_run, index=processed, total=len(active),
-                             campaign_name=rule.campaign_name, campaign_id=cid)
+                             campaign_name=rule.campaign_name, campaign_id=cid, keyword=kw,
+                             match_type=rule.match_type, target=rule.target_position)
             # Resolved ONCE, so everything downstream — the decision, the clamps, the
             # relaxation — keeps taking a plain int and never has to know `max_bid` is
             # optional. `rule.max_bid` must not be read directly below this line.
@@ -557,7 +599,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     floors_cache[cid] = {}
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
-                                  msg=f"could not read the campaign from {mp} — {e}")
+                                  msg=f"campaign unreadable: {e}")
 
             # The floor is resolved ONCE, exactly like `ceiling` above, so every clamp,
             # decision and reset downstream takes a plain int: **`rule.min_bid` must not be
@@ -574,8 +616,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if min_bid != rule.min_bid:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning",
-                              msg=(f"{mp}'s minimum for this keyword is ₹{min_bid}, above "
-                                   f"the rule's ₹{rule.min_bid} — bidding at ₹{min_bid}"))
+                              msg=(f"{mp} minimum is ₹{min_bid} (rule ₹{rule.min_bid}) → "
+                                   f"using ₹{min_bid}"))
 
             stores = rule_stores[rule.id]
             anchor = stores[0]
@@ -586,7 +628,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 current_cpm=live_cpm if live_cpm is not None else min_bid,
                 min_bid=min_bid, max_bid=rule.max_bid,
                 location_name=anchor.label or None, lat=anchor.lat, lon=anchor.lon,
-                store_source=anchor.source, store_count=len(stores))
+                store_source=anchor.source, store_count=len(stores),
+                rotation=[s.label or s.merchant_id for s in stores] if rotate else None,
+                store_names=[s.label or s.merchant_id for s in stores])
 
             # A stopped campaign isn't serving, so there is no position to chase — and
             # Blinkit rejects bid writes on one anyway. Skipping here saves the expensive
@@ -597,8 +641,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if status_cache[cid] is not None and status_cache[cid] != "running":
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning",
-                             msg=f"campaign is {status_cache[cid]} on {mp} — not serving, "
-                                 f"so there is nothing to optimise")
+                             msg=f"skip · campaign is {status_cache[cid]} on {mp}")
                 skipped += 1
                 continue
 
@@ -607,8 +650,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if refusal_cache.get(cid):
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning",
-                             msg=f"campaign is not automatable — {refusal_cache[cid]}; "
-                                 f"nothing is changed")
+                             msg=f"skip · not automatable — {refusal_cache[cid]}")
                 skipped += 1
                 continue
 
@@ -618,8 +660,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if anchor.source == "default" and getattr(adapter, "REQUIRES_RULE_LOCATION", False):
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning",
-                             msg=f"this automation has no city or store to measure at, which "
-                                 f"{mp} needs — edit it to name a city; nothing is changed")
+                             msg="skip · no city or store to measure at — edit the "
+                                 "automation to name a city")
                 skipped += 1
                 continue
 
@@ -648,12 +690,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             opened = _window_opened(_rule_dict(rule),
                                     runtime.updated_at if runtime else None, now)
             if not opened and (live_cpm is None or int(live_cpm) != int(min_bid)):
-                # Decision BEFORE the write, as everywhere else — a log that reports the
-                # outcome before the reason that caused it is exactly what makes a run
-                # hard to read.
-                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                             msg="first run of today's window — resetting to the floor "
-                                 "before optimising")
+                # One line, after the write: what was decided AND how it ended.
                 if not await _still_active(rule.id):
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                  level="warning", msg=_PAUSED_MIDRUN)
@@ -670,13 +707,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 applied += int(ok)
                 skipped += int(not ok and write_error is None)
                 errors += int(write_error is not None)
-                was = f" (was ₹{live_cpm})" if live_cpm is not None else ""
+                was = f"₹{live_cpm} → " if live_cpm is not None else "→ "
                 logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
-                             msg=(f"applied — bid is now ₹{min_bid}{was}" if ok else
-                                  _plain(write_error, f"not applied — the change to "
-                                                      f"₹{min_bid} could not be sent to {mp}")
-                                  if write_error is not None else
-                                  f"not applied — {mp} rejected the change to ₹{min_bid}"))
+                             msg=f"window opened · bid {was}₹{min_bid} (floor) · "
+                                 f"{_outcome(ok, write_error, outcome, dry_run, mp)}")
                 open_reason = (f"the window opened, so the bid starts at its "
                                f"₹{min_bid} floor")
                 action, success, reason = _write_verdict(ok, write_error, outcome, mp=mp,
@@ -706,9 +740,6 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     # it cannot run away — one write puts the bid back inside the bounds.
                     why = ("above the" if int(live_cpm) > int(ceiling) else "below the")
                     limit = ceiling if int(live_cpm) > int(ceiling) else min_bid
-                    logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                                 msg=f"live bid ₹{live_cpm} is {why} ₹{limit} limit — "
-                                     f"forcing it back into range")
                     if not await _still_active(rule.id):
                         logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                      level="warning", msg=_PAUSED_MIDRUN)
@@ -725,12 +756,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     applied += int(ok)
                     skipped += int(not ok and write_error is None)
                     errors += int(write_error is not None)
+                    side = "above max" if int(live_cpm) > int(ceiling) else "below min"
                     logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
-                                 msg=(f"applied — bid is now ₹{bounded}" if ok else
-                                      _plain(write_error, f"not applied — the change to "
-                                                          f"₹{bounded} could not be sent to {mp}")
-                                      if write_error is not None else
-                                      f"not applied — {mp} rejected the change to ₹{bounded}"))
+                                 msg=f"bid ₹{live_cpm} {side} ₹{limit} → ₹{bounded} · "
+                                     f"{_outcome(ok, write_error, outcome, dry_run, mp)}")
                     # Present tense: this sentence also heads a row whose write did NOT land,
                     # and "was brought back" would then describe something that never happened.
                     bounds_reason = (f"the live bid of ₹{live_cpm} is {why} ₹{limit} limit, "
@@ -810,16 +839,19 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     # Out-of-stock rest, and no check is due: no search at all this tick.
                     why = _resting_reason(rot, len(stores), current_cpm)
                     logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                                 level="warning", msg=why)
+                                 level="warning",
+                                 msg=f"hold ₹{current_cpm} · no store can sell since "
+                                     f"{rot.rest_since:%H:%M} · next check "
+                                     f"{rot.next_check_at:%H:%M} at {_store_name(rot.upcoming)}")
                     skipped += 1
                     log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name,
                                          kw, "hold", current_cpm, current_cpm, why, dry_run,
                                          True, rule_id=rule.id, target=rule.target_position))
                     continue
                 measure_at = [rot.store]
-                if len(stores) > 1:
-                    logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                                  msg=_rotation_note(rot, len(stores), rule_history))
+                note = _rotation_note(rot, len(stores), rule_history) if len(stores) > 1 else None
+                if note:
+                    logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, msg=note)
             readings = await _read_stores(
                 adapter, pos_session, positions_cache, measure_at, kw,
                 products=products, campaign_pids=campaign_pids, stock_by_store=stock_by_store,
@@ -834,7 +866,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             outcome = coverage.aggregate(readings)
             for reading in outcome.readings:
                 logs.store_reading(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                                   reading=reading, many=len(stores) > 1)
+                                   reading=reading, of=len(stores))
                 # A store that keeps giving nothing usable drops out of every decision quietly
                 # — say so once it has happened twice in a row.
                 streak = coverage.unusable_streak(
@@ -844,14 +876,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     name = reading.store.label or reading.store.merchant_id
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
-                                  msg=f"{name} has given no usable reading for {streak} checks "
-                                      f"in a row — decisions are running without it")
+                                  msg=f"{name}: no usable reading for {streak} checks · "
+                                      f"decisions run without it")
             store_rows.extend(_store_rows(tenant_id, platform, run_id, rule, outcome.readings,
                                           outcome, current_cpm, dry_run))
 
             if outcome.kind == "no_stock":
                 why = ("none of this campaign's products are available at the stores we check "
                        "— a stock problem, not a bidding one, so the bid is left alone")
+                said = f"hold ₹{current_cpm} · no store we check can sell this campaign"
                 if rot is not None:
                     # Which store comes next, and whether that completed a cycle of stock-outs.
                     after = rotation.plan(
@@ -860,8 +893,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                         rest_minutes=config.STOCK_REST_MINUTES)
                     why = _stock_out_reason(rot, after, outcome.readings[0], len(stores),
                                             current_cpm)
+                    said = _stock_out_line(rot, after, len(stores), current_cpm)
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                             level="warning", msg=why)
+                             level="warning", msg=said)
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "skip", current_cpm, current_cpm, why, dry_run, True,
@@ -871,7 +905,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 why = (f"every store we count has stayed out of reach at the ₹{ceiling} ceiling "
                        f"— the bid stays where it is until this window ends")
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                             level="warning", msg=why)
+                             level="warning",
+                             msg=f"hold ₹{current_cpm} · out of reach at the ₹{ceiling} max "
+                                 f"everywhere · until the window ends")
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "skip", current_cpm, current_cpm, why, dry_run, True,
@@ -884,7 +920,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 failed = bool(outcome.binding and outcome.binding.verdict == coverage.ERROR)
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="error" if failed else "warning",
-                              msg=f"no store gave a usable reading — {err}. Bid left unchanged")
+                              msg=f"no usable reading — {err} · bid unchanged")
                 errors += int(failed)
                 skipped += int(not failed)
                 said = _plain(err, "no store gave a usable search reading, so the bid was left "
@@ -924,23 +960,18 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if absent and not getattr(adapter, "RAISE_WHEN_ABSENT", False):
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               level="warning",
-                              msg=f"no sponsored slot for us{at_store} — {source}, leaving the "
-                                  f"bid unchanged")
+                              msg=f"ad missing{at_store} — {source} · bid unchanged")
                 skipped += 1
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "skip", current_cpm, current_cpm, source, dry_run, True,
                                      rule_id=rule.id, target=rule.target_position))
                 continue
-            if absent:
+            # One store: its reading line above already says it. Several: say which bound.
+            if outcome.counted > 1:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              level="warning",
-                              msg=f"no sponsored slot for us{at_store} — bidding up to get onto "
-                                  f"the page")
-            else:
-                logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                              msg=(f"worst of {outcome.counted} stores: position "
-                                   f"{position:g}{at_store}" if outcome.counted > 1 else
-                                   f"our ad is at position {position:g}"),
+                              msg=(f"worst of {outcome.counted}: "
+                                   + ("ad missing" if absent else f"#{position:g}")
+                                   + at_store),
                               position=position)
 
             # A rotating rule that has just moved to another store is in a different auction:
@@ -990,9 +1021,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if relaxed_now:
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning",
-                             msg=f"position {rule.target_position} unreachable at the "
-                                 f"₹{ceiling} ceiling — settling for position {target} and "
-                                 f"optimising cost for that")
+                             msg=f"target #{rule.target_position} out of reach at ₹{ceiling} "
+                                 f"max → aiming for #{target}")
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "relax", current_cpm, current_cpm,
                                      f"target position {rule.target_position} unreachable at "
@@ -1023,10 +1053,16 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             escalated = (new_cpm is not None and position > target and not improved
                          and not fresh and (runtime.raise_step if runtime else None)
                          and step_now > int(runtime.raise_step))
-            msg = reason + ("; the last raise did not move us, so the step grew"
-                            if escalated else "")
-            logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, msg=msg,
-                         level="info" if new_cpm is not None else "info")
+            said = _decision_line(
+                current=int(current_cpm),
+                new=int(writes.clamp_bid(new_cpm, min_bid, ceiling)) if new_cpm is not None else None,
+                position=position, target=target, absent=absent, escalated=bool(escalated),
+                recovering=recovering, drift_pct=drift_pct, drift_paused=drift_paused,
+                last_pos=last_pos, minutes=mins)
+            if rot is not None and rot.resting:
+                said = f"back in stock at {binding.store.label or binding.store.merchant_id} · {said}"
+            if new_cpm is None:
+                logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, msg=said)
 
             # The snap-back price is refreshed on EVERY holding tick, not just the first.
             # Stale, it would send us back to a price that worked an hour ago — the point
@@ -1107,20 +1143,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             skipped += int(not ok and write_error is None)
             errors += int(write_error is not None)
             final = int(writes.clamp_bid(new_cpm, min_bid, ceiling))
-            if ok:
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=True,
-                             msg=(f"would set bid to ₹{final} — not sent" if dry_run
-                                  else f"applied — bid is now ₹{final}"))
-            elif write_error is not None:
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=_plain(write_error,
-                                        f"not applied — the change to ₹{final} could not "
-                                        f"be sent to {mp}"))
-            else:
-                # The choke point already knows why — rate limit, the marketplace's own
-                # bounds, its refusal message, "already ₹X" — so say that rather than guess.
-                logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=False,
-                             msg=f"not applied — {outcome.get('reason') or f'{mp} rejected the change to ₹{final}'}")
+            # The choke point already knows why a write did not land — rate limit, the
+            # marketplace's own bounds, its refusal message — and `_outcome` says that.
+            logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
+                         msg=f"{said} · {_outcome(ok, write_error, outcome, dry_run, mp)}")
 
             if ok and not dry_run:                 # only a REAL write changes last_cpm/timestamp
                 rt["last_cpm"] = final
@@ -1141,10 +1167,12 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
         # MARKETPLACE rejected the bids — which is the misreporting this whole path exists
         # to stop. Abort, and say what actually happened.
         logs.session_expired(run_id, dry_run=dry_run, platform=platform)
-        logs.note(run_id, f"stopped after {processed} of {len(active)} automations — {e}",
+        logs.note(run_id, f"stopped after {processed}/{len(active)} automations — {e}",
                   dry_run=dry_run)
         errors += 1
     finally:
+        # What the shopper session cost (the proxy's bill), for the closing line.
+        usage = getattr(adapter, "position_session_usage", lambda s: None)(pos_session)
         await adapter.close_position_session(pos_session)
         if browser is not None:
             await browser.close()
@@ -1159,10 +1187,10 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     logs.run_summary(
         run_id, "bid_optimizer", dry_run=dry_run, unit="automations",
         processed=processed, applied=applied, skipped=skipped, errors=errors,
-        seconds=(now_ist() - started).total_seconds(),
-        note=(f"{len(positions_cache)} position searches"
-              + (f" + {stock_searches} stock searches" if stock_searches else "")
-              + f" for {processed} keywords"))
+        seconds=(now_ist() - started).total_seconds(), skipped_word="held",
+        note=(f"searches: {len(positions_cache)} rank"
+              + (f" + {stock_searches} stock" if stock_searches else "")
+              + (f" · {usage}" if usage else "")))
     return {"processed": processed, "applied": applied, "skipped": skipped, "errors": errors}
 
 
@@ -1268,12 +1296,22 @@ async def _read_stores(adapter, session, positions_cache: dict, stores, keyword:
 
 # ── Store rotation (ROTATE marketplaces — Zepto, C6; campaign_manager/rotation.py) ──────
 
-# What a rotating rule's History says a store can't sell, by eligibility. "There", because the
-# store is named just before it.
-_CANT_SELL_SAID = {
-    coverage.NOT_LISTED: "none of the campaign's products are available there",
-    coverage.OUT_OF_STOCK: "all of the campaign's products are sold out there",
-}
+def _cant_sell_said(eligibility: str, n_products: int) -> str | None:
+    """What a rotating rule's History says a store can't sell. About THIS campaign's products
+    (the brand may well have others there — the stock line just before lists them). "There",
+    because the store is named just before it."""
+    if n_products == 1:
+        if eligibility == coverage.NOT_LISTED:
+            return "this campaign's product isn't listed there"
+        if eligibility == coverage.OUT_OF_STOCK:
+            return "this campaign's product is sold out there"
+        return None
+    what = f"this campaign's {n_products} products" if n_products else "this campaign's products"
+    if eligibility == coverage.NOT_LISTED:
+        return f"none of {what} are listed there"
+    if eligibility == coverage.OUT_OF_STOCK:
+        return f"{what} are sold out there"
+    return None
 
 
 def _rule_history(store_history: dict, rule_id) -> list:
@@ -1309,7 +1347,8 @@ async def _rotation_stock(adapter, session, tenant_id, platform: str, readings, 
     for r in readings:
         if r.verdict == coverage.SKIPPED:
             # Already known from the cache: say it the rotation's way.
-            out.append(replace(r, detail=_CANT_SELL_SAID.get(r.eligibility, r.detail)))
+            out.append(replace(r, detail=_cant_sell_said(r.eligibility, len(campaign_pids or ()))
+                               or r.detail))
             continue
         if r.verdict != coverage.ABSENT or r.eligibility != coverage.UNKNOWN:
             out.append(r)
@@ -1317,7 +1356,7 @@ async def _rotation_stock(adapter, session, tenant_id, platform: str, readings, 
         known = None
         if r.store.merchant_id:
             fresh, n = await stock.load(adapter, session, tenant_id, platform, [r.store],
-                                        now=now, run_id=run_id, dry_run=dry_run)
+                                        now=now, run_id=run_id, dry_run=dry_run, indent=True)
             searches += n
             stock_by_store.update(fresh)
             known = fresh.get(r.store.merchant_id)
@@ -1326,7 +1365,7 @@ async def _rotation_stock(adapter, session, tenant_id, platform: str, readings, 
             out.append(replace(r, eligibility=elig))
         elif elig in rotation.CANT_SELL:
             out.append(replace(r, eligibility=elig, verdict=coverage.SKIPPED, position=None,
-                               detail=_CANT_SELL_SAID[elig]))
+                               detail=_cant_sell_said(elig, len(campaign_pids or ()))))
         else:
             out.append(replace(r, verdict=coverage.UNTRUSTED, detail=(
                 "our ad isn't showing and stock there couldn't be checked, so being outbid "
@@ -1342,17 +1381,33 @@ def _everywhere(n: int) -> str:
     return "the store we check" if n == 1 else f"all {n} stores we check"
 
 
-def _rotation_note(rot, n: int, history) -> str:
-    """The log line saying where a rotating rule measures this tick, and why there."""
-    said = f"measuring at {_store_name(rot.store)} (store {rot.rank} of {n})"
+def _rotation_note(rot, n: int, history) -> str | None:
+    """A rotating rule's run-log line about WHY it measures where it does — only when there
+    is something to say: the store's own reading line already names it and its place
+    (`J. P. Nagar (1/3): …`)."""
+    here = f"{_store_name(rot.store)} ({rot.rank}/{n})"
     if rot.resting:
-        return (f"{said} — the out-of-stock check (every {config.STOCK_REST_MINUTES} min); "
-                f"nothing sellable at {_everywhere(n)} since {rot.rest_since:%H:%M}")
+        return (f"{here}: out-of-stock check · nothing sellable since "
+                f"{rot.rest_since:%H:%M}")
     if rot.switched and history:
         prev = getattr(history[0], "store_label", "") or getattr(history[0], "merchant_id", "")
-        return (f"{said} — {prev or 'the last store'} can't sell this campaign right now; a "
-                f"different auction, so the bid's learning starts fresh here")
-    return said
+        return f"moved to {here} · {prev or 'the last store'} can't sell · learning restarts"
+    return None
+
+
+def _stock_out_line(rot, after, n: int, cpm) -> str:
+    """The run-log line for a rotating rule at a store that can't sell — the History sentence
+    is `_stock_out_reason`."""
+    if after.resting and not rot.resting:
+        return (f"hold ₹{cpm} · can't sell at any of {n} stores · resting, one check every "
+                f"{config.STOCK_REST_MINUTES} min" if n > 1 else
+                f"hold ₹{cpm} · can't sell here · resting, check every "
+                f"{config.STOCK_REST_MINUTES} min")
+    if after.resting:
+        when = (f"{after.next_check_at:%H:%M} at {_store_name(after.upcoming)}"
+                if after.next_check_at else _store_name(after.store))
+        return f"hold ₹{cpm} · still out of stock · next check {when}"
+    return f"hold ₹{cpm} · can't sell here · next check: {_store_name(after.store)}"
 
 
 def _resting_reason(rot, n: int, cpm) -> str:
@@ -1631,7 +1686,8 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             say = (phrases or {}).get(r.id) or phrase
             logs.blank(run_id, dry_run=dry_run)
             logs.rule_header(run_id, dry_run=dry_run, index=processed, total=len(to_reset),
-                             campaign_name=r.campaign_name, campaign_id=cid)
+                             campaign_name=r.campaign_name, campaign_id=cid, keyword=kw,
+                             match_type=r.match_type)
             if cid not in bids_cache:
                 try:
                     status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
@@ -1642,7 +1698,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                     floors_cache[cid] = {}
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
-                                  msg=f"could not read the current bid from {mp} — {e}")
+                                  msg=f"current bid unreadable: {e}")
 
             # The reset writes the bid back DOWN to the floor, so it has to respect the
             # marketplace's own minimum too — writing below it would be refused, leaving
@@ -1658,7 +1714,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             current = bids_cache[cid](kw, r.match_type)
             shown = f"₹{current}" if current is not None else "unknown"
             logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                          msg=f'keyword "{kw}" · {say} · current bid {shown}')
+                          msg=f"{say} · bid {shown}")
 
             if current is not None and int(current) <= int(min_bid):
                 # Genuinely already at the floor. Skipped rather than written because a
@@ -1667,7 +1723,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
                 # same campaign from a parallel lane around this minute — so a PUT that
                 # changes nothing is a free chance to clobber a budget. Logged either way.
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                             msg=f"already at the ₹{min_bid} floor — nothing to change")
+                             msg=f"already at the ₹{min_bid} floor · nothing to change")
                 skipped += 1
                 landed_ids.append(r.id)
                 log_rows.append(_row(tenant_id, platform, run_id, cid, r.campaign_name, kw,
@@ -1683,10 +1739,6 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             # useful outcome: a failed History row you can see, not an invisible skip.
             # A rejected write must not abort the whole reset either — one dark campaign
             # shouldn't cost every other keyword its de-escalation.
-            logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
-                         msg=f"{say} — resetting to the ₹{min_bid} floor so it does not "
-                             f"keep spending high (campaign is "
-                             f"{status or 'in an unknown state'})")
             outcome: dict = {}
             try:
                 ok = await writes.apply_bid(
@@ -1704,11 +1756,12 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             errors += int(not ok)
             (landed_ids if ok else failed_ids).append(r.id)
             stuck = _stranded(mp, status, current) if not ok else ""
+            tail = ("DRY RUN, not sent" if (ok and dry_run) else "applied" if ok
+                    else f"NOT applied — {stuck or f'{mp} rejected the reset'}"
+                         + (f" ({err})" if err else ""))
             logs.applied(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw, ok=ok,
-                         msg=(f"would set bid to ₹{min_bid} — not sent" if (ok and dry_run)
-                              else f"applied — bid is now ₹{min_bid}" if ok
-                              else f"not applied — {stuck or f'{mp} rejected the reset'}"
-                                   + (f" ({err})" if err else "")))
+                         msg=f"reset {shown} → ₹{min_bid} (floor) · campaign "
+                             f"{status or 'state unknown'} · {tail}")
             # `r.id` is None once the rule is gone (Delete + reset), and a runtime row
             # cannot exist without one.
             if ok and not dry_run and r.id:

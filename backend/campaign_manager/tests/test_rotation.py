@@ -497,6 +497,85 @@ def test_the_bid_lookup_reads_the_pair_where_the_marketplace_has_one():
     assert bid._no_bids("milk", "EXACT") is None
 
 
+def test_the_stock_line_is_about_the_brand_and_names_what_is_listed():
+    """2026-10-02: "2 of 2 of our products available" was printed right before "none of the
+    campaign's products are available there" — both true, together they read as a
+    contradiction. The store line now names what the BRAND has there, briefly."""
+    from campaign_manager import stock
+    said = stock._stock_said("J. P. Nagar", [{"name": "Brik Oven Sour Cream"},
+                                             {"name": "Brik Oven Whey Ricotta Cheese"}], 2, True,
+                             {"brik oven"})
+    assert said == "stock at J. P. Nagar: brand has 2 (Sour Cream, Whey Ricotta Cheese) · 2 in stock"
+    assert stock._stock_said("BTM", [], 0, True) == "stock at BTM: brand has nothing listed"
+    many = [{"name": f"P{i}"} for i in range(5)]
+    assert "(P0, P1, P2 +2 more)" in stock._stock_said("X", many, 5, True)
+    assert stock._stock_said("X", many, 5, False).endswith(" · partial read")
+
+
+def test_the_decision_reads_in_a_few_words():
+    line = lambda **k: bid._decision_line(**{**dict(              # noqa: E731
+        current=10, new=12, position=2, target=1, absent=False, escalated=False,
+        recovering=False, drift_pct=7, drift_paused=False, last_pos=2, minutes=20), **k})
+    assert line() == "raise ₹10 → ₹12 (+₹2) · #2 vs target #1"
+    assert line(new=15, current=12, escalated=True) == \
+        "raise ₹12 → ₹15 (+₹3, step grew) · #2 vs target #1"
+    assert line(absent=True, position=31) == "raise ₹10 → ₹12 (+₹2) · ad missing vs target #1"
+    assert line(new=None, minutes=4) == "hold ₹10 · #2 vs target #1 · last change 4 min ago, waiting"
+    assert line(new=None, position=1, last_pos=1) == "hold ₹10 · at #1 (target #1) · at floor"
+    assert line(new=None, position=1, last_pos=None) == \
+        "hold ₹10 · at #1 (target #1) · confirming before trimming"
+    assert line(new=None, position=1, last_pos=1, drift_paused=True) == \
+        "hold ₹10 · at #1 (target #1) · trimming paused"
+    assert line(new=None, position=1, drift_pct=0) == "hold ₹10 · at #1 (target #1) · trimming off"
+    assert line(current=15, new=14, position=1) == "trim ₹15 → ₹14 · holding #1 (target #1)"
+    assert line(current=12, new=15, recovering=True) == \
+        "recover ₹12 → ₹15 · dropped to #2 after trimming"
+
+
+def test_a_write_ends_its_line_with_what_happened():
+    assert bid._outcome(True, None, {}, False, "Zepto") == "applied"
+    assert bid._outcome(True, None, {}, True, "Zepto") == "DRY RUN, not sent"
+    assert bid._outcome(False, None, {"reason": "rate limit"}, False, "Zepto") == \
+        "NOT applied — rate limit"
+    assert bid._outcome(False, None, {}, False, "Zepto") == "NOT applied — Zepto rejected it"
+    assert bid._outcome(False, RuntimeError("boom"), {}, False, "Zepto").startswith("NOT applied — ")
+
+
+def test_a_run_reads_crisply_through_the_real_engine():
+    """The whole block for one automation, as the run log prints it."""
+    from app.utils.logger import logger
+
+    w = _World()
+    st, stubs = _engine(w)
+    w.ad["m1"] = 8
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="INFO",
+                      filter=lambda r: r["extra"].get("tag") == "cm")
+    try:
+        _tick(w, stubs, 0)
+    finally:
+        logger.remove(sink)
+    body = [l for l in lines if l.strip()]
+    assert body[0].startswith("── Bid optimizer · ") and " · zepto · DRY RUN · run " in body[0]
+    assert body[1] == "ready · session ok · 1 automation in window"
+    assert body[2].startswith("shopper search · direct · ") and body[2].endswith("s to open")
+    assert body[3] == ('[1/1] Brik · #11 · "sourdough" EXACT · target #3')
+    assert body[4] == ("  bid ₹20 (₹10–60) · stores: Store1 → Store2 → Store3 (client set)")
+    assert body[5] == "  Store1 (1/3): ad #8 of 20"
+    assert body[6].startswith("  raise ₹20 → ₹") and body[6].endswith(
+        " · #8 vs target #3 · DRY RUN, not sent"), body[6]
+    assert body[-1].startswith("── done ") and "searches: 1 rank" in body[-1]
+    assert len(body) == 8, body
+
+
+def test_a_store_that_cannot_sell_says_so_about_this_campaign():
+    assert bid._cant_sell_said(coverage.NOT_LISTED, 4) == "none of this campaign's 4 products are listed there"
+    assert bid._cant_sell_said(coverage.NOT_LISTED, 1) == "this campaign's product isn't listed there"
+    assert bid._cant_sell_said(coverage.OUT_OF_STOCK, 1) == "this campaign's product is sold out there"
+    assert bid._cant_sell_said(coverage.OUT_OF_STOCK, 4) == "this campaign's 4 products are sold out there"
+    assert bid._cant_sell_said(coverage.ELIGIBLE, 4) is None
+
+
 def test_a_shopper_search_that_cannot_open_holds_every_bid_and_says_so():
     w = _World()
     st, stubs = _engine(w)
