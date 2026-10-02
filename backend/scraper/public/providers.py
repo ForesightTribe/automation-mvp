@@ -87,10 +87,13 @@ class Provider:
     close_session: CloseSession | None = None
     parse: Parse | None = None
     # Cap FLOORS, from the marketplace's own endpoints.py. These apply only when the
-    # tenant configures no `keyword_cap`/`brand_cap` and the CLI passes no override —
-    # they are the last fallback, not the usual value.
+    # tenant configures no cap for THIS marketplace (`tenant_watchlist_caps`, read via
+    # scraper/public/caps.py) and the CLI passes no override — the last fallback.
     result_cap: int = 48
     brand_cap: int = 60
+    # Results per page, where known. Only used to warn about a configured cap that is not
+    # a whole number of pages (`cli sync`); None = no such check.
+    page_size: int | None = None
 
     # ── Pacing and concurrency, per marketplace ──────────────────────────────
     # These were module constants in orchestrator.py, tuned for Blinkit, which
@@ -160,6 +163,7 @@ _PROVIDERS: dict[str, Provider] = {
         parse=bl_parser.parse,
         result_cap=bl_ep.RESULT_CAP,
         brand_cap=bl_ep.BRAND_RESULT_CAP,
+        page_size=bl_ep.PAGE_SIZE,
     ),
     "instamart": Provider(
         slug="instamart",
@@ -195,6 +199,7 @@ _PROVIDERS: dict[str, Provider] = {
         parse=ze_parser.parse,
         result_cap=ze_ep.RESULT_CAP,
         brand_cap=ze_ep.BRAND_RESULT_CAP,
+        page_size=ze_ep.PAGE_SIZE,
         # Re-measured from scratch 31-Aug-2026 and validated on a full-city run:
         # 169 stores x 9 keywords = 1,521 requests in 56.6 min, 100% success, zero
         # blocks. 2 s pacing, one worker, no scheduled rests — the previous 12 s /

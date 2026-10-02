@@ -182,7 +182,7 @@ change takes effect on that user's next login.
 Config-driven (Blinkit only). Fill `config.xlsx`, sync it, then run per tenant:
 
 ```bash
-python -m cli sync --file config.xlsx                 # locations + watchlist (+ keyword_cap/brand_cap) + coverage → DB
+python -m cli sync --file config.xlsx                 # locations + watchlist + caps (per marketplace) + coverage → DB
 python -m cli scrape public-run   --tenant <id>       # keyword scrape: SoV/rank + competitors → search_snapshots/listings
 python -m cli scrape public-skus  --tenant <id>       # targeted own-SKU scrape: price/stock/inventory → sku_snapshots
 

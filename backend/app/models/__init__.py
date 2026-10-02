@@ -1,6 +1,6 @@
 from app.models.account import Account
 from app.models.brand import Brand, Marketplace
-from app.models.tenant import Tenant, User, TenantWatchlist
+from app.models.tenant import Tenant, User, TenantWatchlist, TenantWatchlistCap
 from app.models.job import (
     ScrapeJob, JobStatus, PlatformSession, PlatformCredential, Job, Lane, JobSchedule,
 )
@@ -70,7 +70,7 @@ from app.models.campaign_manager_v2 import (
 __all__ = [
     "Account",
     "Brand", "Marketplace",
-    "Tenant", "User", "TenantWatchlist",
+    "Tenant", "User", "TenantWatchlist", "TenantWatchlistCap",
     "ScrapeJob", "JobStatus", "PlatformSession", "PlatformCredential",
     "Job", "Lane", "JobSchedule",
     "SearchSnapshot", "SearchListing", "MarketplaceLocation", "City", "CityAlias",

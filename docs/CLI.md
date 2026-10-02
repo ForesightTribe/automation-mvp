@@ -297,12 +297,13 @@ wired marketplace today**; an unwired or unknown value fails fast and scrapes
 nothing. Each marketplace has its **own** catalog, its own coverage rows, and its
 own engine; coordinates are never shared between platforms. See [zepto-public.md](zepto-public.md).
 
-**1. Configure — `cli sync`.** `config.xlsx` has three sheets:
+**1. Configure — `cli sync`.** `config.xlsx` has these sheets:
 
 | Sheet       | Columns                                                                                    | What it is                                                                                                                                                                                                                                                                 |
 | ----------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `locations` | `mp, merchant_id, city, state, region, pincode, lat, lon, active, location_name, address`  | that marketplace's **express** store catalog (keyed on `mp` + `merchant_id`); `lat/lon` is the probe point. `mp` is optional, blank → `blinkit`. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
-| `brands`    | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional). Shared across marketplaces                                                                                                                                          |
+| `brands`    | `tenant, brand, relationship (own\|competitor), keywords, aliases`                          | per-tenant keywords + brands to track. Shared across marketplaces. (`keyword_cap`/`brand_cap` here are no longer read — see `caps`)                                                                                                                                       |
+| `caps`      | `tenant, brand, mp, keyword_cap, brand_cap`                                                | how deep an own brand's searches go, **per marketplace** (2026-10-02) — one row per brand + marketplace; `mp` is required. Blank → that marketplace's default                                                                                                              |
 | `coverage`  | `mp, tenant, city`                                                                         | which cities a tenant scrapes on which marketplace (all that marketplace's stores in each listed city). `mp` blank → `blinkit`                                                                                                                                             |
 
 > ⚠️ **`--prune` only deletes within the marketplaces the file mentions** — a
@@ -311,10 +312,14 @@ own engine; coordinates are never shared between platforms. See [zepto-public.md
 > deleting the real Blinkit catalog. Always `--dry-run` first; a non-zero
 > `locations` deletion is a stop-and-check.
 
-The two caps (own rows only; blank → code default): **`keyword_cap`** bounds the
-keyword scrape (`public-run`, default 48), **`brand_cap`** bounds the targeted
-brand scrape (`public-skus`, default 60). Precedence for both: CLI flag > config
-value > default.
+The two caps live on the `caps` sheet, one row per own brand **and marketplace**,
+because a cap is a number of results and marketplaces page differently: Blinkit 12 a
+page (so 36 / 48), Zepto 30 a page (so 30 / 60). **`keyword_cap`** bounds the keyword
+scrape (`public-run`), **`brand_cap`** the targeted brand scrape (`public-skus`) and the
+bid engine's stock check. Precedence: CLI flag > the brand's cap for that marketplace >
+the marketplace's default. `cli sync` warns about a cap that is not a whole number of
+pages (it fetches a page only to discard part of it). Stored in
+`tenant_watchlist_caps`; read only through `scraper/public/caps.py`.
 
 ```bash
 python -m cli sync --file config.xlsx --template   # write a starter workbook

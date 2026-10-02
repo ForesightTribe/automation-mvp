@@ -225,6 +225,9 @@ MAX_WORKERS = 1
 # do. DEDUPE IS MANDATORY at any depth: page 0 alone carried 3 duplicates among
 # 30 items, and page 1 repeated 29% of page 0.
 RESULT_CAP = 30
+# One results page. A cap that is not a multiple of it fetches a last page only to throw
+# part of it away — `cli sync` warns about such caps (scraper/public/caps.py).
+PAGE_SIZE = 30
 BRAND_RESULT_CAP = 60      # brand scrape paginates the catalog; tuned in Phase 4
 MAX_PAGES = 3              # ceiling only; RESULT_CAP is what normally stops paging
 

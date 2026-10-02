@@ -24,7 +24,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.public import outcome, pacing, staging
+from scraper.public import caps, outcome, pacing, staging
 from scraper.public.orchestrator import (
     _clamp_workers, _drain, _handles_blocks, _kinds, _note_block, _recover,
     warn_if_co_located,
@@ -79,16 +79,20 @@ def _brand_query(brand_slug: str, aliases: list[str]) -> str:
     return brand_slug.replace("-", " ")
 
 
-async def _own_brands(db: AsyncSession, tenant_id: uuid.UUID,
-                      default_cap: int) -> list[tuple[str, list[str], int]]:
-    """(brand_slug, aliases, brand_cap) for each own brand the tenant tracks."""
+async def _own_brands(db: AsyncSession, tenant_id: uuid.UUID, default_cap: int,
+                      mp_slug: str) -> list[tuple[str, list[str], int]]:
+    """(brand_slug, aliases, brand_cap) for each own brand the tenant tracks — the cap being
+    the brand's for THIS marketplace (scraper/public/caps.py), else `default_cap`."""
     rows = (await db.execute(
         select(TenantWatchlist).where(
             TenantWatchlist.tenant_id == tenant_id,
             TenantWatchlist.relationship == "own",
         )
     )).scalars().all()
-    return [(e.brand_slug, e.aliases or [], e.brand_cap or default_cap) for e in rows]
+    configured = await caps.own_caps(db, tenant_id, mp_slug)
+    return [(e.brand_slug, e.aliases or [],
+             (configured.get(e.brand_slug) or caps.Caps()).brand_cap or default_cap)
+            for e in rows]
 
 
 async def _locations(db: AsyncSession, tenant_id: uuid.UUID,
@@ -387,7 +391,7 @@ async def run_targeted(
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
     provider = get_provider(mp_slug)
 
-    brands = await _own_brands(db, tid, provider.brand_cap)
+    brands = await _own_brands(db, tid, provider.brand_cap, mp_slug)
     if cap:  # CLI override wins over each brand's configured cap
         brands = [(slug, aliases, cap) for slug, aliases, _ in brands]
     locations = await _locations(db, tid, mp_slug)

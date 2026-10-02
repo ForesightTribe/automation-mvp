@@ -139,7 +139,7 @@ def _patched(provider, *, locations, keywords=None, brands=None):
     async def _kw_map(db, tid):
         return dict(kw_map)
 
-    async def _none(db, tid):
+    async def _none(db, tid, mp):
         return None
 
     async def _locs(db, tid, mp):
@@ -148,7 +148,7 @@ def _patched(provider, *, locations, keywords=None, brands=None):
     async def _no_competitors(db, tid):
         return []
 
-    async def _brands(db, tid, default_cap):
+    async def _brands(db, tid, default_cap, mp):
         return list(brands or [("dobra", ["dobra"], 48)])
 
     with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:

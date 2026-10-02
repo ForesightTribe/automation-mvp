@@ -324,8 +324,10 @@ on marketplace). Fully per-tenant and DB-driven. Deep dive + status:
 
 - **Config is a workbook, applied via `cli sync`.** `config.xlsx` (sheets
   `locations` / `brands` / `coverage`) is the source of truth: the darkstore
-  catalog, each tenant's keywords/aliases, and which stores it covers. The `brands`
-  sheet also carries per-tenant `keyword_cap` / `brand_cap` (own rows). `cli sync`
+  catalog, each tenant's keywords/aliases, and which stores it covers. The `caps`
+  sheet carries `keyword_cap` / `brand_cap` per own brand **per marketplace**
+  (`tenant_watchlist_caps`, read only via `scraper/public/caps.py`; the old columns on
+  `tenant_watchlist` are retired, dropped once prod runs the new code). `cli sync`
   reconciles the DB (upsert; `--dry-run`, `--prune`). **The catalog is the ONLY source
   of store locations** — `scraper/utils/cities.py` (hardcoded placeholder coordinates)
   was deleted 2026-09-04 with the `GET /reference/cities` endpoint that served them;
@@ -360,7 +362,7 @@ on marketplace). Fully per-tenant and DB-driven. Deep dive + status:
   is derived from `pack_count > 1` (the parsed `unit` string), falling back to a name
   regex only when the unit is unparseable — the name alone missed ~13% of multipacks.
   Combos are stocked selectively, so views filter `?kind=main|combo|all` (default main).
-  `keyword_cap`/`brand_cap` live on the `brands` config sheet.
+  `keyword_cap`/`brand_cap` live on the `caps` config sheet, per marketplace.
 - **Paid vs organic (`is_ad`)** — search results interleave bought and earned
   placements and both marketplaces say which is which (Blinkit:
   `tracking.common_attributes.ads_campaign_id`; Zepto: `meta.tagsV2`). Without it SoV

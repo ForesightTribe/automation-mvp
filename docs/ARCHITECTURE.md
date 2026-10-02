@@ -153,7 +153,8 @@ The runner is a thin dispatch layer above this diagram — see docs/jobs.md.
 |---|---|---|
 | `tenants` | `id` (UUID PK), `name`, `is_active` | Create with `cli tenant create` |
 | `users` | `id`, `tenant_id`, `email`, `hashed_password` | FK to tenants |
-| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `keywords`, `aliases`, `keyword_cap`, `brand_cap` | Brands + keywords per tenant; the two caps (own rows) tune the keyword vs brand scrape. `cities`/`marketplaces` are legacy — use `tenant_locations` |
+| `tenant_watchlist` | `tenant_id`, `brand_slug`, `relationship`, `keywords`, `aliases` | Brands + keywords per tenant. `cities`/`marketplaces` are legacy — use `tenant_locations`; `keyword_cap`/`brand_cap` are retired (see next row) |
+| `tenant_watchlist_caps` | `watchlist_id`, `mp_slug`, `keyword_cap`, `brand_cap` | The two caps per own brand **per marketplace** (pages differ: Blinkit 12, Zepto 30); tune the keyword vs brand scrape. Read via `scraper/public/caps.py` |
 | `platform_sessions` | `tenant_id`, `platform`, `encrypted_session` | Fernet-encrypted Playwright sessions |
 | `scrape_jobs` | `id`, `tenant_id`, `platform`, `dashboard`, `status` | Audit log for every scrape run |
 
@@ -290,11 +291,11 @@ session, pulling stores off a shared queue (`--workers`, default 5). They differ
 query, cap, classification, and storage target:
 
 - **Keyword scrape** — `scraper/public/orchestrator.py`. Category keywords ×
-  stores → SoV/rank + declared competitors (`keyword_cap`, default 12), classifying
+  stores → SoV/rank + declared competitors (`keyword_cap` per marketplace), classifying
   each result against the own brand via the API's explicit `brand` field. Writes
   `search_snapshots` + `search_listings`.
 - **Targeted own-SKU scrape** — `scraper/public/targeted.py`. Searches the tenant's
-  **brand name**, paginates the whole catalog (`brand_cap`, default 60), own-brand
+  **brand name**, paginates the whole catalog (`brand_cap` per marketplace), own-brand
   only. Writes the flat `sku_snapshots` (keyed on `platform_product_id`) —
   guaranteeing coverage of every own SKU regardless of keyword ranking.
 - **Explorer (ad-hoc, ephemeral)** — `scraper/public/explorer/`. The same worker

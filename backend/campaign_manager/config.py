@@ -129,8 +129,9 @@ STOCK_REST_MINUTES: int = int(os.getenv("CM_STOCK_REST_MINUTES", "60"))
 # Stock is one brand search per store, reused across runs until it is this old. Inventory
 # does not flip every 15 minutes, and one read serves every keyword at the store.
 STOCK_MAX_AGE_MINUTES: int = int(os.getenv("CM_STOCK_MAX_AGE_MINUTES", "60"))
-# Cap on that brand search when the client's watchlist row sets no `brand_cap`. Blinkit pads
-# a brand search with other brands' products; walking the whole tail invites HTTP 429.
+# Cap on that brand search when the client sets no `brand_cap` for the marketplace (the
+# config workbook's `caps` sheet). Blinkit pads a brand search with other brands' products;
+# walking the whole tail invites HTTP 429.
 STOCK_DEFAULT_BRAND_CAP: int = int(os.getenv("CM_STOCK_DEFAULT_BRAND_CAP", "48"))
 # `cm_bid_store_reads` grows with time (a row per store per tick), so it is trimmed.
 STORE_READS_RETENTION_DAYS: int = int(os.getenv("CM_STORE_READS_RETENTION_DAYS", "30"))

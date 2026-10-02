@@ -29,7 +29,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.search import MarketplaceLocation, TenantLocation
 from app.models.tenant import Tenant, TenantWatchlist
 from app.utils.logger import logger
-from scraper.public import outcome, pacing, staging
+from scraper.public import caps, outcome, pacing, staging
 from scraper.public.providers import DEFAULT_MARKETPLACE, get_provider
 
 _STORE_SKIP_AFTER = 2   # consecutive failed fetches at a store → skip its remaining keywords
@@ -200,16 +200,9 @@ async def _own_keyword_map(db: AsyncSession, tenant_id: uuid.UUID) -> dict[str, 
     return kw_map
 
 
-async def _keyword_cap(db: AsyncSession, tenant_id: uuid.UUID) -> int | None:
-    """The tenant's configured keyword_cap (first own row that sets one), or None."""
-    rows = (await db.execute(
-        select(TenantWatchlist.keyword_cap).where(
-            TenantWatchlist.tenant_id == tenant_id,
-            TenantWatchlist.relationship == "own",
-            TenantWatchlist.keyword_cap.is_not(None),
-        )
-    )).scalars().all()
-    return rows[0] if rows else None
+async def _keyword_cap(db: AsyncSession, tenant_id: uuid.UUID, mp_slug: str) -> int | None:
+    """The tenant's keyword_cap on THIS marketplace (scraper/public/caps.py), or None."""
+    return caps.tenant_keyword_cap(await caps.own_caps(db, tenant_id, mp_slug))
 
 
 async def _competitor_list(db: AsyncSession, tenant_id: uuid.UUID) -> list[tuple[str, list[str]]]:
@@ -631,8 +624,8 @@ async def run_tenant(
     on disk for --resume, never auto-loaded) or `failed` (nothing scraped)."""
     tid = tenant_id if isinstance(tenant_id, uuid.UUID) else uuid.UUID(str(tenant_id))
     provider = get_provider(mp_slug)
-    # Precedence: CLI --cap > tenant's configured keyword_cap > the platform's floor.
-    cap = cap or await _keyword_cap(db, tid) or provider.result_cap
+    # Precedence: CLI --cap > tenant's keyword_cap for this marketplace > the platform's floor.
+    cap = cap or await _keyword_cap(db, tid, mp_slug) or provider.result_cap
 
     kw_map = await _own_keyword_map(db, tid)
     if keyword:

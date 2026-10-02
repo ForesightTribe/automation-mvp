@@ -1290,24 +1290,29 @@ async def store_ids_at(platform: str, coords) -> dict:
     return out
 
 
-async def get_own_brands(tenant_id: uuid.UUID) -> list[tuple[str, int, set[str]]]:
+async def get_own_brands(tenant_id: uuid.UUID,
+                         platform: str) -> list[tuple[str, int, set[str]]]:
     """`[(search query, cap, brand names)]` for each own brand a client tracks — what a stock
     check searches for. The query is the targeted scrape's (first alias, else the de-slugged
-    brand slug); the cap is the watchlist's `brand_cap`, else `CM_STOCK_DEFAULT_BRAND_CAP`;
-    the names are what a product's `brand` field may say."""
+    brand slug); the cap is the brand's `brand_cap` on THIS marketplace
+    (scraper/public/caps.py), else `CM_STOCK_DEFAULT_BRAND_CAP`; the names are what a
+    product's `brand` field may say."""
     from app.models.tenant import TenantWatchlist
+    from scraper.public import caps
 
     async with AsyncSessionLocal() as db:
         rows = (await db.execute(select(TenantWatchlist).where(
             TenantWatchlist.tenant_id == tenant_id,
             TenantWatchlist.relationship == "own",
         ))).scalars().all()
+        configured = await caps.own_caps(db, tenant_id, platform)
     out = []
     for w in rows:
         slug_name = w.brand_slug.replace("-", " ")
         aliases = [a for a in (w.aliases or []) if a and a.strip()]
+        cap = (configured.get(w.brand_slug) or caps.Caps()).brand_cap
         out.append((aliases[0] if aliases else slug_name,
-                    int(w.brand_cap or config.STOCK_DEFAULT_BRAND_CAP),
+                    int(cap or config.STOCK_DEFAULT_BRAND_CAP),
                     {slug_name, *aliases}))
     return out
 

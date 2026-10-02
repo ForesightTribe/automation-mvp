@@ -76,7 +76,7 @@ async def _load(adapter, session, tenant_id: uuid.UUID, platform: str, stores, *
     out = dict(from_cache)
     stale = [s for mid, s in by_id.items() if mid not in out]
 
-    brands = await repo.get_own_brands(tenant_id) if stale else []
+    brands = await repo.get_own_brands(tenant_id, platform) if stale else []
     if stale and not brands:
         logs.note(run_id, "no own brand is configured for this client, so stock can't be "
                           "checked", dry_run=dry_run, level="warning")

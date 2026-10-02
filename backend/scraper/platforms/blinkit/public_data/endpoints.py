@@ -30,6 +30,10 @@ SEARCH_HEADER_KEYS = (
 # loosely-related items ("similarity"). Stop paging when it switches.
 BASIC_SEARCH_METHOD = "basic"
 
+# One Blinkit results page. A cap that is not a multiple of it fetches a last page only
+# to throw part of it away — `cli sync` warns about such caps (scraper/public/caps.py).
+PAGE_SIZE = 12
+
 # Max products to collect per (keyword, location). One Blinkit page is 12.
 # FLOOR ONLY — the real knob is the tenant's `keyword_cap` (config workbook), which
 # takes precedence; this applies to tenants that set none, and to the ad-hoc CLI.

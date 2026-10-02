@@ -140,22 +140,31 @@ python -m cli auth status --tenant <uuid>
 
 `sync` **overwrites** the DB with whatever the file says, for every tenant in it. If your
 copy is older than the DB (someone else synced since), you'll silently undo their change.
-For example, a blank `brand_cap` in your file resets a tenant's cap to NULL. The dry run
+For example, a blank cap on the `caps` sheet resets that brand's cap to the default. The dry run
 below catches this. **It must only show changes for your new tenant.**
 
 ### The sheets
 
 **`brands` sheet:** one `own` row plus one row per competitor.
 
-| tenant | brand | relationship | keywords | aliases | keyword_cap | brand_cap |
-|---|---|---|---|---|---|---|
-| BrandName | brandslug | own | goli soda, nimbu soda, … | brandslug, brand name | 36 | 48 |
-| BrandName | rival-brand | competitor | | rival-brand, rival | | |
+| tenant | brand | relationship | keywords | aliases |
+|---|---|---|---|---|
+| BrandName | brandslug | own | goli soda, nimbu soda, … | brandslug, brand name |
+| BrandName | rival-brand | competitor | | rival-brand, rival |
 
 - `keywords` go on the `own` row only.
-- `keyword_cap` is how many results per keyword are read. `brand_cap` is how many of the
-  brand's own SKUs the targeted scrape reads. Dobra uses 36 / 48, Brik Oven 30 / 60.
-  **Fill both in.**
+
+**`caps` sheet:** one row per own brand **per marketplace** it is scraped on.
+
+| tenant | brand | mp | keyword_cap | brand_cap |
+|---|---|---|---|---|
+| BrandName | brandslug | blinkit | 36 | 48 |
+| BrandName | brandslug | zepto | 30 | 60 |
+
+- `keyword_cap` is how many results per keyword are read; `brand_cap` how many of the
+  brand's own SKUs the targeted scrape reads. **Use whole pages:** Blinkit returns 12 a
+  page (36 / 48), Zepto 30 a page (30 / 60). `sync` warns about anything else.
+- `mp` is required here — a cap means nothing without its marketplace.
 - ⚠️ **Write `aliases` in lowercase.** Matching lowercases the product name but not your
   alias, so an alias like `mCaffeine` never matches anything. Use `mcaffeine`. Aliases are
   substrings of the product or brand name as the marketplace shows it (`the derma co`,

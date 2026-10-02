@@ -725,8 +725,8 @@ problem, not a bidding one. A failed stock read is not cached, so the next run t
 never raises.
 
 ⚠️ **The brand search pads itself with other brands.** Following that tail walked 219 products (soda
-water, baking soda…) and hit HTTP 429 in recon, so the read is capped at the watchlist's `brand_cap`
-(default 48). A capped or 429-truncated read may not have reached all our products, so it is **complete**
+water, baking soda…) and hit HTTP 429 in recon, so the read is capped at the brand's `brand_cap` for that
+marketplace (the config workbook's `caps` sheet; default 48). A capped or 429-truncated read may not have reached all our products, so it is **complete**
 only if it ran out cleanly before the cap, or its last 10 results are all other brands — one foreign
 product mid-block proves nothing (a competitor's chips sat between our own combos). Only a complete read
 can conclude "not listed" or "out of stock" (`blinkit/catalog.py::summarise`). A search returning none of
@@ -797,7 +797,7 @@ the set's lowest remaining rank becomes the anchor.
 | `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 3 (was 1 before C6) |
 | `CM_STOCK_MAX_AGE_MINUTES`       | 60      | reuse a store's stock read for this long                   |
 | `CM_STOCK_REST_MINUTES`          | 60      | rotation only: after a full cycle of stock-outs, check one store this often |
-| `CM_STOCK_DEFAULT_BRAND_CAP`     | 48      | brand-search cap when the watchlist sets no `brand_cap`    |
+| `CM_STOCK_DEFAULT_BRAND_CAP`     | 48      | brand-search cap when the brand has no `brand_cap` for the marketplace |
 | `CM_STORE_READS_RETENTION_DAYS`  | 30      | trim `cm_bid_store_reads`                                  |
 | `CM_BID_GIVE_UP_TICKS`           | 2       | checks not showing at the ceiling before a store is given up for the window; 0 disables |
 | `CM_STORE_PROBLEM_WARN_TICKS`    | 2       | consecutive unusable readings before a store is warned about |
