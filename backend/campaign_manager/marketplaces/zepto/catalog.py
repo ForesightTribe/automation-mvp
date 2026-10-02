@@ -44,6 +44,9 @@ def summarise(res: dict, cap: int, names: set[str]) -> dict:
     if not products:
         return {"ok": False, "error": "the brand search came back empty, so it says nothing "
                                       "about stock"}
+    # A typed search (the proxied session) reads ONE page. When that page was full it says
+    # how far it got, and that — not the cap we asked for — is where the read stopped.
+    cap = min(cap, res.get("capped_at") or cap)
     ours = [p for p in products if _is_own(p, names) and p.get("variant_id")]
     ran_out = len(products) < cap and not res.get("error")
     tail = products[-TAIL_OF_OTHER_BRANDS:]

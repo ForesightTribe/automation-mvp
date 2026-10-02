@@ -65,11 +65,11 @@ def test_the_ad_hoc_session_and_the_bid_engine_use_the_zepto_launcher():
     seen = []
     orig_make, orig_launch = zs._make_session, zs.launch_browser
 
-    async def _launch(pw):
+    async def _launch(pw, proxy=None):
         seen.append("launch_browser")
         return _Browser()
 
-    async def _make(browser, lat, lon):
+    async def _make(browser, lat, lon, **kw):
         return None                     # "could not open" — nothing else to do here
 
     zs.launch_browser, zs._make_session = _launch, _make

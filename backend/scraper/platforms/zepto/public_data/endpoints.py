@@ -194,6 +194,37 @@ RESULT_CAP = 30
 BRAND_RESULT_CAP = 60      # brand scrape paginates the catalog; tuned in Phase 4
 MAX_PAGES = 3              # ceiling only; RESULT_CAP is what normally stops paging
 
+# ── Typed search (`typed_search.py`) ──────────────────────────────────────────
+# The second way to search: drive Zepto's own search box and read the page's own answer.
+# Used where replaying captured headers is refused — through a proxy (measured 2026-09-29/30,
+# `zepto-cm-exp/PROXY-TESTS.md`). Every number below is what the 10/10 runs used.
+#
+# What the page's search calls say about themselves, in the request body's `mode`:
+TYPED_RESULTS_MODES = frozenset({"AUTOSUGGEST", "SHOW_ALL_RESULTS"})   # a ranked results list
+TYPED_TYPING_MODE = "TYPED"                   # the as-you-type suggestions
+TYPED_SEARCH_BOX = ('input[type="search"], input[placeholder*="earch" i], '
+                    'input[aria-label*="earch" i], [data-testid*="search" i] input')
+TYPED_SEARCH_PAGE = BASE_URL + "/search"
+# Never downloaded in a typed session, from its first request: most of a page's weight and
+# none of its data. The proxy bills by the megabyte, and on a measured session (2026-09-30)
+# Zepto's own search was ~35 KB a search while images were ~1 MB of the warm-up, and
+# third-party trackers plus Zepto's analytics uploads (~100 KB each) outweighed the searches
+# several times over. Blocking them is what an ad blocker does. The firewall's own challenge
+# (`*.awswaf.com`) is never on this list.
+TYPED_BLOCK_RESOURCES = frozenset({"image", "media", "font"})
+TYPED_BLOCK_HOSTS = ("googletagmanager.com", "google-analytics.com", "doubleclick.net",
+                     "connect.facebook.net", "facebook.com", "events.zepto.co.in")
+TYPED_SETTLE_S = 20.0            # after a page load: wait this long, at most, for it to go quiet
+TYPED_FOCUS_MS = 300             # click -> first keystroke. Less, and keystrokes are lost
+TYPED_KEY_DELAY_MS = 80
+TYPED_ENTER_WAIT_MS = 1500       # last keystroke -> Enter
+TYPED_ANSWER_S = 12.0            # an answer takes 3-6 s; past this, none is coming
+TYPED_AFTER_S = 1.0              # let the page finish its own re-sends before the next search
+TYPED_GAP_S = 3.0                # between two searches
+# A FULL first page. One page is all a typed search reads, so a page this long may have more
+# behind it (the caller is told: `capped_at`); a shorter one is the whole list.
+TYPED_PAGE_ROWS = 30
+
 # ── Status codes ──────────────────────────────────────────────────────────────
 GATE_STATUS = 299          # LOGIN_REQUIRED — shared, self-clearing
 CHALLENGE_STATUS = 202     # AWS WAF — per-session, TERMINAL without a re-mint

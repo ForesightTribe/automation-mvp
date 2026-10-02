@@ -1859,6 +1859,10 @@ _PLAIN_CAUSES = (
     # A search page that never finished loading (35 rows 2026-08-22, before the REST path).
     ("Page.goto: Timeout",
      "Blinkit's search page did not load in time; it is retried next check"),
+    # zepto/adapter.py: the proxy Zepto's shopper search runs through on the VM refused the
+    # connection (2026-09-30: 503 on every connection, cause never found).
+    ("Zepto shopper proxy did not connect",
+     "the connection Zepto's search runs through was not available; it is retried next check"),
 )
 
 

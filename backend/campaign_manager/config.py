@@ -146,6 +146,27 @@ STORE_PROBLEM_WARN_TICKS: int = int(os.getenv("CM_STORE_PROBLEM_WARN_TICKS", "2"
 # `marketplaces.keyword_bidding_refusal`. `1` turns them back on (a supervised test).
 ZEPTO_KEYWORD_BIDDING: bool = _flag("CM_ZEPTO_KEYWORD_BIDDING", False)
 
+# Zepto's shopper search through a proxy: OFF by default (2026-09-30).
+#
+# Zepto's firewall refuses the VM's own address outright (a data-centre range), so on the VM
+# — and only there — the bid engine's rank and stock reads go out through a consumer-line
+# proxy. Through a proxy Zepto also refuses our normal replayed search, so a proxied session
+# searches by typing into Zepto's own page
+# (`scraper/platforms/zepto/public_data/typed_search.py`); the switch selects both at once.
+# Nothing else uses it — not the scrapes, not the Explorer, not the ads API.
+#
+#   CM_ZEPTO_SHOPPER_PROXY_ON=1                           the switch
+#   CM_ZEPTO_SHOPPER_PROXY=http://user:pass@host:port     the address. A SECRET: that
+#       machine's .env only — never in git, never logged (host:port is all that is printed).
+#
+# On WITHOUT a usable address holds every bid and says why. It never quietly goes direct.
+ZEPTO_SHOPPER_PROXY_ON: bool = _flag("CM_ZEPTO_SHOPPER_PROXY_ON", False)
+ZEPTO_SHOPPER_PROXY: str = os.getenv("CM_ZEPTO_SHOPPER_PROXY", "").strip()
+# A search Zepto refuses ("login to search") waits about a minute before its one retry. This
+# is the most a single proxied run may spend waiting like that; past it, a refused search
+# fails at once and its bid is held, so one bad spell cannot eat the whole 15-minute tick.
+ZEPTO_SHOPPER_WAIT_BUDGET_S: float = float(os.getenv("CM_ZEPTO_SHOPPER_WAIT_BUDGET_S", "180"))
+
 # ── Prepaid ad wallet (wallet.py, ZC-C12) ───────────────────────────────────
 #
 # Zepto ads spend from a prepaid wallet; when it runs dry every campaign stops delivering

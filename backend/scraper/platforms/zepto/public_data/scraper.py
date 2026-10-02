@@ -23,6 +23,10 @@ THREE THINGS THAT MAKE ZEPTO DIFFERENT FROM BLINKIT
    it. `_ensure_pass` re-mints on a timer, in place, so a long run never
    discovers the expiry as a wall of 202s.
 
+4. **Replaying is refused through a proxy.** A session opened with `typed=True` searches
+   through the page's own search box instead (`typed_search.py`); `search()` hands such a
+   session straight over, so callers see one function and one result shape.
+
 A BLOCK IS NEVER AN EMPTY RESULT
 --------------------------------
 `search()` returns `ok=False` on any non-200. It must never return an empty
@@ -248,13 +252,16 @@ async def _fetch(session: dict, url: str, headers: dict, body: dict) -> dict:
 
 # ── Session lifecycle ────────────────────────────────────────────────────────
 
-async def _capture(page, url_part: str, nav,
-                   settle_ms: int = 9000) -> tuple[dict, str | None]:
+async def _capture(page, url_part: str, nav, settle_ms: int = 9000,
+                   why: dict | None = None) -> tuple[dict, str | None]:
     """Capture headers (and body) from the page's OWN request to `url_part`.
 
     The listener must outlive the navigation: Zepto fires these AFTER
     domcontentloaded, so removing it when goto() returns captures nothing. The
     poll below is load-bearing — do not 'simplify' it away.
+
+    `why`, when given, receives the browser's own reason for a navigation that failed
+    (`nav_error`) — the only thing that tells "the proxy is down" from "Zepto said no".
     """
     cap: dict[str, Any] = {"h": None, "body": None}
 
@@ -275,8 +282,13 @@ async def _capture(page, url_part: str, nav,
             waited += 250
     except PWTimeout:
         logger.debug(f"Zepto: navigation timeout capturing {url_part}")
+        if why is not None:
+            why.setdefault("nav_error", "the page did not load in time")
     except Exception as e:
         logger.debug(f"Zepto: capture failed for {url_part}: {e}")
+        if why is not None:
+            # First line only: Playwright appends a call log, and the reason is up front.
+            why.setdefault("nav_error", " ".join(str(e).split("Call log")[0].split())[:160])
     finally:
         page.remove_listener("request", _on_req)
 
@@ -336,25 +348,33 @@ async def _ensure_pass(session: dict) -> None:
         await _mint_pass(session)
 
 
-async def _make_session(browser, lat: float, lon: float) -> dict | None:
+async def _make_session(browser, lat: float, lon: float, *, typed: bool = False,
+                        why: dict | None = None) -> dict | None:
     """Isolated context on `browser`, warmed up, headers captured, coordinate
-    resolved to a store. Returns the session dict or None."""
+    resolved to a store. Returns the session dict or None.
+
+    `typed` makes it a typed-search session (`typed_search.py`): same warm-up, then the
+    page's requests are taken over and every `search()` goes through the search box.
+    `why` receives the reason when None is returned (see `_capture`)."""
     ctx = await browser.new_context(
         user_agent=HEADERS_COMMON["User-Agent"], locale="en-IN")
     page = await ctx.new_page()
     session: dict[str, Any] = {"context": ctx, "page": page}
+    if typed:
+        from scraper.platforms.zepto.public_data import typed_search
+        await typed_search.attach(session)
 
     gp_headers, _ = await _capture(
         page, ep.GET_PAGE_PATH,
         lambda: page.goto(ep.HOMEPAGE_URL, wait_until="domcontentloaded",
-                          timeout=30000))
+                          timeout=30000), why=why)
     session["gp_headers"] = gp_headers
     session["minted_at"] = time.monotonic()
 
     headers, raw_body = await _capture(
         page, ep.SEARCH_PATH,
         lambda: page.goto(ep.WARMUP_SEARCH_URL, wait_until="domcontentloaded",
-                          timeout=30000))
+                          timeout=30000), why=why)
     if not headers:
         logger.warning("Zepto: no session headers captured")
         await ctx.close()
@@ -365,6 +385,13 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
         session["body"] = json.loads(raw_body) if raw_body else dict(ep.SEARCH_BODY)
     except Exception:
         session["body"] = dict(ep.SEARCH_BODY)
+
+    if typed:
+        # No coordinate lookup: it is a replayed request, the very thing a typed session
+        # exists to avoid. Every search names its store.
+        session.update(store_id="", secondary_ids=(), coord=(lat, lon))
+        await typed_search.arm(session)
+        return session
 
     # Best effort only. A caller that passes merchant_id per search never needs
     # this, and get_page has its own rate-limit budget — failing the whole session
@@ -379,23 +406,32 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
     return session
 
 
-async def launch_browser(pw):
+async def launch_browser(pw, proxy: dict | None = None):
     """The browser every Zepto shopper session runs in — the public scrape's worker pool,
     the own-SKU scrape, the Explorer and the bid engine's rank checks all come through
     here (the pool via `providers.Provider.launch_browser`).
 
     The FULL Chromium in headless mode, not Playwright's default headless shell, which
     Zepto's WAF blocks — see `endpoints.BROWSER_CHANNEL`.
+
+    `proxy` is Playwright's own `{server, username, password}`. Only the bid engine passes
+    one (`campaign_manager/marketplaces/zepto/adapter.py`); the scrapes never do.
     """
-    return await pw.chromium.launch(headless=True, channel=ep.BROWSER_CHANNEL,
-                                    args=PLAYWRIGHT_ARGS)
+    kw = dict(headless=True, channel=ep.BROWSER_CHANNEL, args=PLAYWRIGHT_ARGS)
+    if proxy:
+        kw["proxy"] = proxy
+    return await pw.chromium.launch(**kw)
 
 
-async def open_session(pw, lat: float, lon: float) -> dict | None:
+async def open_session(pw, lat: float, lon: float, *, proxy: dict | None = None,
+                       typed: bool = False, why: dict | None = None) -> dict | None:
     """Launch a browser + one session (ad-hoc / single-worker use). The session
-    OWNS the browser; close_session shuts it down."""
-    browser = await launch_browser(pw)
-    session = await _make_session(browser, lat, lon)
+    OWNS the browser; close_session shuts it down.
+
+    `proxy` and `typed` go together in practice — a proxied session must search through the
+    page (`typed_search.py`). `why` receives the reason when None is returned."""
+    browser = await launch_browser(pw, proxy)
+    session = await _make_session(browser, lat, lon, typed=typed, why=why)
     if not session:
         await browser.close()
         return None
@@ -446,6 +482,12 @@ async def search(
 
     Returns {products, total_results, merchant_id, ok, error, blocked, kind}.
     """
+    if session.get("typed") is not None:
+        # A typed session cannot replay (that is why it is one). Same result shape.
+        from scraper.platforms.zepto.public_data import typed_search
+        return await typed_search.search(session, keyword, cap, merchant_id=merchant_id,
+                                         distinct_ad_slots=distinct_ad_slots)
+
     if merchant_id and merchant_id != session.get("store_id"):
         # Free: the catalog row IS the store. No get_page, no second budget.
         session["store_id"] = merchant_id
