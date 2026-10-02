@@ -41,6 +41,13 @@ class SearchSnapshot(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
     brand_rank: int | None = None
     brand_sov: float | None = None
+    # ⚠️ NOT the same measure on every marketplace — never compare it across them:
+    #   blinkit, instamart  the marketplace's OWN count of matches for the search, when it
+    #                       reports one (Blinkit: `search_count` in next_url); else rows kept
+    #   zepto               the rows we kept (at most the cap) — Zepto reports no total
+    #   any                 0 = the search answered with nothing (rank/SoV are then NULL)
+    # Nothing in the app reads it today. If something ever needs "how many results", it
+    # needs a per-marketplace definition first.
     total_results: int | None = None
 
 

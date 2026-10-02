@@ -648,6 +648,9 @@ async def search(
 
     return {
         "products": products,
+        # The rows we KEPT, not a total: Zepto reports no count of matches. Blinkit's
+        # `total_results` is its own count, so the two never compare — see
+        # app/models/search.py SearchSnapshot.total_results.
         "total_results": len(products),
         # The session's store IS the merchant here — unlike Blinkit, where it has
         # to be read back off the products because one response spans several.

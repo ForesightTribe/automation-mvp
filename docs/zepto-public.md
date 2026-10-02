@@ -430,6 +430,11 @@ whose real result set was 11 items.
 
 **Prices are in PAISE.** `mrp: 11000` is ₹110.00.
 
+**`total_results` is not Blinkit's `total_results`.** Zepto reports no count of matches,
+so a Zepto snapshot's `total_results` is the number of rows we kept (at most the cap);
+Blinkit's is Blinkit's own count. Never compare or sum it across marketplaces. Nothing
+reads it today.
+
 **`position` is 0-based** in the payload; the shared contract is 1-based.
 
 **`availableQuantity` lives on `productResponse`**, not on `productVariant`.
