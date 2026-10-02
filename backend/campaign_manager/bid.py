@@ -59,6 +59,29 @@ def _in_window(rule: dict, now: datetime) -> bool:
     return window.in_window(window.from_bid(rule), now)
 
 
+def _bid_lookup(adapter, detail: dict):
+    """How to read ONE rule's live bid out of an already-fetched campaign detail:
+    `lookup(keyword, match_type) -> cpm | None`.
+
+    Zepto bids each match type separately ("sour dough" EXACT ₹10 next to PHRASE ₹15), so
+    where the adapter can key bids by (keyword, match type) the rule's own pair is read.
+    Keyed by text alone, the EXACT rule read the PHRASE bid: the floor written at window
+    open never read back, every tick re-floored and the optimizer never ran (2026-10-02).
+    Blinkit keeps the text read — its write sets every match type of a keyword together,
+    so the text names one bid there."""
+    by_match = getattr(adapter, "bids_by_match_from_detail", None)
+    if by_match is not None:
+        bids = by_match(detail) or {}
+        return lambda kw, match: bids.get((kw, (match or "EXACT").upper()))
+    bids = adapter.bids_from_detail(detail) or {}
+    return lambda kw, match: bids.get(kw)
+
+
+def _no_bids(kw, match):
+    """The lookup for a campaign whose detail could not be read."""
+    return None
+
+
 def _window_start(rule: dict, now: datetime) -> datetime:
     """When the rule's CURRENT window opened — `window.window_start`. Only meaningful while
     the rule is in window (callers filter on `_in_window` first)."""
@@ -442,7 +465,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
     # Catalogue write-back, flushed once with the rows above (campaign_manager/writes.py).
     patches: list[dict] = []
     store_rows: list[dict] = []            # cm_bid_store_reads — what each store showed
-    bids_cache: dict[int, dict] = {}       # campaign_id → {keyword: cpm}  (one detail fetch/campaign)
+    # campaign_id → lookup(keyword, match_type) → cpm  (one detail fetch/campaign; `_bid_lookup`)
+    bids_cache: dict[int, object] = {}
     products_cache: dict[int, list] = {}   # campaign_id → [products]
     status_cache: dict[int, str | None] = {}   # campaign_id → canonical status (same fetch)
     # campaign_id → {(keyword, match_type): marketplace minimum bid} (V7.6).
@@ -521,7 +545,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     # ONE detail read gives status AND bids (docs/campaign-manager.md §8.3).
                     status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
                     refusal_cache[cid] = writes.automation_refusal(adapter, detail)
-                    bids_cache[cid] = adapter.bids_from_detail(detail)
+                    bids_cache[cid] = _bid_lookup(adapter, detail)
                     products_cache[cid] = await adapter.read_products(client, cid)
                     # +1 request per campaign (never per keyword) for the marketplace's own
                     # minimum bids. Read live, not from the nightly scrape: this decides
@@ -529,7 +553,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     floors_cache[cid] = await adapter.read_bid_floors(client, cid, detail)
                 except Exception as e:
                     status_cache[cid] = None
-                    bids_cache[cid], products_cache[cid] = {}, []
+                    bids_cache[cid], products_cache[cid] = _no_bids, []
                     floors_cache[cid] = {}
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
@@ -555,7 +579,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
 
             stores = rule_stores[rule.id]
             anchor = stores[0]
-            live_cpm = bids_cache[cid].get(kw)
+            live_cpm = bids_cache[cid](kw, rule.match_type)
             logs.rule_context(
                 run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                 target=rule.target_position,
@@ -752,7 +776,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             open_stamp = not opened
             current_cpm = (int(min_bid) if open_stamp else
                            int((runtime.last_cpm if runtime else None)
-                               or bids_cache[cid].get(kw) or min_bid))
+                               or bids_cache[cid](kw, rule.match_type) or min_bid))
 
             # ── Read every measurement store; act on the worst one that counts ──
             #
@@ -1597,7 +1621,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
     patches: list[dict] = []
     landed_ids: list[str] = []                 # floors that landed or were already in place
     failed_ids: list[str] = []
-    bids_cache: dict[int, dict] = {}
+    bids_cache: dict[int, object] = {}     # campaign_id → `_bid_lookup`
     status_cache: dict[int, str | None] = {}
     floors_cache: dict[int, dict] = {}
     try:
@@ -1611,10 +1635,10 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             if cid not in bids_cache:
                 try:
                     status_cache[cid], _, detail = await adapter.read_campaign(client, cid)
-                    bids_cache[cid] = adapter.bids_from_detail(detail)
+                    bids_cache[cid] = _bid_lookup(adapter, detail)
                     floors_cache[cid] = await adapter.read_bid_floors(client, cid, detail)
                 except Exception as e:
-                    status_cache[cid], bids_cache[cid] = None, {}
+                    status_cache[cid], bids_cache[cid] = None, _no_bids
                     floors_cache[cid] = {}
                     logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                                   level="warning",
@@ -1631,7 +1655,7 @@ async def _floor_bids(tenant_id: uuid.UUID, platform: str, to_reset: list[_Targe
             # and skipped in silence — no decision line, no History row. It was the reset's
             # single most likely way to do nothing at all while looking healthy. `None` now
             # means "we don't know", and we write anyway.
-            current = bids_cache[cid].get(kw)
+            current = bids_cache[cid](kw, r.match_type)
             shown = f"₹{current}" if current is not None else "unknown"
             logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                           msg=f'keyword "{kw}" · {say} · current bid {shown}')

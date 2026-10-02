@@ -445,6 +445,58 @@ def test_a_day_of_stock_outs_through_the_real_engine():
     assert last()["reason"].startswith("back in stock at Store2"), last()["reason"]
 
 
+def test_the_rules_own_match_type_is_read_not_another_one():
+    """2026-10-02, live: "sour dough" bid EXACT ₹10 / PHRASE ₹15 / BROAD ₹15, rule on EXACT
+    with a ₹10 floor. Read by text, the EXACT rule saw ₹15, so the floor written at window
+    open never read back: every tick re-floored (refused as "no change") and no position
+    was ever searched. Read by (keyword, match type) the floor is seen and the optimizer runs."""
+    w = _World()
+    st, stubs = _engine(w)
+    st["runtime"].updated_at = T0 - timedelta(hours=2)    # before the window: it opens now
+    w.ad["m1"] = 4
+
+    class _ZeptoByMatch(_FakeZepto):
+        def bids_from_detail(self, detail):                 # the lossy view: PHRASE won
+            return {"sourdough": 15}
+
+        def bids_by_match_from_detail(self, detail):
+            return {("sourdough", "EXACT"): 10, ("sourdough", "PHRASE"): 15,
+                    ("sourdough", "BROAD"): 15}
+
+    saved_repo = {k: getattr(repo, k) for k in stubs}
+    saved = (bid.get_adapter, bid.now_ist)
+    for k, v in stubs.items():
+        setattr(repo, k, v)
+    bid.get_adapter = lambda platform: _ZeptoByMatch(w)
+    bid.now_ist = lambda: T0
+    try:
+        asyncio.run(bid.run(uuid.uuid4(), dry_run=True, platform="zepto"))
+    finally:
+        for k, v in saved_repo.items():
+            setattr(repo, k, v)
+        bid.get_adapter, bid.now_ist = saved
+    assert w.searches == [("keyword", "m1")], "the window opened at the floor: optimise"
+    assert [r["action"] for r in st["log"]] != ["open"], "must not re-floor an EXACT ₹10"
+    assert st["log"][-1]["old_value"] == 10, st["log"][-1]
+
+
+def test_the_bid_lookup_reads_the_pair_where_the_marketplace_has_one():
+    class _ByText:
+        def bids_from_detail(self, detail):
+            return {"milk": 30}
+
+    class _ByPair(_ByText):
+        def bids_by_match_from_detail(self, detail):
+            return {("milk", "EXACT"): 10, ("milk", "BROAD"): 30}
+
+    assert bid._bid_lookup(_ByText(), {})("milk", "EXACT") == 30      # Blinkit: one bid
+    lookup = bid._bid_lookup(_ByPair(), {})
+    assert lookup("milk", "EXACT") == 10 and lookup("milk", "broad") == 30
+    assert lookup("milk", None) == 10                                  # no type → EXACT
+    assert lookup("milk", "PHRASE") is None and lookup("bread", "EXACT") is None
+    assert bid._no_bids("milk", "EXACT") is None
+
+
 def test_a_shopper_search_that_cannot_open_holds_every_bid_and_says_so():
     w = _World()
     st, stubs = _engine(w)
