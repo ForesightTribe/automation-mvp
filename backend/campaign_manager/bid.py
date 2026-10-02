@@ -878,8 +878,9 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                                   level="warning",
                                   msg=f"{name}: no usable reading for {streak} checks · "
                                       f"decisions run without it")
-            store_rows.extend(_store_rows(tenant_id, platform, run_id, rule, outcome.readings,
-                                          outcome, current_cpm, dry_run))
+            tick_rows = _store_rows(tenant_id, platform, run_id, rule, outcome.readings,
+                                    outcome, current_cpm, dry_run)
+            store_rows.extend(tick_rows)
 
             if outcome.kind == "no_stock":
                 why = ("none of this campaign's products are available at the stores we check "
@@ -887,8 +888,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 said = f"hold ₹{current_cpm} · no store we check can sell this campaign"
                 if rot is not None:
                     # Which store comes next, and whether that completed a cycle of stock-outs.
+                    # Stamped like the row being stored, so the next check this tick reports
+                    # is the one the next tick computes (it said 17:15, then 17:16).
+                    stamped = tick_rows[0]["observed_at"] if tick_rows else now
                     after = rotation.plan(
-                        stores, [_as_history(outcome.readings[0], now)] + rule_history,
+                        stores, [_as_history(outcome.readings[0], stamped)] + rule_history,
                         window_start=window_open_at, now=now,
                         rest_minutes=config.STOCK_REST_MINUTES)
                     why = _stock_out_reason(rot, after, outcome.readings[0], len(stores),

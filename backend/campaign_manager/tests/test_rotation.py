@@ -398,6 +398,17 @@ def _tick(world, stubs, at_minutes):
 
 
 def test_a_day_of_stock_outs_through_the_real_engine():
+    """The timeline below is written for an HOURLY rest check; the default became 30 min on
+    2026-10-02, so it is pinned here and the 30-minute rhythm is tested on its own."""
+    saved = config.STOCK_REST_MINUTES
+    config.STOCK_REST_MINUTES = 60
+    try:
+        _a_day_of_stock_outs()
+    finally:
+        config.STOCK_REST_MINUTES = saved
+
+
+def _a_day_of_stock_outs():
     w = _World()
     st, stubs = _engine(w)
     last = lambda: st["log"][-1]                          # noqa: E731
@@ -566,6 +577,28 @@ def test_a_run_reads_crisply_through_the_real_engine():
         " · #8 vs target #3 · DRY RUN, not sent"), body[6]
     assert body[-1].startswith("── done ") and "searches: 1 rank" in body[-1]
     assert len(body) == 8, body
+
+
+def test_the_rest_is_dated_from_the_current_sets_first_stock_out():
+    """2026-10-02: the client's set replaced the global one. A stock-out at the old global
+    store (X), just before, said nothing about the new stores, yet the rest read "nothing
+    sellable since" that reading. It is dated from the new set's first stock-out now; whether
+    it rests at all was never affected."""
+    hist = [_out("m3", 30), _out("m2", 15), _out("m1", 0), _out("X", -14)]
+    p = rotation.plan(S, hist, window_start=WINDOW, now=T0 + timedelta(minutes=45),
+                      rest_minutes=30)
+    assert p.resting and p.rest_since == T0
+
+
+def test_the_out_of_stock_rest_checks_a_store_every_30_minutes_by_default():
+    assert config.STOCK_REST_MINUTES == 30
+    hist = [_out("m3", 30), _out("m2", 15), _out("m1", 0)]
+    waiting = rotation.plan(S, hist, window_start=WINDOW, now=T0 + timedelta(minutes=45),
+                            rest_minutes=config.STOCK_REST_MINUTES)
+    assert waiting.store is None and waiting.next_check_at == T0 + timedelta(minutes=60)
+    due = rotation.plan(S, hist, window_start=WINDOW, now=T0 + timedelta(minutes=60),
+                        rest_minutes=config.STOCK_REST_MINUTES)
+    assert due.store is S[0] and due.resting
 
 
 def test_a_store_that_cannot_sell_says_so_about_this_campaign():

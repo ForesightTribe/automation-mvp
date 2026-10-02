@@ -69,11 +69,15 @@ def _in_window(history, window_start: datetime) -> list:
             if getattr(h, "observed_at", None) is not None and h.observed_at >= window_start]
 
 
-def _failing_run(rows) -> list:
-    """The newest-first run of readings that each proved a stock-out."""
+def _failing_run(rows, ids=None) -> list:
+    """The newest-first run of readings that each proved a stock-out. With `ids` (the current
+    set), the run also stops at a store that has LEFT the set: a stock-out there says nothing
+    about the stores measured now — and counting it once dated a rest from a store the client
+    had already replaced ("nothing sellable since 12:01", 2026-10-02, when the new set's first
+    stock-out was 12:16)."""
     run = []
     for h in rows:
-        if not cant_sell(h):
+        if not cant_sell(h) or (ids is not None and h.merchant_id not in ids):
             break
         run.append(h)
     return run
@@ -83,7 +87,7 @@ def is_resting(stores, rows) -> bool:
     """Has a whole cycle — every store in the set — come back unable to sell, with nothing
     in between that could? `rows` = this window's readings, newest first."""
     ids = {s.merchant_id for s in stores}
-    run = _failing_run(rows)
+    run = _failing_run(rows, ids)
     return bool(ids) and ids <= {h.merchant_id for h in run}
 
 
@@ -116,7 +120,7 @@ def plan(stores, history, *, window_start: datetime, now: datetime,
     nxt = (i + 1) % len(stores)
     if not is_resting(stores, rows):
         return _at(nxt)                                 # hop — one store per tick
-    since = _failing_run(rows)[-1].observed_at
+    since = _failing_run(rows, set(ids))[-1].observed_at
     due = last.observed_at + timedelta(minutes=rest_minutes)
     if now < due:
         return Plan(None, rank=nxt + 1, resting=True, rest_since=since, next_check_at=due,

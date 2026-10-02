@@ -796,7 +796,7 @@ the set's lowest remaining rank becomes the anchor.
 | -------------------------------- | ------- | ---------------------------------------------------------- |
 | `CM_BID_MAX_STORES`              | 3       | ranks per city; `CM_ZEPTO_BID_MAX_STORES` = 3 (was 1 before C6) |
 | `CM_STOCK_MAX_AGE_MINUTES`       | 60      | reuse a store's stock read for this long                   |
-| `CM_STOCK_REST_MINUTES`          | 60      | rotation only: after a full cycle of stock-outs, check one store this often |
+| `CM_STOCK_REST_MINUTES`          | 30      | rotation only: after a full cycle of stock-outs, check one store this often (60 until 2026-10-02) |
 | `CM_STOCK_DEFAULT_BRAND_CAP`     | 48      | brand-search cap when the watchlist sets no `brand_cap`    |
 | `CM_STORE_READS_RETENTION_DAYS`  | 30      | trim `cm_bid_store_reads`                                  |
 | `CM_BID_GIVE_UP_TICKS`           | 2       | checks not showing at the ceiling before a store is given up for the window; 0 disables |
