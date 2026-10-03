@@ -78,8 +78,8 @@ from scraper.platforms.blinkit.dashboard_data.seller.storage import (
 )
 from scraper.platforms.blinkit.dashboard_data.seller_hub import scraper as seller_hub_scraper
 from scraper.platforms.blinkit.dashboard_data.seller_hub.parser import (
-    parse_sales_daily as parse_seller_hub_sales_daily,
     parse_sales_by_product as parse_seller_hub_sales_by_product,
+    parse_sales_orders as parse_seller_hub_sales_orders,
 )
 from scraper.platforms.blinkit.dashboard_data.seller_hub.storage import (
     save_sales_results as save_seller_hub_sales_results,
@@ -691,19 +691,34 @@ def scrape_blinkit_seller_hub(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
     sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
+    window: str = typer.Option(
+        seller_hub_scraper.DEFAULT_WINDOW, "--window", "-w",
+        help='Time window, must be one of the account\'s own presets: "Last 7 days", '
+             '"Last 30 days", or a named month like "September 2026" (for manual backfill '
+             '— the account\'s filters list only goes back a few months; anything older '
+             "isn't available from Blinkit at all).",
+    ),
 ):
     """Scrape Blinkit's NEW seller dashboard (seller.blinkit.com/seller-hub) —
     for tenants Blinkit has migrated off partnersbiz.com (see `blinkit-seller`
     for everyone else). Currently sales-only; pass --sales or none runs it.
 
-    Writes to blinkit_seller_hub_sales_daily_ro / _sales_by_product_ro, NOT
-    blinkit_seller_sales — the two dashboards' sales APIs return incompatible
-    grains (no city, no item+day on one row), confirmed against the live API.
+    Writes to blinkit_seller_hub_sales_by_product_ro and
+    ..._sales_order_ro, NOT blinkit_seller_sales — the old dashboard's sales
+    API can't produce this domain's grains at all. (Scope narrowed
+    2026-10-01: the daily/city/category chart tables are no longer written —
+    fully derivable from ..._sales_order_ro now; their old rows are left in
+    place, untouched, just not updated.)
+
+    Defaults to "Last 30 days", not the dashboard's own "Last 7 days" — real
+    day-grain data either way (verified live), so a normal scheduled run
+    now self-heals any gap under a month instead of losing missed days for
+    good. Pass --window with a named month to manually backfill further back.
     """
-    asyncio.run(_scrape_blinkit_seller_hub(tenant_id, sales, save))
+    asyncio.run(_scrape_blinkit_seller_hub(tenant_id, sales, save, window))
 
 
-async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: bool) -> None:
+async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: bool, window: str) -> None:
     # Sales is the only pillar built so far, so it always runs — --sales exists
     # now so a future pillar (Product Expansion, etc.) can gate behind it
     # without a breaking CLI change later.
@@ -713,7 +728,14 @@ async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: boo
         session = await auth_service.ensure(db, tenant_id, "blinkit_seller_new")
         email = session.email
         if not email:
-            console.print("[red]No email on the blinkit_seller_new session — cannot locate its browser profile.[/red]")
+            console.print("[red]No email on the blinkit_seller_new session.[/red]")
+            raise typer.Exit(1)
+        if not session.storage_state or not session.storage_state.get("cookies"):
+            console.print(
+                "[red]No storage_state cookies on the blinkit_seller_new session — "
+                "it may never have completed a real login. Run "
+                "`cli auth login blinkit_seller_new` first.[/red]"
+            )
             raise typer.Exit(1)
 
         job_id = None
@@ -721,20 +743,22 @@ async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: boo
             job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_sales")
 
             with console.status("[cyan]Scraping seller-hub sales...[/cyan]"):
-                raw = await seller_hub_scraper.scrape_sales(email)
+                raw = await seller_hub_scraper.scrape_sales(
+                    email, session.storage_state, time_range_filter=window
+                )
 
-            daily = parse_seller_hub_sales_daily(raw["histogram"], tenant_id, job_id)
             by_product = parse_seller_hub_sales_by_product(
                 raw["products"], raw["window_label"], tenant_id, job_id
             )
+            orders = parse_seller_hub_sales_orders(raw.get("orders") or [], tenant_id, job_id)
 
             if save:
-                written = await save_seller_hub_sales_results(db, daily, by_product)
+                written = await save_seller_hub_sales_results(db, by_product, orders)
                 await complete_scrape_job(db, job_id, written)
 
             console.print(
-                f"[green]Seller-hub sales: {len(daily)} daily row(s), "
-                f"{len(by_product)} product row(s) (window: {raw['window_label']!r})[/green]"
+                f"[green]Seller-hub sales: {len(by_product)} product row(s), "
+                f"{len(orders)} order row(s) (window: {raw['window_label']!r})[/green]"
             )
         except Exception as e:
             if job_id:

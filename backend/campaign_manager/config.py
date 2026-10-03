@@ -123,7 +123,9 @@ def store_strategy(platform: str) -> str:
 # ROTATE only: once a full cycle of stores has come back unable to sell the campaign, the bid
 # is held and ONE store is checked every this many minutes (in rotation) until one can sell
 # again. The ~15-minute tick keeps running; it just doesn't search while resting.
-STOCK_REST_MINUTES: int = int(os.getenv("CM_STOCK_REST_MINUTES", "60"))
+# 30, not 60 (2026-10-02): stock at a Zepto store is a unit or two and turns over within
+# hours, so an hourly check left a restock unseen for up to 3 hours across a 3-store set.
+STOCK_REST_MINUTES: int = int(os.getenv("CM_STOCK_REST_MINUTES", "30"))
 
 
 # Stock is one brand search per store, reused across runs until it is this old. Inventory

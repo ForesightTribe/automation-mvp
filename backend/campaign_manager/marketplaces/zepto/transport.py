@@ -301,7 +301,7 @@ async def mint_waf_token() -> str:
             "Zepto: headless Chromium did not produce an aws-waf-token. The WAF "
             "challenge did not complete — check that the console loads from this IP."
         )
-    logger.info(f"Zepto WAF token minted ({len(token)} chars)")
+    logger.debug(f"Zepto WAF token minted ({len(token)} chars)")
     return token
 
 
@@ -331,7 +331,7 @@ async def setup(tenant_id: str):
     # failed login should not have paid for a browser launch first.
     waf = await mint_waf_token()
     client = ZeptoClient(tenant_id, jwt, waf, session.raw.get("brand_ids"))
-    logger.info(
+    logger.debug(
         f"Zepto client ready (brand {client.brand_ids[0] if client.brand_ids else '—'}), "
         "no persistent browser"
     )

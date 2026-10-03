@@ -7,33 +7,41 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel.sql.sqltypes import AutoString
 
 from app.models.blinkit_seller_hub import (
-    BlinkitSellerHubSalesDailyRO,
     BlinkitSellerHubSalesByProductRO,
+    BlinkitSellerHubSalesOrderRO,
 )
 from app.utils.logger import logger
 
 
 async def save_sales_results(
-    session: AsyncSession, daily: list[dict], by_product: list[dict]
+    session: AsyncSession, by_product: list[dict], orders: list[dict] | None = None,
 ) -> int:
-    await _upsert(session, BlinkitSellerHubSalesDailyRO, daily)
-    await _upsert(session, BlinkitSellerHubSalesByProductRO, by_product)
+    written = 0
+    written += await _upsert(session, BlinkitSellerHubSalesByProductRO, by_product)
+    if orders:
+        written += await _upsert(session, BlinkitSellerHubSalesOrderRO, orders)
     await session.commit()
-    logger.info(f"Blinkit seller-hub sales saved — daily:{len(daily)} by_product:{len(by_product)}")
-    return len(daily) + len(by_product)
+    logger.info(
+        f"Blinkit seller-hub sales saved — by_product:{len(by_product)} orders:{len(orders or [])}"
+    )
+    return written
 
 
 # Identical to scraper/platforms/blinkit/dashboard_data/seller/storage.py's
 # _upsert/_prepare — duplicated rather than imported because that module is
 # scoped to its own model set (app/models/blinkit_seller.py) and the two are
 # small enough that sharing a helper isn't worth a cross-module dependency.
-async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
+async def _upsert(session: AsyncSession, model, rows: list[dict]) -> int:
+    """Returns rows actually inserted-or-updated (Postgres's own rowcount per
+    chunk), not len(rows) — the parsed count can be higher than what lands if
+    two parsed rows ever share an upsert_key, which len(rows) would hide."""
     if not rows:
-        return
+        return 0
     prepared = [_prepare(model, r) for r in rows]
     cols = max(1, len(model.__table__.columns))
     chunk = max(1, 32000 // cols)
     update_cols = _update_cols(model)
+    affected = 0
     for i in range(0, len(prepared), chunk):
         stmt = (
             insert(model)
@@ -43,7 +51,9 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
                 set_={c: insert(model).excluded[c] for c in update_cols},
             )
         )
-        await session.execute(stmt)
+        result = await session.execute(stmt)
+        affected += result.rowcount
+    return affected
 
 
 def _prepare(model, row: dict) -> dict:

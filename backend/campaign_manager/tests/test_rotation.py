@@ -398,6 +398,17 @@ def _tick(world, stubs, at_minutes):
 
 
 def test_a_day_of_stock_outs_through_the_real_engine():
+    """The timeline below is written for an HOURLY rest check; the default became 30 min on
+    2026-10-02, so it is pinned here and the 30-minute rhythm is tested on its own."""
+    saved = config.STOCK_REST_MINUTES
+    config.STOCK_REST_MINUTES = 60
+    try:
+        _a_day_of_stock_outs()
+    finally:
+        config.STOCK_REST_MINUTES = saved
+
+
+def _a_day_of_stock_outs():
     w = _World()
     st, stubs = _engine(w)
     last = lambda: st["log"][-1]                          # noqa: E731
@@ -443,6 +454,159 @@ def test_a_day_of_stock_outs_through_the_real_engine():
     assert _tick(w, stubs, 135) == [("keyword", "m2"), ("stock", "m2")]
     assert last()["action"] == "apply", last()
     assert last()["reason"].startswith("back in stock at Store2"), last()["reason"]
+
+
+def test_the_rules_own_match_type_is_read_not_another_one():
+    """2026-10-02, live: "sour dough" bid EXACT ₹10 / PHRASE ₹15 / BROAD ₹15, rule on EXACT
+    with a ₹10 floor. Read by text, the EXACT rule saw ₹15, so the floor written at window
+    open never read back: every tick re-floored (refused as "no change") and no position
+    was ever searched. Read by (keyword, match type) the floor is seen and the optimizer runs."""
+    w = _World()
+    st, stubs = _engine(w)
+    st["runtime"].updated_at = T0 - timedelta(hours=2)    # before the window: it opens now
+    w.ad["m1"] = 4
+
+    class _ZeptoByMatch(_FakeZepto):
+        def bids_from_detail(self, detail):                 # the lossy view: PHRASE won
+            return {"sourdough": 15}
+
+        def bids_by_match_from_detail(self, detail):
+            return {("sourdough", "EXACT"): 10, ("sourdough", "PHRASE"): 15,
+                    ("sourdough", "BROAD"): 15}
+
+    saved_repo = {k: getattr(repo, k) for k in stubs}
+    saved = (bid.get_adapter, bid.now_ist)
+    for k, v in stubs.items():
+        setattr(repo, k, v)
+    bid.get_adapter = lambda platform: _ZeptoByMatch(w)
+    bid.now_ist = lambda: T0
+    try:
+        asyncio.run(bid.run(uuid.uuid4(), dry_run=True, platform="zepto"))
+    finally:
+        for k, v in saved_repo.items():
+            setattr(repo, k, v)
+        bid.get_adapter, bid.now_ist = saved
+    assert w.searches == [("keyword", "m1")], "the window opened at the floor: optimise"
+    assert [r["action"] for r in st["log"]] != ["open"], "must not re-floor an EXACT ₹10"
+    assert st["log"][-1]["old_value"] == 10, st["log"][-1]
+
+
+def test_the_bid_lookup_reads_the_pair_where_the_marketplace_has_one():
+    class _ByText:
+        def bids_from_detail(self, detail):
+            return {"milk": 30}
+
+    class _ByPair(_ByText):
+        def bids_by_match_from_detail(self, detail):
+            return {("milk", "EXACT"): 10, ("milk", "BROAD"): 30}
+
+    assert bid._bid_lookup(_ByText(), {})("milk", "EXACT") == 30      # Blinkit: one bid
+    lookup = bid._bid_lookup(_ByPair(), {})
+    assert lookup("milk", "EXACT") == 10 and lookup("milk", "broad") == 30
+    assert lookup("milk", None) == 10                                  # no type → EXACT
+    assert lookup("milk", "PHRASE") is None and lookup("bread", "EXACT") is None
+    assert bid._no_bids("milk", "EXACT") is None
+
+
+def test_the_stock_line_is_about_the_brand_and_names_what_is_listed():
+    """2026-10-02: "2 of 2 of our products available" was printed right before "none of the
+    campaign's products are available there" — both true, together they read as a
+    contradiction. The store line now names what the BRAND has there, briefly."""
+    from campaign_manager import stock
+    said = stock._stock_said("J. P. Nagar", [{"name": "Brik Oven Sour Cream"},
+                                             {"name": "Brik Oven Whey Ricotta Cheese"}], 2, True,
+                             {"brik oven"})
+    assert said == "stock at J. P. Nagar: brand has 2 (Sour Cream, Whey Ricotta Cheese) · 2 in stock"
+    assert stock._stock_said("BTM", [], 0, True) == "stock at BTM: brand has nothing listed"
+    many = [{"name": f"P{i}"} for i in range(5)]
+    assert "(P0, P1, P2 +2 more)" in stock._stock_said("X", many, 5, True)
+    assert stock._stock_said("X", many, 5, False).endswith(" · partial read")
+
+
+def test_the_decision_reads_in_a_few_words():
+    line = lambda **k: bid._decision_line(**{**dict(              # noqa: E731
+        current=10, new=12, position=2, target=1, absent=False, escalated=False,
+        recovering=False, drift_pct=7, drift_paused=False, last_pos=2, minutes=20), **k})
+    assert line() == "raise ₹10 → ₹12 (+₹2) · #2 vs target #1"
+    assert line(new=15, current=12, escalated=True) == \
+        "raise ₹12 → ₹15 (+₹3, step grew) · #2 vs target #1"
+    assert line(absent=True, position=31) == "raise ₹10 → ₹12 (+₹2) · ad missing vs target #1"
+    assert line(new=None, minutes=4) == "hold ₹10 · #2 vs target #1 · last change 4 min ago, waiting"
+    assert line(new=None, position=1, last_pos=1) == "hold ₹10 · at #1 (target #1) · at floor"
+    assert line(new=None, position=1, last_pos=None) == \
+        "hold ₹10 · at #1 (target #1) · confirming before trimming"
+    assert line(new=None, position=1, last_pos=1, drift_paused=True) == \
+        "hold ₹10 · at #1 (target #1) · trimming paused"
+    assert line(new=None, position=1, drift_pct=0) == "hold ₹10 · at #1 (target #1) · trimming off"
+    assert line(current=15, new=14, position=1) == "trim ₹15 → ₹14 · holding #1 (target #1)"
+    assert line(current=12, new=15, recovering=True) == \
+        "recover ₹12 → ₹15 · dropped to #2 after trimming"
+
+
+def test_a_write_ends_its_line_with_what_happened():
+    assert bid._outcome(True, None, {}, False, "Zepto") == "applied"
+    assert bid._outcome(True, None, {}, True, "Zepto") == "DRY RUN, not sent"
+    assert bid._outcome(False, None, {"reason": "rate limit"}, False, "Zepto") == \
+        "NOT applied — rate limit"
+    assert bid._outcome(False, None, {}, False, "Zepto") == "NOT applied — Zepto rejected it"
+    assert bid._outcome(False, RuntimeError("boom"), {}, False, "Zepto").startswith("NOT applied — ")
+
+
+def test_a_run_reads_crisply_through_the_real_engine():
+    """The whole block for one automation, as the run log prints it."""
+    from app.utils.logger import logger
+
+    w = _World()
+    st, stubs = _engine(w)
+    w.ad["m1"] = 8
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(m.record["message"]), level="INFO",
+                      filter=lambda r: r["extra"].get("tag") == "cm")
+    try:
+        _tick(w, stubs, 0)
+    finally:
+        logger.remove(sink)
+    body = [l for l in lines if l.strip()]
+    assert body[0].startswith("── Bid optimizer · ") and " · zepto · DRY RUN · run " in body[0]
+    assert body[1] == "ready · session ok · 1 automation in window"
+    assert body[2].startswith("shopper search · direct · ") and body[2].endswith("s to open")
+    assert body[3] == ('[1/1] Brik · #11 · "sourdough" EXACT · target #3')
+    assert body[4] == ("  bid ₹20 (₹10–60) · stores: Store1 → Store2 → Store3 (client set)")
+    assert body[5] == "  Store1 (1/3): ad #8 of 20"
+    assert body[6].startswith("  raise ₹20 → ₹") and body[6].endswith(
+        " · #8 vs target #3 · DRY RUN, not sent"), body[6]
+    assert body[-1].startswith("── done ") and "searches: 1 rank" in body[-1]
+    assert len(body) == 8, body
+
+
+def test_the_rest_is_dated_from_the_current_sets_first_stock_out():
+    """2026-10-02: the client's set replaced the global one. A stock-out at the old global
+    store (X), just before, said nothing about the new stores, yet the rest read "nothing
+    sellable since" that reading. It is dated from the new set's first stock-out now; whether
+    it rests at all was never affected."""
+    hist = [_out("m3", 30), _out("m2", 15), _out("m1", 0), _out("X", -14)]
+    p = rotation.plan(S, hist, window_start=WINDOW, now=T0 + timedelta(minutes=45),
+                      rest_minutes=30)
+    assert p.resting and p.rest_since == T0
+
+
+def test_the_out_of_stock_rest_checks_a_store_every_30_minutes_by_default():
+    assert config.STOCK_REST_MINUTES == 30
+    hist = [_out("m3", 30), _out("m2", 15), _out("m1", 0)]
+    waiting = rotation.plan(S, hist, window_start=WINDOW, now=T0 + timedelta(minutes=45),
+                            rest_minutes=config.STOCK_REST_MINUTES)
+    assert waiting.store is None and waiting.next_check_at == T0 + timedelta(minutes=60)
+    due = rotation.plan(S, hist, window_start=WINDOW, now=T0 + timedelta(minutes=60),
+                        rest_minutes=config.STOCK_REST_MINUTES)
+    assert due.store is S[0] and due.resting
+
+
+def test_a_store_that_cannot_sell_says_so_about_this_campaign():
+    assert bid._cant_sell_said(coverage.NOT_LISTED, 4) == "none of this campaign's 4 products are listed there"
+    assert bid._cant_sell_said(coverage.NOT_LISTED, 1) == "this campaign's product isn't listed there"
+    assert bid._cant_sell_said(coverage.OUT_OF_STOCK, 1) == "this campaign's product is sold out there"
+    assert bid._cant_sell_said(coverage.OUT_OF_STOCK, 4) == "this campaign's 4 products are sold out there"
+    assert bid._cant_sell_said(coverage.ELIGIBLE, 4) is None
 
 
 def test_a_shopper_search_that_cannot_open_holds_every_bid_and_says_so():

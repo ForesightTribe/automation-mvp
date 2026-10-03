@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.blinkit_seller import BlinkitSellerSale
+from app.models.blinkit_seller_hub import BlinkitSellerHubSalesOrderRO
 from app.models.instamart_seller import InstamartSellerStoreDaily
 from app.models.zepto_seller import ZeptoSellerSales
 from app.models.search import SkuMap, SkuSnapshot
@@ -63,10 +64,25 @@ async def _private_skus(
     seller dashboard has its own disjoint id system — Zepto's calls Artisinal
     Sourdough `5e4a9b9b-…` on the seller side and `06d0fc37-…` on the shopper
     side, same as Blinkit's 8-digit vs 6-digit split — so the source table, not
-    the id shape, is what determines `mp_slug` here."""
-    blinkit = (await session.execute(
+    the id shape, is what determines `mp_slug` here.
+
+    Blinkit is TWO source tables under the one "blinkit" slug — BlinkitSellerSale
+    (partnersbiz.com, the old domain) and BlinkitSellerHubSalesOrderRO
+    (seller.blinkit.com/seller-hub, e.g. Sereko). A tenant is only ever on one
+    domain, so in practice exactly one of the two queries returns rows for any
+    given tenant — concatenating them is safe, never a collision. Added
+    2026-10-01: until this, a seller-hub tenant's items were invisible to
+    build_map entirely, since this function never looked at their table.
+    """
+    blinkit_old = (await session.execute(
         select(BlinkitSellerSale.item_id, BlinkitSellerSale.item_name)
         .where(BlinkitSellerSale.tenant_id == tenant_id)
+        .distinct()
+    )).all()
+
+    blinkit_new = (await session.execute(
+        select(BlinkitSellerHubSalesOrderRO.item_id, BlinkitSellerHubSalesOrderRO.product_name)
+        .where(BlinkitSellerHubSalesOrderRO.tenant_id == tenant_id)
         .distinct()
     )).all()
 
@@ -90,7 +106,10 @@ async def _private_skus(
     )).all()
 
     return {
-        "blinkit": [(str(iid), name) for iid, name in blinkit],
+        "blinkit": (
+            [(str(iid), name) for iid, name in blinkit_old]
+            + [(str(iid), name) for iid, name in blinkit_new]
+        ),
         "zepto": [(str(iid), name) for iid, name in zepto],
         "instamart": [(str(iid), name) for iid, name in instamart],
     }

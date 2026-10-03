@@ -58,6 +58,11 @@ class TopSku(BaseModel):
     item_name: str | None
     revenue: float
     units_sold: int
+    # Set only for a seller-hub-sourced row (e.g. Sereko): that revenue covers
+    # a rolling window ("Last 7 days", ...) as of the scrape, not this
+    # endpoint's own start/end — None for every other source, where revenue is
+    # a true sum over the requested range.
+    window_label: str | None = None
 
 
 class CityBreakdown(BaseModel):

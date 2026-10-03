@@ -210,9 +210,21 @@ async def read_bids_by_match(client, campaign_id: int) -> dict[tuple[str, str], 
 
 def bids_from_detail(detail: dict) -> dict[str, int]:
     """Bids off an already-fetched detail, saving a call. Same lossiness as
-    `read_bids`."""
+    `read_bids` — for display only. The bid engine reads `bids_by_match_from_detail`."""
     return {text: value
             for (text, _match), value in translate.bids_from_detail(detail).items()}
+
+
+def bids_by_match_from_detail(detail: dict) -> dict[tuple[str, str], int]:
+    """Bids off an already-fetched detail, keyed by (text, match_type) — the real grain on
+    Zepto, and what the bid engine reads (`bid._bid_lookup`).
+
+    ⚠️ Found live 2026-10-02: the engine used to read `bids_from_detail`, keyed by text only.
+    A campaign bidding "sour dough" under EXACT ₹10 / PHRASE ₹15 / BROAD ₹15 reported ₹15
+    for an EXACT rule — so the floor written at window open never "read back", every tick
+    re-floored (refused as "no change", the guard working), the window never opened and
+    not one position was searched."""
+    return translate.bids_from_detail(detail)
 
 
 async def read_bid_floors(client, campaign_id: int, detail: dict | None = None
@@ -351,9 +363,27 @@ async def open_position_session(pw, lat: float | None = None,
     session["_pw"] = driver
     if proxy:
         session["_wait_budget_s"] = config.ZEPTO_SHOPPER_WAIT_BUDGET_S
-        logger.info(f"Zepto: shopper search is going through the proxy {proxy_label(proxy)}, "
-                    f"searching by typed search")
+        session["_proxy_label"] = proxy_label(proxy)
+        # The bid engine says this in its run log (`position_session_note`).
+        logger.debug(f"Zepto: shopper search is going through the proxy {proxy_label(proxy)}, "
+                     f"searching by typed search")
     return session
+
+
+def position_session_note(session: dict) -> str | None:
+    """How the shopper session reaches Zepto, for the bid engine's run log:
+    `via proxy res.proxy-seller.com:10000 · typed`. None = directly, nothing to say."""
+    if session and session.get("_proxy_label"):
+        return f"via proxy {session['_proxy_label']} · typed"
+    return None
+
+
+def position_session_usage(session: dict) -> str | None:
+    """What a proxied session cost, for the run's closing line: `proxy 2.5 MB, 0 refused`."""
+    st = (session or {}).get("typed")
+    if st is None:
+        return None
+    return f"proxy {st.bytes / 1_048_576:.1f} MB, {st.refused} refused"
 
 
 async def close_position_session(session: dict) -> None:
@@ -367,7 +397,8 @@ async def close_position_session(session: dict) -> None:
         # What the proxy is billed on. One line a run, so a month's cost can be read off the
         # logs instead of the provider's dashboard.
         from scraper.platforms.zepto.public_data import typed_search
-        logger.info(f"Zepto: shopper search through the proxy used {typed_search.usage(session)}")
+        # Debug: the bid engine puts MB and refusals on its closing line.
+        logger.debug(f"Zepto: shopper search through the proxy used {typed_search.usage(session)}")
     try:
         await zs.close_session(session)
     except Exception as e:
@@ -428,14 +459,13 @@ async def fetch_positions(session: dict, keyword: str, lat: float,
         waited = session.get("_waited_s", 0.0)
         if budget is None and retries:
             break                                   # no budget: one retry, as always
+        status = (res.get("error") or kind).split(" —")[0]
         if budget is not None and waited + pause > budget:
-            logger.warning(
-                f"Zepto {kind} on {keyword!r} ({res.get('error')}) — not waiting: this run "
-                f"has already waited {waited:g}s of the {budget:g}s it may")
+            logger.warning(f'Zepto refused "{keyword}" ({status}) · not retrying, wait budget '
+                           f"spent ({waited:g}/{budget:g}s)")
             break
-        logger.warning(
-            f"Zepto {kind} on {keyword!r} ({res.get('error')}) — waiting {pause:g}s and "
-            f"retrying; this throttle is shared and self-clearing")
+        used = f" · {waited + pause:g}/{budget:g}s used" if budget is not None else ""
+        logger.warning(f'Zepto refused "{keyword}" ({status}) · retry in {pause:g}s{used}')
         await asyncio.sleep(pause)
         session["_waited_s"] = waited + pause
         retries += 1
@@ -685,7 +715,8 @@ async def apply_bid(client, campaign_id: int, keyword: str, cpm: int,
     except repo.WriteLockBusy as e:
         raise WriteRefused(f"campaign {campaign_id}: {e} — nothing was sent, so the two "
                            f"writes cannot overwrite each other") from e
-    logger.info(
+    # Debug: the bid engine's own line already says the bid moved and that it landed.
+    logger.debug(
         f"Zepto campaign {campaign_id}: bid[{keyword!r}/{match_type}] -> ₹{target}")
     return _landed(resp)
 
@@ -766,7 +797,7 @@ def set_advertiser(client, advertiser_id) -> None:
             f"among this session's brand ids {client.brand_ids}. Refusing to write — "
             "the session may belong to a different account than the one configured."
         )
-    logger.info(f"Zepto account asserted: {advertiser_id}")
+    logger.debug(f"Zepto account asserted: {advertiser_id}")
 
 
 async def resolve_advertiser(client):
