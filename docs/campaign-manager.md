@@ -1117,8 +1117,10 @@ Two fields are guarded **structurally** rather than against the campaign, becaus
 publishes no counterpart:
 
 - **`advertiser_id`** — the account a write lands in. A wrong one spends against someone
-  else's account, and `client.get_advertiser_id()` still falls back to the stale pre-split
-  `234` when its read comes back without the field. Now refused outright, along with `0` on
+  else's account, and `client.get_advertiser_id()` once fell back to the stale pre-split
+  `234` when its read came back without the field (it now uses the account's advertiser
+  list when that holds exactly one advertiser, and otherwise raises — never a constant).
+  Now refused outright, along with `0` on
   an UPDATE and any non-zero value on a RESTART (AD4).
 - **`brand_name`** — compared to the campaign on updates, exempt on RESTART, which blanks it
   deliberately.

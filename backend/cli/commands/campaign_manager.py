@@ -100,8 +100,8 @@ def set_advertiser(
     tenant: str = _TENANT,
     id: str = typer.Option(
         ..., "--id",
-        help="The ad-account id. Blinkit: the integer advertiser_id from a dashboard "
-             "PUT payload. Zepto: the brand UUID (run `cm advertiser -m zepto` to read it)."),
+        help="The ad-account id. Blinkit: the integer advertiser_id (run `cm advertiser "
+             "-m blinkit` to read it). Zepto: the brand UUID (`cm advertiser -m zepto`)."),
     platform: str = _MARKETPLACE,
 ):
     """Store a tenant's ad-account id.
@@ -109,10 +109,11 @@ def set_advertiser(
     Two marketplaces, two meanings — the id's shape decides which column it lands in:
 
     
-    * Blinkit — an INTEGER that live writes SEND. It appears in no read API, so a
-      stored value is the only source and a stale one spends real money on the wrong
-      account. Capture it once from a real dashboard budget/bid PUT
-      (DevTools → Network → the request body's advertiser_id).
+    * Blinkit — an INTEGER that live writes SEND, so a stale one spends real money on
+      the wrong account. `cm advertiser -m blinkit` reads it: from the campaign list,
+      else from the account's advertiser list when that holds exactly one advertiser.
+      A login that sees several advertisers gets no answer — pick by name from the
+      list it prints.
     * Zepto — a brand UUID that live writes CHECK. It arrives in the login response,
       so it is never sent; storing it lets us assert the session belongs to the
       account we expect before writing.
