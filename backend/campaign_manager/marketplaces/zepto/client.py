@@ -80,7 +80,8 @@ _MAX_PAGES = 30
 
 async def get_keyword_floors(client: ZeptoClient, keywords: list[tuple[str, str]]
                              ) -> dict[tuple[str, str], int]:
-    """Zepto's minimum bid per `(keyword, match_type)` — ONE request for the whole list.
+    """Zepto's minimum bid per `(keyword, match_type)` — one request per
+    `ep.KEYWORD_CONFIG_MAX` keywords (Zepto refuses a larger list with a 400).
 
     `POST /ads-bff/api/v1/keyword/config` {"keywords": [{keyword, match_type}]} →
     {"keywords": [{keyword, match_type, min_bid}]}. The direct analogue of Blinkit's
@@ -90,19 +91,19 @@ async def get_keyword_floors(client: ZeptoClient, keywords: list[tuple[str, str]
     A keyword Zepto leaves out is simply ABSENT from the result. Absent means "unknown",
     never "no floor" — `pink toffee` was once absent and a write was still refused at ₹10.
     """
-    if not keywords:
-        return {}
-    body = {"keywords": [{"keyword": k, "match_type": m} for k, m in keywords]}
-    r = await client.request("POST", ep.KEYWORD_CONFIG, json=body)
-    if r.status_code != 200:
-        raise RuntimeError(f"Zepto keyword/config -> {r.status_code}: {r.text[:200]}")
     out: dict[tuple[str, str], int] = {}
-    for k in (r.json() or {}).get("keywords") or []:
-        if k.get("keyword") and k.get("match_type") and k.get("min_bid") is not None:
-            try:
-                out[(k["keyword"], k["match_type"])] = int(round(float(k["min_bid"])))
-            except (TypeError, ValueError):
-                continue
+    for i in range(0, len(keywords), ep.KEYWORD_CONFIG_MAX):
+        batch = keywords[i:i + ep.KEYWORD_CONFIG_MAX]
+        body = {"keywords": [{"keyword": k, "match_type": m} for k, m in batch]}
+        r = await client.request("POST", ep.KEYWORD_CONFIG, json=body)
+        if r.status_code != 200:
+            raise RuntimeError(f"Zepto keyword/config -> {r.status_code}: {r.text[:200]}")
+        for k in (r.json() or {}).get("keywords") or []:
+            if k.get("keyword") and k.get("match_type") and k.get("min_bid") is not None:
+                try:
+                    out[(k["keyword"], k["match_type"])] = int(round(float(k["min_bid"])))
+                except (TypeError, ValueError):
+                    continue
     return out
 
 

@@ -58,6 +58,10 @@ MIN_DAILY_BUDGET = 500
 # Zepto PUBLISHES a per-keyword minimum, read-only, one request for a whole list —
 # the direct analogue of Blinkit's `get_keyword_attributes`:
 KEYWORD_CONFIG = "/ads-bff/api/v1/keyword/config"    # POST
+# ⚠️ Capped at 500 keywords per request — more is a 400 "max 500 keywords allowed per
+# request" (seen 2026-10-03 on Sereko's 2428159, which failed the catalogue every day
+# from 2026-09-29). `client.get_keyword_floors` batches on this.
+KEYWORD_CONFIG_MAX = 500
 #
 #     -> {"keywords": [{"keyword": "bread", "match_type": "EXACT"}]}
 #     <- {"keywords": [{"keyword": "bread", "match_type": "EXACT", "min_bid": 9}]}

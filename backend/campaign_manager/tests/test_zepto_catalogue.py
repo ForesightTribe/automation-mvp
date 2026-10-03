@@ -188,6 +188,31 @@ def test_keyword_floors_parse():
     assert got == {("bread", "EXACT"): 9, ("bread", "BROAD"): 10}
 
 
+def test_keyword_floors_batch_at_zeptos_cap():
+    # Zepto answers 400 "max 500 keywords allowed per request" above the cap — that
+    # failed Sereko's catalogue (campaign 2428159) every day from 2026-09-29.
+    sizes = []
+
+    class _C:
+        async def request(self, method, path, json=None, **_):
+            kws = json["keywords"]
+            sizes.append(len(kws))
+
+            class _R:
+                status_code = 400 if len(kws) > 500 else 200
+                text = '{"message":"max 500 keywords allowed per request"}'
+
+                def json(self):
+                    return {"keywords": [{**k, "min_bid": 5} for k in kws]}
+            return _R()
+
+    pairs = [(f"kw{i}", "EXACT") for i in range(1203)]
+    got = asyncio.run(zc.get_keyword_floors(_C(), pairs))
+    assert sizes == [500, 500, 203]
+    assert len(got) == 1203 and got[("kw1202", "EXACT")] == 5
+    assert asyncio.run(zc.get_keyword_floors(_C(), [])) == {} and sizes == [500, 500, 203]
+
+
 def _fake_zc(details: dict, *, fail_once=(), fail_always=()):
     seen = {"detail": [], "floors": 0, "options": 0}
     failed_once: set = set()
