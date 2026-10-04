@@ -11,6 +11,10 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     APP_NAME: str = "Foresight API"
     DEBUG: bool = False
+    # Deployment environment. Only "development" serves the interactive docs and
+    # the OpenAPI schema (see app/main.py). Defaults to production, like DEBUG
+    # above: a forgotten variable then costs the local docs, never exposure.
+    ENV: str = "production"
 
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/foresight"
 
@@ -18,6 +22,14 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = ""  # Generate with: Fernet.generate_key().decode()
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+
+    # Login rate limiting (app/utils/ratelimit.py). Counts FAILED attempts only,
+    # per email and per client IP, inside a rolling window. The per-email limit
+    # is the real wall — an IP can be spoofed past Cloudflare, an email cannot.
+    # Set LOGIN_MAX_PER_EMAIL to 0 to disable the limiter entirely.
+    LOGIN_WINDOW_SECONDS: int = 900          # 15 minutes
+    LOGIN_MAX_PER_EMAIL: int = 5
+    LOGIN_MAX_PER_IP: int = 30               # one office NATs many people
 
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 

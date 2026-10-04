@@ -65,7 +65,19 @@ async def lifespan(_: FastAPI):
             task.cancel()
 
 
-app = FastAPI(title=settings.APP_NAME, debug=settings.DEBUG, lifespan=lifespan)
+# /docs, /redoc and /openapi.json describe every route, parameter and schema to
+# anyone who asks, unauthenticated. Served only in development; elsewhere all
+# three 404 because the routes are never registered.
+_DOCS = settings.ENV.strip().lower() == "development"
+
+app = FastAPI(
+    title=settings.APP_NAME,
+    debug=settings.DEBUG,
+    lifespan=lifespan,
+    docs_url="/docs" if _DOCS else None,
+    redoc_url="/redoc" if _DOCS else None,
+    openapi_url="/openapi.json" if _DOCS else None,
+)
 
 app.add_middleware(
     CORSMiddleware,

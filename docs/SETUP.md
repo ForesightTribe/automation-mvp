@@ -131,6 +131,9 @@ uvicorn app.main:app --reload --port 8000
 
 - `--reload` auto-restarts on code changes (development only).
 - **API base:** http://localhost:8000/api
+Both require `ENV=development` in `backend/.env` — they are off by default so a
+deployment never serves them by accident.
+
 - **Swagger UI (interactive docs):** http://localhost:8000/docs — lists every endpoint and lets you fire real requests from the browser.
 - **OpenAPI spec:** http://localhost:8000/openapi.json
 
