@@ -80,34 +80,28 @@ async def require_admin(user: CurrentUserDep) -> CurrentUser:
 AdminDep = Annotated[CurrentUser, Depends(require_admin)]
 
 
-async def get_account_id(user: CurrentUserDep) -> str:
-    """The account seam. The active *client* is chosen per-request (path param)
-    and validated against this account before any tenant-scoped query runs.
-    """
-    return user.account_id
-
-
-AccountDep = Annotated[str, Depends(get_account_id)]
-
-
 # --- Active client (the access wall) ---------------------------------------
 
 # How long a passed access check is remembered, per process. Every client-scoped request
 # runs this check, and without the memory each one spent a database round trip — and a
-# pooled connection — on it before doing any real work. The cost: removing an account's
+# pooled connection — on it before doing any real work. The cost: revoking a user's
 # access to a client takes up to this long to bite in a running API process.
 CLIENT_CHECK_TTL_S = 60.0
+# ⚠️ Keyed by USER, not account — two users of one account can have different client
+# scopes, and an account-keyed entry would serve one user's pass to another.
 _client_checks: dict[tuple[uuid.UUID, uuid.UUID], tuple[float, Tenant]] = {}
 
 
 async def get_client(
     client_id: uuid.UUID,        # bound to the {client_id} path segment
-    account_id: AccountDep,
+    user: CurrentUserDep,
     session: SessionDep,
 ) -> Tenant:
-    """Resolve {client_id} from the URL, but only if it belongs to the caller's
-    account. Any other client (or a bogus id) returns 404 — so one account can
-    never reach another's data. Hands the route a validated Client (Tenant).
+    """Resolve {client_id} from the URL, but only if this user may reach it.
+
+    Two walls, same 404 either way: the client must belong to the caller's account,
+    and a scope-restricted user must have been granted it. Identical responses so
+    the API never reveals that a client exists but is off-limits.
 
     ⚠️ Two rules keep this from eating the connection pool (diagnosed 2026-09-25):
 
@@ -122,13 +116,14 @@ async def get_client(
       database trip for it at all. Only passes are remembered — a refusal is re-checked.
       The cached Tenant is detached and read-only (routes use `.id` / `.name`).
     """
-    key = (uuid.UUID(account_id), client_id)
+    user_id = uuid.UUID(user.user_id)
+    key = (user_id, client_id)
     hit = _client_checks.get(key)
     if hit and time.monotonic() - hit[0] < CLIENT_CHECK_TTL_S:
         return hit[1]
 
     client = await client_service.get_client_for_account(
-        session, client_id, uuid.UUID(account_id)
+        session, client_id, uuid.UUID(user.account_id), user_id
     )
     if client is not None:
         session.expunge(client)

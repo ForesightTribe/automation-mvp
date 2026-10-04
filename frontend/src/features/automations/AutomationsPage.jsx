@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import { ScrollText, RefreshCw } from "lucide-react";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
+import { ReadOnlyNotice } from "../../components/feedback/ReadOnlyNotice";
+import { useAuth } from "../../context/AuthContext";
 import { Button } from "../../components/ui/Button";
 import { AutomationsFilterBar } from "./components/AutomationsFilterBar";
 import { StatusSummary } from "./components/StatusSummary";
@@ -206,6 +208,8 @@ export const AutomationsPage = () => {
 	const resetSchedule = useResetBudgetSchedule();
 	const resetBid = useResetBidRule();
 	const refreshCampaigns = useRefreshCampaigns();
+	// Automations move live budgets and bids: writing is admin-only.
+	const { isAdmin } = useAuth();
 	// In-flight actions against each row, from the server rather than component state — so
 	// a row stays busy across a reload, and one started in another tab still shows.
 	// UNFILTERED on purpose: a clash on a campaign is a clash whichever page caused it.
@@ -368,7 +372,7 @@ export const AutomationsPage = () => {
 					<Button
 						variant="secondary"
 						size="sm"
-						disabled={refreshCampaigns.isPending}
+						disabled={refreshCampaigns.isPending || !isAdmin}
 						onClick={handleRefreshCampaigns}
 						title={`Re-read the campaign list from ${mpName}`}
 					>
@@ -406,10 +410,16 @@ export const AutomationsPage = () => {
 				</div>
 			)}
 
+			{!isAdmin && (
+				<div className="mt-10">
+					<ReadOnlyNotice what="Creating, editing and pausing automations is admin-only, because they change live budgets and bids." />
+				</div>
+			)}
+
 			{/* Two CTAs instead of one generic button plus a promo banner: the kind of
 			    automation is the first real decision, so it is made here rather than on the
 			    first screen of the wizard. The wizard then opens already knowing which it is. */}
-			<div className="mt-10 grid gap-4 sm:grid-cols-2">
+			<div className={`mt-10 grid gap-4 sm:grid-cols-2 ${isAdmin ? "" : "hidden"}`}>
 				{[
 					{
 						kind: "campaign",

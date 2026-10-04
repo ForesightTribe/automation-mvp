@@ -17,7 +17,7 @@ from types import SimpleNamespace
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
-from app.dependencies import get_client, get_session
+from app.dependencies import CurrentUser, get_client, get_session, require_admin
 from app.routes import campaign_manager as routes
 from app.services import campaign_manager_service as svc
 
@@ -31,6 +31,10 @@ def _client(stubs: dict) -> tuple[TestClient, list]:
     app.include_router(routes.router, prefix="/clients/{client_id}/campaign-manager")
     app.dependency_overrides[get_client] = lambda: SimpleNamespace(id=TENANT)
     app.dependency_overrides[get_session] = lambda: None
+    # Writes are admin-gated; these tests are about marketplace routing, not auth.
+    app.dependency_overrides[require_admin] = lambda: CurrentUser(
+        user_id=str(uuid.uuid4()), account_id=str(uuid.uuid4()), role="admin"
+    )
     calls: list = []
     originals = {}
     for name, result in stubs.items():

@@ -19,11 +19,11 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 
-from app.dependencies import ClientDep, PaginationDep, SessionDep
+from app.dependencies import ClientDep, PaginationDep, SessionDep, require_admin
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
-    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionOut, CmActionsPage,
+    BudgetScheduleUpdate, BidContextOut, CatalogKeywordOut, CmActionsPage,
     CmJobOut, EnqueuedOut, LiveOut, OverviewOut, RunLogOut, SetActivationIn, SetBudgetIn,
 )
 from app.schemas.common import Page
@@ -34,6 +34,11 @@ from campaign_manager.repo import DuplicateBidRule, DuplicateSchedule
 from jobs.queue import DuplicateActiveJob
 
 router = APIRouter()
+
+# Writes here spend the client's money, so they are admin-only; members get the
+# module read-only. A route dependency, not a parameter, so it is visible in the
+# decorator and survives anyone tidying an unused argument.
+ADMIN_ONLY = [Depends(require_admin)]
 
 
 def _marketplace(marketplace: str = Path(
@@ -64,7 +69,7 @@ async def list_budget_schedules(client: ClientDep, marketplace: Marketplace):
 
 
 @router.post("/{marketplace}/budget-schedules", response_model=BudgetScheduleOut,
-             status_code=201)
+             status_code=201, dependencies=ADMIN_ONLY)
 async def create_budget_schedule(client: ClientDep, session: SessionDep,
                                  marketplace: Marketplace, body: BudgetScheduleIn):
     try:
@@ -78,7 +83,8 @@ async def create_budget_schedule(client: ClientDep, session: SessionDep,
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
-@router.patch("/{marketplace}/budget-schedules/{schedule_id}", response_model=BudgetScheduleOut)
+@router.patch("/{marketplace}/budget-schedules/{schedule_id}", response_model=BudgetScheduleOut,
+              dependencies=ADMIN_ONLY)
 async def update_budget_schedule(client: ClientDep, session: SessionDep,
                                  marketplace: Marketplace, schedule_id: int,
                                  body: BudgetScheduleUpdate):
@@ -92,7 +98,7 @@ async def update_budget_schedule(client: ClientDep, session: SessionDep,
     return out
 
 
-@router.delete("/{marketplace}/budget-schedules/{schedule_id}", status_code=204)
+@router.delete("/{marketplace}/budget-schedules/{schedule_id}", status_code=204, dependencies=ADMIN_ONLY)
 async def delete_budget_schedule(client: ClientDep, session: SessionDep,
                                  marketplace: Marketplace, schedule_id: int):
     if not await svc.delete_budget_schedule(session, client.id, marketplace, schedule_id):
@@ -100,7 +106,7 @@ async def delete_budget_schedule(client: ClientDep, session: SessionDep,
 
 
 @router.post("/{marketplace}/budget-schedules/{schedule_id}/rules",
-             response_model=BudgetRuleOut, status_code=201)
+             response_model=BudgetRuleOut, status_code=201, dependencies=ADMIN_ONLY)
 async def add_budget_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                           schedule_id: int, body: BudgetRuleIn):
     try:
@@ -112,7 +118,8 @@ async def add_budget_rule(client: ClientDep, session: SessionDep, marketplace: M
     return rule
 
 
-@router.patch("/{marketplace}/budget-rules/{rule_id}", response_model=BudgetScheduleOut)
+@router.patch("/{marketplace}/budget-rules/{rule_id}", response_model=BudgetScheduleOut,
+              dependencies=ADMIN_ONLY)
 async def update_budget_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                              rule_id: int, body: BudgetRuleUpdate):
     try:
@@ -124,14 +131,15 @@ async def update_budget_rule(client: ClientDep, session: SessionDep, marketplace
     return out
 
 
-@router.delete("/{marketplace}/budget-rules/{rule_id}", status_code=204)
+@router.delete("/{marketplace}/budget-rules/{rule_id}", status_code=204, dependencies=ADMIN_ONLY)
 async def delete_budget_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                              rule_id: int):
     if not await svc.delete_budget_rule(session, client.id, marketplace, rule_id):
         raise _not_found(marketplace)
 
 
-@router.post("/{marketplace}/budget-schedules/{schedule_id}/reset", response_model=EnqueuedOut)
+@router.post("/{marketplace}/budget-schedules/{schedule_id}/reset", response_model=EnqueuedOut,
+             dependencies=ADMIN_ONLY)
 async def reset_budget_schedule(client: ClientDep, session: SessionDep,
                                 marketplace: Marketplace, schedule_id: int):
     try:
@@ -176,7 +184,7 @@ async def list_catalog_keywords(client: ClientDep, marketplace: Marketplace):
     return await svc.list_catalog_keywords(client.id, marketplace)
 
 
-@router.post("/{marketplace}/bid-rules", response_model=BidRuleOut, status_code=201)
+@router.post("/{marketplace}/bid-rules", response_model=BidRuleOut, status_code=201, dependencies=ADMIN_ONLY)
 async def create_bid_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                           body: BidRuleIn):
     try:
@@ -191,7 +199,7 @@ async def create_bid_rule(client: ClientDep, session: SessionDep, marketplace: M
         raise HTTPException(status.HTTP_400_BAD_REQUEST, str(e))
 
 
-@router.patch("/{marketplace}/bid-rules/{rule_id}", response_model=BidRuleOut)
+@router.patch("/{marketplace}/bid-rules/{rule_id}", response_model=BidRuleOut, dependencies=ADMIN_ONLY)
 async def update_bid_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                           rule_id: str, body: BidRuleUpdate):
     try:
@@ -206,7 +214,7 @@ async def update_bid_rule(client: ClientDep, session: SessionDep, marketplace: M
     return rule
 
 
-@router.delete("/{marketplace}/bid-rules/{rule_id}", status_code=204)
+@router.delete("/{marketplace}/bid-rules/{rule_id}", status_code=204, dependencies=ADMIN_ONLY)
 async def delete_bid_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                           rule_id: str, reset: bool = False):
     """Delete an automation. `?reset=true` also puts its keyword back to the floor first —
@@ -233,14 +241,14 @@ async def _bid_lifecycle(action, client, session, marketplace: str,
     return rule
 
 
-@router.post("/{marketplace}/bid-rules/{rule_id}/pause", response_model=BidRuleOut)
+@router.post("/{marketplace}/bid-rules/{rule_id}/pause", response_model=BidRuleOut, dependencies=ADMIN_ONLY)
 async def pause_bid_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                          rule_id: str):
     """Freeze the automation. The bid is left where it is — pair with `/reset` to lower it."""
     return await _bid_lifecycle(svc.pause_bid_rule, client, session, marketplace, rule_id)
 
 
-@router.post("/{marketplace}/bid-rules/{rule_id}/resume", response_model=BidRuleOut)
+@router.post("/{marketplace}/bid-rules/{rule_id}/resume", response_model=BidRuleOut, dependencies=ADMIN_ONLY)
 async def resume_bid_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                           rule_id: str):
     """Un-freeze, discarding everything the engine learned before the pause. If the window
@@ -248,7 +256,7 @@ async def resume_bid_rule(client: ClientDep, session: SessionDep, marketplace: M
     return await _bid_lifecycle(svc.resume_bid_rule, client, session, marketplace, rule_id)
 
 
-@router.post("/{marketplace}/bid-rules/{rule_id}/reset", response_model=EnqueuedOut)
+@router.post("/{marketplace}/bid-rules/{rule_id}/reset", response_model=EnqueuedOut, dependencies=ADMIN_ONLY)
 async def reset_bid_rule(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                          rule_id: str):
     """Put the keyword's bid back to the automation's `min_bid` → enqueues the write,
@@ -265,7 +273,7 @@ async def reset_bid_rule(client: ClientDep, session: SessionDep, marketplace: Ma
 
 # ── On-demand actions (enqueue → poll) ──────────────────────────────────────
 
-@router.post("/{marketplace}/set-budget", response_model=EnqueuedOut)
+@router.post("/{marketplace}/set-budget", response_model=EnqueuedOut, dependencies=ADMIN_ONLY)
 async def set_budget_now(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                          body: SetBudgetIn, source: str | None = None):
     try:
@@ -278,7 +286,8 @@ async def set_budget_now(client: ClientDep, session: SessionDep, marketplace: Ma
     return EnqueuedOut(job_id=job_id)
 
 
-@router.post("/{marketplace}/campaigns/{campaign_id}/activation", response_model=EnqueuedOut)
+@router.post("/{marketplace}/campaigns/{campaign_id}/activation", response_model=EnqueuedOut,
+             dependencies=ADMIN_ONLY)
 async def set_activation_now(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                              campaign_id: int, body: SetActivationIn,
                              source: str | None = None):
@@ -301,7 +310,7 @@ async def set_activation_now(client: ClientDep, session: SessionDep, marketplace
     return EnqueuedOut(job_id=job_id)
 
 
-@router.post("/{marketplace}/campaigns/refresh", response_model=EnqueuedOut)
+@router.post("/{marketplace}/campaigns/refresh", response_model=EnqueuedOut, dependencies=ADMIN_ONLY)
 async def refresh_campaigns(client: ClientDep, session: SessionDep, marketplace: Marketplace,
                             source: str | None = None):
     """Re-read the account's campaigns + statuses from the marketplace into the catalogue.
@@ -317,7 +326,7 @@ async def refresh_campaigns(client: ClientDep, session: SessionDep, marketplace:
     return EnqueuedOut(job_id=job_id)
 
 
-@router.post("/{marketplace}/run/budget-scheduler", response_model=EnqueuedOut)
+@router.post("/{marketplace}/run/budget-scheduler", response_model=EnqueuedOut, dependencies=ADMIN_ONLY)
 async def run_budget_scheduler(client: ClientDep, session: SessionDep, marketplace: Marketplace):
     try:
         job_id = await svc.run_engine(session, client.id, marketplace, "cm.budget_scheduler")
@@ -326,7 +335,7 @@ async def run_budget_scheduler(client: ClientDep, session: SessionDep, marketpla
     return EnqueuedOut(job_id=job_id)
 
 
-@router.post("/{marketplace}/run/bid-optimizer", response_model=EnqueuedOut)
+@router.post("/{marketplace}/run/bid-optimizer", response_model=EnqueuedOut, dependencies=ADMIN_ONLY)
 async def run_bid_optimizer(client: ClientDep, session: SessionDep, marketplace: Marketplace):
     try:
         job_id = await svc.run_engine(session, client.id, marketplace, "cm.bid_optimizer")
@@ -421,7 +430,7 @@ async def get_advertiser(client: ClientDep, marketplace: Marketplace):
     return AdvertiserOut(advertiser_id=await svc.get_advertiser(client.id, marketplace))
 
 
-@router.put("/{marketplace}/advertiser", response_model=AdvertiserOut)
+@router.put("/{marketplace}/advertiser", response_model=AdvertiserOut, dependencies=ADMIN_ONLY)
 async def set_advertiser(client: ClientDep, marketplace: Marketplace, body: AdvertiserIn):
     try:
         await svc.set_advertiser(client.id, marketplace, body.advertiser_id)

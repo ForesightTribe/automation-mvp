@@ -33,7 +33,27 @@ class User(SQLModel, table=True):
     hashed_password: str
     full_name: str
     role: str = Field(default="member")  # 'admin' | 'member'
+    # Which Clients this user may see: 'all' (every one under the account) or
+    # 'listed' (only those named in `user_clients`). A separate axis from `role`.
+    client_scope: str = Field(default="all")  # 'all' | 'listed'
     is_active: bool = True
+    created_at: datetime = Field(default_factory=now_ist)
+
+
+class UserClient(SQLModel, table=True):
+    """Which Clients a `client_scope='listed'` user may reach.
+
+    Ignored for a user scoped 'all'. Rows only narrow access, never widen it.
+    """
+
+    __tablename__ = "user_clients"
+
+    __table_args__ = (
+        Index("idx_user_clients_user", "user_id"),
+    )
+
+    user_id: uuid.UUID = Field(foreign_key="users.id", primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id", primary_key=True)
     created_at: datetime = Field(default_factory=now_ist)
 
 
