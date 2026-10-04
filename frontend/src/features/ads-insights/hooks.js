@@ -107,38 +107,6 @@ export const usePreviousBudgetSplit = (enabled = false) => {
 	});
 };
 
-import { useMutation } from "@tanstack/react-query";
-import { setCampaignActivation, setCampaignBudget } from "./api";
-
-/**
- * Start or stop one campaign now. Returns the job id to poll.
- *
- * `marketplace` is the row's own (`CampaignRow.platform`) and is required: this page shows
- * every selected marketplace at once, so the action goes to whichever one the campaign
- * belongs to — never to a default.
- */
-export const useSetCampaignActivation = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: ({ campaignId, marketplace, status }) =>
-			setCampaignActivation(
-				activeClientId,
-				marketplace,
-				campaignId,
-				status,
-			),
-	});
-};
-
-/** Push a budget to one campaign now. Also returns a job id. Same `marketplace` rule. */
-export const useSetCampaignBudget = () => {
-	const { activeClientId } = useClient();
-	return useMutation({
-		mutationFn: ({ campaignId, marketplace, budget }) =>
-			setCampaignBudget(activeClientId, marketplace, campaignId, budget),
-	});
-};
-
 const isoDay = (d) => d.toISOString().slice(0, 10);
 
 /**

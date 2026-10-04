@@ -13,25 +13,6 @@ export * from "../ads/api";
 import { api } from "../../lib/axios";
 
 /**
- * Campaign actions, reached through the Campaign Manager endpoints the Automations page
- * uses. Declared here rather than imported from that feature: an endpoint is a contract we
- * may both call, whereas another feature's internals are not ours to depend on.
- *
- * Both ENQUEUE a job and return its id; nothing has happened when the promise resolves.
- */
-// The marketplace is part of every campaign-manager address, with no default on the
-// server (ZC-D1) — and none here. This page can show several marketplaces at once, so an
-// action names the ROW's marketplace (`CampaignRow.platform`); without one it throws
-// rather than guessing, because a guess is how a Zepto id once reached Blinkit's account.
-const cm = (clientId, marketplace) => {
-	if (!marketplace)
-		throw new Error(
-			"No marketplace on this campaign row, so the action was not sent.",
-		);
-	return `/clients/${clientId}/campaign-manager/${marketplace}`;
-};
-
-/**
  * One page of keyword rows for CURRENT campaigns only (`recent_only`).
  *
  * The keyword table groups every row by search term in the browser, so it needs them all,
@@ -52,25 +33,6 @@ export const getKeywordRowsPage = (clientId, { marketplaces, page, limit }) =>
 			page,
 			limit,
 		},
-	});
-
-export const setCampaignActivation = (
-	clientId,
-	marketplace,
-	campaignId,
-	status,
-) =>
-	api.post(
-		`${cm(clientId, marketplace)}/campaigns/${campaignId}/activation`,
-		{
-			status,
-		},
-	);
-
-export const setCampaignBudget = (clientId, marketplace, campaignId, budget) =>
-	api.post(`${cm(clientId, marketplace)}/set-budget`, {
-		campaign_id: campaignId,
-		budget,
 	});
 
 /**
