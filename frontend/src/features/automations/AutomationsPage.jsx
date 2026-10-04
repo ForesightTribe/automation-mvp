@@ -490,6 +490,7 @@ export const AutomationsPage = () => {
 				{!isLoading && !error && (
 					<div className="overflow-hidden rounded-xl border border-border bg-card">
 						<AutomationsTable
+							canWrite={isAdmin}
 							activeActionFor={activeActionFor}
 							rows={rows}
 							onEdit={setEditRow}

@@ -51,7 +51,13 @@ export const AutomationsTable = ({
 	onReset,
 	onOpenCampaign,
 	activeActionFor,
+	// Pause, resume, reset, edit and delete all change live budgets and bids, so
+	// they are admin-only. Execution logs and the campaign link stay available.
+	canWrite = true,
 }) => {
+	const adminHint = canWrite
+		? null
+		: "Admin access required — ask an admin on your account.";
 	const columns = [
 		{
 			key: "name",
@@ -150,10 +156,12 @@ export const AutomationsTable = ({
 						{r.kind === "keyword" && r.status !== "ended" && (
 							<IconButton
 								icon={r.status === "paused" ? Play : Pause}
+								disabled={!canWrite}
 								label={
-									r.status === "paused"
+									adminHint ??
+									(r.status === "paused"
 										? "Resume this automation"
-										: "Pause this automation, the campaign keeps running"
+										: "Pause this automation, the campaign keeps running")
 								}
 								onClick={() =>
 									onToggle(
@@ -173,13 +181,14 @@ export const AutomationsTable = ({
 							<IconButton
 								icon={RotateCcw}
 								label={
-									busy
+									adminHint ??
+									(busy
 										? busyLabel
 										: r.kind === "campaign"
 											? "Stop and put the budget back"
-											: "Put the bid back to the minimum"
+											: "Put the bid back to the minimum")
 								}
-								disabled={Boolean(busy)}
+								disabled={Boolean(busy) || !canWrite}
 								onClick={() => onReset(r)}
 							/>
 						)}
@@ -190,7 +199,8 @@ export const AutomationsTable = ({
 					    immediate ones live on the One-time ops page. */}
 						<IconButton
 							icon={Pencil}
-							label="Edit"
+							label={adminHint ?? "Edit"}
+							disabled={!canWrite}
 							onClick={() => onEdit(r)}
 						/>
 						<IconButton
@@ -200,9 +210,9 @@ export const AutomationsTable = ({
 						/>
 						<IconButton
 							icon={Trash2}
-							label={busy ? busyLabel : "Delete"}
+							label={adminHint ?? (busy ? busyLabel : "Delete")}
 							danger
-							disabled={Boolean(busy)}
+							disabled={Boolean(busy) || !canWrite}
 							onClick={() => onDelete(r)}
 						/>
 					</div>

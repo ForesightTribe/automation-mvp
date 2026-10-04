@@ -10,6 +10,8 @@ import { Toggle } from "../../components/ui/Toggle";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 import { EmptyState } from "../../components/feedback/EmptyState";
+import { ReadOnlyNotice } from "../../components/feedback/ReadOnlyNotice";
+import { useAuth } from "../../context/AuthContext";
 import { formatCurrency, formatNumber } from "../../lib/format";
 import { CampaignDrawer } from "./components/CampaignDrawer";
 import { useAutomationMarketplace } from "../../context/MarketplaceContext";
@@ -110,6 +112,11 @@ export const OneTimeOpsPage = () => {
 	const setBudget = useSetBudget();
 	const setActivation = useSetActivation();
 	const refresh = useRefreshCampaigns();
+	// Every operation on this page writes to the marketplace immediately.
+	const { isAdmin } = useAuth();
+	const adminHint = isAdmin
+		? null
+		: "Admin access required — ask an admin on your account.";
 
 	const [query, setQuery] = useState("");
 	const [status, setStatus] = useState("");
@@ -341,8 +348,15 @@ export const OneTimeOpsPage = () => {
 							<Button
 								size="xs"
 								variant="secondary"
-								disabled={Boolean(refused) || busy}
-								title={busyHint ?? refused ?? undefined}
+								disabled={
+									Boolean(refused) || busy || !isAdmin
+								}
+								title={
+									adminHint ??
+									busyHint ??
+									refused ??
+									undefined
+								}
 								onClick={() => ask("budget", c)}
 							>
 								<IndianRupee size={12} /> Set budget
@@ -353,6 +367,7 @@ export const OneTimeOpsPage = () => {
 							<span
 								className="inline-flex"
 								title={
+									adminHint ??
 									busyHint ??
 									blocked ??
 									(held
@@ -364,7 +379,9 @@ export const OneTimeOpsPage = () => {
 							>
 								<Toggle
 									on={live}
-									disabled={Boolean(blocked) || busy}
+									disabled={
+										Boolean(blocked) || busy || !isAdmin
+									}
 									aria-label={
 										live
 											? "Stop this campaign"
@@ -494,9 +511,12 @@ export const OneTimeOpsPage = () => {
 						<Button
 							size="sm"
 							variant="secondary"
-							disabled={refresh.isPending}
+							disabled={refresh.isPending || !isAdmin}
 							onClick={onRefresh}
-							title={`Re-read the campaign list from ${mpName}`}
+							title={
+								adminHint ??
+								`Re-read the campaign list from ${mpName}`
+							}
 						>
 							<RefreshCw size={14} />
 							{refresh.isPending
@@ -506,6 +526,10 @@ export const OneTimeOpsPage = () => {
 					</div>
 				}
 			/>
+
+			{!isAdmin && (
+				<ReadOnlyNotice what="Changing budgets and starting or stopping campaigns is admin-only — every action here applies immediately on the marketplace." />
+			)}
 
 			{actionError && (
 				<div className="flex items-start justify-between gap-3 rounded-md border border-warning/30 bg-warning-soft px-3 py-2 text-sm text-content">

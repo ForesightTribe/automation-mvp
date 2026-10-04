@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../../context/AuthContext";
 import { Button } from "../../../components/ui/Button";
 import { AutomateBidForm } from "./AutomateBidForm";
 import { JobStatus } from "./JobStatus";
@@ -37,6 +38,8 @@ const Detail = ({ label, children }) => (
  * that costs money if you assume otherwise.
  */
 export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
+	// Bid rules move live bids, so members see them read-only.
+	const { isAdmin } = useAuth();
 	const [open, setOpen] = useState(false);
 	const [editing, setEditing] = useState(false);
 	const [error, setError] = useState(null);
@@ -107,6 +110,7 @@ export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
 						<Button
 							size="sm"
 							variant="secondary"
+							disabled={!isAdmin}
 							onClick={() => act("resume")}
 						>
 							Resume
@@ -116,12 +120,18 @@ export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
 						<Button
 							size="sm"
 							variant="secondary"
+							disabled={!isAdmin}
 							onClick={() => act("pause")}
 						>
 							Pause
 						</Button>
 					)}
-					<Button size="sm" variant="ghost" onClick={openEdit}>
+					<Button
+						size="sm"
+						variant="ghost"
+						disabled={!isAdmin}
+						onClick={openEdit}
+					>
 						Edit
 					</Button>
 					<Chevron
@@ -170,11 +180,15 @@ export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
 						</dl>
 
 						<div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/70 pt-3">
-							<Action tone="primary" onClick={openEdit}>
+							<Action
+								tone="primary"
+								disabled={!isAdmin}
+								onClick={openEdit}
+							>
 								Edit rule
 							</Action>
 							<Action
-								disabled={running}
+								disabled={running || !isAdmin}
 								title={
 									running
 										? "Pause it first — the next check would bid it straight back up."
@@ -192,6 +206,7 @@ export const BidRuleRow = ({ rule, onAction, onReset, onDelete, resetJob }) => {
 							)}
 							<span className="ml-auto">
 								<ConfirmDelete
+									disabled={!isAdmin}
 									onConfirm={() => {
 										setError(null);
 										onDelete(
