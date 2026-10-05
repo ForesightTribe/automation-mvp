@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import httpx
 
 from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
+from platform_auth.errors import AuthError
 from app.utils.logger import logger
 
 
@@ -289,6 +290,10 @@ async def fetch_po_items(
                 rows.extend(data.get("poItems") or [])
                 if not data.get("hasNext"):
                     break
+        except AuthError:
+            # Not a bad PO: the session is gone, and every remaining PO would fail
+            # the same way. Let it reach the CLI, which exits 3 (`auth_expired`).
+            raise
         except Exception as e:
             logger.warning(f"Zepto po items failed for {po_id}: {e}")
             continue
@@ -459,8 +464,14 @@ async def fetch_product_performance_by_city(
     ids: dict,
     city_ids: list[str] | None = None,
     limit: int = 50,
+    failed: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """Per-SKU breakdown split by city. Returns {city_id: [product, ...]}.
+
+    A city whose call fails is skipped so the others still land — and, when the
+    caller passes a `failed` list, its id is appended there. Without that list a
+    failed city looked exactly like a city with no sales: absent from the result,
+    the run green, a hole in the city table nobody heard about.
 
     Same endpoint as `fetch_product_performance`, but with `cityIds` set to ONE
     city instead of all of them — which is what makes the city dimension appear.
@@ -501,8 +512,12 @@ async def fetch_product_performance_by_city(
             rows = [p for p in (data["data"] or []) if p.get("gmv")]
             if rows:
                 out[city_id] = rows
+        except AuthError:
+            raise                      # the session is gone — no other city will work either
         except Exception as e:
             logger.warning(f"Zepto product-performance failed for city {city_id}: {e}")
+            if failed is not None:
+                failed.append(city_id)
         if i < len(targets):
             await asyncio.sleep(0.6)
 
@@ -626,7 +641,8 @@ async def fetch_ad_campaigns(
     if out and not any(_has_metrics(c) for c in out):
         logger.warning(
             f"Zepto ad campaigns [{category}] [{date_from}]: {len(out)} campaigns but every "
-            "metric is empty — ads-bff often does this transiently; treat as not-yet-ready, not as zero spend"
+            "metric is empty — not computed yet, ads-bff's transient blank, or no spend at all; "
+            "the caller retries once and then decides (cli _zepto_blank_ads_day)"
         )
 
     logger.info(f"Zepto ad campaigns [{category}] [{date_from}..{date_to}]: {len(out)} of {total}")

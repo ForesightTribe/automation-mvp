@@ -100,6 +100,51 @@ _ZEPTO_DAY_GAP_S = 1.5
 # the replay too makes the run exit non-zero (and mail the alert).
 _ZEPTO_RECHECK_WAIT_S = 20
 
+# How many days each Zepto ads run scrapes, ending yesterday — Blinkit's ads scrape
+# does the same. Until 2026-10-05 it was yesterday only, so a failed or interrupted
+# run lost that day for good (Brik Oven 07-25, 07-26, 08-17, 09-14, 09-17; Sereko
+# 10-01). With 7, a missed day is picked up by any of the next six runs, and late
+# attribution revisions land too. Every row upserts on its key, so re-scraping a
+# day is safe.
+_ZEPTO_ADS_DAYS = 7
+
+
+def _zepto_ads_days(date_from: str | None, date_to: str | None, today: _date | None = None) -> list[str]:
+    """The ads window: --from..--to, defaulting to the _ZEPTO_ADS_DAYS days up to
+    --to (itself defaulting to yesterday). Counted back from --to, not from today, so
+    `--to` alone still gives a full window."""
+    today = today or _date.today()
+    end = _date.fromisoformat(date_to) if date_to else today - timedelta(days=1)
+    start = (_date.fromisoformat(date_from) if date_from
+             else end - timedelta(days=_ZEPTO_ADS_DAYS - 1))
+    return [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
+
+
+def _zepto_blank_ads_day(day: str, stored_spend: float, today: _date | None = None) -> str:
+    """What to do with a day whose campaign list came back blank — no spend,
+    impressions or clicks on ANY campaign — twice, 6 s apart.
+
+    Blank means one of three things, and the response cannot say which: Zepto has
+    not computed the day yet; ads-bff's transient all-"-" glitch; or every campaign
+    really spent nothing (all paused). The old rule called all three "not ready" and
+    skipped the day, so a brand with everything paused lost every day, silently,
+    under green runs (Brik Oven 09-19 -> 09-28, P28). Decided by date instead:
+
+      not_ready    yesterday or later — Zepto computes a day once each morning, so
+                   this one may genuinely not exist yet. Skipped; with the 7-day
+                   window the next run fetches it again.
+      keep_stored  an older day we already hold real spend for — a blank answer
+                   for it can only be the glitch. Skipped, the stored rows stay.
+      zero         an older day with no stored spend — the brand spent nothing.
+                   Saved as zeros, so the day exists instead of being a hole.
+    """
+    today = today or _date.today()
+    if _date.fromisoformat(day) >= today - timedelta(days=1):
+        return "not_ready"
+    if stored_spend > 0:
+        return "keep_stored"
+    return "zero"
+
 
 @app.command("blinkit")
 def scrape_blinkit(
@@ -832,80 +877,34 @@ def scrape_zepto_sales(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
     date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
     date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
-    save_xlsx: str = typer.Option(None, "--save-xlsx", help="Also write the results to this .xlsx path"),
     all_cities: bool = typer.Option(
         False, "--all-cities",
         help=(
-            "Sweep every city for the per-city split instead of only those "
-            "already known to sell. 138 calls rather than a handful — run it "
-            "occasionally to pick up a new city, not daily."
+            "Sweep every city on EVERY day of the window (~145 calls a day) — a "
+            "one-off backfill. Not needed daily: every run already sweeps every "
+            "city for the newest day."
         ),
     ),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
     """Fetch Zepto Sales Analytics (GMV/Units + per-SKU breakdown).
 
-    Browser-free end to end: a pre-flight session health check, fresh
-    brand/city/category ID discovery, then direct API calls — with an auth-only
-    browser fallback if a call comes back 401/403. Tenant-general, no hardcoded
-    IDs. Requires a session saved by `cli auth zepto-seller`.
+    Browser-free end to end: a pre-flight session check, fresh brand/city/category
+    ID discovery, then direct API calls through the shared Zepto client, which
+    re-logs in on a 401 and re-mints the WAF token on a 202/429. Tenant-general,
+    no hardcoded IDs. Log in with `cli auth login zepto --tenant <id>`.
     """
-    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to, save_xlsx, all_cities, save))
-
-
-def _write_zepto_sales_xlsx(
-    path: str, data: dict, products: list[dict], date_from: str, date_to: str, ids: dict
-) -> None:
-    from openpyxl import Workbook
-
-    gmv_daily = data["metrics"]["gmv"]["data"]
-    units_daily = {row["key"]: next(v for k, v in row.items() if k != "key") for row in data["metrics"]["units"]["data"]}
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Daily Sales"
-    ws.append(["Date", "GMV (Rs)", "Units"])
-    for row in gmv_daily:
-        day = row["key"]
-        gmv_val = next(v for k, v in row.items() if k != "key")
-        ws.append([day, gmv_val, units_daily.get(day)])
-
-    ws3 = wb.create_sheet("Top Products")
-    ws3.append([
-        "Product", "Pack Size", "Category", "Subcategory", "GMV (Rs)", "Units Sold",
-        "Sales Contribution %", "Available Stores %", "WoW Growth %", "MoM Growth %",
-        "Stock On Hand",
-    ])
-    for p in products:
-        ws3.append([
-            p.get("productName"), p.get("packSize"), p.get("categoryName"), p.get("subcategoryName"),
-            p.get("gmv"), p.get("qtySold"), p.get("salesContribution"), p.get("availableStores"),
-            p.get("weekOnWeekGrowth"), p.get("monthOnMonthGrowth"), p.get("stockOnHand"),
-        ])
-    products_gmv_sum = sum(p.get("gmv") or 0 for p in products)
-
-    ws2 = wb.create_sheet("Summary")
-    ws2.append(["Brand", ids["brand_name"]])
-    ws2.append(["Date range", f"{date_from} to {date_to}"])
-    ws2.append(["Total GMV (Sales Overview)", data["headers"]["gmv"]["value"]])
-    ws2.append(["Total Units", data["headers"]["units"]["value"]])
-    ws2.append(["Sum of Top-Products GMV", products_gmv_sum])
-    ws2.append(["Note", "Top-Products GMV may not fully reconcile with the overview total — see scraper.py"])
-    ws2.append(["Cities", len(ids["city_ids"])])
-    ws2.append(["Subcategories", ", ".join(ids["subcategory_names"])])
-
-    wb.save(path)
+    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to, all_cities, save))
 
 
 async def _scrape_zepto_sales(
     tenant_id: str,
     date_from: str | None,
     date_to: str | None,
-    save_xlsx: str | None,
     all_cities: bool,
     save: bool,
     # Pass a client to reuse one session across several sections — that is how
-    # `zepto-seller` runs sales and PO on a single login and a single WAF mint.
+    # `scrape zepto` runs sales, PO and ads on a single login and a single WAF mint.
     # None means "build your own", so running this command alone is unchanged.
     storage_state=None,
 ) -> None:
@@ -946,67 +945,74 @@ async def _scrape_zepto_sales(
             # the whole window broken down by day in a single call.
             days = _date_range(date_from, date_to)
             product_rows: list[dict] = []
-            failed_days: list[str] = []
+
+            # Fetches that failed, as (label, closure that repeats exactly that
+            # fetch and its parse). Same mechanism as the ads section: each gets
+            # one more attempt after _ZEPTO_RECHECK_WAIT_S, and only what fails
+            # THERE too fails the run. Before 2026-10-05 a failed product day was
+            # a yellow line and a failed product-by-city day or city was not even
+            # that — the run exited 0 and the city table (the Analytics heatmap)
+            # got holes nobody heard about.
+            lost: list[tuple[str, object]] = []
+            recovered: list[str] = []
+
+            async def _product_day(day: str) -> None:
+                day_products = await zepto_fetch_product_performance(
+                    storage_state, day, day, ids
+                )
+                product_rows.extend(
+                    parse_zepto_product_perf(day_products, tenant_id, job_id, day, day)
+                )
+
+            # Per-SKU data is fetched one day at a time, like the Blinkit seller
+            # scrape, so the rows land at day grain instead of one aggregate per
+            # window — that is what makes a per-day SKU/category trend possible.
+            # Only this endpoint needs the loop: sales-overview already returns
+            # the whole window broken down by day in a single call.
             with console.status("[cyan]Fetching product-level breakdown...[/cyan]") as status:
                 for i, day in enumerate(days, 1):
                     status.update(f"[cyan]Fetching product breakdown {day} ({i}/{len(days)})...[/cyan]")
                     try:
-                        day_products = await zepto_fetch_product_performance(
-                            storage_state, day, day, ids
-                        )
+                        await _product_day(day)
+                    except AuthError:
+                        raise
                     except Exception as e:
-                        # One bad day shouldn't discard the rest of the run; the
-                        # count is reported below so a partial result is visible
-                        # rather than silently short.
+                        # One bad day must not discard the rest of the run; it is
+                        # re-checked below, and fails the run if it stays lost.
                         logger.warning(f"Zepto product-performance failed for {day}: {e}")
-                        failed_days.append(day)
-                        continue
-                    product_rows.extend(
-                        parse_zepto_product_perf(day_products, tenant_id, job_id, day, day)
-                    )
+                        lost.append((f"products {day}", lambda day=day: _product_day(day)))
                     if i < len(days):
                         await asyncio.sleep(_ZEPTO_DAY_GAP_S)
 
             daily_rows = parse_zepto_sales_daily(data, ids, tenant_id, job_id, date_from, date_to)
 
-            # Which cities to ask for. Zepto has no city breakdown in a single
-            # response, so a split means one call per city — but only for cities
-            # already known to sell, which on this account is two of 138.
-            # `--all-cities` re-sweeps everything to catch a new one; worth
-            # running occasionally, not daily (Hosur went unnoticed for weeks).
-            city_names = {c["cityID"]: c["cityName"] for c in ids.get("city_list", [])}
-            targets = None if all_cities else await _zepto_known_cities(db, tenant_id)
+            # SKU x city x day — see _zepto_city_split for why Zepto needs a call per
+            # city and which cities each run asks. Its lost fetches join `lost`, so
+            # the re-check pass below covers them too.
+            product_city_rows = await _zepto_city_split(
+                db, tenant_id, job_id, ids, days, all_cities, storage_state, lost
+            )
 
-            # SKU x city x day — the only source that carries city AND category
-            # on one row, which is what the Analytics category-x-city heatmap
-            # needs. One call per city per day, so it reuses the same short
-            # `targets` list as the city split above rather than sweeping all
-            # 138 every run.
-            product_city_rows: list[dict] = []
-            pc_targets = targets if targets is not None else ids["city_ids"]
-            if pc_targets:
-                with console.status("[cyan]Fetching product breakdown by city...[/cyan]") as status:
-                    for i, day in enumerate(days, 1):
-                        status.update(
-                            f"[cyan]Product-by-city {day} ({i}/{len(days)}), "
-                            f"{len(pc_targets)} cities...[/cyan]"
-                        )
-                        try:
-                            by_city_products = await zepto_fetch_product_perf_by_city(
-                                storage_state, day, day, ids, pc_targets
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Zepto product-performance by city failed for {day}: {e}"
-                            )
-                            continue
-                        product_city_rows.extend(
-                            parse_zepto_product_city(
-                                by_city_products, city_names, tenant_id, job_id, day
-                            )
-                        )
-                        if i < len(days):
-                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+            # ── re-check pass (as in the ads section) ────────────────────────
+            if lost:
+                queued, lost = lost, []
+                console.print(
+                    f"[yellow]{len(queued)} sales fetch(es) lost — re-checking in "
+                    f"{_ZEPTO_RECHECK_WAIT_S}s before the run reports a failure.[/yellow]"
+                )
+                await asyncio.sleep(_ZEPTO_RECHECK_WAIT_S)
+                for label, fn in queued:
+                    try:
+                        await fn()
+                    except AuthError:
+                        raise
+                    except Exception as e:
+                        logger.warning(f"Zepto sales {label} failed on re-check: {e}")
+                        lost.append((label, fn))
+                    else:
+                        recovered.append(label)
+                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+            failed = [label for label, _ in lost]
 
             written = 0
             if save:
@@ -1035,20 +1041,34 @@ async def _scrape_zepto_sales(
             units = data["headers"]["units"]["value"]
             console.print(f"\n[bold cyan]Zepto Sales Overview[/bold cyan] ({date_from} to {date_to})")
             console.print(f"  GMV: [bold]{gmv}[/bold]   Units: [bold]{units}[/bold]   ({len(daily_rows)} days)")
-            console.print(f"  Product rows: [bold]{len(product_rows)}[/bold] over {len(days) - len(failed_days)}/{len(days)} days")
-            if failed_days:
+            console.print(f"  Product rows: [bold]{len(product_rows)}[/bold] over {len(days)} day(s)   "
+                          f"Product-by-city rows: [bold]{len(product_city_rows)}[/bold]")
+            if recovered:
                 console.print(
-                    f"  [yellow]{len(failed_days)} day(s) failed and were skipped: "
-                    f"{', '.join(failed_days[:5])}{' …' if len(failed_days) > 5 else ''}[/yellow]"
+                    f"  [green]{len(recovered)} fetch(es) failed once and succeeded on "
+                    f"re-check:[/green] {', '.join(recovered[:5])}"
+                    f"{' …' if len(recovered) > 5 else ''}"
                 )
             if save:
                 console.print(f"  [green]Saved to DB:[/green] {written} rows")
             else:
                 console.print("  [yellow]--no-save: nothing written to the database[/yellow]")
 
-            if save_xlsx:
-                _write_zepto_sales_xlsx(save_xlsx, data, products, date_from, date_to, ids)
-                console.print(f"[green]Saved:[/green] {save_xlsx}")
+            # ⚠️ Everything above already SAVED — same rule as the ads and PO
+            # sections: what came back is kept, but a run that lost fetches must
+            # not report success, or on the VM nobody is told. The exit code is the
+            # only route to the alert (see the note at the end of _scrape_zepto_ads).
+            if failed:
+                logger.error(
+                    f"Zepto sales: {len(failed)} fetch(es) lost — {', '.join(failed[:5])}"
+                    f"{' …' if len(failed) > 5 else ''}. Saved what returned; "
+                    f"re-run the same window to backfill."
+                )
+                console.print(
+                    f"[red]Incomplete: {len(failed)} sales fetch(es) failed twice. Data "
+                    "that did return was saved — re-run the same window to backfill.[/red]"
+                )
+                raise typer.Exit(1)
 
         except AuthError as e:
             # platform_auth already tried to re-login and could not. Usually the
@@ -1085,6 +1105,87 @@ async def _scrape_zepto_sales(
                 await fail_scrape_job(db, job_id, str(e))
             console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
             raise typer.Exit(1)
+
+
+async def _zepto_city_split(
+    db, tenant_id: str, job_id: str, ids: dict, days: list[str], all_cities: bool,
+    client, lost: list,
+) -> list[dict]:
+    """Zepto sales per product per city per day — `zepto_seller_product_city_daily` rows.
+
+    Why it is its own scrape: SKU x city x day is the only Zepto source with city AND
+    category on one row (the Analytics category-x-city heatmap), but Zepto answers
+    sales by city ONE CITY PER CALL, and an account lists ~145 cities. Blinkit's sales
+    call carries the city on every row, so Blinkit has none of this.
+
+    The rule: sweep EVERY city for the newest day of the window (~145 calls, ~2.5 min),
+    and ask only the cities known to sell (+ any the sweep just found) for the older
+    days, which are re-scrapes. Each day gets one full sweep, the run after it
+    happens, so a city that starts selling is caught on its first day. This replaces
+    "only ever ask the cities that sold before", which never asked a new city (Hosur
+    went unnoticed for weeks, P21) and, for a new tenant, asked none at all (Sereko:
+    21 days of sales, 0 city rows — P29). `all_cities` sweeps every city on every day
+    (a one-off backfill).
+
+    A city whose call fails is appended to `lost` as (label, replay) — the caller's
+    re-check pass retries it once, then fails the run (P44). The replay adds its rows
+    to the returned list, so call the re-check before saving.
+    """
+    rows: list[dict] = []
+    city_names = {c["cityID"]: c["cityName"] for c in ids.get("city_list", [])}
+
+    async def _city_day(day: str, cities: list[str]) -> list[str]:
+        """One day's split for `cities`; returns the ids whose call failed (the
+        fetcher skips those so the rest still land)."""
+        failed: list[str] = []
+        by_city = await zepto_fetch_product_perf_by_city(
+            client, day, day, ids, cities, failed=failed
+        )
+        rows.extend(parse_zepto_product_city(by_city, city_names, tenant_id, job_id, day))
+        return failed
+
+    def _queue(day: str, failed: list[str]) -> None:
+        for city in failed:
+            async def _again(day=day, city=city) -> None:
+                if await _city_day(day, [city]):
+                    raise RuntimeError(f"city {city} failed again")
+            lost.append((f"{city_names.get(city, city)} {day}", _again))
+
+    if not days:
+        return rows
+    if all_cities:
+        targets, city_days = ids["city_ids"], days
+    else:
+        sweep_day = days[-1]
+        with console.status(
+            f"[cyan]Sweeping all {len(ids['city_ids'])} cities for {sweep_day}...[/cyan]"
+        ):
+            _queue(sweep_day, await _city_day(sweep_day, ids["city_ids"]))
+        swept = {r["city_id"] for r in rows}
+        known = set(await _zepto_known_cities(db, tenant_id))
+        targets, city_days = sorted(known | swept), days[:-1]
+        new = sorted(swept - known)
+        logger.info(
+            f"Zepto: city sweep for {sweep_day} — {len(swept)} selling, "
+            f"{len(new)} new: {', '.join(city_names.get(c, c) for c in new) or 'none'}"
+        )
+        console.print(
+            f"  City sweep {sweep_day}: {len(swept)} selling city(ies)"
+            + (f", new: {', '.join(city_names.get(c, c) for c in new)}" if new else "")
+        )
+        await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+
+    if targets and city_days:
+        with console.status("[cyan]Fetching product breakdown by city...[/cyan]") as status:
+            for i, day in enumerate(city_days, 1):
+                status.update(
+                    f"[cyan]Product-by-city {day} ({i}/{len(city_days)}), "
+                    f"{len(targets)} cities...[/cyan]"
+                )
+                _queue(day, await _city_day(day, targets))
+                if i < len(city_days):
+                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
+    return rows
 
 
 def _print_scorecard_summary(weekly: dict) -> None:
@@ -1923,10 +2024,27 @@ async def _zepto_known_cities(db, tenant_id: str) -> list[str]:
     return list(rows)
 
 
+async def _zepto_stored_ad_spend(db, tenant_id: str, day: str) -> float:
+    """Total ad spend already stored for this tenant and day (0 when none) — what
+    _zepto_blank_ads_day needs to tell the blank-list glitch from a spend-less day."""
+    from sqlalchemy import text
+
+    total = (
+        await db.execute(
+            text(
+                "SELECT COALESCE(SUM(spend), 0) FROM zepto_ad_campaign_daily "
+                "WHERE tenant_id = :t AND date = :d"
+            ),
+            {"t": tenant_id, "d": _date.fromisoformat(day)},
+        )
+    ).scalar()
+    return float(total or 0)
+
+
 @app.command("zepto-ads")
 def scrape_zepto_ads(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
+    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: the 7 days up to --to)"),
     date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
     category: str = typer.Option(
         "all", "--category",
@@ -1949,9 +2067,9 @@ def scrape_zepto_ads(
     operational ones. Campaign rows merge both; keyword rows come only from
     the second.
 
-    Unlike `zepto-sales`, this needs a browser: the ads-bff service rejects the
-    saved session's WAF token with a 202 challenge, so headers are harvested
-    from one short page load and reused for the HTTP calls.
+    ads-bff needs a WAF token on top of the session, which the shared Zepto client
+    holds and re-mints on a 202/429 — no browser beyond that one mint. Scrapes the
+    7 days up to yesterday by default, so a missed run heals on the next one.
     """
     asyncio.run(_scrape_zepto_ads(tenant_id, date_from, date_to, category, save))
 
@@ -1965,7 +2083,12 @@ async def _scrape_zepto_ads(
     from scraper.platforms.zepto.dashboard_data.seller import endpoints as zep
 
     categories = list(zep.ADS_CATEGORIES) if category == "all" else [category]
-    days = _date_range(date_from, date_to)
+    # NOT _date_range: that defaults to yesterday alone, which is right for Blinkit's
+    # seller scrape that shares it and was wrong here (P1). See _ZEPTO_ADS_DAYS.
+    days = _zepto_ads_days(date_from, date_to)
+    if not days:
+        console.print(f"[red]Empty ads window: --from {date_from} is after --to {date_to}.[/red]")
+        raise typer.Exit(1)
 
     async with AsyncSessionLocal() as db:
         job_id = None
@@ -1996,6 +2119,8 @@ async def _scrape_zepto_ads(
             bd_rows: list[dict] = []
             failed: list[str] = []
             not_ready: list[str] = []
+            kept_stored: list[str] = []    # blank older day, stored spend kept (glitch)
+            zero_days: list[str] = []      # blank older day, saved as genuine zeros
             # Per day: one campaign list (the filter is ignored there, so
             # fetching it per category would just repeat the same call) plus
             # four tabular views per category — campaign, keyword, product and
@@ -2023,7 +2148,7 @@ async def _scrape_zepto_ads(
                         raise _SessionGone(
                             "3 consecutive auth failures — the Zepto session is gone. "
                             "Stopping so the rows already fetched can be saved; "
-                            "re-run `cli auth zepto-seller` and scrape the missing days."
+                            "run `cli auth login zepto --tenant <id>` and scrape the missing days."
                         )
                 else:
                     auth_fails = 0
@@ -2079,8 +2204,10 @@ async def _scrape_zepto_ads(
                 # ads-bff intermittently returns the campaign list with
                 # every metric as "-", then real figures for the same
                 # window seconds later. Retry once; if it is still bare,
-                # skip the day rather than upserting zeros over data that
-                # a previous run got right.
+                # _zepto_blank_ads_day decides: skip a day that may not be
+                # computed yet, keep the stored rows of a day we already hold
+                # spend for (never zeros over data a previous run got right),
+                # and save a genuinely spend-less older day as zeros (P28).
                 if day_rows and not _has_any(day_rows):
                     await asyncio.sleep(6)
                     camps = await zepto_fetch_ad_campaigns(
@@ -2090,8 +2217,17 @@ async def _scrape_zepto_ads(
                         camps, tenant_id, job_id, day, categories[0]
                     )
                     if not _has_any(day_rows):
-                        if day not in not_ready:
-                            not_ready.append(day)
+                        verdict = _zepto_blank_ads_day(
+                            day, await _zepto_stored_ad_spend(db, tenant_id, day)
+                        )
+                        if verdict == "zero":
+                            if day not in zero_days:
+                                zero_days.append(day)
+                            rows.extend(day_rows)
+                            return
+                        skipped = not_ready if verdict == "not_ready" else kept_stored
+                        if day not in skipped:
+                            skipped.append(day)
                         return
                 # Extended BEFORE the tabs, not after, so _day_campaigns can find
                 # the day's rows; the tabs patch these same row objects either way.
@@ -2186,7 +2322,10 @@ async def _scrape_zepto_ads(
                 lost — the tabs are meaningless without it, so _attempt queues the
                 whole day as a single re-check item."""
                 await _fetch_campaign_list(day)
-                if day in not_ready:
+                # A zero day skips the six tabs too: with no spend anywhere they
+                # can only come back empty, and a paused brand would otherwise
+                # spend ~18 calls per day of the window on nothing.
+                if day in not_ready or day in kept_stored or day in zero_days:
                     return
                 await asyncio.sleep(_ZEPTO_DAY_GAP_S)
                 await _fetch_day_tabs(day)
@@ -2300,6 +2439,17 @@ async def _scrape_zepto_ads(
                     f"  [yellow]{len(not_ready)} day(s) had no metrics yet and were skipped "
                     f"(not written as zero): {', '.join(not_ready[:5])}{' …' if len(not_ready) > 5 else ''}[/yellow]"
                 )
+            if zero_days:
+                console.print(
+                    f"  {len(zero_days)} day(s) with no ad activity on any campaign, saved as "
+                    f"zero: {', '.join(zero_days[:5])}{' …' if len(zero_days) > 5 else ''}"
+                )
+            if kept_stored:
+                console.print(
+                    f"  [yellow]{len(kept_stored)} day(s) came back blank but already have "
+                    f"stored spend — kept the stored rows: {', '.join(kept_stored[:5])}"
+                    f"{' …' if len(kept_stored) > 5 else ''}[/yellow]"
+                )
             if save:
                 console.print(
                     "  [green]Saved to DB:[/green] "
@@ -2375,7 +2525,7 @@ async def _scrape_zepto_ads(
 @app.command("zepto")
 def scrape_zepto(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: 7 days ago)"),
+    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: sales 8 days ago; ads the 7 days up to --to)"),
     date_to: str = typer.Option(None, "--to", help="Sales/ads end date YYYY-MM-DD (default: yesterday)"),
     sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
     po: bool = typer.Option(False, "--po", help="Scrape PO/ASN/GRN data"),
@@ -2397,7 +2547,7 @@ def scrape_zepto(
             "while the sales window stops at yesterday."
         ),
     ),
-    all_cities: bool = typer.Option(False, "--all-cities", help="Sweep every city for the per-city sales split"),
+    all_cities: bool = typer.Option(False, "--all-cities", help="Sales: sweep every city on every day (a one-off backfill; every run already sweeps the newest day)"),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
     """Scrape ALL Zepto private data. Pass --sales, --po, --ads, or none for all three.
@@ -2509,7 +2659,7 @@ async def _scrape_zepto(
         logger.info("Zepto: sales section starting")
         try:
             await _scrape_zepto_sales(
-                tenant_id, date_from, date_to, None, all_cities, save,
+                tenant_id, date_from, date_to, all_cities, save,
                 storage_state=client,
             )
             ran.append("sales")
@@ -2625,6 +2775,8 @@ async def _scrape_zepto_po(
             async def _try(label, coro):
                 try:
                     return await coro
+                except AuthError:
+                    raise              # not a flaky endpoint — the session is gone
                 except Exception as e:
                     lost.append(label)
                     logger.warning(f"Zepto {label} failed, continuing without it: {e}")
@@ -2705,6 +2857,20 @@ async def _scrape_zepto_po(
                     "retries. Data that did return was saved — re-run to backfill.[/red]"
                 )
                 raise typer.Exit(1)
+        except AuthError as e:
+            # Same handler as the sales and ads sections. Without it the generic
+            # `except Exception` below turned an expired session into exit 1: the
+            # combined `scrape zepto` never saw the AuthError, carried on into ads
+            # on a dead session, and the runner recorded `exit_1`, not
+            # `auth_expired` (P46).
+            if job_id:
+                await fail_scrape_job(db, job_id, "auth_expired")
+            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
+            console.print(
+                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
+                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
+            )
+            raise
         except typer.Exit:
             raise
         except Exception as e:
