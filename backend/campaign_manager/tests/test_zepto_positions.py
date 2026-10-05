@@ -1,7 +1,10 @@
-"""Zepto position attribution — which sponsored slot is THIS rule's?
+"""Zepto ad-slot attribution — which sponsored slot is THIS rule's?
 
 Rows here are shaped as the public scraper returns them, and the `uclId`s are REAL
 ones captured from live Zepto search on 2026-09-01.
+
+Since 2026-10-05 the answer is an AD SLOT (campaign_manager/ad_slots.py): our place among the
+sponsored rows. Organic rows of ours are recorded, never a slot.
 
     python -m campaign_manager.tests.test_zepto_positions
 """
@@ -42,6 +45,10 @@ def row(pos, *, ad=False, ucl="", variant=""):
             "name": "Brik Oven Sourdough", "brand": "Brik Oven"}
 
 
+def theirs(pos):
+    return row(pos, ad=True, ucl=UCL_THEIRS, variant="someone-else")
+
+
 def locate(results, keyword="bakers dozen bread", match_type="PHRASE"):
     return positions.locate(results, keyword, 12.9, 77.5,
                             campaign_id=OUR_CAMPAIGN, match_type=match_type,
@@ -51,125 +58,130 @@ def locate(results, keyword="bakers dozen bread", match_type="PHRASE"):
 # ── the happy path ───────────────────────────────────────────────────────────
 
 def test_finds_our_slot_by_campaign_and_keyword():
-    pos, src = locate([row(1, ad=True, ucl=UCL_THEIRS),
-                       row(7, ad=True, ucl=UCL_OURS_PHRASE, variant=OUR_VARIANT)])
-    assert pos == 7 and "live(" in src
+    p = locate([theirs(1), row(7, ad=True, ucl=UCL_OURS_PHRASE, variant=OUR_VARIANT)])
+    assert (p.slot, p.page_position, p.ad_positions) == (2, 7, (1, 7))
+    assert "live(" in p.reason
+
+
+def test_the_slot_is_counted_among_ads_only():
+    """Deepansh's example (2026-10-05): ads at 2, 5, 6, 9, 11 are slots 1-5, so our ad at
+    page position 5 is Ad #2 — and our organic listings at 1 and 4 change nothing."""
+    p = locate([row(1, variant=OUR_VARIANT), theirs(2), row(4, variant=OUR_VARIANT),
+                row(5, ad=True, ucl=UCL_OURS_PHRASE, variant=OUR_VARIANT),
+                theirs(6), theirs(9), theirs(11)])
+    assert (p.slot, p.page_position) == (2, 5)
+    assert p.ad_positions == (2, 5, 6, 9, 11)
+    assert p.organic_positions == (1, 4)
 
 
 def test_best_slot_wins_when_we_hold_several():
-    """A campaign can hold several slots for one keyword with different products.
-    `min` matches Blinkit's convention so the two marketplaces report rank alike."""
-    pos, _ = locate([row(9, ad=True, ucl=UCL_OURS_PHRASE),
-                     row(3, ad=True, ucl=UCL_OURS_PHRASE)])
-    assert pos == 3
+    """A campaign can hold several slots for one keyword with different products."""
+    p = locate([row(9, ad=True, ucl=UCL_OURS_PHRASE), row(3, ad=True, ucl=UCL_OURS_PHRASE)])
+    assert (p.slot, p.page_position) == (1, 3)
 
 
-def test_a_slot_won_by_another_keyword_still_counts_as_visibility():
-    """CHANGED 2026-09-02. This used to return None on the reasoning that the slot was
-    not this rule's to claim. Under best-position it counts: the shopper sees our
-    product there. The reason string still says which keyword won it, so the
-    distinction survives where it matters — in the log, not the decision."""
-    pos, src = locate([row(7, ad=True, ucl=UCL_OURS_PHRASE)], match_type="EXACT")
-    assert pos == 7
-    assert "won by" in src and "bakers dozen bread" in src
+def test_a_slot_won_by_another_keyword_still_counts():
+    """The shopper sees our ad there, whichever of our keywords won it. The reason says
+    which, so the distinction survives in the log, not the decision."""
+    p = locate([row(7, ad=True, ucl=UCL_OURS_PHRASE)], match_type="EXACT")
+    assert p.slot == 1
+    assert "won by" in p.reason and "bakers dozen bread" in p.reason
 
 
 def test_keyword_comparison_is_normalised():
-    pos, src = locate([row(4, ad=True, ucl=UCL_OURS_PHRASE)],
-                      keyword="  Bakers   Dozen Bread ", match_type="phrase")
-    assert pos == 4 and "won by" not in src      # matched this rule exactly
+    p = locate([row(4, ad=True, ucl=UCL_OURS_PHRASE)],
+               keyword="  Bakers   Dozen Bread ", match_type="phrase")
+    assert p.slot == 1 and "won by" not in p.reason      # matched this rule exactly
 
 
-# ── organic counts, and the best row wins ────────────────────────────────────
+# ── organic is recorded, never a slot ────────────────────────────────────────
 
-def test_organic_appearance_is_a_position_not_a_skip():
-    """THE change. A bid cannot move the organic ROW, but it can add a paid row above
-    it — so best-position does respond to bidding. And when organic already meets the
-    target, drift-down trims the bid and we keep the placement for free, which the
-    sponsored-only model could not even see."""
-    pos, src = locate([row(2, variant=OUR_VARIANT)])
-    assert pos == 2 and "organic" in src
+def test_organic_alone_is_no_ad_slot():
+    """CHANGED 2026-10-05 (was "organic is a position", 2026-09-02). The engine pushes the ad
+    where the client asked whatever organic does, so organic-only reads as "not showing" and
+    the bid climbs. The organic listing is kept for the overlap warning."""
+    p = locate([row(2, variant=OUR_VARIANT)])
+    assert p.slot is None and p.organic_positions == (2,)
+    assert "organic only" in p.reason
 
 
 def test_organic_is_only_ours_on_a_product_id_match():
     """There is no tracking id on an organic row, so a product-id match is the only
-    proof. A stranger's organic row must not become our position."""
-    pos, _ = locate([row(2, variant="someone-else")])
-    assert pos is None
+    proof. A stranger's organic row must not become our organic listing."""
+    p = locate([row(2, variant="someone-else")])
+    assert p.slot is None and p.organic_positions == ()
 
 
-def test_the_better_of_organic_and_paid_wins():
-    """Verified live on `ricotta`: the same product at 8 organic and 9 sponsored."""
-    pos, src = locate([row(8, variant=OUR_VARIANT),
-                       row(9, ad=True, ucl=UCL_OURS_PHRASE, variant=OUR_VARIANT)])
-    assert pos == 8 and "organic" in src
-
-
-def test_paid_wins_when_it_is_the_higher_slot():
-    pos, src = locate([row(3, ad=True, ucl=UCL_OURS_PHRASE, variant=OUR_VARIANT),
-                       row(11, variant=OUR_VARIANT)])
-    assert pos == 3 and "sponsored" in src
+def test_organic_above_our_ad_does_not_replace_it():
+    """Verified live on `ricotta`: the same product at 8 organic and 9 sponsored. The slot is
+    the sponsored one; the organic row is only recorded."""
+    p = locate([row(8, variant=OUR_VARIANT),
+                row(9, ad=True, ucl=UCL_OURS_PHRASE, variant=OUR_VARIANT)])
+    assert (p.slot, p.page_position, p.organic_positions) == (1, 9, (8,))
+    assert "sponsored" in p.reason
 
 
 # ── absent ───────────────────────────────────────────────────────────────────
 
 def test_a_competitors_ad_is_not_ours():
-    pos, reason = locate([row(1, ad=True, ucl=UCL_THEIRS)])
-    assert pos is None and "not in these results" in reason
+    p = locate([theirs(1)])
+    assert p.slot is None and "not in these results" in p.reason
+    assert p.ad_positions == (1,)
 
 
 def test_absent_when_nothing_on_the_page_is_ours():
-    pos, reason = locate([row(2, variant="someone-else"),
-                          row(1, ad=True, ucl=UCL_THEIRS)])
-    assert pos is None and "not in these results" in reason
+    p = locate([row(2, variant="someone-else"), theirs(1)])
+    assert p.slot is None and "not in these results" in p.reason
 
 
 def test_our_product_in_an_unattributable_paid_slot_still_counts():
     """Sponsored, our product, tracking id undecodable — another campaign of ours, or
-    a malformed id. Either way the shopper sees us there."""
-    pos, src = locate([row(6, ad=True, ucl="garbage", variant=OUR_VARIANT)])
-    assert pos == 6 and "not attributable" in src
+    a malformed id. Either way the shopper sees our ad there."""
+    p = locate([theirs(2), row(6, ad=True, ucl="garbage", variant=OUR_VARIANT)])
+    assert (p.slot, p.page_position) == (2, 6) and "not attributable" in p.reason
 
 
 def test_empty_results_are_not_an_error_here():
     """`fetch_positions` raises when it could not LOOK. Reaching locate with nothing
     means we looked and were not there."""
-    pos, reason = locate([])
-    assert pos is None and "not in these results" in reason
+    p = locate([])
+    assert p.slot is None and p.ad_positions == () and "not in these results" in p.reason
 
 
 # ── the adapter seam ─────────────────────────────────────────────────────────
 
 def test_adapter_passes_products_through_as_variant_ids():
     """`read_products` returns `{pid, name}` on every marketplace; Zepto's pid IS the
-    variant id consumer search reports, so the join is exact. Without it an ORGANIC
-    row of ours cannot be recognised at all."""
-    pos, _ = get_adapter("zepto").locate_position(
-        [row(6, variant=OUR_VARIANT)], "bakers dozen bread", 12.9, 77.5,
+    variant id consumer search reports, so the join is exact. Without it neither an
+    unattributable ad nor an organic row of ours could be recognised."""
+    p = get_adapter("zepto").locate_position(
+        [row(3, ad=True, ucl="garbage", variant=OUR_VARIANT), row(6, variant=OUR_VARIANT)],
+        "bakers dozen bread", 12.9, 77.5,
         products=[{"pid": OUR_VARIANT, "name": ""}],
         campaign_id=OUR_CAMPAIGN, match_type="PHRASE", brand_name=None)
-    assert pos == 6
+    assert (p.slot, p.organic_positions) == (1, (6,))
 
 
 def test_both_adapters_accept_the_same_call():
     """The engine passes `campaign_id`/`match_type` unconditionally. Blinkit has no
     per-slot attribution and must simply ignore them rather than raise."""
     for mp in ("blinkit", "zepto"):
-        out = get_adapter(mp).locate_position(
+        p = get_adapter(mp).locate_position(
             [], "kw", 12.9, 77.5, products=[], campaign_id=1,
             match_type="EXACT", brand_name=None)
-        assert isinstance(out, tuple) and out[0] is None, mp
+        assert p.slot is None and p.ad_positions == (), mp
 
 
 def test_blinkit_still_matches_on_product_identity():
     """The extraction moved out of bid.py into the adapter — this proves it still
     happens, rather than quietly producing empty lists like it would have on Zepto."""
-    results = [{"position": 3, "is_ad": True, "name": "Dobra Goli Soda", "pid": "p1"}]
-    pos, _ = get_adapter("blinkit").locate_position(
+    results = [{"position": 1, "is_ad": True, "name": "Other Brand Cola", "pid": "x"},
+               {"position": 3, "is_ad": True, "name": "Dobra Goli Soda", "pid": "p1"}]
+    p = get_adapter("blinkit").locate_position(
         results, "goli soda", 12.9, 77.5,
         products=[{"pid": "p1", "name": "Dobra Goli Soda"}],
         campaign_id=99, match_type="EXACT", brand_name="dobra")
-    assert pos == 3
+    assert (p.slot, p.page_position) == (2, 3)
 
 
 if __name__ == "__main__":

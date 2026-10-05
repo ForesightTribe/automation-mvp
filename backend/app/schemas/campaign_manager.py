@@ -3,7 +3,7 @@ import uuid
 from datetime import datetime
 from typing import Annotated, Literal
 
-from pydantic import AfterValidator, BaseModel, ConfigDict
+from pydantic import AfterValidator, AliasChoices, BaseModel, ConfigDict, Field
 
 from campaign_manager import window
 
@@ -34,6 +34,21 @@ def _date(v: str | None) -> str | None:
 
 Time = Annotated[str | None, AfterValidator(_time)]
 Date = Annotated[str | None, AfterValidator(_date)]
+
+
+# ── The bid target: an AD SLOT ──────────────────────────────────────────────
+#
+# A bid automation targets an ad slot — the Nth sponsored listing on the page
+# (campaign_manager/ad_slots.py) — not a page position. The column and the field keep their
+# old name, `target_position`; the API also speaks `target_ad_slot`, and the dashboard sends
+# that. Both are accepted on input so a frontend and backend deployed minutes apart (Vercel /
+# Render) never reject each other.
+#
+# Capped at Ad #5: consumer search is read 48 products deep, so a deeper slot cannot be told
+# apart from "not showing" — and slots past the first few are not what anyone pays for.
+MAX_TARGET_AD_SLOT = 5
+_SLOT_ALIASES = AliasChoices("target_ad_slot", "target_position")
+TargetSlot = Annotated[int, Field(ge=1, le=MAX_TARGET_AD_SLOT, validation_alias=_SLOT_ALIASES)]
 
 
 # ── Budget schedules + rules ────────────────────────────────────────────────
@@ -117,7 +132,7 @@ class BidRuleIn(BaseModel):
     campaign_id: int
     campaign_name: str | None = None
     keyword: str
-    target_position: int
+    target_position: TargetSlot             # an AD SLOT — also accepted as `target_ad_slot`
     min_bid: int
     # Optional — omit for "reach the target whatever it costs". The engine still applies
     # the absolute backstop (`CM_BID_MAX_ABSOLUTE`), so this is never truly unbounded.
@@ -169,13 +184,35 @@ class BidRuleOut(BaseModel):
     # When the last window closed, and when its final teardown landed (lifecycle.py).
     ended_at: datetime | None = None
     settled_at: datetime | None = None
+    # The target as what it IS — an ad slot. Same value as `target_position`, which stays for
+    # clients that still read it.
+    target_ad_slot: int | None = None
+    # Set when we keep showing ORGANICALLY above the target slot at most recent checks — the
+    # spend may buy visibility we already have. A warning only; the engine ignores organic.
+    organic_overlap: "OrganicOverlapOut | None" = None
+
+
+class OrganicOverlapOut(BaseModel):
+    """`ad_slots.Overlap`, for the dashboard: "Targeting Ad #2 (position 5), but you already
+    appear organically at position 1 at 2 of 3 stores"."""
+    stores: int                         # stores where it keeps happening …
+    of: int                             # … of the stores with recent readings
+    store_labels: list[str] = []
+    organic_positions: list[int] = []   # our organic page positions (newest such reading)
+    target_page_position: int | None = None   # where the target slot sat on that page
+    last_seen: datetime | None = None
+
+
+BidRuleOut.model_rebuild()              # resolve the forward reference above
 
 
 class BidRuleUpdate(BaseModel):
     """Partial edit of a bid rule — only the fields sent are changed. `city`/`location_id`
     re-resolve the measurement lat/lon (like create); campaign is NOT editable (identity)."""
     keyword: str | None = None
-    target_position: int | None = None
+    # An AD SLOT — also accepted as `target_ad_slot` (see TargetSlot).
+    target_position: Annotated[int | None, Field(ge=1, le=MAX_TARGET_AD_SLOT,
+                                                 validation_alias=_SLOT_ALIASES)] = None
     min_bid: int | None = None
     max_bid: int | None = None
     match_type: str | None = None
@@ -391,9 +428,16 @@ class RunLogOut(BaseModel):
     rule_id: str | None = None
     old_value: float | None = None
     new_value: float | None = None
-    # The two inputs behind the decision, so the UI can show WHY without parsing `reason`.
+    # The inputs behind the decision, so the UI can show WHY without parsing `reason`.
+    # Since the ad-slot switch (2026-10): `ad_slot` and `target` are ad slots and `position`
+    # is where our slot sat on the PAGE ("Ad #2 · position 5"). Rows from before have no
+    # `ad_slot`, and their `position` / `target` are page positions.
     position: float | None = None
     target: int | None = None
+    ad_slot: int | None = None
+    # "ad_slot" on rows written since the switch — what says `target` is an ad slot even
+    # when the row has no `ad_slot` (our ad wasn't showing). NULL = page positions.
+    measured_in: str | None = None
     reason: str | None = None
     dry_run: bool
     success: bool

@@ -1400,6 +1400,46 @@ async def recent_store_reads(tenant_id: uuid.UUID, platform: str, rule_ids, *,
     return out
 
 
+async def recent_page_reads(tenant_id: uuid.UUID, platform: str, rule_ids, *,
+                            since: datetime, per_store: int, db=None) -> dict:
+    """`{rule_id: [CmBidStoreRead-like rows]}` — each store's last `per_store` readings that SAW
+    the page (`ad_positions` recorded), newest first. Feeds the organic-overlap warning
+    (`ad_slots.overlap_summary`).
+
+    Capped per (rule, store) in SQL with a window function: a list page calls this for every
+    automation, and an uncapped day of readings (~4/hour × stores × rules) is the fetch-all
+    shape that exhausted the pool in 2026-09. Dry and live readings both count — a dry run's
+    search is a real search. Rows written before the ad-slot switch have no `ad_positions`
+    and are left out."""
+    from sqlalchemy import func
+    from app.models.campaign_manager_v2 import CmBidStoreRead as R
+
+    ids = [r for r in rule_ids if r]
+    if not ids:
+        return {}
+    ranked = select(
+        R.rule_id, R.merchant_id, R.store_label, R.ad_positions, R.organic_positions,
+        R.observed_at,
+        func.row_number().over(partition_by=(R.rule_id, R.merchant_id),
+                               order_by=R.observed_at.desc()).label("n"),
+    ).where(
+        R.tenant_id == tenant_id, R.platform == platform, R.rule_id.in_(ids),
+        R.observed_at >= since,
+        # The page is recorded only on readings that saw it. The verdict is the real filter:
+        # the JSON type stores Python None as JSON `null`, which IS NOT NULL in SQL. The NULL
+        # test drops rows from before the column existed.
+        R.verdict.in_(coverage.COUNTED), R.ad_positions.is_not(None),
+    ).subquery()
+    async with _session(db) as db:
+        rows = (await db.execute(
+            select(ranked).where(ranked.c.n <= per_store)
+            .order_by(ranked.c.observed_at.desc()))).all()
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r.rule_id, []).append(r)
+    return out
+
+
 async def write_store_reads(rows: list[dict]) -> None:
     """Append a run's per-store readings and trim what has aged past
     `CM_STORE_READS_RETENTION_DAYS` for the clients written. Never raises: the bids these

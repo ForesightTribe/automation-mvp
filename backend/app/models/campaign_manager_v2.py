@@ -174,6 +174,13 @@ class CmBidRuntime(SQLModel, table=True):
     # means "start from the base step" — the state at a window open, after a riser is
     # crossed, and for a rule that has never climbed.
     raise_step: int | None = None
+    # What `last_position` / `effective_target` were measured in. "ad_slot" since the switch to
+    # ad-slot targets (campaign_manager/ad_slots.py); NULL = page positions, written before it.
+    # The engine ignores the learned state on a row that isn't "ad_slot" and rewrites it
+    # (`bid.slot_state_is_stale`) — the migration does not wipe it, because the old code keeps
+    # writing page positions until the new code is deployed.
+    # ⚠️ Migration `b8e2d4f6a1c3` first, model second.
+    measured_in: str | None = None
     updated_at: datetime = Field(default_factory=now_ist)
 
 
@@ -291,7 +298,16 @@ class CmBidStoreRead(SQLModel, table=True):
     bid: int | None = None
     eligibility: str
     verdict: str
+    # Our ad's PAGE position, when it held a slot. The slot itself — what the decision acted
+    # on (campaign_manager/ad_slots.py) — is `ad_slot`.
     position: float | None = None
+    # ⚠️ Migration `b8e2d4f6a1c3` first, model second — these three.
+    ad_slot: int | None = None
+    # The page as we saw it (sponsored / absent readings only): every ad's page position, and
+    # our organic listings' (product-id match). Organic never decides a bid; it feeds the
+    # "already showing organically above your target" warning.
+    ad_positions: list | None = Field(default=None, sa_column=Column(JSON))
+    organic_positions: list | None = Field(default=None, sa_column=Column(JSON))
     binding: bool = False
     detail: str | None = None
     dry_run: bool = True
@@ -379,8 +395,17 @@ class CmRunLog(SQLModel, table=True):
     # The observed search position, and the target it was judged against — the two inputs to
     # every bid decision. They used to exist only as prose inside `reason`, which meant a UI
     # could show THAT a decision happened but never why.
+    #
+    # Since the switch to ad-slot targets (2026-10, campaign_manager/ad_slots.py): `target` and
+    # `ad_slot` are AD SLOTS — what the decision compared — and `position` is where our slot
+    # sat on the PAGE. Older rows have no `ad_slot`, and their `position`/`target` are page
+    # positions. `measured_in` = "ad_slot" says which — it is the only tell on a "not showing"
+    # row, where `ad_slot` and `position` are both empty.
+    # ⚠️ Migration `b8e2d4f6a1c3` first, model second (`ad_slot`, `measured_in`).
     position: float | None = None
     target: int | None = None
+    ad_slot: int | None = None
+    measured_in: str | None = None
     reason: str | None = None
     dry_run: bool = True
     success: bool = True

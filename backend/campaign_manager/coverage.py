@@ -1,8 +1,9 @@
 """Multi-store coverage: which stores a bid decision counts, and the one position it acts on.
 
 A keyword automation measures at up to three stores per city (`cm_city_stores` ranks: 1 is
-the anchor, 2-3 validate it). The goal is the target position at EVERY store where the
-campaign can actually be sold, so the decision acts on the WORST position among those stores.
+the anchor, 2-3 validate it). The goal is the target AD SLOT at EVERY store where the
+campaign can actually be sold, so the decision acts on the WORST slot among those stores.
+("position" below means that slot — campaign_manager/ad_slots.py.)
 "All eligible stores at target" and "the worst eligible store at target" are the same
 statement — which is why `bid.compute_bid` needed no change: it is simply handed the binding
 store's position.
@@ -93,20 +94,32 @@ def absent_position(results: int) -> float:
     """Where a counted store without our ad sits, for the decision: just below the last
     result. A genuine lower bound, and it keeps escalation honest — still absent next tick
     reads as "not improved", exactly like a real slot that didn't move. Never shown to a
-    client and never stored as a position."""
+    client and never stored as a position.
+
+    Still counted in RESULTS, not ads, now that the decision is in ad slots: a page can show
+    fewer ads than the target (none at all, even), and "ads + 1" would then read as holding.
+    There can never be more ad slots than results, so this stays worse than any real slot."""
     return float(results + 1)
 
 
 @dataclass(frozen=True)
 class Reading:
     """One store, one tick. `store` is anything carrying `label`, `rank` and `merchant_id`
-    (repo.MeasurementStore in the engine)."""
+    (repo.MeasurementStore in the engine).
+
+    `position` is what the decision acts on: our AD SLOT (campaign_manager/ad_slots.py — 1 =
+    the first ad on the page), or `absent_position` when ABSENT. Where that slot sits on the
+    page is `page_position`; `ad_positions` / `organic_positions` describe the page for the
+    log, History and the organic-overlap warning, and never decide anything."""
     store: object
     eligibility: str
     verdict: str
-    position: float | None = None       # sponsored slot, or `absent_position` when ABSENT
+    position: float | None = None       # our ad slot, or `absent_position` when ABSENT
     results: int = 0                    # products on the results page
     detail: str = ""                    # what the matcher said, or why it was not counted
+    page_position: int | None = None    # where our ad slot sits on the page
+    ad_positions: tuple = ()            # page position of every ad on the page
+    organic_positions: tuple = ()       # page positions of our unpaid listings
 
 
 @dataclass(frozen=True)

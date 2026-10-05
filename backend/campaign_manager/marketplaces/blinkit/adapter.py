@@ -193,10 +193,10 @@ async def read_position(client, keyword: str, lat: float, lon: float) -> list[di
 
 async def resolve_position(client, campaign_id: int, keyword: str, *, lat: float, lon: float,
                            product_names: list[str], product_pids: list[str],
-                           brand_name: str | None) -> tuple[float | None, str]:
-    """Live sponsored position for the campaign's product on `keyword` (a READ — safe).
+                           brand_name: str | None):
+    """Live ad slot for the campaign's product on `keyword` (a READ — safe).
     Scrapes consumer search, then matches this campaign's product by pid/name/brand.
-    Returns (position | None, source). None = product not found / organic-only → skip.
+    Returns an `ad_slots.Placement`; `slot` None = we hold no ad slot (organic doesn't count).
     MP-specific matching lives in `positions.py`; the bid loop stays MP-agnostic.
 
     Self-contained (own browser) — for a one-off lookup. A run with several keywords uses
@@ -247,8 +247,9 @@ async def read_store_catalog(session: dict, query: str, lat: float, lon: float, 
 
 def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
                     products: list[dict] | None = None, brand_name: str | None = None,
-                    **_ignored) -> tuple[float | None, str]:
-    """Match a campaign's product inside already-fetched results (pure, no I/O).
+                    **_ignored):
+    """Match a campaign's product inside already-fetched results (pure, no I/O) and return
+    its `ad_slots.Placement` — our ad slot, every ad's page position, our organic positions.
 
     Takes the raw `products` from `read_products` and pulls out what Blinkit's matcher
     needs. That extraction used to live in `bid.py`, which meant the MP-agnostic engine

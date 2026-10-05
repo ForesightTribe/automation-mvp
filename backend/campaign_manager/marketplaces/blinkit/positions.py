@@ -1,7 +1,7 @@
 """Blinkit position sourcing for the bid optimizer (D17 — MP-specific).
 
 Scrapes consumer search for a keyword at a dark store, then finds THIS campaign's
-product among the results and returns its sponsored rank. Ported from v1's
+product among the results and returns its AD SLOT (campaign_manager/ad_slots.py). Ported from v1's
 `_find_product_position`; the scrape engine is `.live_position` (vendored into this
 package on 2026-07-30 — v2 no longer imports `ad_campaigns/`).
 
@@ -9,6 +9,7 @@ package on 2026-07-30 — v2 no longer imports `ad_campaigns/`).
 for at-target keywords) is a deferred scale optimization — see the impl-doc backlog.
 The bid loop (`bid.py`) never imports this; it calls `adapter.resolve_position`.
 """
+from campaign_manager import ad_slots
 from campaign_manager.marketplaces.blinkit.live_position import get_live_positions
 from app.utils.logger import logger
 
@@ -60,26 +61,40 @@ def match_position(results: list[dict], product_names: list[str],
     return (None, False, True) if organic_match is not None else (None, False, False)
 
 
+def organic_positions(results: list[dict], product_pids: list[str]) -> list[int]:
+    """Page positions of OUR unpaid listings — by product id only. Name tokens are good enough
+    to recognise our ad, but they also catch other products, and these positions only feed a
+    warning that must not cry wolf (campaign_manager/ad_slots.py)."""
+    pid_set = {str(p).strip() for p in (product_pids or []) if p}
+    return [int(r["position"]) for r in results or ()
+            if not r.get("is_ad") and r.get("position") is not None
+            and str(r.get("pid") or "").strip() in pid_set]
+
+
 def locate(results: list[dict], keyword: str, lat: float, lon: float, *,
            product_names: list[str], product_pids: list[str],
-           brand_name: str | None) -> tuple[float | None, str]:
-    """Find this campaign's product in an ALREADY-FETCHED result set. Returns
-    (position | None, source-string). None = not found / organic-only → skip the bid.
+           brand_name: str | None) -> ad_slots.Placement:
+    """Find this campaign's AD SLOT in an ALREADY-FETCHED result set
+    (campaign_manager/ad_slots.py). `slot` None = we hold no ad slot on this page — organic
+    listings never count as one.
 
     Split from the fetch so several campaigns targeting the same keyword at the same store
     share one scrape: the search results are identical, only the product match differs."""
     log = logger.bind(tag=f"cm.pos[{keyword}]")
-    pos, is_sponsored, found = match_position(results, product_names, product_pids, brand_name)
+    pos, _is_sponsored, found = match_position(results, product_names, product_pids, brand_name)
+    organic = organic_positions(results, product_pids)
     if pos is None:
-        reason = "organic-only (not a sponsored ad)" if found else "product not in results"
-        log.debug(f"@ ({lat},{lon}): {reason} ({len(results)} results) — skip")
-        return None, reason
-    log.debug(f"@ ({lat},{lon}): sponsored pos {pos} ({len(results)} results)")
-    return pos, f"live({len(results)} results)"
+        reason = "organic only, no ad slot" if found else "product not in results"
+        log.debug(f"@ ({lat},{lon}): {reason} ({len(results)} results)")
+        return ad_slots.place(results, None, organic, reason)
+    placed = ad_slots.place(results, pos, organic, f"live({len(results)} results)")
+    log.debug(f"@ ({lat},{lon}): {ad_slots.label(placed.slot, placed.page_position)} "
+              f"({len(results)} results)")
+    return placed
 
 
 async def resolve(keyword: str, lat: float, lon: float, *, product_names: list[str],
-                  product_pids: list[str], brand_name: str | None) -> tuple[float | None, str]:
+                  product_pids: list[str], brand_name: str | None) -> ad_slots.Placement:
     """Fetch + locate in one call, with its own browser. Convenience for an ad-hoc lookup;
     the bid loop fetches once per (keyword, location) and calls `locate` per campaign."""
     results = await get_live_positions(keyword, lat=lat, lon=lon)

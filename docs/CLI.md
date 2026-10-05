@@ -582,7 +582,7 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 | Flag                      | Notes                                                                                                     |
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `--keyword`               | search keyword to chase                                                                                   |
-| `--target`                | target sponsored position (e.g. `3`)                                                                      |
+| `--target`                | target **ad slot**, 1–5: the Nth sponsored listing on the page, wherever it lands (`2` = the second ad) — campaign-manager.md §7.0 |
 | `--min-bid` / `--max-bid` | bid floor / ceiling (₹) — CPM on Blinkit, **CPC** on Zepto                                               |
 | `--city`                  | measure in this city, at its **frozen store** (`cm stores`, below) — the rule keeps following it          |
 | `--location-id`           | **pin** to one store (merchant_id from `cli locations list --city <slug>`); ignores the city's store      |
@@ -617,7 +617,7 @@ registry through its store catalogue and, where its **ads** spell a city differe
 ### Measurement stores — `cm stores …`
 
 A bid rule saved with `--city` measures at that city's **frozen store set**: up to three stores, rank 1
-the anchor and ranks 2–3 validating it. The bid aims for the target position at **every** store in the
+the anchor and ranks 2–3 validating it. The bid aims for the target ad slot at **every** store in the
 set where the campaign is listed and in stock — the worst such store sets the bid. There is a global set
 per city, which a client can replace whole. The engine reads stock itself (one brand search per store,
 at most hourly). Nothing is frozen until you set it — until then a city measures at its lowest
