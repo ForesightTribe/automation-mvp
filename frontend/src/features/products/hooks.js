@@ -19,7 +19,7 @@ import {
 export const useProducts = ({ page, limit = 20, sort, status, search }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: [
 			"products",
@@ -43,7 +43,7 @@ export const useProducts = ({ page, limit = 20, sort, status, search }) => {
 				sku_status: status || undefined,
 				search: search || undefined,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -51,7 +51,7 @@ export const useProducts = ({ page, limit = 20, sort, status, search }) => {
 export const useProductDetail = (itemId) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["product-detail", activeClientId, itemId, range, selected],
 		queryFn: () =>
@@ -60,7 +60,7 @@ export const useProductDetail = (itemId) => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId && itemId),
+		enabled: Boolean(activeClientId && itemId) && ready,
 	});
 };
 

@@ -7,6 +7,7 @@ export const STORAGE_KEYS = {
 	dateRange: "foresight.dateRange",
 	marketplaces: "foresight.marketplaces",
 	automationMarketplace: "foresight.automationMarketplace",
+	ordersMarketplace: "foresight.ordersMarketplace",
 	sidebarCollapsed: "foresight.sidebarCollapsed",
 };
 
@@ -21,6 +22,13 @@ export const SINGLE_MARKETPLACE_PATHS = [
 	"/automations",
 	"/ads/one-time-ops",
 ];
+
+/**
+ * Pages that READ one marketplace at a time: purchase orders are fetched per marketplace
+ * and there is no blended view. Like the automation pages they drop "All" and keep their
+ * own single choice, so opening them never narrows the rest of the dashboard.
+ */
+export const ORDERS_PATHS = ["/purchase-orders"];
 
 // Default `?days=` window for dashboard endpoints.
 export const DEFAULT_DAYS = 30;

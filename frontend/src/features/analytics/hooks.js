@@ -23,7 +23,7 @@ import {
 const useWindowed = (key, fetcher, extra) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: [key, activeClientId, range, selected, extra],
 		queryFn: () =>
@@ -33,7 +33,7 @@ const useWindowed = (key, fetcher, extra) => {
 				marketplaces: selected,
 				...extra,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 

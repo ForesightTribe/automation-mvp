@@ -3,6 +3,10 @@ import { Sidebar } from "./Sidebar";
 import { Navbar } from "./Navbar";
 import { Footer } from "./Footer";
 import { ErrorBoundary } from "../components/feedback/ErrorBoundary";
+import { ErrorState } from "../components/feedback/ErrorState";
+import { Loading } from "../components/feedback/Loading";
+import { useClient } from "../context/ClientContext";
+import { useMarketplaces } from "../context/MarketplaceContext";
 
 /**
  * The app shell. The Sidebar owns the ENTIRE left column, full height, including
@@ -15,6 +19,22 @@ import { ErrorBoundary } from "../components/feedback/ErrorBoundary";
  * space left over.
  */
 export const AppLayout = () => {
+	const { activeClientId } = useClient();
+	const { ready, error, refetch } = useMarketplaces();
+
+	// ⚠️ Pages wait for the client's marketplace list. Their queries are scoped by it and
+	// stay disabled until it lands — and a disabled query reports `isLoading: false`, so a
+	// page drawn before then shows its EMPTY state ("No data yet") rather than a loader.
+	// One gate here instead of one per page. No client at all means nothing to wait for.
+	const page =
+		!activeClientId || ready ? (
+			<Outlet />
+		) : error ? (
+			<ErrorState message={error.message} onRetry={refetch} />
+		) : (
+			<Loading label="Loading…" />
+		);
+
 	return (
 		<div className="flex h-screen overflow-hidden">
 			<Sidebar />
@@ -23,9 +43,7 @@ export const AppLayout = () => {
 				{/* Content gutter. 36px is the 1920 value (2xl); it steps down
 				    with the viewport — see the scale in Sidebar.jsx. */}
 				<main className="flex-1 overflow-y-auto px-4 py-4 lg:px-6 lg:py-6 xl:px-8 2xl:px-9 2xl:py-8">
-					<ErrorBoundary>
-						<Outlet />
-					</ErrorBoundary>
+					<ErrorBoundary>{page}</ErrorBoundary>
 				</main>
 				<Footer />
 			</div>

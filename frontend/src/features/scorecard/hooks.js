@@ -27,60 +27,65 @@ import {
  * Only when the picker narrows to ONE marketplace does that become explicit.
  */
 const useScorecardMarketplace = () => {
-	const { selected, allSelected } = useMarketplaces();
-	if (allSelected || selected.length !== 1) return undefined;
-	return selected[0];
+	const { selected, allSelected, ready } = useMarketplaces();
+	// `ready` holds the queries until the client's marketplaces are known, so a
+	// one-marketplace client is not fetched as auto-detect and then again by name.
+	return {
+		marketplace:
+			allSelected || selected.length !== 1 ? undefined : selected[0],
+		ready,
+	};
 };
 
 export const useScorecardWeeks = () => {
 	const { activeClientId } = useClient();
-	const marketplace = useScorecardMarketplace();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
 		queryKey: ["scorecard-weeks", activeClientId, marketplace],
 		queryFn: () => getWeeks(activeClientId, { marketplace }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useScorecardWeekly = (from) => {
 	const { activeClientId } = useClient();
-	const marketplace = useScorecardMarketplace();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
 		queryKey: ["scorecard-weekly", activeClientId, from, marketplace],
 		queryFn: () => getWeekly(activeClientId, { from, marketplace }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
 
 export const useScorecardTrend = (weeks = 12) => {
 	const { activeClientId } = useClient();
-	const marketplace = useScorecardMarketplace();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
 		queryKey: ["scorecard-trend", activeClientId, weeks, marketplace],
 		queryFn: () => getTrend(activeClientId, { weeks, marketplace }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useKeySkus = ({ from, page, limit = 20 }) => {
 	const { activeClientId } = useClient();
-	const marketplace = useScorecardMarketplace();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
 		queryKey: ["scorecard-key-skus", activeClientId, from, page, limit, marketplace],
 		queryFn: () => getKeySkus(activeClientId, { from, page, limit, marketplace }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
 
 export const useFacilities = ({ from, page, limit = 20 }) => {
 	const { activeClientId } = useClient();
-	const marketplace = useScorecardMarketplace();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
 		queryKey: ["scorecard-facilities", activeClientId, from, page, limit, marketplace],
 		queryFn: () => getFacilities(activeClientId, { from, page, limit, marketplace }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -89,14 +94,14 @@ export const useFacilities = ({ from, page, limit = 20 }) => {
  * (gated by `enabled`), so the table only pulls drill-down data on demand. */
 export const useFacilityPos = (facilityId, { page, limit = 10, enabled }) => {
 	const { activeClientId } = useClient();
-	const marketplace = useScorecardMarketplace();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
 		queryKey: [
 			"scorecard-facility-pos", activeClientId, facilityId, page, limit, marketplace,
 		],
 		queryFn: () =>
 			getFacilityPos(activeClientId, facilityId, { page, limit, marketplace }),
-		enabled: Boolean(activeClientId) && Boolean(facilityId) && enabled,
+		enabled: Boolean(activeClientId) && Boolean(facilityId) && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };

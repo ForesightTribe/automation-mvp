@@ -26,7 +26,7 @@ import {
 export const useAdsSummary = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["ads-summary", activeClientId, range, selected],
 		queryFn: () =>
@@ -35,14 +35,14 @@ export const useAdsSummary = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useAdsPerformance = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["ads-performance", activeClientId, range, selected],
 		queryFn: () =>
@@ -51,14 +51,14 @@ export const useAdsPerformance = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useBudgetSplit = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["ads-budget-split", activeClientId, range, selected],
 		queryFn: () =>
@@ -67,14 +67,14 @@ export const useBudgetSplit = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useCampaigns = ({ page, limit = 20, status, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["ads-campaigns", activeClientId, range, selected, page, limit, status, sort, order],
 		queryFn: () =>
@@ -88,14 +88,14 @@ export const useCampaigns = ({ page, limit = 20, status, sort, order }) => {
 				sort,
 				order,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
 
 export const useKeywords = ({ page, limit = 20, campaignId, targetType, sort, order }) => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["ads-keywords", activeClientId, selected, page, limit, campaignId, targetType, sort, order],
 		queryFn: () =>
@@ -108,7 +108,7 @@ export const useKeywords = ({ page, limit = 20, campaignId, targetType, sort, or
 				sort,
 				order,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -116,7 +116,7 @@ export const useKeywords = ({ page, limit = 20, campaignId, targetType, sort, or
 export const useSov = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["ads-sov", activeClientId, range, selected],
 		queryFn: () =>
@@ -125,7 +125,7 @@ export const useSov = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -163,16 +163,16 @@ export const useCollections = () => {
 
 /** Zepto keyword performance for the selected window.
  *
- * Only fetched when Zepto is in scope: an empty `selected` means "all
- * marketplaces", which includes it. Deliberately not merged into useKeywords —
+ * Only fetched when Zepto is in scope — `selected` is the resolved selection, so
+ * "All" lists every connected marketplace. Deliberately not merged into useKeywords —
  * that hook backs the Blinkit keywords table, whose row shape Zepto cannot
  * fill (no campaign id, no direct/indirect sales split).
  */
 export const useZeptoKeywords = ({ sort = "spend", order = "desc", enabled = true } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const { selected, ready } = useMarketplaces();
+	const wantsZepto = selected.includes("zepto");
 	return useQuery({
 		queryKey: ["ads-zepto-keywords", activeClientId, range, sort, order],
 		queryFn: () =>
@@ -182,7 +182,7 @@ export const useZeptoKeywords = ({ sort = "spend", order = "desc", enabled = tru
 				sort,
 				order,
 			}),
-		enabled: Boolean(activeClientId) && wantsZepto && enabled,
+		enabled: Boolean(activeClientId) && wantsZepto && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -191,8 +191,8 @@ export const useZeptoKeywords = ({ sort = "spend", order = "desc", enabled = tru
 export const useZeptoBudgetSplit = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const { selected, ready } = useMarketplaces();
+	const wantsZepto = selected.includes("zepto");
 	return useQuery({
 		queryKey: ["ads-zepto-budget-split", activeClientId, range],
 		queryFn: () =>
@@ -200,7 +200,7 @@ export const useZeptoBudgetSplit = () => {
 				start: range.from,
 				end: range.to,
 			}),
-		enabled: Boolean(activeClientId) && wantsZepto,
+		enabled: Boolean(activeClientId) && wantsZepto && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -210,8 +210,8 @@ export const useZeptoBudgetSplit = () => {
 export const useInstamartBudgetSplit = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	const { selected, ready } = useMarketplaces();
+	const wantsInstamart = selected.includes("instamart");
 	return useQuery({
 		queryKey: ["ads-instamart-budget-split", activeClientId, range],
 		queryFn: () =>
@@ -219,7 +219,7 @@ export const useInstamartBudgetSplit = () => {
 				start: range.from,
 				end: range.to,
 			}),
-		enabled: Boolean(activeClientId) && wantsInstamart,
+		enabled: Boolean(activeClientId) && wantsInstamart && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -231,8 +231,8 @@ export const useInstamartBudgetSplit = () => {
 export const useInstamartProducts = ({ enabled = true } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	const { selected, ready } = useMarketplaces();
+	const wantsInstamart = selected.includes("instamart");
 	return useQuery({
 		queryKey: ["ads-instamart-products", activeClientId, range],
 		queryFn: () =>
@@ -240,7 +240,7 @@ export const useInstamartProducts = ({ enabled = true } = {}) => {
 				start: range.from,
 				end: range.to,
 			}),
-		enabled: Boolean(activeClientId) && wantsInstamart && enabled,
+		enabled: Boolean(activeClientId) && wantsInstamart && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -254,8 +254,8 @@ export const useInstamartKeywords = ({
 } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	const { selected, ready } = useMarketplaces();
+	const wantsInstamart = selected.includes("instamart");
 	return useQuery({
 		queryKey: ["ads-instamart-keywords", activeClientId, range, sort, order],
 		queryFn: () =>
@@ -265,7 +265,7 @@ export const useInstamartKeywords = ({
 				sort,
 				order,
 			}),
-		enabled: Boolean(activeClientId) && wantsInstamart && enabled,
+		enabled: Boolean(activeClientId) && wantsInstamart && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -296,13 +296,13 @@ export const useInstamartCampaignKeywords = (campaignId, { enabled = true } = {}
 export const useZeptoSov = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const { selected, ready } = useMarketplaces();
+	const wantsZepto = selected.includes("zepto");
 	return useQuery({
 		queryKey: ["ads-zepto-sov", activeClientId, range],
 		queryFn: () =>
 			getZeptoSov(activeClientId, { start: range.from, end: range.to }),
-		enabled: Boolean(activeClientId) && wantsZepto,
+		enabled: Boolean(activeClientId) && wantsZepto && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -311,8 +311,8 @@ export const useZeptoSov = () => {
 export const useZeptoProducts = ({ campaignCategory = "", enabled = true } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const { selected, ready } = useMarketplaces();
+	const wantsZepto = selected.includes("zepto");
 	return useQuery({
 		queryKey: ["ads-zepto-products", activeClientId, range, campaignCategory],
 		queryFn: () =>
@@ -321,7 +321,7 @@ export const useZeptoProducts = ({ campaignCategory = "", enabled = true } = {})
 				end: range.to,
 				campaignCategory,
 			}),
-		enabled: Boolean(activeClientId) && wantsZepto && enabled,
+		enabled: Boolean(activeClientId) && wantsZepto && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -330,8 +330,8 @@ export const useZeptoProducts = ({ campaignCategory = "", enabled = true } = {})
 export const useZeptoBreakdown = ({ dimension, campaignCategory = "", enabled = true } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const { selected, ready } = useMarketplaces();
+	const wantsZepto = selected.includes("zepto");
 	return useQuery({
 		queryKey: [
 			"ads-zepto-breakdown",
@@ -347,7 +347,7 @@ export const useZeptoBreakdown = ({ dimension, campaignCategory = "", enabled = 
 				dimension,
 				campaignCategory,
 			}),
-		enabled: Boolean(activeClientId) && wantsZepto && enabled,
+		enabled: Boolean(activeClientId) && wantsZepto && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };

@@ -27,7 +27,7 @@ const formatPos = (v) =>
  */
 export const ZeptoSovTable = () => {
 	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const wantsZepto = selected.includes("zepto");
 
 	const { data, isLoading, error, refetch } = useZeptoSov();
 	const rows = data ?? [];

@@ -14,26 +14,26 @@ import {
 import { downloadBlob } from "../../lib/exportTable";
 
 /**
- * Resolves the global marketplace pill selection down to what the PO
- * endpoints actually accept: undefined (Blinkit, this page's original
- * default), "instamart", or "zepto" — never auto-detected, and there's no
- * blended PO view across marketplaces, so "All" or a multi-select also falls
- * back to undefined (Blinkit). Same convention as the Scorecard page's
- * `useScorecardMarketplace`.
+ * The page's own single marketplace (`orders`, picked with the navbar pills on this
+ * page), in the form the PO endpoints accept: undefined for Blinkit (their original
+ * default), else "instamart" or "zepto".
+ *
+ * `ready` holds every query until the client's marketplace list has landed, so a
+ * Zepto choice is not first fetched as Blinkit's orders and then swapped.
  */
 const usePoMarketplace = () => {
-	const { selected, allSelected } = useMarketplaces();
-	if (allSelected || selected.length !== 1 || selected[0] === "blinkit") {
-		return undefined;
-	}
-	return selected[0];
+	const { orders, ready } = useMarketplaces();
+	return {
+		marketplace: !orders || orders === "blinkit" ? undefined : orders,
+		ready,
+	};
 };
 
 /** The KPI tiles: ordered value, fill rate, undelivered value. */
 export const usePoSummary = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const marketplace = usePoMarketplace();
+	const { marketplace, ready } = usePoMarketplace();
 	return useQuery({
 		queryKey: ["po-summary", activeClientId, range, marketplace],
 		queryFn: () =>
@@ -42,7 +42,7 @@ export const usePoSummary = () => {
 				end: range.to,
 				marketplace,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -50,7 +50,7 @@ export const usePoSummary = () => {
 export const usePoInsights = ({ scope, search, status, page, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const marketplace = usePoMarketplace();
+	const { marketplace, ready } = usePoMarketplace();
 	return useQuery({
 		queryKey: [
 			"po-insights",
@@ -76,7 +76,7 @@ export const usePoInsights = ({ scope, search, status, page, sort, order }) => {
 				order,
 				marketplace,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -85,7 +85,7 @@ export const usePoInsights = ({ scope, search, status, page, sort, order }) => {
 export const usePoSkus = ({ search, page, sort, order }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const marketplace = usePoMarketplace();
+	const { marketplace, ready } = usePoMarketplace();
 	return useQuery({
 		queryKey: [
 			"po-skus",
@@ -107,7 +107,7 @@ export const usePoSkus = ({ search, page, sort, order }) => {
 				order,
 				marketplace,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -116,7 +116,7 @@ export const usePoSkus = ({ search, page, sort, order }) => {
 export const usePoExport = (scope, status) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const marketplace = usePoMarketplace();
+	const { marketplace } = usePoMarketplace();
 	const [busy, setBusy] = useState(false);
 	const [error, setError] = useState(null);
 
@@ -148,11 +148,11 @@ export const usePoExport = (scope, status) => {
 /** One PO's full record, fetched when its row is opened. */
 export const usePo = (poNumber) => {
 	const { activeClientId } = useClient();
-	const marketplace = usePoMarketplace();
+	const { marketplace, ready } = usePoMarketplace();
 	return useQuery({
 		queryKey: ["po-detail", activeClientId, poNumber, marketplace],
 		queryFn: () => getPo(activeClientId, poNumber, { marketplace }),
-		enabled: Boolean(activeClientId && poNumber),
+		enabled: Boolean(activeClientId && poNumber) && ready,
 	});
 };
 

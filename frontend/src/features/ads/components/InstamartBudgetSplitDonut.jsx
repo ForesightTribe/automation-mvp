@@ -31,7 +31,7 @@ const typeLabel = (t) =>
  */
 export const InstamartBudgetSplitDonut = () => {
 	const { selected } = useMarketplaces();
-	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	const wantsInstamart = selected.includes("instamart");
 
 	const { data, isLoading, error, refetch } = useInstamartBudgetSplit();
 	const rows = data ?? [];

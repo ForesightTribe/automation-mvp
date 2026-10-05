@@ -39,7 +39,7 @@ const reportWindow = (range, activePreset) =>
 export const useSalesPivot = (metric) => {
 	const { activeClientId } = useClient();
 	const { range, activePreset } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const { start, end } = reportWindow(range, activePreset);
 	return useQuery({
 		queryKey: [
@@ -57,7 +57,7 @@ export const useSalesPivot = (metric) => {
 				marketplaces: selected,
 				metric,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -65,7 +65,7 @@ export const useSalesPivot = (metric) => {
 export const useMarketing = () => {
 	const { activeClientId } = useClient();
 	const { range, activePreset } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const { start, end } = reportWindow(range, activePreset);
 	return useQuery({
 		queryKey: ["reports-marketing", activeClientId, start, end, selected],
@@ -75,7 +75,7 @@ export const useMarketing = () => {
 				end,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -84,7 +84,7 @@ export const useMarketing = () => {
 export const useCompetition = (kind) => {
 	const { activeClientId } = useClient();
 	const { range, activePreset } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const { start, end } = reportWindow(range, activePreset);
 	return useQuery({
 		queryKey: [
@@ -102,7 +102,7 @@ export const useCompetition = (kind) => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -111,7 +111,7 @@ export const useCompetition = (kind) => {
 export const useWeekendPlanning = () => {
 	const { activeClientId } = useClient();
 	const { range, activePreset } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const { start, end } = reportWindow(range, activePreset);
 	return useQuery({
 		queryKey: [
@@ -127,7 +127,7 @@ export const useWeekendPlanning = () => {
 				end,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 

@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { Search } from "lucide-react";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { PageHeader } from "../../components/ui/PageHeader";
@@ -25,10 +25,9 @@ import { usePoSummary, usePoInsights, usePoSkus, usePoExport } from "./hooks";
 
 /**
  * Purchase orders — what was ordered, how much of it arrived, and which POs still
- * have money sitting undelivered. Blinkit is the default; Instamart and Zepto are
- * reachable by picking either explicitly in the navbar's marketplace pills (see
- * hooks.js's `usePoMarketplace` — there's no blended PO view across marketplaces,
- * so "All" or a multi-select falls back to Blinkit, this page's original platform).
+ * have money sitting undelivered. One marketplace at a time — there's no blended PO
+ * view — picked with the navbar's pills, which drop "All" on this page and drive its
+ * own choice (see hooks.js's `usePoMarketplace`).
  *
  * "Undelivered value" is short units × landing rate. On an open PO that is value still
  * to come; on a closed one it is value missed. The two are counted separately
@@ -64,25 +63,13 @@ export const PurchaseOrdersPage = () => {
 	// One switch for the whole strip: the tiles open and close together.
 	const [comparing, setComparing] = useState(false);
 
-	// Same reasoning as the Scorecard page: no blended PO view, so only name a
-	// marketplace here when the picker itself has narrowed to exactly one.
-	const { marketplaces, selected, allSelected, selectOnly } =
-		useMarketplaces();
-
-	// ⚠️ These endpoints read ONE marketplace, and return Blinkit's orders when
-	// none is named, so there is no all-marketplaces view to show. The page
-	// runs on a single marketplace and picks the first connected one.
-	useEffect(() => {
-		if (!allSelected) return;
-		const first = marketplaces.find((m) => m.connected);
-		if (first) selectOnly(first.slug);
-	}, [allSelected, marketplaces, selectOnly]);
-	const explicitMp =
-		!allSelected && selected.length === 1
-			? marketplaces.find((m) => m.slug === selected[0])
-			: null;
-	const subtitle = explicitMp
-		? `What was ordered on ${explicitMp.name}, how much of it arrived, and what is still undelivered.`
+	// ⚠️ These endpoints read ONE marketplace, so there is no all-marketplaces view
+	// to show. The page runs on its own single choice (`orders`), picked with the
+	// navbar pills and kept apart from the global selection — choosing here never
+	// narrows what the rest of the dashboard shows.
+	const { ordersInfo } = useMarketplaces();
+	const subtitle = ordersInfo
+		? `What was ordered on ${ordersInfo.name}, how much of it arrived, and what is still undelivered.`
 		: "What Blinkit ordered, what arrived, and what is still undelivered.";
 
 	const summary = usePoSummary();

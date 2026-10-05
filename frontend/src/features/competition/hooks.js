@@ -19,7 +19,7 @@ import {
 export const useShareOfVoice = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["comp-sov", activeClientId, range, selected],
 		queryFn: () =>
@@ -28,14 +28,14 @@ export const useShareOfVoice = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useRankMatrix = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["comp-rank-matrix", activeClientId, range, selected],
 		queryFn: () =>
@@ -44,14 +44,14 @@ export const useRankMatrix = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useTopCompetitors = () => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["comp-top", activeClientId, range, selected],
 		queryFn: () =>
@@ -60,14 +60,14 @@ export const useTopCompetitors = () => {
 				end: range.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const usePricePosition = (kind = "main") => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["comp-price", activeClientId, range, selected, kind],
 		queryFn: () =>
@@ -77,6 +77,6 @@ export const usePricePosition = (kind = "main") => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };

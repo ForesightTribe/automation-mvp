@@ -60,7 +60,7 @@ export const InstamartAssetPerformanceCard = () => {
 	const menuRef = useRef(null);
 
 	const { selected } = useMarketplaces();
-	const wantsInstamart = !selected?.length || selected.includes("instamart");
+	const wantsInstamart = selected.includes("instamart");
 	const { range } = useDateRange();
 
 	useEffect(() => {

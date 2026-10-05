@@ -23,7 +23,7 @@ import { fetchAllPages } from "../../lib/exportTable";
  */
 export const useAllKeywordRows = () => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["insights-keyword-rows", activeClientId, selected],
 		queryFn: () =>
@@ -34,7 +34,7 @@ export const useAllKeywordRows = () => {
 					limit,
 				}),
 			),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		staleTime: 5 * 60 * 1000,
 	});
 };
@@ -62,7 +62,7 @@ export const usePreviousRange = () => {
 /** Daily rows for the previous window. Only fetched once a comparison is opened. */
 export const usePreviousPerformance = (enabled = false) => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const prev = usePreviousRange();
 	return useQuery({
 		queryKey: [
@@ -78,7 +78,7 @@ export const usePreviousPerformance = (enabled = false) => {
 				end: prev.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId && enabled),
+		enabled: Boolean(activeClientId && enabled) && ready,
 		staleTime: 5 * 60 * 1000,
 	});
 };
@@ -86,7 +86,7 @@ export const usePreviousPerformance = (enabled = false) => {
 /** Spend split for the previous window, for the same reason. */
 export const usePreviousBudgetSplit = (enabled = false) => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const prev = usePreviousRange();
 	return useQuery({
 		queryKey: [
@@ -102,7 +102,7 @@ export const usePreviousBudgetSplit = (enabled = false) => {
 				end: prev.to,
 				marketplaces: selected,
 			}),
-		enabled: Boolean(activeClientId && enabled),
+		enabled: Boolean(activeClientId && enabled) && ready,
 		staleTime: 5 * 60 * 1000,
 	});
 };
@@ -179,7 +179,7 @@ export const useDailyBudgetUtilisation = ({
 	days = null,
 } = {}) => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const { range } = useDateRange();
 
 	// `days` asks for the last N days ending at the window's end, which is what a "7 day
@@ -206,7 +206,7 @@ export const useDailyBudgetUtilisation = ({
 				end: dates[dates.length - 1],
 				marketplaces: selected,
 			}),
-		enabled: enabled && Boolean(activeClientId) && dates.length > 0,
+		enabled: enabled && Boolean(activeClientId) && dates.length > 0 && ready,
 		// A past day never changes once its scrape has landed, so this is cheap to hold.
 		staleTime: 15 * 60 * 1000,
 	});
@@ -334,7 +334,7 @@ export const useDailyBudgetUtilisation = ({
  */
 export const useAllCampaigns = () => {
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	const { range } = useDateRange();
 
 	const query = useQuery({
@@ -347,7 +347,7 @@ export const useAllCampaigns = () => {
 				page: 1,
 				limit: 500,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		staleTime: 5 * 60 * 1000,
 	});
 
