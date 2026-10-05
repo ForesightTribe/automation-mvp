@@ -1,6 +1,11 @@
-"""Blinkit NEW-domain (seller.blinkit.com/seller-hub) reads for the Analytics
-page — Sereko today, any future account Blinkit migrates off partnersbiz.com
-next.
+"""Blinkit NEW-domain (seller.blinkit.com/seller-hub) reads for the Analytics,
+Products and Reports pages — Sereko today, any future account Blinkit migrates
+off partnersbiz.com next.
+
+Revenue everywhere here is `total_gross_amount`, the figure verified against the
+dashboard's own monthly total (see the order model). The old domain's pages sum
+`mrp_value` instead; the two are different measures of the same sales, which is
+fine because a tenant only ever has one of the two sources.
 
 Kept out of `analytics_service.py` for the same reason `zepto_analytics` is:
 the source is shaped differently from `blinkit_seller.BlinkitSellerSale`.
@@ -176,3 +181,150 @@ async def category_trend(
         {"date": d, "category": cat, "revenue": round(float(rev), 2), "units_sold": int(units)}
         for d, cat, rev, units in rows
     ]
+
+
+# --- Products page ------------------------------------------------------------
+
+async def product_list_agg(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    search: str | None = None,
+    category: str | None = None,
+) -> list[dict]:
+    """One row per item over the window, in the field names `_list_row` takes.
+    Stock is NOT here — the seller-hub domain publishes none; the caller joins
+    whatever stock it has."""
+    conds = _conds(tenant_id, start, end)
+    if search:
+        conds.append(Order.product_name.ilike(f"%{search}%"))
+    if category:
+        conds.append(Order.business_category == category)
+    rows = (
+        await session.execute(
+            select(
+                Order.item_id,
+                func.max(Order.product_name),
+                func.max(Order.business_category),
+                func.coalesce(func.sum(Order.total_gross_amount), 0.0),
+                func.coalesce(func.sum(Order.quantity), 0),
+                func.max(Order.order_date),
+            )
+            .where(*conds)
+            .group_by(Order.item_id)
+        )
+    ).all()
+    return [
+        {
+            "item_id": item_id,
+            "item_name": name,
+            "category": cat,
+            "revenue": round(float(rev), 2),
+            "units_sold": int(units),
+            "last_sold": last,
+        }
+        for item_id, name, cat, rev, units, last in rows
+    ]
+
+
+async def product_detail_agg(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    start: date,
+    end: date,
+) -> dict | None:
+    """Sales half of Product 360 for one item: totals, daily trend, and the
+    per-city split (by `supply_city`, same reading as `sales_by_city`). None
+    when the item has no orders in the window."""
+    conds = [*_conds(tenant_id, start, end), Order.item_id == item_id]
+    revenue = func.coalesce(func.sum(Order.total_gross_amount), 0.0)
+    units = func.coalesce(func.sum(Order.quantity), 0)
+    name, cat, rev, qty, count = (
+        await session.execute(
+            select(
+                func.max(Order.product_name),
+                func.max(Order.business_category),
+                revenue,
+                units,
+                func.count(),
+            ).where(*conds)
+        )
+    ).one()
+    if count == 0:
+        return None
+
+    trend_rows = (
+        await session.execute(
+            select(Order.order_date, units, revenue)
+            .where(*conds)
+            .group_by(Order.order_date)
+            .order_by(Order.order_date)
+        )
+    ).all()
+    city = func.coalesce(Order.supply_city, "Unknown")
+    city_rows = (
+        await session.execute(
+            select(city, units, revenue)
+            .where(*conds)
+            .group_by(city)
+            .order_by(revenue.desc())
+        )
+    ).all()
+    return {
+        "item_id": item_id,
+        "item_name": name,
+        "category": cat,
+        "revenue": round(float(rev), 2),
+        "units_sold": int(qty),
+        "trend": [
+            {"date": d, "units_sold": int(u), "revenue": round(float(r), 2)}
+            for d, u, r in trend_rows
+        ],
+        "cities": [
+            {"city": c, "units_sold": int(u), "revenue": round(float(r), 2)}
+            for c, u, r in city_rows
+        ],
+    }
+
+
+# --- Reports page -------------------------------------------------------------
+
+async def pivot_rows(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    metric: str = "value",
+) -> list[tuple]:
+    """(platform, item_id, item_name, category, date, value) — the exact tuple
+    `reports_service.get_sales_pivot` builds its pivot from."""
+    metric_col = Order.quantity if metric == "units" else Order.total_gross_amount
+    rows = (
+        await session.execute(
+            select(
+                Order.item_id,
+                func.max(Order.product_name),
+                Order.business_category,
+                Order.order_date,
+                func.coalesce(func.sum(metric_col), 0.0),
+            )
+            .where(*_conds(tenant_id, start, end))
+            .group_by(Order.item_id, Order.business_category, Order.order_date)
+        )
+    ).all()
+    return [(SLUG, item_id, name, cat, d, val) for item_id, name, cat, d, val in rows]
+
+
+async def sales_daily(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> dict[date, float]:
+    """date -> total revenue, for the Marketing report's total/organic columns."""
+    return {
+        r["date"]: r["revenue"]
+        for r in await revenue_series(session, tenant_id=tenant_id, start=start, end=end)
+    }

@@ -51,6 +51,9 @@ STATUS_OUT_OF_STOCK = "out_of_stock"
 STATUS_LOW_COVER = "low_cover"
 STATUS_NO_SALES = "no_sales"
 STATUS_HEALTHY = "healthy"
+# No stock source exists for the SKU (seller-hub Blinkit publishes none), as
+# opposed to a known zero — cover can't be computed either.
+STATUS_NO_STOCK_DATA = "no_stock_data"
 
 
 class ProductListRow(BaseModel):

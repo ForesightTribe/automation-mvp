@@ -1,5 +1,6 @@
 """Per-SKU performance for a client. "Products" are derived from the client's
-sales rows (blinkit_seller_sales), enriched with current stock (blinkit_soh),
+sales rows (blinkit_seller_sales, or blinkit_seller_hub_sales_order_ro for a
+seller-hub account like Sereko), enriched with current stock (blinkit_soh),
 PO history (blinkit_po_items), and the Blinkit scorecard signal
 (blinkit_scorecard_key_skus). Private plane only — keyed on `item_id`.
 """
@@ -25,6 +26,7 @@ from app.models.search import (
     SkuSnapshot,
     TenantLocation,
 )
+from app.services import blinkit_seller_hub_analytics as seller_hub
 from app.services import instamart_products, zepto_products
 from app.utils.time import now_ist
 from scraper.utils.pack import per_unit_price
@@ -33,6 +35,7 @@ from app.schemas.product import (
     STATUS_HEALTHY,
     STATUS_LOW_COVER,
     STATUS_NO_SALES,
+    STATUS_NO_STOCK_DATA,
     STATUS_OUT_OF_STOCK,
     CityShare,
     FacilityStock,
@@ -91,14 +94,21 @@ def _list_row(
     frontend_qty: int,
     window_days: int,
     marketplace: str = "blinkit",
+    stock_known: bool = True,
 ) -> ProductListRow:
     """Build one list row from window sales + current stock.
 
     Shared by the Blinkit and Zepto branches so cover, status and average price
     are computed identically for both — the two differ in where the numbers come
     from, never in what they mean.
+
+    `stock_known=False` means there is no stock source for this SKU at all (a
+    seller-hub Blinkit SKU with no SOH row): cover is None and the status says
+    so, instead of a 0 reading as "out of stock" on a SKU that is selling.
     """
     avg_daily, cover = cover_metrics(frontend_qty, units_sold, window_days)
+    if not stock_known:
+        cover = None
     return ProductListRow(
         item_id=item_id,
         item_name=item_name,
@@ -111,7 +121,11 @@ def _list_row(
         frontend_qty=frontend_qty,
         avg_daily_units=avg_daily,
         days_of_cover=cover,
-        status=cover_status(frontend_qty, units_sold, cover),
+        status=(
+            cover_status(frontend_qty, units_sold, cover)
+            if stock_known
+            else STATUS_NO_STOCK_DATA
+        ),
         marketplace=marketplace,
     )
 
@@ -208,20 +222,52 @@ async def get_products(
     )
     window_days = period.length_days
 
+    blinkit: dict[str, dict] = {
+        item_id: {
+            "item_name": name,
+            "category": cat,
+            "revenue": round(float(rev), 2),
+            "units_sold": int(units),
+            "last_sold": last,
+        }
+        for item_id, name, cat, rev, units, last in sale_rows
+    }
+    # Seller-hub Blinkit accounts (Sereko): same item_id space as the old
+    # domain, so an item present in both is merged rather than listed twice.
+    # The domain publishes no stock, so a hub-only SKU is "stock unknown"
+    # unless the SOH table happens to have it.
+    hub_only: set[str] = set()
+    if seller_hub.wants_blinkit_seller_hub(marketplaces):
+        for h in await seller_hub.product_list_agg(
+            session,
+            tenant_id=tenant_id,
+            start=period.start,
+            end=period.end,
+            search=search,
+            category=category,
+        ):
+            b = blinkit.get(h["item_id"])
+            if b is None:
+                blinkit[h["item_id"]] = {k: v for k, v in h.items() if k != "item_id"}
+                hub_only.add(h["item_id"])
+                continue
+            b["revenue"] = round(b["revenue"] + h["revenue"], 2)
+            b["units_sold"] += h["units_sold"]
+            b["last_sold"] = max(d for d in (b["last_sold"], h["last_sold"]) if d)
+            b["item_name"] = b["item_name"] or h["item_name"]
+            b["category"] = b["category"] or h["category"]
+
     rows: list[ProductListRow] = []
-    for item_id, name, cat, rev, units, last in sale_rows:
+    for item_id, b in blinkit.items():
         backend, frontend = stock_map.get(item_id, (0, 0))
         rows.append(
             _list_row(
                 item_id=item_id,
-                item_name=name,
-                category=cat,
-                revenue=round(float(rev), 2),
-                units_sold=int(units),
-                last_sold=last,
+                **b,
                 backend_qty=backend,
                 frontend_qty=frontend,
                 window_days=window_days,
+                stock_known=item_id in stock_map or item_id not in hub_only,
             )
         )
 
@@ -420,7 +466,16 @@ async def get_product_detail(
     ).one()
 
     if count == 0:
-        # Not a Blinkit SKU in this window. `item_id` is a Zepto
+        # Not an old-domain Blinkit SKU in this window. Seller-hub Blinkit
+        # (Sereko) shares the same item_id space, so it is tried first.
+        if seller_hub.wants_blinkit_seller_hub(marketplaces):
+            h = await _seller_hub_detail(
+                session, tenant_id=tenant_id, item_id=item_id, period=period,
+                marketplaces=marketplaces,
+            )
+            if h is not None:
+                return h
+        # `item_id` is a Zepto
         # `product_variant_id` when the row came from the Zepto branch of the
         # list, so try there before 404-ing.
         if zepto_products.wants_zepto(marketplaces):
@@ -477,7 +532,112 @@ async def get_product_detail(
         for c, u, r in city_rows
     ]
 
-    # Stock: current snapshot (summed + per-facility) and the in-window trend.
+    stock, facilities, frontend_now, stock_trend = await _blinkit_stock(
+        session, tenant_id=tenant_id, item_id=item_id, period=period,
+        marketplaces=marketplaces,
+    )
+    potential_loss = await _potential_loss(session, tenant_id=tenant_id, item_id=item_id)
+
+    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+
+    return {
+        "item_id": item_id,
+        "item_name": name,
+        "category": cat,
+        "marketplace": "blinkit",
+        "period_days": period.length_days,
+        "units_sold": units,
+        "revenue": rev,
+        "avg_price": _avg_price(rev, units),
+        "stock": stock,
+        "avg_daily_units": avg_daily,
+        "days_of_cover": cover,
+        "status": cover_status(frontend_now, units, cover),
+        "potential_loss": potential_loss,
+        "trend": trend,
+        "stock_trend": stock_trend,
+        "facilities": facilities,
+        "cities": cities,
+    }
+
+
+async def _seller_hub_detail(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    period: Period,
+    marketplaces: list[str] | None,
+) -> dict | None:
+    """Product 360 for a seller-hub Blinkit SKU (Sereko), in the same shape as
+    the old-domain branch. Sales come from the order report; stock, facilities
+    and the scorecard signal are the same Blinkit tables keyed on the same
+    item_id, used when they have rows. With no stock at all the status says
+    "no stock data" rather than "out of stock" — see `_list_row`."""
+    d = await seller_hub.product_detail_agg(
+        session, tenant_id=tenant_id, item_id=item_id,
+        start=period.start, end=period.end,
+    )
+    if d is None:
+        return None
+
+    stock, facilities, frontend_now, stock_trend = await _blinkit_stock(
+        session, tenant_id=tenant_id, item_id=item_id, period=period,
+        marketplaces=marketplaces,
+    )
+    units, rev = d["units_sold"], d["revenue"]
+    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+    if stock is None:
+        cover = None
+
+    return {
+        **d,
+        "marketplace": seller_hub.SLUG,
+        "period_days": period.length_days,
+        "avg_price": _avg_price(rev, units),
+        "stock": stock,
+        "avg_daily_units": avg_daily,
+        "days_of_cover": cover,
+        "status": (
+            cover_status(frontend_now, units, cover)
+            if stock is not None
+            else STATUS_NO_STOCK_DATA
+        ),
+        "potential_loss": await _potential_loss(
+            session, tenant_id=tenant_id, item_id=item_id
+        ),
+        "stock_trend": stock_trend,
+        "facilities": facilities,
+        "cities": [CityShare(**c) for c in d["cities"]],
+    }
+
+
+async def _potential_loss(
+    session: AsyncSession, *, tenant_id: uuid.UUID, item_id: str
+) -> float | None:
+    """Latest Blinkit scorecard signal for this SKU (potential fill loss), if any."""
+    value = (
+        await session.execute(
+            select(KeySku.potential_loss)
+            .where(KeySku.tenant_id == tenant_id, KeySku.item_id == item_id)
+            .order_by(KeySku.from_date_ist.desc())
+            .limit(1)
+        )
+    ).scalar()
+    return round(float(value), 2) if value is not None else None
+
+
+async def _blinkit_stock(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    item_id: str,
+    period: Period,
+    marketplaces: list[str] | None,
+) -> tuple[dict | None, list[FacilityStock], int, list[dict]]:
+    """(stock, facilities, frontend_now, stock_trend) for one Blinkit SKU from
+    SOH: current snapshot (summed + per-facility) and the in-window trend.
+    `stock` is None when SOH has never seen the SKU."""
     soh_cond = [SOH.tenant_id == tenant_id, SOH.item_id == item_id]
     if marketplaces is not None:
         soh_cond.append(SOH.platform.in_(marketplaces))
@@ -542,40 +702,7 @@ async def get_product_detail(
         {"date": d, "backend_qty": int(b), "frontend_qty": int(f)}
         for d, b, f in stock_trend_rows
     ]
-
-    # Latest Blinkit scorecard signal for this SKU (potential fill loss), if any.
-    potential_loss = (
-        await session.execute(
-            select(KeySku.potential_loss)
-            .where(KeySku.tenant_id == tenant_id, KeySku.item_id == item_id)
-            .order_by(KeySku.from_date_ist.desc())
-            .limit(1)
-        )
-    ).scalar()
-
-    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
-
-    return {
-        "item_id": item_id,
-        "item_name": name,
-        "category": cat,
-        "marketplace": "blinkit",
-        "period_days": period.length_days,
-        "units_sold": units,
-        "revenue": rev,
-        "avg_price": _avg_price(rev, units),
-        "stock": stock,
-        "avg_daily_units": avg_daily,
-        "days_of_cover": cover,
-        "status": cover_status(frontend_now, units, cover),
-        "potential_loss": (
-            round(float(potential_loss), 2) if potential_loss is not None else None
-        ),
-        "trend": trend,
-        "stock_trend": stock_trend,
-        "facilities": facilities,
-        "cities": cities,
-    }
+    return stock, facilities, frontend_now, stock_trend
 
 
 # --- PO history ------------------------------------------------------------

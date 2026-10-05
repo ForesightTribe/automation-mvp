@@ -1,8 +1,10 @@
 """Aggregations for the Reports feature — the client's Excel views, computed
 server-side. Client-scoped (filtered by `tenant_id`); read-only.
 
-Sales pipeline is Blinkit-only today, so the sales pivot returns one platform
-block per marketplace present in `blinkit_seller_sales` (Blinkit in practice).
+The sales pivot returns one platform block per marketplace with sales in the
+window. Blinkit comes from `blinkit_seller_sales` (old partnersbiz domain) or
+`blinkit_seller_hub_sales_order_ro` (new seller-hub domain, e.g. Sereko) —
+both under the "blinkit" block, since a tenant only ever has one of them.
 """
 import uuid
 from datetime import date, datetime, timedelta
@@ -13,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchListing
-from app.services import instamart_reports, zepto_ads, zepto_reports
+from app.services import blinkit_seller_hub_analytics, instamart_reports, zepto_ads, zepto_reports
 from scraper.utils.pack import per_unit_price
 from app.schemas.reports import (
     CampaignHalf,
@@ -162,6 +164,15 @@ async def get_sales_pivot(
     # axis, category grouping, subtotals, the weekday/weekend split — runs over
     # both marketplaces without knowing which produced a row. `platform` keeps
     # them in separate top-level blocks.
+    # Seller-hub Blinkit accounts (Sereko) land in the same "blinkit" block —
+    # a tenant is on one Blinkit domain or the other, never both.
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        rows = [
+            *rows,
+            *await blinkit_seller_hub_analytics.pivot_rows(
+                session, tenant_id=tenant_id, start=start, end=end, metric=metric
+            ),
+        ]
     if zepto_reports.wants_zepto(marketplaces):
         rows = [
             *rows,
@@ -368,6 +379,13 @@ async def get_marketing_report(
     ).all()
     sale_map = {d: float(rev) for d, rev in sale_rows}
 
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        for d, rev in (
+            await blinkit_seller_hub_analytics.sales_daily(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            sale_map[d] = sale_map.get(d, 0.0) + rev
     if zepto_reports.wants_zepto(marketplaces):
         for d, rev in (
             await zepto_reports.sales_daily(
