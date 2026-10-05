@@ -37,8 +37,8 @@ stores by lat/lon header-swap, run through a concurrent worker pool.
 | Platform | Status |
 |---|---|
 | Blinkit | Working (Playwright in-page fetch — Cloudflare bypass) |
-| Instamart | Out of scope (Blinkit-only) |
-| Zepto | Out of scope (Blinkit-only) |
+| Zepto | Working — own provider in the same engine (header store-binding, full Chromium headless, 2 s pacing); see [zepto-public.md](zepto-public.md). No schedule yet |
+| Instamart | In progress (on `dev`) |
 
 ### Private data — requires seller login
 
@@ -46,8 +46,8 @@ stores by lat/lon header-swap, run through a concurrent worker pool.
 |---|---|---|
 | Blinkit | Marketing (`brands.blinkit.com`) | Working |
 | Blinkit | Seller (`partnersbiz.com`) — sales, PO, SOH, scorecard | Working |
-| Instamart | TBD | Pending |
-| Zepto | TBD | Pending |
+| Zepto | Seller dashboard (`brands.zepto.co.in`) — sales, ads, POs, campaign catalogue | Working (daily `scrape.zepto`) |
+| Instamart | TBD | In progress (on `dev`) |
 
 ## What Data Is Collected
 

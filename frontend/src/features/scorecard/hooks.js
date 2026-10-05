@@ -1,5 +1,6 @@
 import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
+import { useMarketplaces } from "../../context/MarketplaceContext";
 import {
 	getWeeks,
 	getWeekly,
@@ -12,54 +13,79 @@ import {
 /**
  * Data hooks for the Scorecard page. Unlike the rest of the dashboard, scorecard
  * data is weekly snapshots — so these keys carry a page-local `selectedWeek`
- * (a `from_date_ist`) instead of the global date range / marketplace selection.
- * Changing the week in the page's WeekPicker re-keys every dependent query and
- * refetches. The week list itself isn't week-scoped.
+ * (a `from_date_ist`) instead of the global date range. Changing the week in the
+ * page's WeekPicker re-keys every dependent query and refetches. The week list
+ * itself isn't week-scoped.
  */
+
+/**
+ * Resolves the global marketplace pill selection down to what the scorecard
+ * endpoints actually accept: undefined (backend auto-detect) or exactly one
+ * slug. Scorecard has no "blended" concept — `scorecard_service._platform`
+ * always answers with a single platform — so a multi-select or "All" state
+ * from the navbar pills can't map onto more than "let the backend choose".
+ * Only when the picker narrows to ONE marketplace does that become explicit.
+ */
+const useScorecardMarketplace = () => {
+	const { selected, allSelected, ready } = useMarketplaces();
+	// `ready` holds the queries until the client's marketplaces are known, so a
+	// one-marketplace client is not fetched as auto-detect and then again by name.
+	return {
+		marketplace:
+			allSelected || selected.length !== 1 ? undefined : selected[0],
+		ready,
+	};
+};
+
 export const useScorecardWeeks = () => {
 	const { activeClientId } = useClient();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
-		queryKey: ["scorecard-weeks", activeClientId],
-		queryFn: () => getWeeks(activeClientId),
-		enabled: Boolean(activeClientId),
+		queryKey: ["scorecard-weeks", activeClientId, marketplace],
+		queryFn: () => getWeeks(activeClientId, { marketplace }),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useScorecardWeekly = (from) => {
 	const { activeClientId } = useClient();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
-		queryKey: ["scorecard-weekly", activeClientId, from],
-		queryFn: () => getWeekly(activeClientId, { from }),
-		enabled: Boolean(activeClientId),
+		queryKey: ["scorecard-weekly", activeClientId, from, marketplace],
+		queryFn: () => getWeekly(activeClientId, { from, marketplace }),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
 
 export const useScorecardTrend = (weeks = 12) => {
 	const { activeClientId } = useClient();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
-		queryKey: ["scorecard-trend", activeClientId, weeks],
-		queryFn: () => getTrend(activeClientId, { weeks }),
-		enabled: Boolean(activeClientId),
+		queryKey: ["scorecard-trend", activeClientId, weeks, marketplace],
+		queryFn: () => getTrend(activeClientId, { weeks, marketplace }),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useKeySkus = ({ from, page, limit = 20 }) => {
 	const { activeClientId } = useClient();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
-		queryKey: ["scorecard-key-skus", activeClientId, from, page, limit],
-		queryFn: () => getKeySkus(activeClientId, { from, page, limit }),
-		enabled: Boolean(activeClientId),
+		queryKey: ["scorecard-key-skus", activeClientId, from, page, limit, marketplace],
+		queryFn: () => getKeySkus(activeClientId, { from, page, limit, marketplace }),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
 
 export const useFacilities = ({ from, page, limit = 20 }) => {
 	const { activeClientId } = useClient();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
-		queryKey: ["scorecard-facilities", activeClientId, from, page, limit],
-		queryFn: () => getFacilities(activeClientId, { from, page, limit }),
-		enabled: Boolean(activeClientId),
+		queryKey: ["scorecard-facilities", activeClientId, from, page, limit, marketplace],
+		queryFn: () => getFacilities(activeClientId, { from, page, limit, marketplace }),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -68,10 +94,14 @@ export const useFacilities = ({ from, page, limit = 20 }) => {
  * (gated by `enabled`), so the table only pulls drill-down data on demand. */
 export const useFacilityPos = (facilityId, { page, limit = 10, enabled }) => {
 	const { activeClientId } = useClient();
+	const { marketplace, ready } = useScorecardMarketplace();
 	return useQuery({
-		queryKey: ["scorecard-facility-pos", activeClientId, facilityId, page, limit],
-		queryFn: () => getFacilityPos(activeClientId, facilityId, { page, limit }),
-		enabled: Boolean(activeClientId) && Boolean(facilityId) && enabled,
+		queryKey: [
+			"scorecard-facility-pos", activeClientId, facilityId, page, limit, marketplace,
+		],
+		queryFn: () =>
+			getFacilityPos(activeClientId, facilityId, { page, limit, marketplace }),
+		enabled: Boolean(activeClientId) && Boolean(facilityId) && enabled && ready,
 		placeholderData: keepPreviousData,
 	});
 };

@@ -2,6 +2,8 @@ import { DateRangePicker } from "./DateRangePicker";
 import { MarketplacePills } from "./MarketplacePills";
 import { ProfileMenu } from "./ProfileMenu";
 import { ClientBadge } from "./ClientBadge";
+import { FreshnessBox } from "../features/overview/components/FreshnessBox";
+import { NotificationBell } from "../features/overview/components/NotificationBell";
 
 /**
  * Top bar, spanning the column beside the rail: which marketplaces (left), over
@@ -33,7 +35,11 @@ export const Navbar = () => (
 
 		<DateRangePicker />
 
-		<div className="flex flex-1 basis-0 items-center justify-end">
+		{/* How current the data is belongs beside the window it is read over,
+		    not inside any one page. */}
+		<div className="flex flex-1 basis-0 items-center justify-end gap-4">
+			<FreshnessBox />
+			<NotificationBell />
 			<ProfileMenu />
 		</div>
 	</header>

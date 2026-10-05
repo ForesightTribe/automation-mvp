@@ -117,6 +117,11 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 
 	const { range } = useDateRange();
 	const { selected } = useMarketplaces();
+	// AOV's and Units' whole columns are withheld in an Instamart-only view, not just
+	// their values — a column of nothing but "—" is worse than no column. In a mixed
+	// view both stay visible (blanked per-row already, in `derived`), since a missing
+	// figure there reads fine next to real ones from other platforms.
+	const instamartOnly = selected?.length === 1 && selected[0] === "instamart";
 	// Which campaign's utilisation is being read day by day, or null. The daily data is
 	// fetched by the drawer, on open: a column of 20 campaigns must not pay for the detail
 	// of 20 campaigns nobody asked about.
@@ -200,13 +205,22 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 			filtered.map((c) => {
 				const allowed =
 					c.daily_budget != null ? c.daily_budget * days : null;
+				// Instamart's units-sold figure is unreliable (confirmed
+				// 2026-09-30) — withheld here rather than shown wrong, along
+				// with the AOV derived from it. Blinkit and Zepto are
+				// unaffected. Nulling `quantities_sold` itself (not just aov)
+				// means every reader downstream — the Units column, the sort
+				// accessor, the CSV export — sees the same blank.
+				const isInstamart = c.platform === "instamart";
+				const quantitiesSold = isInstamart ? null : c.quantities_sold;
 				return {
 					...c,
+					quantities_sold: quantitiesSold,
 					acos: c.ad_sales
 						? (c.budget_consumed / c.ad_sales) * 100
 						: null,
-					aov: c.quantities_sold
-						? c.ad_sales / c.quantities_sold
+					aov: quantitiesSold
+						? c.ad_sales / quantitiesSold
 						: null,
 					cpm: c.impressions
 						? (c.budget_consumed / c.impressions) * 1000
@@ -272,13 +286,20 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 						header: "ACoS %",
 						value: (c) => (c.acos == null ? "" : c.acos.toFixed(2)),
 					},
-					{
-						header: "AOV",
-						value: (c) => (c.aov == null ? "" : c.aov.toFixed(2)),
-					},
+					...(instamartOnly
+						? []
+						: [
+								{
+									header: "AOV",
+									value: (c) =>
+										c.aov == null ? "" : c.aov.toFixed(2),
+								},
+							]),
 					{ header: "Impressions", value: (c) => c.impressions },
 					{ header: "Add to cart", value: (c) => c.atc },
-					{ header: "Units", value: (c) => c.quantities_sold },
+					...(instamartOnly
+						? []
+						: [{ header: "Units", value: (c) => c.quantities_sold }]),
 					{
 						header: "CPM",
 						value: (c) => (c.cpm == null ? "" : c.cpm.toFixed(2)),
@@ -462,14 +483,16 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 											order={order}
 											onSort={onSort}
 										/>
-										<SortHead
-											label="AOV"
-											hint={ABOUT["AOV"]}
-											sortKey="aov"
-											sort={sort}
-											order={order}
-											onSort={onSort}
-										/>
+										{!instamartOnly && (
+											<SortHead
+												label="AOV"
+												hint={ABOUT["AOV"]}
+												sortKey="aov"
+												sort={sort}
+												order={order}
+												onSort={onSort}
+											/>
+										)}
 										<SortHead
 											label="Impressions"
 											hint={ABOUT["Impressions"]}
@@ -486,14 +509,16 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 											order={order}
 											onSort={onSort}
 										/>
-										<SortHead
-											label="Units"
-											hint={ABOUT["Units"]}
-											sortKey="units"
-											sort={sort}
-											order={order}
-											onSort={onSort}
-										/>
+										{!instamartOnly && (
+											<SortHead
+												label="Units"
+												hint={ABOUT["Units"]}
+												sortKey="units"
+												sort={sort}
+												order={order}
+												onSort={onSort}
+											/>
+										)}
 										<SortHead
 											label="CPM"
 											hint={ABOUT["CPM"]}
@@ -569,11 +594,13 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 												<td className={NUM}>
 													{pctText(acos)}
 												</td>
-												<td className={NUM}>
-													{aov == null
-														? "—"
-														: formatCurrency(aov)}
-												</td>
+												{!instamartOnly && (
+													<td className={NUM}>
+														{aov == null
+															? "—"
+															: formatCurrency(aov)}
+													</td>
+												)}
 												<td className={NUM}>
 													{formatNumber(
 														c.impressions,
@@ -582,11 +609,13 @@ export const CampaignInsightsCard = ({ onOpenCampaign }) => {
 												<td className={NUM}>
 													{formatNumber(c.atc)}
 												</td>
-												<td className={NUM}>
-													{formatNumber(
-														c.quantities_sold,
-													)}
-												</td>
+												{!instamartOnly && (
+													<td className={NUM}>
+														{formatNumber(
+															c.quantities_sold,
+														)}
+													</td>
+												)}
 												<td className={NUM}>
 													{cpm == null
 														? "—"

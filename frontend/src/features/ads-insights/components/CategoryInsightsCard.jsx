@@ -21,6 +21,7 @@ import {
 	useClientSort,
 } from "./insightsTable";
 import { CategoryDrawer } from "./CategoryDrawer";
+import { useMarketplaces } from "../../../context/MarketplaceContext";
 
 /** What each column measures, in plain terms. Definitions, not platform notes. */
 const ABOUT = {
@@ -40,6 +41,15 @@ export const CategoryInsightsCard = () => {
 	const [openRow, setOpenRow] = useState(null);
 	const { range } = useDateRange();
 	const { data, isLoading, error, refetch } = useSalesByCategory();
+	// This whole card is a BLEND across whatever marketplaces are selected —
+	// a category has no per-row platform to check the way a campaign does —
+	// so Units/AOV can only be withheld cleanly when the view is
+	// Instamart-only. A mixed or "all" view still includes Blinkit/Zepto and
+	// must keep showing them exactly as before. Nothing below is deleted:
+	// `rows` still carries units_sold/aov for every view, only what RENDERS
+	// is gated on instamartOnly further down.
+	const { selected } = useMarketplaces();
+	const instamartOnly = selected?.length === 1 && selected[0] === "instamart";
 
 	const rows = useMemo(() => {
 		const items = data ?? [];
@@ -67,11 +77,15 @@ export const CategoryInsightsCard = () => {
 	const columns = [
 		{ header: "Category", value: (r) => r.category },
 		{ header: "Revenue", value: (r) => r.revenue },
-		{ header: "Units", value: (r) => r.units_sold },
-		{
-			header: "Revenue per unit",
-			value: (r) => (r.aov == null ? "" : r.aov.toFixed(2)),
-		},
+		...(instamartOnly
+			? []
+			: [
+					{ header: "Units", value: (r) => r.units_sold },
+					{
+						header: "Revenue per unit",
+						value: (r) => (r.aov == null ? "" : r.aov.toFixed(2)),
+					},
+				]),
 		{
 			header: "Share of revenue %",
 			value: (r) => (r.share == null ? "" : r.share.toFixed(2)),
@@ -140,8 +154,8 @@ export const CategoryInsightsCard = () => {
 										className={`${STICKY_NAME} ${STICKY_HEAD} ${scrolled ? LIFTED_L : ""} z-30`}
 									/>
 									{head("Revenue", "revenue")}
-									{head("Units", "units")}
-									{head("AOV", "aov")}
+									{!instamartOnly && head("Units", "units")}
+									{!instamartOnly && head("AOV", "aov")}
 									{head("Share", "share")}
 								</tr>
 							</thead>
@@ -160,14 +174,18 @@ export const CategoryInsightsCard = () => {
 										<td className={NUM}>
 											{formatCurrency(r.revenue)}
 										</td>
-										<td className={NUM}>
-											{formatNumber(r.units_sold)}
-										</td>
-										<td className={NUM}>
-											{r.aov == null
-												? "—"
-												: formatCurrency(r.aov)}
-										</td>
+										{!instamartOnly && (
+											<td className={NUM}>
+												{formatNumber(r.units_sold)}
+											</td>
+										)}
+										{!instamartOnly && (
+											<td className={NUM}>
+												{r.aov == null
+													? "—"
+													: formatCurrency(r.aov)}
+											</td>
+										)}
 										<td className={`${TD} w-48`}>
 											{/* The bar makes the ranking readable at a glance; the number stays,
 										    because a bar alone cannot be read off precisely. */}
@@ -198,6 +216,7 @@ export const CategoryInsightsCard = () => {
 					range={range}
 					open={Boolean(openRow)}
 					onClose={() => setOpenRow(null)}
+					instamartOnly={instamartOnly}
 				/>
 			</Card>
 		</div>

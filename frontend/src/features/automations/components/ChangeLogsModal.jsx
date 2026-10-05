@@ -18,6 +18,7 @@ const TYPE_OPTIONS = [
 	["budget", "Budget change"],
 	["bid", "Bid change"],
 	["activation", "Start / stop"],
+	["wallet", "Ad wallet"],
 ];
 
 /**
@@ -317,7 +318,13 @@ export const ChangeLogsModal = ({
 														}
 													>
 														{r.campaign_name ||
-															`Campaign ${r.campaign_id ?? "—"}`}
+															(r.campaign_id ==
+															null
+																? (KIND_LABEL[
+																		r.kind
+																	] ??
+																	"Account")
+																: `Campaign ${r.campaign_id}`)}
 													</span>
 												</div>
 												<div className="text-xs text-content-subtle">

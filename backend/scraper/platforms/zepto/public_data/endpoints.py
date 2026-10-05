@@ -47,6 +47,18 @@ WARMUP_SEARCH_URL = BASE_URL + "/search?query=bread"
 
 SEARCH_BODY = {"query": "", "pageNumber": 0, "mode": "SHOW_ALL_RESULTS"}
 
+# Which Chromium build to run headless. "chromium" = the FULL browser in headless mode.
+#
+# ⚠️ NOT Playwright's default. Since Playwright 1.49, `launch(headless=True)` runs a
+# stripped-down `chromium-headless-shell`, and Zepto's WAF refuses it (found 2026-09-24,
+# diagnosed 2026-09-26): the challenge is solved and the pass cookie is set, then the
+# homepage AND the search page answer 429 and the page never fires its search. Same
+# machine, same IP, seconds apart: a visible browser went straight through, and the full
+# Chromium in headless mode did too — 50 Bengaluru stores, 50/50 ok, 0 blocks, ~740 MB,
+# ~4% of a core. Needs Playwright >= 1.49 and `playwright install chromium` (which installs
+# the full build alongside the shell). See zepto-cm-exp/CHECKLIST.md C6.
+BROWSER_CHANNEL = "chromium"
+
 # Headers the transport sets itself; copying them from a capture corrupts the
 # request.
 DROP_HEADER_KEYS = frozenset({
@@ -97,6 +109,20 @@ SECTION_BREAK_WIDGETS = frozenset({"HEADER_WIDGET"})
 # key IS present, so `data.get("layout", [])` returns None and iterating it raises.
 # Always `data.get("layout") or []`.
 LAYOUT_KEY = "layout"
+
+# Zepto's own "no more pages" flag on every search response, alongside `currentPage`,
+# `pageProductCount` and `totalProductCount`. Paging stops on it.
+#
+# ⚠️ A SHORT PAGE IS NOT THE END. Checked on 20 saved page-0 responses (2026-10-02):
+# `almonds` 27 rows of 220, `butter` 24 of 177, `sourdough` 18 of 212 — every one with
+# hasReachedEnd false and more behind it. "Stop when fewer than PAGE_SIZE came back" would
+# have thrown real results away; only this flag (or the Similar Products break) says
+# the list is over.
+#
+# `totalProductCount` is NOT the number of search matches: it counts the Similar
+# Products tail too (`mozzarella` 79, where the real results end at 26 with a break).
+REACHED_END_KEY = "hasReachedEnd"
+TOTAL_COUNT_KEY = "totalProductCount"
 
 # Prices are in PAISE. mrp 11000 = Rs 110.00.
 PRICE_DIVISOR = 100
@@ -152,11 +178,45 @@ PAUSE_S = 0
 
 # Blocks clear on their own in about a minute. The old (900, 1800, 2700, 3600)
 # ladder waited out a gate that was already gone.
+#
+# How each kind is met is `scraper.block_remedy`: the FIRST 429 waits RATE_PAUSE_S and
+# the first 299 GATE_PAUSE_S, on the SAME session — both are connection-wide, so a new
+# session changes nothing and its warm-up only adds requests to a connection that is
+# already being told it sent too many. A 202 is per session: re-minted inside `search()`
+# first, and rebuilt (no wait) if that fails. Blocks that keep coming back walk
+# RECOVERY_WAITS_S, rebuilding from the end of the ladder on.
 GATE_PAUSE_S = 60.0        # after a 299
 RATE_PAUSE_S = 30.0        # after a 429
 PROBE_EVERY_S = 60
 RECOVERY_WAITS_S = (60, 60, 120, 180)
 RETRY_DELAYS = (1.0, 2.0)
+
+# A worker that has seen nothing but blocks for this long stops taking stores, and the
+# run ends `partial` for --resume. Blocks clear in about a minute, so half an hour of
+# nothing else is not a rate limit — it is a wall (the 2026-09-24 headless block, the
+# VM's 403) that waiting will not move. Replaces "give up after 4 waits", which gave up
+# on ordinary bad patches and lost the rest of the run.
+BLOCK_GIVE_UP_S = 30 * 60
+
+# ── Adaptive pacing ───────────────────────────────────────────────────────────
+# SEARCH_GAP_S is the clean pace for 14:00-22:00. Mornings measured 10-14 requests a
+# minute, so the same fixed pace overshoots there, and a run lives in block -> recover ->
+# block: the 2026-09-29 Brik Oven run had 48 such streaks, a median of 7 searches each,
+# and took 8.4 h for what had taken ~1 h. So the gap is a FLOOR, not a constant: each
+# block widens it, a clean stretch narrows it back. 8 s is the widest arm measured clean
+# (97%); slower only wastes time.
+#
+# The adaptive pace is measured START to START (from when one request left to when the
+# next leaves), unlike SEARCH_GAP_S, which was a sleep AFTER each search. The floor is set
+# to what the clean runs actually did — 2 s of sleep plus ~0.25 s of request, a 2.31 s
+# median gap on the 2026-09-29 run — so the switch alone changes nothing. Lowering it is
+# a measurement (checklist M1), not a guess: 1.0 s measured 21% clean, 2.0 s 99%, and
+# nothing in between has been tried.
+PACE_FLOOR_S = 2.3
+GAP_MAX_S = 8.0
+GAP_BACKOFF = 1.5          # gap x this after a block
+GAP_EASE_AFTER = 20        # clean searches in a row before easing back
+GAP_EASE = 1.25            # gap / this per easing step, never below SEARCH_GAP_S
 
 # The AWS WAF pass (the `aws-waf-token` cookie) lives 4-6 minutes and NOTHING on
 # the page refreshes it — `window.AwsWafIntegration` is absent. Re-mint on a timer
@@ -179,8 +239,42 @@ MAX_WORKERS = 1
 # do. DEDUPE IS MANDATORY at any depth: page 0 alone carried 3 duplicates among
 # 30 items, and page 1 repeated 29% of page 0.
 RESULT_CAP = 30
+# One results page. A cap that is not a multiple of it fetches a last page only to throw
+# part of it away — `cli sync` warns about such caps (scraper/public/caps.py).
+PAGE_SIZE = 30
 BRAND_RESULT_CAP = 60      # brand scrape paginates the catalog; tuned in Phase 4
 MAX_PAGES = 3              # ceiling only; RESULT_CAP is what normally stops paging
+
+# ── Typed search (`typed_search.py`) ──────────────────────────────────────────
+# The second way to search: drive Zepto's own search box and read the page's own answer.
+# Used where replaying captured headers is refused — through a proxy (measured 2026-09-29/30,
+# `zepto-cm-exp/PROXY-TESTS.md`). Every number below is what the 10/10 runs used.
+#
+# What the page's search calls say about themselves, in the request body's `mode`:
+TYPED_RESULTS_MODES = frozenset({"AUTOSUGGEST", "SHOW_ALL_RESULTS"})   # a ranked results list
+TYPED_TYPING_MODE = "TYPED"                   # the as-you-type suggestions
+TYPED_SEARCH_BOX = ('input[type="search"], input[placeholder*="earch" i], '
+                    'input[aria-label*="earch" i], [data-testid*="search" i] input')
+TYPED_SEARCH_PAGE = BASE_URL + "/search"
+# Never downloaded in a typed session, from its first request: most of a page's weight and
+# none of its data. The proxy bills by the megabyte, and on a measured session (2026-09-30)
+# Zepto's own search was ~35 KB a search while images were ~1 MB of the warm-up, and
+# third-party trackers plus Zepto's analytics uploads (~100 KB each) outweighed the searches
+# several times over. Blocking them is what an ad blocker does. The firewall's own challenge
+# (`*.awswaf.com`) is never on this list.
+TYPED_BLOCK_RESOURCES = frozenset({"image", "media", "font"})
+TYPED_BLOCK_HOSTS = ("googletagmanager.com", "google-analytics.com", "doubleclick.net",
+                     "connect.facebook.net", "facebook.com", "events.zepto.co.in")
+TYPED_SETTLE_S = 20.0            # after a page load: wait this long, at most, for it to go quiet
+TYPED_FOCUS_MS = 300             # click -> first keystroke. Less, and keystrokes are lost
+TYPED_KEY_DELAY_MS = 80
+TYPED_ENTER_WAIT_MS = 1500       # last keystroke -> Enter
+TYPED_ANSWER_S = 12.0            # an answer takes 3-6 s; past this, none is coming
+TYPED_AFTER_S = 1.0              # let the page finish its own re-sends before the next search
+TYPED_GAP_S = 3.0                # between two searches
+# A FULL first page. One page is all a typed search reads, so a page this long may have more
+# behind it (the caller is told: `capped_at`); a shorter one is the whole list.
+TYPED_PAGE_ROWS = 30
 
 # ── Status codes ──────────────────────────────────────────────────────────────
 GATE_STATUS = 299          # LOGIN_REQUIRED — shared, self-clearing

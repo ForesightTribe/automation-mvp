@@ -26,13 +26,33 @@ from app.services import scorecard_service
 
 router = APIRouter()
 
+# Blinkit publishes a scorecard; Zepto's and Instamart's are both derived from
+# PO tables at read time (see scorecard_service module docstring). Any value
+# outside this set used to fall straight through `scorecard_service._platform`'s
+# `== "zepto"`/`== "instamart"` checks into the BLINKIT branch by default,
+# silently serving Blinkit's rows under whatever marketplace was actually
+# asked for. Guarding here, once, before any service call, is cheaper and
+# safer than teaching every branch in the service to recognise a platform it
+# has no data for.
+_SUPPORTED = {"blinkit", "zepto", "instamart"}
+
+
+def _check_marketplace(marketplace: str | None) -> None:
+    if marketplace is not None and marketplace not in _SUPPORTED:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=f"Scorecard is not available for {marketplace!r} yet "
+            f"(only blinkit and zepto publish/derive one).",
+        )
+
 
 @router.get("/weeks", response_model=list[date])
 async def weeks(
     session: SessionDep,
     client: ClientDep,
-    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+    marketplace: str | None = Query(None, description="blinkit | zepto | instamart; auto-detects blinkit/zepto when omitted, instamart is explicit-only"),
 ):
+    _check_marketplace(marketplace)
     return await scorecard_service.get_weeks(
         session, tenant_id=client.id, marketplace=marketplace
     )
@@ -43,8 +63,9 @@ async def weekly(
     session: SessionDep,
     client: ClientDep,
     from_date: date | None = Query(None, alias="from", description="Defaults to latest"),
-    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+    marketplace: str | None = Query(None, description="blinkit | zepto | instamart; auto-detects blinkit/zepto when omitted, instamart is explicit-only"),
 ):
+    _check_marketplace(marketplace)
     data = await scorecard_service.get_weekly(
         session, tenant_id=client.id, from_date=from_date, marketplace=marketplace
     )
@@ -60,8 +81,9 @@ async def trend(
     session: SessionDep,
     client: ClientDep,
     weeks: int = Query(12, ge=1, le=104, description="Number of recent weeks"),
-    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+    marketplace: str | None = Query(None, description="blinkit | zepto | instamart; auto-detects blinkit/zepto when omitted, instamart is explicit-only"),
 ):
+    _check_marketplace(marketplace)
     return await scorecard_service.get_trend(
         session, tenant_id=client.id, weeks=weeks, marketplace=marketplace
     )
@@ -73,8 +95,9 @@ async def key_skus(
     client: ClientDep,
     pagination: PaginationDep,
     from_date: date | None = Query(None, alias="from", description="Defaults to latest"),
-    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+    marketplace: str | None = Query(None, description="blinkit | zepto | instamart; auto-detects blinkit/zepto when omitted, instamart is explicit-only"),
 ):
+    _check_marketplace(marketplace)
     return await scorecard_service.get_key_skus(
         session, tenant_id=client.id, pagination=pagination, from_date=from_date,
         marketplace=marketplace,
@@ -87,8 +110,9 @@ async def facilities(
     client: ClientDep,
     pagination: PaginationDep,
     from_date: date | None = Query(None, alias="from", description="Defaults to latest"),
-    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+    marketplace: str | None = Query(None, description="blinkit | zepto | instamart; auto-detects blinkit/zepto when omitted, instamart is explicit-only"),
 ):
+    _check_marketplace(marketplace)
     return await scorecard_service.get_facilities(
         session, tenant_id=client.id, pagination=pagination, from_date=from_date,
         marketplace=marketplace,
@@ -101,8 +125,9 @@ async def facility_pos(
     client: ClientDep,
     pagination: PaginationDep,
     facility_id: str,
-    marketplace: str | None = Query(None, description="blinkit | zepto; auto when omitted"),
+    marketplace: str | None = Query(None, description="blinkit | zepto | instamart; auto-detects blinkit/zepto when omitted, instamart is explicit-only"),
 ):
+    _check_marketplace(marketplace)
     return await scorecard_service.get_facility_pos(
         session, tenant_id=client.id, facility_id=facility_id, pagination=pagination,
         marketplace=marketplace,

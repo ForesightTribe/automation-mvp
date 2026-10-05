@@ -11,6 +11,10 @@ BASE_DIR = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     APP_NAME: str = "Foresight API"
     DEBUG: bool = False
+    # Deployment environment. Only "development" serves the interactive docs and
+    # the OpenAPI schema (see app/main.py). Defaults to production, like DEBUG
+    # above: a forgotten variable then costs the local docs, never exposure.
+    ENV: str = "production"
 
     DATABASE_URL: str = "postgresql+asyncpg://postgres:password@localhost:5432/foresight"
 
@@ -18,6 +22,14 @@ class Settings(BaseSettings):
     ENCRYPTION_KEY: str = ""  # Generate with: Fernet.generate_key().decode()
 
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 60 * 24  # 24 hours
+
+    # Login rate limiting (app/utils/ratelimit.py). Counts FAILED attempts only,
+    # per email and per client IP, inside a rolling window. The per-email limit
+    # is the real wall — an IP can be spoofed past Cloudflare, an email cannot.
+    # Set LOGIN_MAX_PER_EMAIL to 0 to disable the limiter entirely.
+    LOGIN_WINDOW_SECONDS: int = 900          # 15 minutes
+    LOGIN_MAX_PER_EMAIL: int = 5
+    LOGIN_MAX_PER_IP: int = 30               # one office NATs many people
 
     CORS_ORIGINS: list[str] = ["http://localhost:5173"]
 
@@ -36,6 +48,20 @@ class Settings(BaseSettings):
     # ~1 h on 2026-09-11). Set ONLY on the API (Render: 60). Leave 0 on the VM — the scrape
     # loader deliberately holds one long all-or-nothing transaction.
     DB_IDLE_TX_TIMEOUT_S: int = 0
+
+    # --- Public scrapes (see scraper/public/outcome.py) ---
+    # Coverage floor: a public scrape that finished fewer than this % of its
+    # (keyword|brand, store) pairs ends `partial` — kept on disk, not auto-loaded,
+    # continued with --resume. Below the floor the data is a hole, not a snapshot;
+    # loading it silently is how a half-scraped run passed for a whole one.
+    PUBLIC_MIN_COVERAGE_PCT: float = 90.0
+    # Precompute the Overview's expensive reads in the background so a reader
+    # never waits for them. OFF by default: it walks EVERY tenant, and on a small
+    # database that is enough concurrent load to have statements cancelled on
+    # timeout — it has to be turned on deliberately, once there is headroom for
+    # it. `WARM_CACHE_GAP_S` paces it so it yields between reads.
+    WARM_CACHE: bool = False
+    WARM_CACHE_GAP_S: float = 1.0
 
     # --- Job runner (see docs/jobs.md) ---
     # Absolute log root. MUST be absolute: the runner's CWD under systemd is not

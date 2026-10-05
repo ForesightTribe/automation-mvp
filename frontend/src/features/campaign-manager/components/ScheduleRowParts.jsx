@@ -90,12 +90,17 @@ export const ConfirmDelete = ({
 	onConfirm,
 	onConfirmAlt,
 	altLabel,
+	disabled = false,
 	children = "Delete",
 }) => {
 	const [armed, setArmed] = useState(false);
 	if (!armed)
 		return (
-			<Action tone="danger" onClick={() => setArmed(true)}>
+			<Action
+				tone="danger"
+				disabled={disabled}
+				onClick={() => setArmed(true)}
+			>
 				{children}
 			</Action>
 		);

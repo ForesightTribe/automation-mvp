@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../../context/AuthContext";
 import { useQueryClient } from "@tanstack/react-query";
 import { Card } from "../../../components/ui/Card";
 import { EmptyState } from "../../../components/feedback/EmptyState";
@@ -121,7 +122,10 @@ export const CampaignsSection = () => {
 	// A job is in flight — every control locks. Activation is one-job-per-client (the API
 	// answers 409 on a second), and with a whole list on screen it is otherwise very easy
 	// to fire three in a row and collect two errors.
+	// Writing here spends the client's money, so members get the section read-only.
+	const { isAdmin } = useAuth();
 	const busy =
+		!isAdmin ||
 		Boolean(job) ||
 		activate.isPending ||
 		setBudgetNow.isPending ||

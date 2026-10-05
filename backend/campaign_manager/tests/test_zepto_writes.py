@@ -12,6 +12,7 @@ The fixtures are the same real captures the golden translate test uses.
 import asyncio
 
 from campaign_manager.marketplaces.zepto import adapter, client as zc
+from campaign_manager.writes import WriteRefused
 from campaign_manager.tests.test_zepto_translate import (
     CAMPAIGN_ID, GET_DETAIL, TARGETING_OPTIONS,
 )
@@ -35,7 +36,7 @@ def _install(monkey_detail=None):
     async def get_detail(client, campaign_id):
         return monkey_detail or client.detail
 
-    async def get_options(client):
+    async def get_options(client, **_):
         return TARGETING_OPTIONS
 
     async def update(client, campaign_id, payload):
@@ -90,7 +91,7 @@ def test_bid_write_refuses_an_absent_keyword():
         c = _FakeClient()
         try:
             asyncio.run(adapter.apply_bid(c, CAMPAIGN_ID, "not a keyword", 14))
-        except RuntimeError as e:
+        except WriteRefused as e:   # a refusal the choke point records, not a crash
             assert "no keyword" in str(e)
             assert c.sent is None, "must not send anything"
         else:
@@ -133,8 +134,8 @@ def test_guard_refuses_when_the_mutation_touches_a_second_field():
 
         try:
             asyncio.run(adapter._put_one_field(
-                c, CAMPAIGN_ID, ".daily_budget", greedy))
-        except RuntimeError as e:
+                c, CAMPAIGN_ID, ".daily_budget", greedy, shape="budget"))
+        except WriteRefused as e:
             assert "REFUSED" in str(e)
             assert "geo_targeting" in str(e), "the reason should name what moved"
             assert c.sent is None, "a refused write must send nothing"
@@ -152,8 +153,8 @@ def test_guard_refuses_a_mutation_that_changes_nothing():
         c = _FakeClient()
         try:
             asyncio.run(adapter._put_one_field(
-                c, CAMPAIGN_ID, ".daily_budget", lambda p: None))
-        except RuntimeError as e:
+                c, CAMPAIGN_ID, ".daily_budget", lambda p: None, shape="budget"))
+        except WriteRefused as e:
             assert "no change" in str(e)
             assert c.sent is None
         else:

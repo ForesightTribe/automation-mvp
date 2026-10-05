@@ -10,6 +10,8 @@ import {
 	WHEN,
 } from "../automation";
 import { formatCurrency } from "../../../lib/format";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { bidUnit } from "../../../lib/marketplaces";
 
 /**
  * Step 3. Not a receipt of the fields that were filled in, but a statement of what the
@@ -139,12 +141,24 @@ export const WizardSummary = ({
 	currentBudget,
 	writeMode,
 }) => {
+	const {
+		marketplace,
+		name: mpName,
+		minDailyBudget,
+	} = useAutomationMarketplace();
+	const unit = bidUnit(marketplace);
 	const base = Number(defaultBudget) || 0;
 	const stops = stopAfterWindow || actions.some((a) => a.type === "stop");
 	const scheduled = actions.filter((a) => a.type !== "stop");
 	const issues =
 		kind === "campaign"
-			? scheduleIssues({ actions, defaultBudget, currentBudget })
+			? scheduleIssues({
+					actions,
+					defaultBudget,
+					currentBudget,
+					minBudget: minDailyBudget,
+					marketplaceName: mpName,
+				})
 			: [];
 
 	// The first moment this will actually act, from the same windows the engine gets.
@@ -230,6 +244,7 @@ export const WizardSummary = ({
 		kind === "campaign"
 			? [
 					["Type", "Campaign budget automation"],
+					["Marketplace", mpName],
 					[
 						"Campaign",
 						campaignLabel || "Not selected",
@@ -250,6 +265,7 @@ export const WizardSummary = ({
 				]
 			: [
 					["Type", "Keyword bid automation"],
+					["Marketplace", mpName],
 					[
 						"Campaign",
 						campaignLabel || "Not selected",
@@ -478,25 +494,35 @@ export const WizardSummary = ({
 							</>
 						) : (
 							" and with no ceiling"
-						)}
-						.
+						)}{" "}
+						({unit.code}, {unit.per}).
 						{timing.end_time
 							? ` It stops checking at ${clockText(timing.end_time)}.`
 							: ""}
 					</p>
 					{effectiveFloor != null && (
 						<p className="mt-2 text-[11px] text-content-subtle">
-							Blinkit's published minimum for this keyword is{" "}
-							{formatCurrency(effectiveFloor)}.
+							{mpName}'s published minimum for this keyword is{" "}
+							{formatCurrency(effectiveFloor)} {unit.per}.
 						</p>
 					)}
-					{!city && !locationName && (
-						<Note tone="warn">
-							Without a city the engine measures at a default
-							Bengaluru store, which is probably not where you
-							meant.
-						</Note>
-					)}
+					{/* Zepto picks one of the campaign's own cities when none is chosen (the
+					    frozen city first, else the one with the most stores), so a blank
+					    city is a choice there, not a mistake. */}
+					{!city &&
+						!locationName &&
+						(marketplace === "zepto" ? (
+							<Note>
+								No city chosen, so one of the campaign's own
+								cities is picked when this is saved. The list
+								shows which one.
+							</Note>
+						) : (
+							<Note tone="warn">
+								Without a city the engine measures at a default
+								store, which is probably not where you meant.
+							</Note>
+						))}
 				</Section>
 			)}
 
@@ -512,17 +538,16 @@ export const WizardSummary = ({
 
 			{writeMode === "dry" && (
 				<Note tone="warn">
-					The last automation run on this account only simulated its
-					writes, so this may not reach Blinkit. Inferred from that
-					run rather than read from the engine, so confirm before
-					relying on it.
+					Automations on {mpName} only simulate their changes right
+					now: the engine&rsquo;s live switch for this account is off,
+					so nothing will change on {mpName} until it is turned on.
 				</Note>
 			)}
 
 			<Note>
 				{isEdit
 					? "Saving replaces the rules on this automation. Windows removed here stop firing straight away."
-					: "This starts acting on your live account as soon as the first window opens."}
+					: `This starts acting on your ${mpName} account as soon as the first window opens.`}
 			</Note>
 		</div>
 	);

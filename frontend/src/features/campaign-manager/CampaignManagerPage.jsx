@@ -2,6 +2,8 @@ import { useState } from "react";
 import { Card } from "../../components/ui/Card";
 import { AutomateBidForm } from "./components/AutomateBidForm";
 import { AutomateBudgetForm } from "./components/AutomateBudgetForm";
+import { ReadOnlyNotice } from "../../components/feedback/ReadOnlyNotice";
+import { useAuth } from "../../context/AuthContext";
 import { CampaignsSection } from "./components/CampaignsSection";
 import { HistoryCard } from "./components/HistoryCard";
 import { ScheduledSection } from "./components/ScheduledSection";
@@ -95,6 +97,8 @@ const Composer = ({ mode, setMode }) => {
 
 export const CampaignManagerPage = () => {
 	const [mode, setMode] = useState(null); // null | "budget" | "bid"
+	// Budgets and bids spend the client's money: writing is admin-only.
+	const { isAdmin } = useAuth();
 
 	return (
 		<div className="space-y-6">
@@ -108,7 +112,11 @@ export const CampaignManagerPage = () => {
 				</p>
 			</header>
 
-			<Composer mode={mode} setMode={setMode} />
+			{!isAdmin && (
+				<ReadOnlyNotice what="Creating and editing automations is admin-only, because they change live budgets and bids." />
+			)}
+
+			{isAdmin && <Composer mode={mode} setMode={setMode} />}
 
 			<CampaignsSection />
 

@@ -144,7 +144,7 @@ def _budget_run(*, status: str, now: datetime, attempts: int = 0, dry_run: bool 
     for (module, name), fake_fn in patches.items():
         setattr(module, name, fake_fn)
     try:
-        asyncio.run(budget.run(_TENANT, dry_run=dry_run))
+        asyncio.run(budget.run(_TENANT, dry_run=dry_run, platform="blinkit"))
     finally:
         for (module, name), original in originals.items():
             setattr(module, name, original)

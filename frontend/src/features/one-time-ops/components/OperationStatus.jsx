@@ -8,7 +8,7 @@ import { describeOutcome, isActive, useRunOutcome } from "../../../lib/actions";
  * sentence on hover), full for the panel (the sentence written out).
  *
  * ⚠️ A finished job is not the answer. `status: success` only means the process exited — the
- * CM commands never set a non-zero exit code, so a write Blinkit REFUSED settles exactly like
+ * CM commands never set a non-zero exit code, so a write the marketplace REFUSED settles exactly like
  * one it accepted. Once settled, the real outcome is read from the run's own history rows by
  * its `run_id`, and worded by `describeOutcome` (shared with Ad Automation).
  */

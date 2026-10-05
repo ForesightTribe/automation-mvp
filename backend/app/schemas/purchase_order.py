@@ -2,6 +2,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict
 
+from app.schemas.analytics import Metric
+
 
 class PurchaseOrderOut(BaseModel):
     """PO header (list view)."""
@@ -77,6 +79,9 @@ class POItemOut(BaseModel):
 class PODetailOut(PurchaseOrderOut):
     """PO header with its line items (detail view)."""
     items: list[POItemOut] = []
+    # Whether the delivery window is still open. Carried so clients need not
+    # re-derive the open set from `po_state`.
+    is_open: bool = False
 
 
 class POSnapshotOut(BaseModel):
@@ -95,6 +100,20 @@ class POSnapshotOut(BaseModel):
     items_delivered: int | None = None
 
 
+class POStateCount(BaseModel):
+    """One state an open PO can sit in, with what it is worth.
+
+    `Scheduled` means a delivery slot exists; `Unscheduled` means the PO is live
+    and nobody has booked one. That difference is the whole reason this is
+    reported separately from the single open figure.
+    """
+
+    state: str
+    pos: int
+    value: float
+    overdue: int  # of those, how many are past their expiry date
+
+
 class POInsightsSummary(BaseModel):
     """The headline figures above the PO table, for one reporting window.
 
@@ -110,6 +129,8 @@ class POInsightsSummary(BaseModel):
     open_pos: int
     closed_pos: int
     short_pos: int                   # closed POs that were not filled in full
+    # The open figure split by the state the marketplace has each PO in.
+    open_states: list[POStateCount] = []
 
     # `value_at_risk` has no comparison: it counts what is open RIGHT NOW, and an
     # older window's figure decays to nothing as its POs close.
@@ -120,6 +141,22 @@ class POInsightsSummary(BaseModel):
     po_value_delta: float | None = None
     fill_rate_delta: float | None = None
     value_missed_delta: float | None = None
+
+
+class POMarketplaceRow(BaseModel):
+    """One marketplace's purchase orders for the window, shaped like the
+    Overview's marketplace rows so one table component renders both."""
+
+    slug: str
+    name: str
+    color: str | None = None
+    connected: bool = True
+    po_value: Metric | None = None
+    fill_rate: Metric | None = None  # percentage points, not a fraction
+    value_at_risk: float = 0.0
+    value_missed: float = 0.0
+    open_pos: int = 0
+    closed_pos: int = 0
 
 
 class POInsightRow(BaseModel):
@@ -153,12 +190,24 @@ class POSkuRow(BaseModel):
     item_id: str
     name: str | None = None
     units_ordered: int
+    # Scoped to settled POs, like `fill_rate` beside it. Units on open POs are
+    # `units_not_due`: not a shortfall until their PO closes.
     units_short: int
+    units_not_due: int               # remaining on OPEN POs — not yet a shortfall
+    units_received: int              # ordered − remaining, settled POs only
     fill_rate: float | None          # received ÷ ordered, closed POs only
+    # Rate of sale and cover, from the sales and stock feeds rather than the PO
+    # feed. `doi_days` reads the LATEST stock snapshot, so it answers "how long
+    # does today's stock last" and does not move with the date picker.
+    drr: float | None = None         # units sold per day over the window
+    doi_days: float | None = None    # (frontend + backend stock) ÷ drr
     undelivered_value: float
     open_value: float                # of that, still to come
     missed_value: float              # of that, already lost
     po_count: int
+    # A SKU spans many POs, so it has no single state. What it has is a split:
+    # how many of its POs are still open, against how many have settled.
+    open_po_count: int
     short_po_count: int
     cities: int
     last_ordered: date | None = None

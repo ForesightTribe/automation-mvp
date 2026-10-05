@@ -1,4 +1,11 @@
+import { useEffect } from "react";
+import { useLocation } from "react-router-dom";
 import { useMarketplaces } from "../context/MarketplaceContext";
+import { ORDERS_PATHS, SINGLE_MARKETPLACE_PATHS } from "../lib/constants";
+
+/** The page itself or anything under it — `/ads/automation/` included. */
+const onPath = (pathname, paths) =>
+	paths.some((p) => pathname === p || pathname.startsWith(`${p}/`));
 
 /**
  * The marketplace filter, as a row of pills in the navbar.
@@ -10,6 +17,16 @@ import { useMarketplaces } from "../context/MarketplaceContext";
  * ⚠️ Selecting a pill selects ONLY that marketplace, and "All" is how you get back to
  * everything. The underlying state is still a list of slugs, so a caller that wants
  * several at once can still have them; this control just never produces that itself.
+ * "All" is only offered when the client has more than one marketplace — with one, its
+ * pill is the whole selection and is shown lit.
+ *
+ * Two kinds of page turn the row into a strict one-of choice with no "All", driving
+ * the page's OWN selection and leaving the global one untouched:
+ *   - the automation pages (`SINGLE_MARKETPLACE_PATHS`) — every write names one
+ *     marketplace; those the campaign manager cannot drive are greyed out with the reason.
+ *   - purchase orders (`ORDERS_PATHS`) — read one marketplace at a time; there is no
+ *     blended PO view to offer.
+ * See `MarketplaceContext` for why those choices are kept apart.
  */
 
 /**
@@ -55,17 +72,86 @@ const PILL_ON = "border-inverse bg-inverse font-semibold text-on-inverse";
 const PILL_OFF =
 	"border-transparent font-medium text-content-muted hover:bg-muted hover:text-content";
 
+/**
+ * Why a pill cannot be picked on an automation page, or null when it can.
+ * Unconnected first: a marketplace with no data at all is "not connected", whatever else.
+ */
+const automationBlock = (mp) =>
+	!mp.connected
+		? `${mp.name} — no data for this brand yet`
+		: !mp.automations
+			? `Automations aren't available on ${mp.name} yet`
+			: null;
+
+const unconnected = (mp) =>
+	mp.connected ? null : `${mp.name} — no data for this brand yet`;
+
 export const MarketplacePills = () => {
 	const {
 		marketplaces,
+		connected,
 		selected,
 		allSelected,
 		isLoading,
+		ready,
 		selectOnly,
 		selectAll,
+		automation,
+		selectAutomation,
+		enterAutomationPage,
+		orders,
+		selectOrders,
+		enterOrdersPage,
 	} = useMarketplaces();
 
-	if (isLoading) return null;
+	// On a single-marketplace page the row drives that page's own choice, leaving the
+	// global selection untouched (see the docblock above).
+	const { pathname } = useLocation();
+	const scope = onPath(pathname, SINGLE_MARKETPLACE_PATHS)
+		? "automation"
+		: onPath(pathname, ORDERS_PATHS)
+			? "orders"
+			: null;
+	const allowAll = !scope && connected.length > 1;
+	useEffect(() => {
+		if (!ready) return;
+		if (scope === "automation") enterAutomationPage();
+		if (scope === "orders") enterOrdersPage();
+		// Entry only (and again once a switched-to client's list lands) — re-running on
+		// every selection change would override the pill the reader just clicked.
+		// eslint-disable-next-line react-hooks/exhaustive-deps
+	}, [scope, ready]);
+
+	// Holds the row's place while the list loads, so the navbar does not reflow on
+	// every client switch.
+	if (isLoading)
+		return (
+			<div
+				aria-hidden="true"
+				className="h-10 w-48 animate-pulse rounded-xl border border-border bg-muted"
+			/>
+		);
+
+	// Per scope: why a pill cannot be picked, whether it is lit, and what a click does.
+	const pill = {
+		automation: {
+			blocked: automationBlock,
+			on: (slug) => slug === automation,
+			pick: selectAutomation,
+		},
+		orders: {
+			blocked: unconnected,
+			on: (slug) => slug === orders,
+			pick: selectOrders,
+		},
+		global: {
+			blocked: unconnected,
+			// "on" only when it is the selection. With All lit, every pill is included but
+			// none of them is the answer to "what am I looking at".
+			on: (slug) => !allSelected && selected.includes(slug),
+			pick: selectOnly,
+		},
+	}[scope ?? "global"];
 
 	return (
 		<div
@@ -73,32 +159,29 @@ export const MarketplacePills = () => {
 			aria-label="Marketplace"
 			className="flex items-center gap-1 rounded-xl border border-border bg-card p-1"
 		>
-			<button
-				type="button"
-				onClick={selectAll}
-				aria-pressed={allSelected}
-				className={`${PILL} ${allSelected ? PILL_ON : PILL_OFF}`}
-			>
-				All
-			</button>
+			{allowAll && (
+				<button
+					type="button"
+					onClick={selectAll}
+					aria-pressed={allSelected}
+					className={`${PILL} ${allSelected ? PILL_ON : PILL_OFF}`}
+				>
+					All
+				</button>
+			)}
 
 			{marketplaces.map((mp) => {
-				// "on" only when it is the sole selection. With All showing, every pill is
-				// included but none of them is the answer to "what am I looking at".
-				const on = !allSelected && selected.includes(mp.slug);
+				const blocked = pill.blocked(mp);
+				const on = pill.on(mp.slug);
 				const bg = mp.color ?? FALLBACK_COLOR[mp.slug] ?? "#6B7280";
 				return (
 					<button
 						key={mp.slug}
 						type="button"
-						disabled={!mp.connected}
-						onClick={() => selectOnly(mp.slug)}
+						disabled={Boolean(blocked)}
+						onClick={() => pill.pick(mp.slug)}
 						aria-pressed={on}
-						title={
-							mp.connected
-								? mp.name
-								: `${mp.name} — not connected yet`
-						}
+						title={blocked ?? mp.name}
 						className={`${PILL} ${on ? PILL_ON : PILL_OFF} disabled:cursor-not-allowed disabled:opacity-40 disabled:hover:bg-transparent`}
 					>
 						<span

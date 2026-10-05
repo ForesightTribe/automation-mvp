@@ -81,7 +81,16 @@ class CmBudgetRule(SQLModel, table=True):
 class CmBidRule(SQLModel, table=True):
     """User config for a keyword bid target (system runtime lives in cm_bid_runtime)."""
     __tablename__ = "cm_bid_rules"
-    __table_args__ = (Index("idx_cm_bid_tenant", "tenant_id"),)
+    # One LIVE automation per (tenant, platform, campaign, keyword, match type) — two of them
+    # overwrite each other's bid every tick (ZC-C9). Partial: pausing sets `active=False` and
+    # deliberately frees the keyword; resuming re-checks in `repo.set_bid_state`.
+    # ⚠️ Migration `c4f7b2e81a93` first, model second.
+    __table_args__ = (
+        Index("idx_cm_bid_tenant", "tenant_id"),
+        Index("uq_cm_bid_rule_live", "tenant_id", "platform", "campaign_id",
+              text("lower(trim(keyword))"), text("upper(coalesce(match_type, 'EXACT'))"),
+              unique=True, postgresql_where=text("active")),
+    )
 
     id: str = Field(primary_key=True)       # uuid hex
     tenant_id: uuid.UUID = Field(foreign_key="tenants.id")

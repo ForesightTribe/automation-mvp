@@ -44,15 +44,15 @@ def test_scrapes_do_not():
 # ── argv ─────────────────────────────────────────────────────────────────────
 
 def test_a_run_id_reaches_the_command_line():
-    argv = _argv("cm.set_budget", {"campaign": 637511, "budget": 700, "live": True,
-                                   "run_id": "abc12345"})
+    argv = _argv("cm.set_budget", {"marketplace": "blinkit", "campaign": 637511,
+                                   "budget": 700, "live": True, "run_id": "abc12345"})
     assert "--run-id" in argv
     assert argv[argv.index("--run-id") + 1] == "abc12345"
 
 
 def test_every_correlated_type_passes_it_through():
-    params = {"campaign": 1, "budget": 100, "status": "paused", "keyword": "soda",
-              "cpm": 200, "run_id": "abc12345"}
+    params = {"marketplace": "zepto", "campaign": 1, "budget": 100, "status": "paused",
+              "keyword": "soda", "cpm": 200, "run_id": "abc12345"}
     for t, spec in JOB_TYPES.items():
         if not spec.carries_run_id:
             continue
@@ -62,14 +62,56 @@ def test_every_correlated_type_passes_it_through():
 def test_absent_run_id_emits_no_flag():
     # A schedule row created before this existed has no run_id in its params. The command
     # must then look exactly as it always did — the run mints its own id instead.
-    argv = _argv("cm.budget_scheduler", {"live": True})
+    argv = _argv("cm.budget_scheduler", {"marketplace": "blinkit", "live": True})
     assert "--run-id" not in argv
     assert argv == ["cm", "budget-scheduler", "--tenant", str(_TENANT),
                     "--marketplace", "blinkit", "--live"]
 
 
 def test_empty_run_id_emits_no_flag():
-    assert "--run-id" not in _argv("cm.budget_scheduler", {"run_id": ""})
+    assert "--run-id" not in _argv("cm.budget_scheduler",
+                                   {"marketplace": "blinkit", "run_id": ""})
+
+
+# ── ZC-D1: no default marketplace ────────────────────────────────────────────
+
+def test_every_cm_job_without_a_marketplace_refuses_to_build():
+    """It used to fall back to Blinkit. A cm.* job drives a real ad account, so an unnamed
+    one fails (the runner marks it failed, nothing starts) instead of guessing."""
+    from jobs.types import MissingMarketplace
+
+    params = {"campaign": 1, "budget": 100, "status": "paused", "keyword": "soda", "cpm": 200}
+    for t in JOB_TYPES:
+        if not t.startswith("cm."):
+            continue
+        try:
+            _argv(t, params)
+        except MissingMarketplace:
+            continue
+        raise AssertionError(f"{t} built without a marketplace")
+
+
+def test_the_named_marketplace_reaches_the_command_line():
+    for mp in ("blinkit", "zepto"):
+        argv = _argv("cm.set_activation", {"marketplace": mp, "campaign": 1, "status": "paused"})
+        assert argv[argv.index("--marketplace") + 1] == mp
+
+
+def test_public_scrapes_refuse_to_build_without_a_marketplace_too():
+    """Public scrapes used to keep a Blinkit fallback ("stored schedules predate the
+    param"). No public schedule exists, and an unnamed job quietly scraped Blinkit and
+    staged it as a Blinkit run — so since 2026-10-02 they follow ZC-D1 as well."""
+    from jobs.types import MissingMarketplace
+
+    for t in ("scrape.public_keyword", "scrape.public_skus"):
+        try:
+            _argv(t, {})
+        except MissingMarketplace:
+            pass
+        else:
+            raise AssertionError(f"{t} built without a marketplace")
+        argv = _argv(t, {"marketplace": "zepto"})
+        assert argv[argv.index("--marketplace") + 1] == "zepto"
 
 
 # ── params ───────────────────────────────────────────────────────────────────

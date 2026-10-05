@@ -75,10 +75,17 @@ export const getWeekendPlanning = (
 
 export const getRawAds = (
 	clientId,
-	{ start, end, campaignType, page, limit } = {},
+	{ start, end, marketplace, campaignType, page, limit } = {},
 ) =>
 	api.get(`/clients/${clientId}/reports/raw-ads`, {
-		params: { start, end, campaign_type: campaignType, page, limit },
+		params: {
+			start,
+			end,
+			marketplace,
+			campaign_type: campaignType,
+			page,
+			limit,
+		},
 	});
 
 export const getReportFile = (

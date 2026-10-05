@@ -1,6 +1,6 @@
 from app.models.account import Account
 from app.models.brand import Brand, Marketplace
-from app.models.tenant import Tenant, User, TenantWatchlist
+from app.models.tenant import Tenant, User, TenantWatchlist, TenantWatchlistCap
 from app.models.job import (
     ScrapeJob, JobStatus, PlatformSession, PlatformCredential, Job, Lane, JobSchedule,
 )
@@ -23,6 +23,10 @@ from app.models.blinkit_seller import (
     BlinkitScorecardFacility,
     BlinkitScorecardKeySku,
 )
+from app.models.blinkit_seller_hub import (
+    BlinkitSellerHubSalesByProductRO,
+    BlinkitSellerHubSalesOrderRO,
+)
 from app.models.zepto_seller import (
     ZeptoSellerSalesSummary,
     ZeptoSellerSales,
@@ -30,6 +34,8 @@ from app.models.zepto_seller import (
     ZeptoAdKeywordDaily,
     ZeptoAdProductDaily,
     ZeptoAdBreakdownDaily,
+    ZeptoAdCampaign,
+    ZeptoAdCampaignKeyword,
 )
 from app.models.blinkit_marketing import (
     BlinkitAdCampaign,
@@ -40,6 +46,15 @@ from app.models.blinkit_marketing import (
     BlinkitBrandCollection,
     BlinkitVisibilityPlan,
 )
+from app.models.instamart_seller import (
+    InstamartSellerStoreDaily,
+    InstamartBrandCityDaily,
+)
+from app.models.instamart_ads import (
+    InstamartAdCampaign, InstamartAdAccountDaily,
+    InstamartAdProductDaily, InstamartAdKeywordDaily, InstamartProductCatalog,
+)
+from app.models.instamart_po import InstamartPO, InstamartPOItem
 from app.models.explorer import ExplorerRun
 from app.models.campaign_manager_v2 import (
     CmBudgetSchedule,
@@ -55,18 +70,21 @@ from app.models.campaign_manager_v2 import (
 __all__ = [
     "Account",
     "Brand", "Marketplace",
-    "Tenant", "User", "TenantWatchlist",
+    "Tenant", "User", "TenantWatchlist", "TenantWatchlistCap",
     "ScrapeJob", "JobStatus", "PlatformSession", "PlatformCredential",
     "Job", "Lane", "JobSchedule",
     "SearchSnapshot", "SearchListing", "MarketplaceLocation", "City", "CityAlias",
     "TenantLocation", "InventoryDepth",
     "BlinkitSellerSale", "BlinkitSellerSalesSummary", "BlinkitPO", "BlinkitPOSnapshot",
     "BlinkitSOH", "BlinkitScorecardWeekly", "BlinkitScorecardFacility", "BlinkitScorecardKeySku",
+    "BlinkitSellerHubSalesByProductRO", "BlinkitSellerHubSalesOrderRO",
     "ZeptoSellerSalesSummary", "ZeptoSellerSales", "ZeptoAdCampaignDaily", "ZeptoAdKeywordDaily",
-    "ZeptoAdProductDaily", "ZeptoAdBreakdownDaily",
+    "ZeptoAdProductDaily", "ZeptoAdBreakdownDaily", "ZeptoAdCampaign", "ZeptoAdCampaignKeyword",
     "BlinkitAdCampaign", "BlinkitAdCampaignDaily", "BlinkitAdCampaignDetail",
     "BlinkitAdCampaignKeyword",
     "BlinkitSponsoredSOV", "BlinkitBrandCollection", "BlinkitVisibilityPlan",
+    "InstamartSellerStoreDaily", "InstamartBrandCityDaily", "InstamartAdCampaign", "InstamartAdAccountDaily", "InstamartAdProductDaily", "InstamartAdKeywordDaily", "InstamartProductCatalog",
+    "InstamartPO", "InstamartPOItem",
     "ExplorerRun",
     "CmBudgetSchedule", "CmBudgetRule", "CmBidRule", "CmBidRuntime", "CmRunLog", "CmCityStore",
 ]

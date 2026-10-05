@@ -35,7 +35,12 @@ from app.models.blinkit_marketing import (
 )
 from app.schemas.ads import CampaignRow, KeywordRow
 from app.schemas.common import Page
-from app.services import reference_service, zepto_ads
+from app.utils.cache import ttl_cache
+from app.services import instamart_ads, reference_service, zepto_ads
+# The pure status vocabularies — NOT the adapters, which pull in Playwright.
+from campaign_manager import repo as cm_repo
+from campaign_manager.marketplaces import canonical_status
+from campaign_manager.marketplaces import supported as supported_marketplaces
 # Shared window helpers — reused so ad aggregates stay identical to the Overview's.
 from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_roas
 
@@ -115,6 +120,14 @@ async def _summary_agg(
         z = await zepto_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
         totals = tuple(a + b for a, b in zip(totals, z))
 
+    if instamart_ads.wants_instamart(marketplaces):
+        # Real window now (instamart_ad_account_daily) -- unlike the
+        # campaigns table, this one genuinely has day-level data, so a real
+        # previous-period comparison is possible and this is called once per
+        # window, same as Blinkit/Zepto above.
+        i = await instamart_ads.summary_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, i))
+
     return totals
 
 
@@ -151,7 +164,7 @@ async def get_summary(
     }
 
 
-async def get_campaigns(
+async def _campaigns(
     session: AsyncSession,
     *,
     tenant_id: uuid.UUID,
@@ -216,6 +229,7 @@ async def get_campaigns(
     rows = [
         {
             "campaign_id": c.campaign_id,
+            "platform": c.platform,
             "name": c.name,
             "type": c.type,
             "status": c.status,
@@ -230,12 +244,14 @@ async def get_campaigns(
         # its campaigns endpoint returns identity and metrics together — so they
         # are appended already-shaped rather than merged by campaign_id. The
         # two marketplaces' ids are separate namespaces and never collide.
-        for z in await zepto_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end):
+        for z in await zepto_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end,
+                                           recent_only=recent_only):
             if status and (z.get("status") or "") != status:
                 continue
             rows.append(
                 {
                     "campaign_id": z["campaign_id"],
+                    "platform": zepto_ads.SLUG,
                     "name": z["name"],
                     "type": z.get("campaign_type"),
                     "status": z.get("status"),
@@ -245,10 +261,38 @@ async def get_campaigns(
                     ),
                     "budget_consumed": z["spend"],
                     "impressions": z["impressions"],
+                    "clicks": z["clicks"],
                     "atc": z["atc"],
                     "quantities_sold": z["units_sold"],
                     "ad_sales": z["sales"],
                     "roas": z["roas"] or 0.0,
+                }
+            )
+
+    if instamart_ads.wants_instamart(marketplaces):
+        # Instamart's per-campaign METRICS are lifetime, not a daily backbone
+        # (see instamart_ads.py) -- but WHICH campaigns are listed is still
+        # windowed by start_time/end_time overlap, matching how the portal's
+        # own date picker narrows "All Campaigns" for the selected range.
+        for i in await instamart_ads.campaigns(session, tenant_id=tenant_id, start=start, end=end):
+            if status and (i.get("status") or "") != status:
+                continue
+            rows.append(
+                {
+                    "campaign_id": i["campaign_id"],
+                    # Required on every row (ZC-D1) — the automatable check and the
+                    # canonical state below are both keyed by it.
+                    "platform": "instamart",
+                    "name": i["name"],
+                    "type": i.get("campaign_type"),
+                    "status": i.get("status"),
+                    "daily_budget": i.get("daily_budget"),
+                    "budget_consumed": i["spend"],
+                    "impressions": i["impressions"],
+                    "atc": i["atc"],
+                    "quantities_sold": i["units_sold"],
+                    "ad_sales": i["sales"],
+                    "roas": i["roas"] or 0.0,
                 }
             )
 
@@ -257,9 +301,173 @@ async def get_campaigns(
     rows.sort(key=lambda r: r[sort_key], reverse=(order != "asc"))
     total = len(rows)
     page = rows[pagination.offset : pagination.offset + pagination.limit]
-    items = [CampaignRow.model_validate(r) for r in page]
+    # Which of this page's campaigns the automations may not touch (ZC-D3) — one catalogue
+    # query per marketplace on the page, never per row.
+    refused: dict[tuple[str, int | str], str] = {}
+    driven = set(supported_marketplaces())
+    for mp in {r["platform"] for r in page}:
+        if mp not in driven:
+            # A marketplace the automations cannot drive at all (Instamart): say so on every
+            # row rather than asking a catalogue — `automation_refusals` would read it as
+            # Blinkit's, and Instamart's campaign ids are UUIDs, not ints.
+            for r in page:
+                if r["platform"] == mp:
+                    refused[(mp, r["campaign_id"])] = (
+                        f"automations are not available on {mp.title()} yet")
+            continue
+        # On THIS request's session — a second session here held two pooled connections
+        # per request and let bursts (Insights' per-day lists) deadlock the pool.
+        for cid, why in (await cm_repo.automation_refusals(
+                tenant_id, mp, [r["campaign_id"] for r in page if r["platform"] == mp],
+                db=session)).items():
+            refused[(mp, cid)] = why
+    # The canonical state beside the raw status — see `CampaignRow.state`. Computed by the
+    # same pure vocabulary the engines use, so the button the UI offers is the transition
+    # the engine will accept.
+    items = [CampaignRow.model_validate({
+        **r, "state": canonical_status(r["platform"], r.get("status")),
+        "automatable": (r["platform"], r["campaign_id"]) not in refused,
+        "not_automatable_reason": refused.get((r["platform"], r["campaign_id"])),
+    }) for r in page]
     return Page.build(items, total, pagination)
 
+
+async def get_campaigns_daily(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+) -> list[dict]:
+    """Every campaign's spend per DAY over the window — what `get_campaigns` returns for a
+    one-day window, for every day at once (2026-09-25). The budget-utilisation views asked
+    `/ads/campaigns` once per day, up to 31 requests; this is one request and two queries
+    per marketplace.
+
+    Same rules as `get_campaigns`, so the two agree row for row: a Blinkit campaign needs a
+    catalogue row (its metadata) to be listed, and its `daily_budget` is the current one.
+    Only days with spend come back.
+    """
+    rollups = (
+        await session.execute(
+            select(
+                AdDaily.date,
+                AdDaily.campaign_id,
+                func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
+                func.coalesce(func.sum(AdDaily.ad_sales), 0.0),
+            )
+            .where(*_ad_conds(tenant_id, start, end, marketplaces))
+            .group_by(AdDaily.date, AdDaily.campaign_id)
+            .having(func.coalesce(func.sum(AdDaily.budget_consumed), 0.0) > 0)
+        )
+    ).all()
+    conds = [BlinkitAdCampaign.tenant_id == tenant_id]
+    if marketplaces is not None:
+        conds.append(BlinkitAdCampaign.platform.in_(marketplaces))
+    meta = {
+        c.campaign_id: c
+        for c in (await session.execute(select(BlinkitAdCampaign).where(*conds)))
+        .scalars()
+        .all()
+    }
+    out = [
+        {
+            "date": day,
+            "campaign_id": cid,
+            "platform": meta[cid].platform,
+            "name": meta[cid].name,
+            "type": meta[cid].type,
+            "budget_consumed": round(float(spend), 2),
+            "daily_budget": meta[cid].daily_budget,
+            "ad_sales": round(float(sales), 2),
+        }
+        for day, cid, spend, sales in rollups
+        if cid in meta
+    ]
+    if zepto_ads.wants_zepto(marketplaces):
+        out.extend(
+            await zepto_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
+        )
+    if instamart_ads.wants_instamart(marketplaces):
+        out.extend(
+            await instamart_ads.campaigns_daily(session, tenant_id=tenant_id, start=start, end=end)
+        )
+    out.sort(key=lambda r: (r["date"], -r["budget_consumed"]))
+    return out
+
+
+
+# ⚠️ `_campaigns`, `_campaigns_settled` and `get_campaigns` carry the SAME
+# parameter list, and a parameter added to one must be added to all three or it
+# is silently dropped on the way through. Spelled out rather than **kwargs
+# because the cache key is built by binding arguments to the signature: a
+# var-keyword wrapper cannot fill in defaults a caller omitted, so every call
+# would land on its own entry and nothing would ever hit.
+# ⚠️ Short despite the window being closed. A user cannot change what a
+# campaign spent yesterday, but the MARKETING SCRAPE re-scrapes the last seven
+# days, so those figures are revised overnight. A day-long entry would serve
+# the pre-revision numbers well past the correction.
+@ttl_cache(30 * 60)
+async def _campaigns_settled(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    pagination: Pagination,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    status: str | None = None,
+    sort: str = "spend",
+    order: str = "desc",
+    recent_only: bool = False,
+) -> Page[CampaignRow]:
+    """A window that has already closed. Cached: nothing a user does now can
+    change what a campaign spent yesterday."""
+    return await _campaigns(
+        session,
+        tenant_id=tenant_id,
+        pagination=pagination,
+        start=start,
+        end=end,
+        marketplaces=marketplaces,
+        status=status,
+        sort=sort,
+        order=order,
+        recent_only=recent_only,
+    )
+
+
+async def get_campaigns(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    pagination: Pagination,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+    status: str | None = None,
+    sort: str = "spend",
+    order: str = "desc",
+    recent_only: bool = False,
+) -> Page[CampaignRow]:
+    """⚠️ A window that includes TODAY is never cached. Budgets and bids are
+    written from the Campaign Manager and the caller invalidates on write, so a
+    cached open window would show someone their own change being ignored. A
+    window that ended before today cannot move."""
+    fn = _campaigns_settled if end < date.today() else _campaigns
+    return await fn(
+        session,
+        tenant_id=tenant_id,
+        pagination=pagination,
+        start=start,
+        end=end,
+        marketplaces=marketplaces,
+        status=status,
+        sort=sort,
+        order=order,
+        recent_only=recent_only,
+    )
 
 async def get_performance(
     session: AsyncSession,
@@ -304,6 +512,20 @@ async def get_performance(
                 cur["ad_sales"] += r["ad_sales"]
                 # RoAS is a ratio, so recompute from the merged bases rather
                 # than averaging the two marketplaces' ratios.
+                cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
+            else:
+                by_date[r["date"]] = dict(r)
+        series = [by_date[k] for k in sorted(by_date)]
+
+    if instamart_ads.wants_instamart(marketplaces):
+        i = await instamart_ads.performance(session, tenant_id=tenant_id, start=start, end=end)
+        by_date = {r["date"]: dict(r) for r in series}
+        for r in i:
+            cur = by_date.get(r["date"])
+            if cur:
+                cur["budget_consumed"] += r["budget_consumed"]
+                cur["impressions"] += r["impressions"]
+                cur["ad_sales"] += r["ad_sales"]
                 cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
             else:
                 by_date[r["date"]] = dict(r)

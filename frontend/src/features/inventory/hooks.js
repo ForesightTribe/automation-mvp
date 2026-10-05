@@ -25,7 +25,7 @@ import {
 export const useDistribution = (kind = "main") => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-distribution", activeClientId, range, selected, kind],
 		queryFn: () =>
@@ -35,14 +35,14 @@ export const useDistribution = (kind = "main") => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useAvailability = ({ page, limit = 20, kind = "main" }) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-availability", activeClientId, range, selected, kind, page, limit],
 		queryFn: () =>
@@ -54,7 +54,7 @@ export const useAvailability = ({ page, limit = 20, kind = "main" }) => {
 				page,
 				limit,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -63,19 +63,19 @@ export const useAvailabilityHistory = (kind = "main", weeks = 12) => {
 	// A trend is history: it deliberately IGNORES the reporting window (a 2-day custom
 	// range would leave nothing to plot) and always looks back `weeks`.
 	const { activeClientId } = useClient();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-availability-history", activeClientId, weeks, selected, kind],
 		queryFn: () =>
 			getAvailabilityHistory(activeClientId, { weeks, marketplaces: selected, kind }),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const usePricing = (kind = "main") => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-pricing", activeClientId, range, selected, kind],
 		queryFn: () =>
@@ -85,7 +85,7 @@ export const usePricing = (kind = "main") => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
@@ -98,7 +98,7 @@ export const usePricing = (kind = "main") => {
 export const useStores = ({ kind = "main", city, tier } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-stores", activeClientId, range, selected, kind, city, tier],
 		queryFn: () =>
@@ -110,14 +110,14 @@ export const useStores = ({ kind = "main", city, tier } = {}) => {
 				city,
 				tier,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useCities = (kind = "main") => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-cities", activeClientId, range, selected, kind],
 		queryFn: () =>
@@ -127,14 +127,14 @@ export const useCities = (kind = "main") => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 	});
 };
 
 export const useActions = ({ action = "oos", page = 1, limit = 20, kind = "main", city } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-actions", activeClientId, range, selected, kind, action, city, page, limit],
 		queryFn: () =>
@@ -148,7 +148,7 @@ export const useActions = ({ action = "oos", page = 1, limit = 20, kind = "main"
 				page,
 				limit,
 			}),
-		enabled: Boolean(activeClientId),
+		enabled: Boolean(activeClientId) && ready,
 		placeholderData: keepPreviousData,
 	});
 };
@@ -157,7 +157,7 @@ export const useActions = ({ action = "oos", page = 1, limit = 20, kind = "main"
 export const useStoreDetail = (merchantId, kind = "main") => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-store-detail", activeClientId, merchantId, range, selected, kind],
 		queryFn: () =>
@@ -167,7 +167,7 @@ export const useStoreDetail = (merchantId, kind = "main") => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId && merchantId),
+		enabled: Boolean(activeClientId && merchantId) && ready,
 	});
 };
 
@@ -175,7 +175,7 @@ export const useStoreDetail = (merchantId, kind = "main") => {
 export const useProductStores = (productId, kind = "main") => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected } = useMarketplaces();
+	const { selected, ready } = useMarketplaces();
 	return useQuery({
 		queryKey: ["inv-product-stores", activeClientId, productId, range, selected, kind],
 		queryFn: () =>
@@ -185,6 +185,6 @@ export const useProductStores = (productId, kind = "main") => {
 				marketplaces: selected,
 				kind,
 			}),
-		enabled: Boolean(activeClientId && productId),
+		enabled: Boolean(activeClientId && productId) && ready,
 	});
 };

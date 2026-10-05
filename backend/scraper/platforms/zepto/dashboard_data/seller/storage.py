@@ -5,7 +5,7 @@ Mirrors blinkit/dashboard_data/seller/storage.py — same ON CONFLICT
 layer here, unlike Blinkit's: this parser emits real `date`/`uuid.UUID` objects
 rather than strings, so there is nothing to convert.
 """
-from sqlalchemy import func
+from sqlalchemy import delete, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -14,7 +14,9 @@ from app.models.zepto_seller import (
     ZeptoGRN,
     ZeptoPO,
     ZeptoPOItem,
+    ZeptoAdCampaign,
     ZeptoAdCampaignDaily,
+    ZeptoAdCampaignKeyword,
     ZeptoAdBreakdownDaily,
     ZeptoAdKeywordDaily,
     ZeptoAdProductDaily,
@@ -220,3 +222,75 @@ async def save_po_results(
         f"asns:{written['asns']} items:{written['po_items']}"
     )
     return written
+
+
+async def save_campaign_catalog(
+    session: AsyncSession,
+    full_rows: list[dict],
+    list_only_rows: list[dict],
+    keywords_by_campaign: dict[int, list[dict]],
+) -> dict[str, int]:
+    """Upsert the campaign CATALOGUE (`zepto_ad_campaigns` + `zepto_ad_campaign_keywords`).
+
+    Two rules the generic `_upsert` cannot express, which is why this has its own writer:
+
+    * **A row updates only the columns it carries.** A list-only row (a Display campaign,
+      or a detail read that failed, or the campaign manager's Refresh) carries no targeting
+      or products, and a plain upsert would write NULL over the values the last full read
+      stored — blanking a campaign's cities on every refresh. The same trap Blinkit's
+      `repo.upsert_campaign_catalog` documents.
+    * **A campaign's keywords are replaced whole.** They are current state, so a keyword
+      removed in the dashboard must disappear here — upsert-only would keep it forever,
+      and an automation could be offered a keyword the campaign no longer has. Only
+      campaigns whose detail was actually read are replaced; the rest are left alone.
+
+    Returns rows written per table.
+    """
+    await _upsert_columns(session, ZeptoAdCampaign, full_rows)
+    await _upsert_columns(session, ZeptoAdCampaign, list_only_rows)
+    kw_written = 0
+    for campaign_id, rows in keywords_by_campaign.items():
+        keep = [r["upsert_key"] for r in rows]
+        tenant_id = (rows[0]["tenant_id"] if rows
+                     else next((r["tenant_id"] for r in full_rows
+                                if r["campaign_id"] == campaign_id), None))
+        if tenant_id is None:
+            continue
+        stale = delete(ZeptoAdCampaignKeyword).where(
+            ZeptoAdCampaignKeyword.tenant_id == tenant_id,
+            ZeptoAdCampaignKeyword.campaign_id == campaign_id,
+        )
+        if keep:
+            stale = stale.where(ZeptoAdCampaignKeyword.upsert_key.not_in(keep))
+        await session.execute(stale)
+        await _upsert_columns(session, ZeptoAdCampaignKeyword, rows)
+        kw_written += len(rows)
+    await session.commit()
+    written = {"campaigns": len(full_rows) + len(list_only_rows),
+               "campaigns_with_detail": len(full_rows), "keywords": kw_written}
+    logger.info("Zepto campaign catalogue saved — "
+                + " ".join(f"{k}:{v}" for k, v in written.items()))
+    return written
+
+
+async def _upsert_columns(session: AsyncSession, model, rows: list[dict]) -> None:
+    """Upsert on `upsert_key`, updating ONLY the columns the rows carry — never the ones
+    they omit. Every row in one call must carry the same keys (checked)."""
+    if not rows:
+        return
+    rows = list({r["upsert_key"]: r for r in rows}.values())
+    shape = set(rows[0])
+    for r in rows[1:]:
+        if set(r) != shape:
+            raise ValueError(f"{model.__tablename__}: rows in one batch carry different "
+                             f"columns ({sorted(shape ^ set(r))})")
+    update_cols = sorted(shape - {"id", "upsert_key"})
+    cols = max(1, len(model.__table__.columns))
+    chunk = max(1, 32000 // cols)
+    for i in range(0, len(rows), chunk):
+        stmt = insert(model).values(rows[i:i + chunk])
+        stmt = stmt.on_conflict_do_update(
+            index_elements=["upsert_key"],
+            set_={c: stmt.excluded[c] for c in update_cols},
+        )
+        await session.execute(stmt)

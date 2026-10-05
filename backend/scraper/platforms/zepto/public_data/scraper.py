@@ -23,6 +23,10 @@ THREE THINGS THAT MAKE ZEPTO DIFFERENT FROM BLINKIT
    it. `_ensure_pass` re-mints on a timer, in place, so a long run never
    discovers the expiry as a wall of 202s.
 
+4. **Replaying is refused through a proxy.** A session opened with `typed=True` searches
+   through the page's own search box instead (`typed_search.py`); `search()` hands such a
+   session straight over, so callers see one function and one result shape.
+
 A BLOCK IS NEVER AN EMPTY RESULT
 --------------------------------
 `search()` returns `ok=False` on any non-200. It must never return an empty
@@ -211,6 +215,9 @@ async def _fetch(session: dict, url: str, headers: dict, body: dict) -> dict:
     for delay in (0.0,) + ep.RETRY_DELAYS:
         if delay:
             await asyncio.sleep(delay)
+        # When the last request LEFT — what pacing measures from (`_pace`, and the
+        # orchestrators' pacer through the session). A transport retry is a request too.
+        session["last_request_at"] = time.monotonic()
         try:
             r = await asyncio.wait_for(
                 session["context"].request.post(
@@ -248,13 +255,16 @@ async def _fetch(session: dict, url: str, headers: dict, body: dict) -> dict:
 
 # ── Session lifecycle ────────────────────────────────────────────────────────
 
-async def _capture(page, url_part: str, nav,
-                   settle_ms: int = 9000) -> tuple[dict, str | None]:
+async def _capture(page, url_part: str, nav, settle_ms: int = 9000,
+                   why: dict | None = None) -> tuple[dict, str | None]:
     """Capture headers (and body) from the page's OWN request to `url_part`.
 
     The listener must outlive the navigation: Zepto fires these AFTER
     domcontentloaded, so removing it when goto() returns captures nothing. The
     poll below is load-bearing — do not 'simplify' it away.
+
+    `why`, when given, receives the browser's own reason for a navigation that failed
+    (`nav_error`) — the only thing that tells "the proxy is down" from "Zepto said no".
     """
     cap: dict[str, Any] = {"h": None, "body": None}
 
@@ -275,8 +285,13 @@ async def _capture(page, url_part: str, nav,
             waited += 250
     except PWTimeout:
         logger.debug(f"Zepto: navigation timeout capturing {url_part}")
+        if why is not None:
+            why.setdefault("nav_error", "the page did not load in time")
     except Exception as e:
         logger.debug(f"Zepto: capture failed for {url_part}: {e}")
+        if why is not None:
+            # First line only: Playwright appends a call log, and the reason is up front.
+            why.setdefault("nav_error", " ".join(str(e).split("Call log")[0].split())[:160])
     finally:
         page.remove_listener("request", _on_req)
 
@@ -336,25 +351,39 @@ async def _ensure_pass(session: dict) -> None:
         await _mint_pass(session)
 
 
-async def _make_session(browser, lat: float, lon: float) -> dict | None:
+async def _make_session(browser, lat: float, lon: float, *, typed: bool = False,
+                        why: dict | None = None,
+                        resolve_store: bool = True) -> dict | None:
     """Isolated context on `browser`, warmed up, headers captured, coordinate
-    resolved to a store. Returns the session dict or None."""
+    resolved to a store. Returns the session dict or None.
+
+    `typed` makes it a typed-search session (`typed_search.py`): same warm-up, then the
+    page's requests are taken over and every `search()` goes through the search box.
+    `why` receives the reason when None is returned (see `_capture`).
+
+    `resolve_store=False` skips the coordinate -> store lookup. The worker pools name the
+    store on every search (`merchant_id`), so for them the lookup was one `get_page` per
+    session open spent on an answer nobody read. A search that does arrive with only a
+    coordinate still resolves it — `coord` is left unset so the first one does."""
     ctx = await browser.new_context(
         user_agent=HEADERS_COMMON["User-Agent"], locale="en-IN")
     page = await ctx.new_page()
     session: dict[str, Any] = {"context": ctx, "page": page}
+    if typed:
+        from scraper.platforms.zepto.public_data import typed_search
+        await typed_search.attach(session)
 
     gp_headers, _ = await _capture(
         page, ep.GET_PAGE_PATH,
         lambda: page.goto(ep.HOMEPAGE_URL, wait_until="domcontentloaded",
-                          timeout=30000))
+                          timeout=30000), why=why)
     session["gp_headers"] = gp_headers
     session["minted_at"] = time.monotonic()
 
     headers, raw_body = await _capture(
         page, ep.SEARCH_PATH,
         lambda: page.goto(ep.WARMUP_SEARCH_URL, wait_until="domcontentloaded",
-                          timeout=30000))
+                          timeout=30000), why=why)
     if not headers:
         logger.warning("Zepto: no session headers captured")
         await ctx.close()
@@ -365,6 +394,17 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
         session["body"] = json.loads(raw_body) if raw_body else dict(ep.SEARCH_BODY)
     except Exception:
         session["body"] = dict(ep.SEARCH_BODY)
+
+    if typed:
+        # No coordinate lookup: it is a replayed request, the very thing a typed session
+        # exists to avoid. Every search names its store.
+        session.update(store_id="", secondary_ids=(), coord=(lat, lon))
+        await typed_search.arm(session)
+        return session
+
+    if not resolve_store:
+        session.update(store_id="", secondary_ids=(), coord=None)
+        return session
 
     # Best effort only. A caller that passes merchant_id per search never needs
     # this, and get_page has its own rate-limit budget — failing the whole session
@@ -379,11 +419,32 @@ async def _make_session(browser, lat: float, lon: float) -> dict | None:
     return session
 
 
-async def open_session(pw, lat: float, lon: float) -> dict | None:
+async def launch_browser(pw, proxy: dict | None = None):
+    """The browser every Zepto shopper session runs in — the public scrape's worker pool,
+    the own-SKU scrape, the Explorer and the bid engine's rank checks all come through
+    here (the pool via `providers.Provider.launch_browser`).
+
+    The FULL Chromium in headless mode, not Playwright's default headless shell, which
+    Zepto's WAF blocks — see `endpoints.BROWSER_CHANNEL`.
+
+    `proxy` is Playwright's own `{server, username, password}`. Only the bid engine passes
+    one (`campaign_manager/marketplaces/zepto/adapter.py`); the scrapes never do.
+    """
+    kw = dict(headless=True, channel=ep.BROWSER_CHANNEL, args=PLAYWRIGHT_ARGS)
+    if proxy:
+        kw["proxy"] = proxy
+    return await pw.chromium.launch(**kw)
+
+
+async def open_session(pw, lat: float, lon: float, *, proxy: dict | None = None,
+                       typed: bool = False, why: dict | None = None) -> dict | None:
     """Launch a browser + one session (ad-hoc / single-worker use). The session
-    OWNS the browser; close_session shuts it down."""
-    browser = await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
-    session = await _make_session(browser, lat, lon)
+    OWNS the browser; close_session shuts it down.
+
+    `proxy` and `typed` go together in practice — a proxied session must search through the
+    page (`typed_search.py`). `why` receives the reason when None is returned."""
+    browser = await launch_browser(pw, proxy)
+    session = await _make_session(browser, lat, lon, typed=typed, why=why)
     if not session:
         await browser.close()
         return None
@@ -393,8 +454,55 @@ async def open_session(pw, lat: float, lon: float) -> dict | None:
 
 async def open_context_session(browser, lat: float, lon: float) -> dict | None:
     """One session as an isolated context on a SHARED browser (the worker pool).
-    Does NOT own the browser — close_session only closes the context."""
-    return await _make_session(browser, lat, lon)
+    Does NOT own the browser — close_session only closes the context.
+
+    No store lookup at open: see `_make_session(resolve_store=False)`."""
+    return await _make_session(browser, lat, lon, resolve_store=False)
+
+
+def block_remedy(kind: str, streak: int) -> tuple[float, bool]:
+    """How to meet a block: (seconds to wait, rebuild the session?).
+
+    `streak` is how many blocks in a row this worker has hit, this one included. The
+    provider hands this to the orchestrators (`providers.Provider.block_remedy`); it is
+    the single place that knows Zepto's three mechanisms want three different things —
+    see endpoints.py:
+
+        rate (429)       connection-wide, ~60 s   wait, SAME session
+        gate (299)       connection-wide, ~60 s   wait, SAME session
+        challenge (202)  this session only        rebuild now (search() already re-minted once)
+
+    Rebuilding on a 429 or a 299 was the old reflex. It fires a homepage, a warm-up search
+    and a `get_page` into a block that is about the connection, not the session — more
+    requests at exactly the moment Zepto is saying there have been too many.
+
+    A block that keeps coming back walks RECOVERY_WAITS_S, and from the end of the ladder
+    the session is rebuilt as well, in case it is the session after all.
+    """
+    ladder = ep.RECOVERY_WAITS_S
+    step = float(ladder[min(streak - 1, len(ladder) - 1)])
+    worn = streak >= len(ladder)
+    if kind == "rate":
+        return (ep.RATE_PAUSE_S if streak == 1 else step), worn
+    if kind == "gate":
+        return (ep.GATE_PAUSE_S if streak == 1 else step), worn
+    if kind == "challenge":
+        return (0.0 if streak == 1 else step), True
+    # Anything else that came back marked blocked: wait, and start clean.
+    return step, True
+
+
+async def _pace(session: dict) -> None:
+    """Hold the next request until `gap_s` after the last one LEFT (start to start).
+
+    `gap_s` is set on the session by the orchestrators' adaptive pacer; a caller that
+    sets nothing gets the floor, PACE_FLOOR_S."""
+    last = session.get("last_request_at")
+    if last is None:
+        return
+    wait = last + session.get("gap_s", ep.PACE_FLOOR_S) - time.monotonic()
+    if wait > 0:
+        await asyncio.sleep(wait)
 
 
 async def close_session(session: dict) -> None:
@@ -434,6 +542,12 @@ async def search(
 
     Returns {products, total_results, merchant_id, ok, error, blocked, kind}.
     """
+    if session.get("typed") is not None:
+        # A typed session cannot replay (that is why it is one). Same result shape.
+        from scraper.platforms.zepto.public_data import typed_search
+        return await typed_search.search(session, keyword, cap, merchant_id=merchant_id,
+                                         distinct_ad_slots=distinct_ad_slots)
+
     if merchant_id and merchant_id != session.get("store_id"):
         # Free: the catalog row IS the store. No get_page, no second budget.
         session["store_id"] = merchant_id
@@ -459,6 +573,7 @@ async def search(
     products: list[dict] = []
     seen: set[tuple[str, bool]] = set()   # (product id, is_ad) — see the loop below
     ok, error, blocked, kind = False, "", False, "ok"
+    truncated = False
     page_no: int | None = 0
 
     while page_no is not None and len(products) < cap:
@@ -475,6 +590,9 @@ async def search(
             kind = resp["kind"]
             error = resp.get("error") or f"HTTP {resp.get('status')}"
             blocked = kind in ("gate", "rate", "challenge")
+            # A page AFTER the first failed: `products` is the head of the list only,
+            # and storing it as the result would state rank and SoV over a cut list.
+            truncated = ok
             logger.debug(f"Zepto search '{keyword}': {error}")
             break
 
@@ -517,12 +635,19 @@ async def search(
             products.append(p)
 
         # The results ended inside this page — anything further is the "Similar
-        # Products" carousel, so there is no next page of search results.
-        if hit_break or page_no + 1 >= ep.MAX_PAGES or len(products) >= cap:
+        # Products" carousel, so there is no next page of search results. Or Zepto
+        # says so itself: `hasReachedEnd`. Without it a list that ended exactly here
+        # cost one more request for an empty page. NOT "the page came back short":
+        # short pages with plenty behind them are normal — see endpoints.py.
+        reached_end = bool((resp["body"] or {}).get(ep.REACHED_END_KEY))
+        if (hit_break or reached_end or page_no + 1 >= ep.MAX_PAGES
+                or len(products) >= cap):
             page_no = None
         else:
             page_no += 1
-            await asyncio.sleep(ep.SEARCH_GAP_S)
+            # The next page is another request against the same limiter: same pace,
+            # measured from when this one left.
+            await _pace(session)
 
     products = products[:cap]
     # Fall back to running order where Zepto gave no position.
@@ -532,11 +657,15 @@ async def search(
 
     return {
         "products": products,
+        # The rows we KEPT. Zepto does send `totalProductCount`, but it counts its
+        # Similar Products tail as well, so it is not "how many matched" either — see
+        # endpoints.TOTAL_COUNT_KEY and app/models/search.py SearchSnapshot.total_results.
         "total_results": len(products),
         # The session's store IS the merchant here — unlike Blinkit, where it has
         # to be read back off the products because one response spans several.
         "merchant_id": session.get("store_id", ""),
         "ok": ok, "error": error, "blocked": blocked, "kind": kind,
+        "truncated": truncated,
     }
 
 

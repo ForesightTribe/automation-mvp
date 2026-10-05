@@ -3,6 +3,8 @@ import { RuleTimingFields } from "./RuleTimingFields";
 import { HoverHint } from "../../../components/ui/HoverHint";
 import { Combobox } from "./Combobox";
 import { formatCurrency } from "../../../lib/format";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { bidUnit } from "../../../lib/marketplaces";
 
 /**
  * The keyword automation's one action, given the same card treatment as a budget action.
@@ -29,6 +31,8 @@ const Section = ({ icon: Icon, title, bordered = true, children }) => (
 
 export const KeywordActionCard = ({
 	keyword,
+	matchType,
+	locationOptional = false,
 	targetPosition,
 	onTargetPosition,
 	minBid,
@@ -52,8 +56,10 @@ export const KeywordActionCard = ({
 	timing,
 	onTiming,
 }) => {
+	const { marketplace, name: mpName } = useAutomationMarketplace();
+	const unit = bidUnit(marketplace);
 	/**
-	 * What Blinkit publishes as the floor for this keyword, carried on the label rather than
+	 * What the marketplace publishes as the floor for this keyword, carried on the label rather than
 	 * printed under the field. It is guidance for the moment the number is typed, not a
 	 * standing statement, and as a permanent paragraph it is the tallest thing in the card.
 	 * The one case that stays on the page is `belowFloor`, because that is an error the
@@ -61,7 +67,7 @@ export const KeywordActionCard = ({
 	 */
 	const floorHint =
 		floor?.min_bid != null
-			? `Blinkit's minimum for “${keyword}” is ${formatCurrency(floor.min_bid)}${
+			? `${mpName}'s minimum for “${keyword}” (${matchType}) is ${formatCurrency(floor.min_bid)} ${unit.per}${
 					floor.suggested_min && floor.suggested_max
 						? `. It suggests ${formatCurrency(floor.suggested_min)} to ${formatCurrency(floor.suggested_max)}`
 						: ""
@@ -84,8 +90,12 @@ export const KeywordActionCard = ({
 	 * only cities this campaign runs in" and "this campaign runs everywhere" lives here.
 	 *
 	 * ⚠️ `null` region_type is NOT pan-India. The campaign has not been scraped, so a full
-	 * list is our assumption rather than Blinkit's answer, and saying so is the difference
-	 * between a fact and a guess.
+	 * list is our assumption rather than the marketplace's answer, and saying so is the
+	 * difference between a fact and a guess. Zepto says `ALL` where Blinkit says `PAN_INDIA`.
+	 *
+	 * Where the location is optional (Zepto), the note also says what an empty field does:
+	 * one of the campaign's own cities is picked on save — the frozen one first, else the one
+	 * with the most stores.
 	 */
 	const cityNote = citiesLoading
 		? null
@@ -95,12 +105,16 @@ export const KeywordActionCard = ({
 						? ` Store: ${singleCity.location_name}.`
 						: ""
 				}`
-			: regionType === "CITY"
-				? "This campaign targets these cities. Pick where to measure."
-				: regionType === "PAN_INDIA"
-					? "This campaign runs pan-India — measure at any city we have a dark store in."
-					: isEdit && existingLocationName
-						? `Currently: ${existingLocationName}. Pick a city to change it.`
+			: isEdit && existingLocationName
+				? `Currently: ${existingLocationName}. Pick a city to change it.`
+				: regionType === "CITY"
+					? locationOptional
+						? "This campaign targets these cities. Pick where to measure, or leave it empty and its best city is used."
+						: "This campaign targets these cities. Pick where to measure."
+					: regionType === "PAN_INDIA" || regionType === "ALL"
+						? locationOptional
+							? "This campaign runs in every city. Pick where to measure, or leave it empty and the best-covered city is used."
+							: "This campaign runs pan-India — measure at any city we have a dark store in."
 						: "We haven't scraped this campaign's targeting yet, so every city we have a dark store in is offered.";
 
 	return (
@@ -144,6 +158,13 @@ export const KeywordActionCard = ({
 							<span className="max-w-[22rem] truncate text-lg font-semibold text-content">
 								&ldquo;{keyword}&rdquo;
 							</span>
+							{/* The match type is part of WHICH bid this is: on Zepto one keyword
+							    can be bid as EXACT, PHRASE and BROAD, each its own bid. */}
+							{matchType && (
+								<span className="rounded bg-muted px-1.5 py-0.5 text-[11px] font-medium tracking-wide text-content-muted uppercase">
+									{matchType}
+								</span>
+							)}
 						</>
 					)}
 				</div>
@@ -163,7 +184,7 @@ export const KeywordActionCard = ({
 										: ""
 								}
 							>
-								Min bid (₹)
+								Min bid (₹ {unit.code})
 							</span>
 						</HoverHint>
 					</label>
@@ -178,7 +199,7 @@ export const KeywordActionCard = ({
 
 				<div className="w-40">
 					<label className={LABEL}>
-						Max bid{" "}
+						Max bid (₹ {unit.code}){" "}
 						<span className="text-content-subtle">(optional)</span>
 					</label>
 					<input
@@ -190,9 +211,10 @@ export const KeywordActionCard = ({
 					/>
 				</div>
 
-				{/* Required. Without a city the engine falls back to a default Bengaluru store
+				{/* Required on Blinkit: without a city the engine falls back to a default store
 				    silently, so this field is the only thing standing between a rule and a
-				    number measured somewhere nobody chose.
+				    number measured somewhere nobody chose. Optional on Zepto, where an empty
+				    field means "pick the campaign's best city" and the save does exactly that.
 
 				    ⚠️ ONE control over ONE list, and it waits. The picker used to choose its
 				    own widget from `cityOptions.length`, which is 0 both for a pan-India
@@ -205,7 +227,17 @@ export const KeywordActionCard = ({
 				    actually measure at is in it, so free text can only be a typo — and a
 				    typo saves a rule whose city resolves to no store at all, silently. */}
 				<div className="w-64">
-					<label className={LABEL}>Evaluation city</label>
+					<label className={LABEL}>
+						Evaluation city
+						{locationOptional && (
+							<>
+								{" "}
+								<span className="text-content-subtle">
+									(optional)
+								</span>
+							</>
+						)}
+					</label>
 					{citiesLoading ? (
 						<div
 							className={`w-full ${INPUT} text-content-subtle`}
@@ -218,7 +250,7 @@ export const KeywordActionCard = ({
 							id="evaluation-city"
 							value={city}
 							onChange={onCity}
-							invalid={!hasLocation}
+							invalid={!hasLocation && !locationOptional}
 							strict
 							placeholder="Search cities"
 							options={cityOptions.map((c) => ({
@@ -238,10 +270,10 @@ export const KeywordActionCard = ({
 				<div className="flex flex-col gap-1 px-4 pb-3 text-[11px]">
 					{belowFloor && (
 						<p className="text-danger">
-							Below Blinkit&rsquo;s minimum of{" "}
-							{formatCurrency(effectiveFloor)}. It would be raised
-							to {formatCurrency(effectiveFloor)} on the first
-							write.
+							Below {mpName}&rsquo;s minimum of{" "}
+							{formatCurrency(effectiveFloor)} {unit.per}. It
+							would be raised to {formatCurrency(effectiveFloor)}{" "}
+							on the first write.
 						</p>
 					)}
 					{cityNote && (

@@ -110,6 +110,12 @@ only way to know, and `status` alone will mislead you.
 platform right now (one API call, no browser). A session can read `active` and be dead —
 that gap is what let the seller scrape fail silently for weeks. When in doubt, `probe`.
 
+**`logins 24h`** (a `status` column, 2026-09-23) counts full logins in the last day. On
+Zepto every one of them signs the client out of the dashboard, and the system now logs in
+whenever it needs to — so a steady climb means something keeps losing its session. Yellow
+above 1, red above `AUTH_LOGINS_PER_DAY_WARN` (4), which also logs a warning. Counting began
+2026-09-23, so an older session reads 0 until its next login.
+
 ### You rarely need any of this
 
 Scrapers call `ensure()` internally: load → probe → refresh → re-login, doing the least
@@ -291,12 +297,13 @@ wired marketplace today**; an unwired or unknown value fails fast and scrapes
 nothing. Each marketplace has its **own** catalog, its own coverage rows, and its
 own engine; coordinates are never shared between platforms. See [zepto-public.md](zepto-public.md).
 
-**1. Configure — `cli sync`.** `config.xlsx` has three sheets:
+**1. Configure — `cli sync`.** `config.xlsx` has these sheets:
 
 | Sheet       | Columns                                                                                    | What it is                                                                                                                                                                                                                                                                 |
 | ----------- | ------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `locations` | `mp, merchant_id, city, state, region, pincode, lat, lon, active, location_name, address`  | that marketplace's **express** store catalog (keyed on `mp` + `merchant_id`); `lat/lon` is the probe point. `mp` is optional, blank → `blinkit`. Longtail/super_longtail hubs are NOT here — they are discovered from scrape responses. See [darkstores.md](darkstores.md) |
-| `brands`    | `tenant, brand, relationship (own\|competitor), keywords, aliases, keyword_cap, brand_cap` | per-tenant keywords + brands to track; the two caps are per-scrape tunables (own rows only, optional). Shared across marketplaces                                                                                                                                          |
+| `brands`    | `tenant, brand, relationship (own\|competitor), keywords, aliases`                          | per-tenant keywords + brands to track. Shared across marketplaces. (`keyword_cap`/`brand_cap` here are no longer read — see `caps`)                                                                                                                                       |
+| `caps`      | `tenant, brand, mp, keyword_cap, brand_cap`                                                | how deep an own brand's searches go, **per marketplace** (2026-10-02) — one row per brand + marketplace; `mp` is required. Blank → that marketplace's default                                                                                                              |
 | `coverage`  | `mp, tenant, city`                                                                         | which cities a tenant scrapes on which marketplace (all that marketplace's stores in each listed city). `mp` blank → `blinkit`                                                                                                                                             |
 
 > ⚠️ **`--prune` only deletes within the marketplaces the file mentions** — a
@@ -305,10 +312,14 @@ own engine; coordinates are never shared between platforms. See [zepto-public.md
 > deleting the real Blinkit catalog. Always `--dry-run` first; a non-zero
 > `locations` deletion is a stop-and-check.
 
-The two caps (own rows only; blank → code default): **`keyword_cap`** bounds the
-keyword scrape (`public-run`, default 48), **`brand_cap`** bounds the targeted
-brand scrape (`public-skus`, default 60). Precedence for both: CLI flag > config
-value > default.
+The two caps live on the `caps` sheet, one row per own brand **and marketplace**,
+because a cap is a number of results and marketplaces page differently: Blinkit 12 a
+page (so 36 / 48), Zepto 30 a page (so 30 / 60). **`keyword_cap`** bounds the keyword
+scrape (`public-run`), **`brand_cap`** the targeted brand scrape (`public-skus`) and the
+bid engine's stock check. Precedence: CLI flag > the brand's cap for that marketplace >
+the marketplace's default. `cli sync` warns about a cap that is not a whole number of
+pages (it fetches a page only to discard part of it). Stored in
+`tenant_watchlist_caps`; read only through `scraper/public/caps.py`.
 
 ```bash
 python -m cli sync --file config.xlsx --template   # write a starter workbook
@@ -338,14 +349,14 @@ store → SoV/rank + declared competitors. Stages rows destined for `search_snap
 `search_listings`.
 
 ```bash
-python -m cli scrape public-run --tenant <id>                  # full run (new staging file)
-python -m cli scrape public-run --tenant <id> -m blinkit       # pick the marketplace (default blinkit)
-python -m cli scrape public-run --tenant <id> --resume         # continue an interrupted run
-python -m cli scrape public-run --tenant <id> --city delhi     # one city
-python -m cli scrape public-run --tenant <id> --keyword "soda" # one keyword
-python -m cli scrape public-run --tenant <id> --cap 30         # override keyword_cap (Blinkit pages 12 at a time)
-python -m cli scrape public-run --tenant <id> --workers 5      # concurrent pool size (default 5)
-python -m cli scrape public-run --all                          # every active tenant
+python -m cli scrape public-run -m <mp> --tenant <id>                  # full run (new staging file)
+python -m cli scrape public-run --tenant <id> -m blinkit       # -m is REQUIRED: blinkit | zepto | instamart (no default)
+python -m cli scrape public-run -m <mp> --tenant <id> --resume         # continue an interrupted run
+python -m cli scrape public-run -m <mp> --tenant <id> --city delhi     # one city
+python -m cli scrape public-run -m <mp> --tenant <id> --keyword "soda" # one keyword
+python -m cli scrape public-run -m <mp> --tenant <id> --cap 30         # override keyword_cap (Blinkit pages 12 at a time)
+python -m cli scrape public-run -m <mp> --tenant <id> --workers 5      # concurrent pool size (default 5)
+python -m cli scrape public-run -m <mp> --all                          # every active tenant
 ```
 
 **2b. Targeted own-SKU scrape — `cli scrape public-skus`.** Searches the tenant's
@@ -355,13 +366,13 @@ _guarantees_ coverage of every own SKU's price/stock/inventory, closing the gap
 where an own product doesn't rank in a category-keyword search.
 
 ```bash
-python -m cli scrape public-skus --tenant <id>                 # full run (new scrape_job)
-python -m cli scrape public-skus --tenant <id> -m blinkit      # pick the marketplace (default blinkit)
-python -m cli scrape public-skus --tenant <id> --resume        # continue an interrupted run
-python -m cli scrape public-skus --tenant <id> --city delhi    # one city
-python -m cli scrape public-skus --tenant <id> --brand-cap 48  # override brand_cap
-python -m cli scrape public-skus --tenant <id> --workers 5     # concurrent pool size (default 5)
-python -m cli scrape public-skus --all                         # every active tenant
+python -m cli scrape public-skus -m <mp> --tenant <id>                 # full run (new scrape_job)
+python -m cli scrape public-skus --tenant <id> -m blinkit      # -m is REQUIRED: blinkit | zepto | instamart (no default)
+python -m cli scrape public-skus -m <mp> --tenant <id> --resume        # continue an interrupted run
+python -m cli scrape public-skus -m <mp> --tenant <id> --city delhi    # one city
+python -m cli scrape public-skus -m <mp> --tenant <id> --brand-cap 48  # override brand_cap
+python -m cli scrape public-skus -m <mp> --tenant <id> --workers 5     # concurrent pool size (default 5)
+python -m cli scrape public-skus -m <mp> --all                         # every active tenant
 ```
 
 **2c. Push to Postgres — `cli scrape staged` / `load` / `discard`.**
@@ -500,21 +511,23 @@ store-grain figures in `cli export public`. The glossary sheet says so.
 
 ## Campaign Manager (`cm`)
 
-Automates Blinkit ad **budgets** and keyword **bids** (v2). Two engines:
+Automates ad **budgets** and keyword **bids** on **Blinkit and Zepto** (v2). Two engines:
 
 - **Budget scheduler** — sets a campaign's daily budget from time/day rules (elevated during a window, back to a default otherwise).
-- **Bid optimizer** — a ~15-min control loop that nudges a keyword's CPM to hold a target search position.
+- **Bid optimizer** — a ~15-min control loop that nudges a keyword's bid to hold a target search position (Blinkit bids per 1,000 impressions, Zepto per click).
 
 **Rules are the source of truth.** You create rules (`cm rules …`); a **reconciler** compiles them into `job_schedules` rows; the runner fires the engines on schedule. See [campaign-manager.md](campaign-manager.md) for the design.
 
+> ⚠️ **Every `cm` command needs `-m blinkit` or `-m zepto` (`--marketplace`; `--platform` is an alias). There is no default** — these commands write to real ad accounts, and a forgotten flag must never drive the wrong one. The same holds everywhere else: the API's addresses are `/campaign-manager/<marketplace>/…`, and a queued `cm.*` job with no `marketplace` param **fails** instead of running (2026-09-24). Examples below use `blinkit`; swap in `zepto` as needed.
+
 **Two ways to run every engine** (same as `cli scrape …` vs `jobs run scrape.…`):
 
-| Path      | Command                                              | Use                                   |
-| --------- | ---------------------------------------------------- | ------------------------------------- |
-| Direct    | `python -m cli cm budget-scheduler -t <id>`          | dev / manual / dry-run testing        |
-| Scheduler | `python -m cli jobs run cm.budget_scheduler -t <id>` | production (queue + lanes, on the VM) |
+| Path      | Command                                                                  | Use                                   |
+| --------- | ------------------------------------------------------------------------ | ------------------------------------- |
+| Direct    | `python -m cli cm budget-scheduler -t <id> -m blinkit`                   | dev / manual / dry-run testing        |
+| Scheduler | `python -m cli jobs run cm.budget_scheduler -t <id> marketplace=blinkit` | production (queue + lanes, on the VM) |
 
-> ⚠️ **Dry-run is the default; nothing touches Blinkit unless the tenant is armed (`cm arm`) AND the run carries `--live`.** The engines read real budgets/positions in dry-run but write nothing. Going live is a deliberate per-tenant switch — see "Go live — arm the tenant" below. Engine reads open a browser + use the tenant's session, so run them where the VM would — locally is fine for dry-run testing. Never run the _plain_ `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
+> ⚠️ **Dry-run is the default; nothing touches a marketplace unless the tenant is armed for it (`cm arm -m …`) AND the run carries `--live`.** The engines read real budgets/positions in dry-run but write nothing. Going live is a deliberate per-tenant, per-marketplace switch — see "Go live — arm the tenant" below. Engine reads open a session with the tenant's login, so run them where the VM would — locally is fine for dry-run testing. Never run the _plain_ `cli runner start` locally (it claims the VM's jobs and scrapes from your home IP); to drive the full queue → schedule → engine loop on a laptop, use **`cli runner start --only-cm`**, which serves only the campaign-manager lanes and fires only `cm.*` schedules (see the "Local Campaign-Manager testing" section of [jobs-runbook.md](jobs-runbook.md)).
 
 ### Timing model (rules)
 
@@ -533,7 +546,7 @@ Both systems share the same timing shapes:
 
 ```bash
 # Budget: create a schedule (container) for a campaign, optionally with one inline rule
-python -m cli cm rules add-budget-schedule -t <id> --campaign <cid> --default-budget 300 \
+python -m cli cm rules add-budget-schedule -t <id> -m blinkit --campaign <cid> --default-budget 300 \
     --name "Weekend nights" \
     --budget 1500 --days "friday,saturday,sunday" --start-time 16:00 --end-time 02:00 \
     --start-date 2026-07-31 --end-date 2026-08-30
@@ -541,12 +554,12 @@ python -m cli cm rules add-budget-schedule -t <id> --campaign <cid> --default-bu
 # Budget: add more rules to an existing schedule (id from `cm rules list`)
 python -m cli cm rules add-budget-rule --schedule <sid> --budget 2000 --once --date 2026-08-15 --start-time 10:00 --end-time 14:00
 
-# Bid: chase position 3 for a keyword, measured at a specific store (lat/lon)
-python -m cli cm rules add-bid -t <id> --campaign <cid> --keyword "goli soda" \
-    --target 3 --min-bid 20 --max-bid 120 --lat 12.97 --lon 77.57 \
+# Bid: chase position 3 for a keyword, measured in a city (at its frozen store — see `cm stores`)
+python -m cli cm rules add-bid -t <id> -m blinkit --campaign <cid> --keyword "goli soda" \
+    --target 3 --min-bid 20 --max-bid 120 --city bengaluru \
     --days "friday,saturday,sunday" --start-time 16:00 --stop-time 02:00
 
-python -m cli cm rules list   -t <id>              # budget schedules (+rules) and bid rules
+python -m cli cm rules list   -t <id> -m blinkit   # budget schedules (+rules) and bid rules
 python -m cli cm rules remove-budget --schedule <sid>
 python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list`
 ```
@@ -555,7 +568,7 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 
 | Flag                          | Notes                                                                          |
 | ----------------------------- | ------------------------------------------------------------------------------ |
-| `--campaign`                  | Blinkit campaign id (schedule)                                                 |
+| `--campaign`                  | campaign id on the `-m` marketplace (schedule)                                 |
 | `--default-budget`            | ₹ applied when no rule matches (schedule)                                      |
 | `--name` / `--campaign-name`  | labels                                                                         |
 | `--budget`                    | ₹ the rule applies (rule; on `add-budget-schedule` it creates one inline rule) |
@@ -570,14 +583,36 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `--keyword`               | search keyword to chase                                                                                   |
 | `--target`                | target sponsored position (e.g. `3`)                                                                      |
-| `--min-bid` / `--max-bid` | CPM floor / ceiling (₹)                                                                                   |
+| `--min-bid` / `--max-bid` | bid floor / ceiling (₹) — CPM on Blinkit, **CPC** on Zepto                                               |
 | `--city`                  | measure in this city, at its **frozen store** (`cm stores`, below) — the rule keeps following it          |
 | `--location-id`           | **pin** to one store (merchant_id from `cli locations list --city <slug>`); ignores the city's store      |
 | `--lat` / `--lon`         | pin to raw coordinates (position is per-store) — overrides `--city` / `--location-id`                     |
 | `--location` / `--brand`  | store label / brand-name fallback for product matching                                                    |
-| `--match-type`            | `EXACT` (default) or `BROAD`                                                                              |
+| `--match-type`            | `EXACT` (default) or `BROAD`; Zepto also takes `PHRASE`                                                   |
 
-> One bid rule per (campaign, keyword) — the bid is campaign-wide; the store only chooses where you measure.
+> **One live bid rule per (campaign, keyword, match type)** — the bid is campaign-wide; the store only chooses where you measure. A second one is refused with the id of the rule to edit instead (a paused rule frees its keyword; resuming it re-checks).
+
+**Zepto differences** (refused with a reason, nothing created):
+
+- Only **product ads bid by keyword** can be automated — Display and automatic-bidding campaigns are refused.
+- Zepto's minimum daily budget is **₹500** (the API refuses less at save).
+- A Zepto bid rule must measure somewhere real. **With no `--city`/`--location-id`/`--lat`, one is chosen for you** from the campaign's own targeted cities — a city with a frozen store first, else the one with the most stores — and printed. It is saved by city, so freezing a store later moves it.
+- Zepto bids are **per click**, so its floors and steps are rupee-small (defaults in `campaign_manager/config.py`).
+
+### City registry — `cities …`
+
+The canonical city list every marketplace's names resolve into (design:
+[campaign-manager.md §7.6c](campaign-manager.md#76c-where-a-rule-measures--the-city-registry)).
+
+```bash
+python -m cli cities seed   [--mp blinkit] [--dry-run]   # build/refresh the list from Blinkit's city directory
+python -m cli cities status [--mp blinkit|zepto]         # how many stores map to a city, and what doesn't
+```
+
+`seed` reads **Blinkit's** directory only and refuses `--mp zepto` — Zepto publishes no
+account-wide city list (its `targeting-options` is one brand's). Zepto's cities reach the
+registry through its store catalogue and, where its **ads** spell a city differently
+(`Belgavi` for Belgaum), a `zepto:ads` row in `config.xlsx` → `city_map`, applied by `cli sync`.
 
 ### Measurement stores — `cm stores …`
 
@@ -585,8 +620,8 @@ A bid rule saved with `--city` measures at that city's **frozen store set**: up 
 the anchor and ranks 2–3 validating it. The bid aims for the target position at **every** store in the
 set where the campaign is listed and in stock — the worst such store sets the bid. There is a global set
 per city, which a client can replace whole. The engine reads stock itself (one brand search per store,
-at most hourly). Nothing is frozen until you set it — until then each rule keeps the store it was saved
-at. Design: [campaign-manager.md §7.6c](campaign-manager.md#76c-where-a-rule-measures--the-city-registry).
+at most hourly). Nothing is frozen until you set it — until then a city measures at its lowest
+`merchant_id` store. Design: [campaign-manager.md §7.6c](campaign-manager.md#76c-where-a-rule-measures--the-city-registry).
 
 ```bash
 python -m cli cm stores show  -m blinkit --city bengaluru [-t <id>]                      # the set in force + every candidate
@@ -605,7 +640,8 @@ python -m cli cm stores stock -m blinkit -t <id> [--products]                   
   already holds changes nothing. `clear` without `--rank` removes the whole set.
 - **A client's set replaces the global set whole** — a client with only rank 1 set measures at one store,
   not at the global ranks 2–3.
-- `--city` takes any name the city registry resolves: canonical (`Gurugram`), Blinkit's, or our catalog's.
+- `--city` takes any name the city registry resolves: canonical (`Gurugram`), the marketplace's ad spelling
+  (Zepto's `Mysuru`, via a `zepto:ads` alias in `config.xlsx` → `city_map` where they differ), or our catalog's.
 - `set` refuses a store that is inactive or in a different city. Any change to a set resets what the engine
   learned for automations following that city (last position, holding price, relaxed target) — a different
   set reads different positions.
@@ -621,33 +657,35 @@ python -m cli cm stores stock -m blinkit -t <id> [--products]                   
 After any rule change, compile the rules into `job_schedules` so the runner fires the engines:
 
 ```bash
-python -m cli cm reconcile -t <id>            # DRY: preview the schedule diff, writes nothing
-python -m cli cm reconcile -t <id> --live     # write job_schedules (create/update/delete)
+python -m cli cm reconcile -t <id> -m blinkit          # DRY: preview the schedule diff, writes nothing
+python -m cli cm reconcile -t <id> -m blinkit --live   # write job_schedules (create/update/delete)
 ```
 
-Here `--live` means "actually write **`job_schedules`**" (our own table) — reconcile **never** touches Blinkit. It's idempotent: re-running with unchanged rules is a no-op. (The V4 API will enqueue this for you on every edit.)
+Here `--live` means "actually write **`job_schedules`**" (our own table) — reconcile **never** touches a marketplace. It's idempotent: re-running with unchanged rules is a no-op ("0 schedules" = nothing to change). Every schedule it writes carries `marketplace=<m>`. The API enqueues a reconcile for you on every edit.
 
 ### Run the engines (dry-run testing)
 
 ```bash
-python -m cli cm budget-scheduler -t <id>          # reads real budget → "would set ₹X" → writes nothing
-python -m cli cm bid-optimizer    -t <id>          # reads live position → "would bid ₹Y" → writes nothing
-python -m cli cm bid-optimizer    -t <id> --reset  # end-of-window: de-escalate closed keywords → min_bid (no scrape)
+python -m cli cm budget-scheduler -t <id> -m blinkit          # reads real budget → "would set ₹X" → writes nothing
+python -m cli cm bid-optimizer    -t <id> -m blinkit          # reads live position → "would bid ₹Y" → writes nothing
+python -m cli cm bid-optimizer    -t <id> -m blinkit --reset  # end-of-window: de-escalate closed keywords → min_bid (no scrape)
 ```
 
-Add `--live` to actually write to Blinkit (only takes effect once the tenant is **armed** — see below). History lands in `cm_run_log` (only real changes — no-op/hold rows go to Cloud Logging); bid runtime (last position/CPM) in `cm_bid_runtime`.
+Add `--live` to actually write (only takes effect once the tenant is **armed** for that marketplace — see below). History lands in `cm_run_log` (only real changes — no-op/hold rows go to Cloud Logging); bid runtime (last position/bid) in `cm_bid_runtime`. On Zepto both engines also check the prepaid **ad wallet** each run and warn (History `kind=wallet`) when it is below `CM_WALLET_WARN_BELOW` (₹5,000) or empty.
 
 **`--reset`** is the end-of-window mode: it sets each just-closed keyword's bid back to its `min_bid` (no position scrape), so a bid the optimizer pushed up doesn't keep spending high overnight. The reconciler fires this automatically at each window's stop time — you rarely run it by hand.
 
 ### Go live — arm the tenant (the cutover)
 
-The whole automated loop is **dry by default**. Arming is a per-tenant switch (`cm_platform_accounts.live_armed`) that makes the reconciler stamp `--live` onto the engine schedules and the API's set-budget/reset pass live — so scheduled runs and UI actions write to Blinkit for real.
+The whole automated loop is **dry by default**. Arming is a per-tenant, **per-marketplace** switch (`cm_platform_accounts.live_armed`) that makes the reconciler stamp `--live` onto that marketplace's engine schedules and the API's actions pass live — so scheduled runs and UI actions write for real. The API can read the switch (`GET …/<marketplace>/live`) but never flip it.
 
 ```bash
-python -m cli cm set-advertiser -t <id> --id 19802   # one-time: the Blinkit ad-account id (required to arm)
-python -m cli cm arm            -t <id>              # ⚡ ARM: set live_armed + reconcile → schedules carry --live
-python -m cli cm advertiser     -t <id>              # verify: "LIVE writes: ⚡ ARMED"
-python -m cli cm disarm         -t <id>              # back to dry (reconciles the --live off)
+python -m cli cm set-advertiser -t <id> -m blinkit --id 19802   # one-time: Blinkit's integer ad-account id (required to arm)
+python -m cli cm advertiser     -t <id> -m zepto                # Zepto: shows the brand UUID to store…
+python -m cli cm set-advertiser -t <id> -m zepto --id <brand-uuid>   # …which writes then CHECK the session against
+python -m cli cm arm            -t <id> -m blinkit              # ⚡ ARM: set live_armed + reconcile → schedules carry --live
+python -m cli cm advertiser     -t <id> -m blinkit              # verify: "LIVE writes: ⚡ ARMED"
+python -m cli cm disarm         -t <id> -m blinkit              # back to dry (reconciles the --live off)
 ```
 
 `cm arm` refuses if no advertiser is set (live writes would be rejected anyway). It auto-reconciles, so existing schedules pick up `--live` immediately. Reversible any time with `cm disarm`.
@@ -655,17 +693,17 @@ python -m cli cm disarm         -t <id>              # back to dry (reconciles t
 ### Worked example — a solo dry-run pass
 
 ```bash
-python -m cli cm rules add-budget-schedule -t <id> --campaign <cid> --default-budget 300 \
+python -m cli cm rules add-budget-schedule -t <id> -m blinkit --campaign <cid> --default-budget 300 \
     --budget 1500 --start-time 16:00 --end-time 02:00 --days "friday,saturday,sunday" \
     --start-date 2026-07-31 --end-date 2026-08-30
-python -m cli cm rules add-bid -t <id> --campaign <cid> --keyword "goli soda" \
-    --target 3 --min-bid 20 --max-bid 120 --lat 12.97 --lon 77.57 \
+python -m cli cm rules add-bid -t <id> -m blinkit --campaign <cid> --keyword "goli soda" \
+    --target 3 --min-bid 20 --max-bid 120 --city bengaluru \
     --start-time 16:00 --stop-time 02:00 --days "friday,saturday,sunday"
-python -m cli cm rules list        -t <id>
-python -m cli cm reconcile         -t <id> --live      # rules → job_schedules
-python -m cli cm budget-scheduler  -t <id>             # dry: would-set budgets
-python -m cli cm bid-optimizer     -t <id>             # dry: would-bid CPMs
-python -m cli cm rules remove-budget --schedule <sid>  # teardown
+python -m cli cm rules list        -t <id> -m blinkit
+python -m cli cm reconcile         -t <id> -m blinkit --live   # rules → job_schedules
+python -m cli cm budget-scheduler  -t <id> -m blinkit          # dry: would-set budgets
+python -m cli cm bid-optimizer     -t <id> -m blinkit          # dry: would-bid values
+python -m cli cm rules remove-budget --schedule <sid>          # teardown
 python -m cli cm rules remove-bid    --rule <hex>
 ```
 
@@ -675,31 +713,37 @@ Outside the rule engine — act on a single campaign right now. All are dry-run
 unless `--live`, except `status`, which is read-only.
 
 ```bash
-python -m cli cm status         -t <id> --campaign <cid>   # live state: status, budget, bids, dates
-python -m cli cm set-budget     -t <id> --campaign <cid> --budget 5000
-python -m cli cm set-bid        -t <id> --campaign <cid> --keyword "soda" --cpm 100
-python -m cli cm set-activation -t <id> --campaign <cid> --status paused|running
-python -m cli cm stop           -t <id> --campaign <cid>   # shorthand for --status paused
-python -m cli cm restart        -t <id> --campaign <cid>   # shorthand for the reverse
+python -m cli cm status         -t <id> -m blinkit --campaign <cid>   # live state: status, budget, bids, dates
+python -m cli cm set-budget     -t <id> -m blinkit --campaign <cid> --budget 5000
+python -m cli cm set-bid        -t <id> -m blinkit --campaign <cid> --keyword "soda" --cpm 100
+python -m cli cm set-activation -t <id> -m blinkit --campaign <cid> --status paused|running
+python -m cli cm stop           -t <id> -m blinkit --campaign <cid>   # shorthand for --status paused
+python -m cli cm restart        -t <id> -m blinkit --campaign <cid>   # shorthand for the reverse
+python -m cli cm sync-campaigns -t <id> -m zepto                      # refresh the campaign catalogue (a read)
 ```
 
 `set-bid` writes ONE keyword's bid and is what the dashboard's **Reset** (and
-Delete-with-reset) runs — `--cpm` is the automation's `min_bid`, raised to the
-marketplace's own floor if that is higher. It takes plain values rather than a rule id
-because Delete removes the rule before the job gets to run. A keyword an *active,
-in-window* automation is currently bidding on is left alone.
+Delete-with-reset) runs — `--cpm` is the automation's `min_bid` (a CPC on Zepto, despite the
+flag's name), raised to the marketplace's own floor if that is higher. It takes plain values
+rather than a rule id because Delete removes the rule before the job gets to run. A keyword
+an *active, in-window* automation is currently bidding on is left alone.
+
+On **Zepto**, a start **with** a budget (`set-activation --status running --budget 900`) sets
+the budget first and then starts — Zepto's own start keeps the campaign's previous budget.
+A plain start keeps it.
 
 Two more rule commands not shown above:
 
 ```bash
 python -m cli cm rules set-stop-after-window --schedule <sid> --on|--off
-python -m cli cm rules remove-budget-rule --rule <hex>   # drop ONE rule, keep its schedule
+python -m cli cm rules remove-budget-rule --rule <rid>   # drop ONE rule (numeric id), keep its schedule
 ```
 
 **The job queue and scheduler have their own reference.** `jobs run|list|logs|types`,
 `schedules add|list|show|update|enable|disable|remove` and `runner start` are all
 documented in [jobs.md](jobs.md) (design) and [jobs-runbook.md](jobs-runbook.md)
-(full command reference, troubleshooting) — they are not repeated here.
+(full command reference, troubleshooting) — they are not repeated here. Remember that a
+hand-queued `cm.*` job needs `marketplace=<m>` among its params, or it fails to start.
 
 ---
 

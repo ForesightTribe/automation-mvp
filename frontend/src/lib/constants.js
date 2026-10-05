@@ -6,8 +6,29 @@ export const STORAGE_KEYS = {
 	activeClientId: "foresight.activeClientId",
 	dateRange: "foresight.dateRange",
 	marketplaces: "foresight.marketplaces",
+	automationMarketplace: "foresight.automationMarketplace",
+	ordersMarketplace: "foresight.ordersMarketplace",
 	sidebarCollapsed: "foresight.sidebarCollapsed",
 };
+
+/**
+ * Pages that act on ONE marketplace at a time — the campaign-manager surfaces, where every
+ * address names its marketplace and there is no "All" to send a write to. On these the
+ * navbar pills drop "All" and pick a single marketplace, held apart from the global
+ * selection so visiting them never changes what the rest of the dashboard shows.
+ */
+export const SINGLE_MARKETPLACE_PATHS = [
+	"/ads/automation",
+	"/automations",
+	"/ads/one-time-ops",
+];
+
+/**
+ * Pages that READ one marketplace at a time: purchase orders are fetched per marketplace
+ * and there is no blended view. Like the automation pages they drop "All" and keep their
+ * own single choice, so opening them never narrows the rest of the dashboard.
+ */
+export const ORDERS_PATHS = ["/purchase-orders"];
 
 // Default `?days=` window for dashboard endpoints.
 export const DEFAULT_DAYS = 30;

@@ -15,7 +15,9 @@ are the values already in the table, so nothing needs migrating.
 from platform_auth.errors import PlatformNotWired, UnknownPlatform
 from platform_auth.marketplaces.blinkit import marketing as blinkit_marketing
 from platform_auth.marketplaces.blinkit import seller as blinkit_seller
+from platform_auth.marketplaces.blinkit import seller_new as blinkit_seller_new
 from platform_auth.marketplaces.zepto import console as zepto_console
+from platform_auth.marketplaces.instamart import brand_portal as instamart_portal
 from platform_auth.types import Authenticator, SecretKind
 
 AUTHENTICATORS: dict[str, Authenticator] = {
@@ -45,6 +47,27 @@ AUTHENTICATORS: dict[str, Authenticator] = {
         refresh=blinkit_seller.refresh,
         refreshable=True,
     ),
+    # Same account family as blinkit_seller, but for accounts Blinkit has
+    # already migrated to seller.blinkit.com (e.g. Sereko). Distinct slug, not
+    # a repoint of blinkit_seller: the old domain still serves most accounts
+    # (Dobra included) and the two need different login mechanics entirely —
+    # plain REST there, browser-only here (Cloudflare bot management blocks
+    # httpx categorically on this domain — see seller_new.py). Wired
+    # 2026-09-30 against the live Sereko account.
+    "blinkit_seller_new": Authenticator(
+        slug="blinkit_seller_new",
+        name="Blinkit Seller (seller.blinkit.com)",
+        marketplace="blinkit",
+        secret_kind=SecretKind.OTP,
+        needs_password=False,          # OTP only, same as blinkit_seller
+        wired=True,
+        start_login=blinkit_seller_new.start_login,
+        complete_login=blinkit_seller_new.complete_login,
+        probe=blinkit_seller_new.probe,
+        # No refresh endpoint has been observed on this domain — see the
+        # module docstring. ensure() falls back to a full (browser) login.
+        refreshable=False,
+    ),
     # ONE console, not two: brands.zepto.co.in covers ads and sales alike, so the
     # marketplace needs a single slug where Blinkit needs two.
     "zepto": Authenticator(
@@ -63,15 +86,24 @@ AUTHENTICATORS: dict[str, Authenticator] = {
         # docs/platform-auth.md.
         refreshable=False,
     ),
-    # Placeholder — see docs/zepto.md. Listed so `cli auth platforms` shows the
-    # roadmap and so selecting it fails with a real message.
+    # ONE portal (partner.instamart.in) covers sales, ads, requisition orders and
+    # catalog — a single slug like Zepto, not two like Blinkit. Wired 2026-09-21
+    # against the live Brik Oven account: email OTP, no password, a 5-hour JWT
+    # with a working refresh endpoint, so `auth.refresh` is what gets scheduled.
+    # The advertiser account id every data call needs is configured per tenant
+    # in platform_credentials.extra (`account_id`) — see brand_portal.py.
     "instamart": Authenticator(
         slug="instamart",
-        name="Swiggy Instamart Seller",
+        name="Instamart Brand Portal (partner.instamart.in)",
         marketplace="instamart",
         secret_kind=SecretKind.OTP,
-        needs_password=False,          # unconfirmed — revisit when wiring it up
-        wired=False,
+        needs_password=False,
+        wired=True,
+        start_login=instamart_portal.start_login,
+        complete_login=instamart_portal.complete_login,
+        probe=instamart_portal.probe,
+        refresh=instamart_portal.refresh,
+        refreshable=True,
     ),
 }
 

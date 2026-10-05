@@ -325,8 +325,9 @@ precise coordinates + `location_name`.
 Caps already live in config and the precedence is already correct:
 
 ```
-keyword scrape:  CLI --cap  >  tenant keyword_cap  >  ep.RESULT_CAP        (orchestrator.py:214)
-brand scrape:    CLI --brand-cap  >  tenant brand_cap  >  ep.BRAND_RESULT_CAP  (targeted.py:58)
+keyword scrape:  CLI --cap  >  tenant keyword_cap for the marketplace  >  ep.RESULT_CAP
+brand scrape:    CLI --brand-cap  >  brand's brand_cap for the marketplace  >  ep.BRAND_RESULT_CAP
+                 (both per marketplace since 2026-10-02 — scraper/public/caps.py)
 ```
 
 Dobra runs `keyword_cap=36` / `brand_cap=48` and never touches the defaults. 36 is deep

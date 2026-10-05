@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { ChevronDown, ChevronUp } from "lucide-react";
-import { useHistory } from "../hooks";
+import { useLatestHistory } from "../hooks";
 import { formatCurrency } from "../../../lib/format";
 import { outcomeOf } from "../../../lib/runLog";
 
@@ -103,7 +103,7 @@ export const StatusSummary = ({ schedules = [], bidRules = [] }) => {
 		if (!r) return;
 		setAt({ right: window.innerWidth - r.right, top: r.bottom + 6 });
 	};
-	const { data: history } = useHistory(1);
+	const { data: history } = useLatestHistory();
 
 	// A popover that only closes by re-clicking its own trigger traps the reader: it covers
 	// the page it is describing. Clicking anywhere else, or Escape, dismisses it.

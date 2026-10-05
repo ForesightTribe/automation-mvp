@@ -1,6 +1,6 @@
 """Config sync: reconcile the DB to a source-of-truth workbook.
 
-One command reads `config.xlsx` (sheets: locations / brands / coverage / city_map) and makes
+One command reads `config.xlsx` (sheets: locations / brands / caps / coverage / city_map) and makes
 the DB match it — upserting by default, deleting only with --prune. The workbook
 is the source of truth; scrapers never read it. Updates are infrequent, so this
 replaces the per-row add/remove CLI verbs.
@@ -10,8 +10,14 @@ Sheets
               cols: mp, merchant_id, city, state, region, pincode, lat, lon,
                     active, location_name, address
   brands    : per-tenant keywords/aliases (the watchlist)
-              cols: tenant, brand, relationship, keywords, aliases,
-                    keyword_cap, brand_cap   (caps optional; own rows only)
+              cols: tenant, brand, relationship, keywords, aliases
+              (`keyword_cap` / `brand_cap` here are NO LONGER READ — see `caps`)
+  caps      : how deep an own brand's searches go, PER MARKETPLACE (2026-10-02)
+              cols: tenant, brand, mp, keyword_cap, brand_cap
+              One row per (tenant, brand, marketplace); the brand must be on the
+              `brands` sheet. Blank = the marketplace's own default. A cap that is
+              not a whole number of the marketplace's pages (Blinkit 12, Zepto 30)
+              is accepted with a warning — it fetches a page only to discard part.
   coverage  : which catalog locations each tenant scrapes
               cols: mp, tenant, city   (one row per marketplace+city covered)
   city_map  : how a marketplace's own city names map onto the catalog (V7.3)
@@ -44,7 +50,9 @@ from sqlmodel import select
 
 from app.core.database import AsyncSessionLocal
 from app.models.search import City, CityAlias, MarketplaceLocation, TenantLocation
-from app.models.tenant import Tenant, TenantWatchlist
+from app.models.tenant import Tenant, TenantWatchlist, TenantWatchlistCap
+from app.utils.time import now_ist
+from scraper.public import caps as caps_mod
 from scraper.utils.storage import _MP_NAMES, ensure_refs
 
 console = Console()
@@ -119,6 +127,8 @@ def _read_config(path: str) -> dict:
     return {
         "locations": _read_sheet(wb, "locations"),
         "brands": _read_sheet(wb, "brands"),
+        # Optional, like city_map: a workbook without it leaves the caps as they are.
+        "caps": _read_sheet(wb, "caps"),
         "coverage": _read_sheet(wb, "coverage"),
         # Optional — an older workbook without it syncs as before (_read_sheet warns
         # and returns []), and an absent sheet must never be read as "delete the map".
@@ -182,6 +192,7 @@ async def _sync_locations(db, rows, prune) -> dict:
 
 async def _sync_brands(db, rows, tenants, prune, tenant_mps: dict | None = None) -> dict:
     desired = {}
+    legacy: list[str] = []
     for r in rows:
         tname = _str(r.get("tenant"))
         brand = _str(r.get("brand")).lower()
@@ -191,9 +202,11 @@ async def _sync_brands(db, rows, tenants, prune, tenant_mps: dict | None = None)
             "relationship": _str(r.get("relationship")).lower() or "own",
             "keywords": _csv(r.get("keywords")),
             "aliases": _csv(r.get("aliases")),
-            "keyword_cap": _int(r.get("keyword_cap")),
-            "brand_cap": _int(r.get("brand_cap")),
         }
+        # The caps moved to the `caps` sheet (one per marketplace). Values still sitting in
+        # the old columns are ignored — said, so nobody edits them expecting an effect.
+        if _int(r.get("keyword_cap")) is not None or _int(r.get("brand_cap")) is not None:
+            legacy.append(f"{tname}/{brand}")
     ref_tenants = {tid for tid, _ in desired}
     existing = {
         (w.tenant_id, w.brand_slug): w
@@ -216,13 +229,11 @@ async def _sync_brands(db, rows, tenants, prune, tenant_mps: dict | None = None)
                 tenant_id=tid, brand_slug=brand, cities=[], marketplaces=mps, **vals
             ))
             added += 1
-        elif (cur.relationship, cur.keywords, cur.aliases, cur.keyword_cap, cur.brand_cap) != (
+        elif (cur.relationship, cur.keywords, cur.aliases) != (
             vals["relationship"], vals["keywords"], vals["aliases"],
-            vals["keyword_cap"], vals["brand_cap"],
         ):
-            (cur.relationship, cur.keywords, cur.aliases, cur.keyword_cap, cur.brand_cap) = (
+            (cur.relationship, cur.keywords, cur.aliases) = (
                 vals["relationship"], vals["keywords"], vals["aliases"],
-                vals["keyword_cap"], vals["brand_cap"],
             )
             updated += 1
     if prune:
@@ -231,7 +242,117 @@ async def _sync_brands(db, rows, tenants, prune, tenant_mps: dict | None = None)
                 await db.delete(cur)
                 deleted += 1
     await db.flush()
-    return {"added": added, "updated": updated, "deleted": deleted}
+    warnings = []
+    if legacy:
+        warnings.append(
+            f"brands sheet: keyword_cap/brand_cap are no longer read (now per marketplace, on "
+            f"the `caps` sheet) — ignored for {', '.join(sorted(legacy))}")
+    return {"added": added, "updated": updated, "deleted": deleted, "warnings": warnings}
+
+
+def _desired_caps(rows, tenants) -> tuple[dict, list[str]]:
+    """Pure. `{(tenant_id, brand, mp): (keyword_cap, brand_cap)}` from the caps sheet, and
+    the warnings it deserves. A row with both caps blank is no row (the default applies)."""
+    desired: dict[tuple, tuple] = {}
+    warnings: list[str] = []
+    for r in rows:
+        tname, brand = _str(r.get("tenant")), _str(r.get("brand")).lower()
+        mp = _str(r.get("mp")).lower()
+        if not tname or not brand:
+            continue
+        if not mp:
+            # Unlike the other sheets, no `blinkit` default: a cap is meaningless without
+            # its marketplace, and guessing would put a Zepto number on Blinkit.
+            raise ValueError(f"caps sheet: {tname}/{brand} has no `mp` — a cap is per "
+                             f"marketplace, so say which")
+        kw, br = _int(r.get("keyword_cap")), _int(r.get("brand_cap"))
+        if kw is None and br is None:
+            continue
+        for label, cap in (("keyword_cap", kw), ("brand_cap", br)):
+            if cap is not None and cap <= 0:
+                raise ValueError(f"caps sheet: {tname}/{brand}/{mp} {label} must be a "
+                                 f"positive number, not {cap}")
+        key = (tenants[tname], brand, mp)
+        if key in desired:
+            raise ValueError(f"caps sheet: {tname}/{brand}/{mp} appears twice")
+        desired[key] = (kw, br)
+        page = _page_size(mp)
+        for label, cap in (("keyword_cap", kw), ("brand_cap", br)):
+            if caps_mod.off_page(cap, page):
+                warnings.append(
+                    f"caps: {tname}/{brand} on {mp} {label}={cap} is not a multiple of "
+                    f"{mp}'s page size ({page}) — every search fetches a page and discards "
+                    f"part of it")
+    return desired, warnings
+
+
+def _page_size(mp: str) -> int | None:
+    try:
+        from scraper.public.providers import get_provider
+        return get_provider(mp).page_size
+    except Exception:
+        return None
+
+
+async def _sync_caps(db, rows, tenants, prune) -> dict:
+    """Reconcile the `caps` sheet into `tenant_watchlist_caps` (2026-10-02).
+
+    Each row names a brand already on the watchlist (the `brands` sheet) and one marketplace.
+    Pruning is scoped like everything else here: only the (tenant, marketplace) pairs the
+    sheet mentions, so a sheet that says nothing about Zepto can never delete Zepto's caps."""
+    desired, warnings = _desired_caps(rows, tenants)
+    if not desired and not prune:
+        return {"added": 0, "updated": 0, "deleted": 0, "warnings": warnings}
+    tids = {tid for tid, _, _ in desired}
+    mps = {mp for _, _, mp in desired}
+
+    known_mps = set((await db.execute(text("SELECT slug FROM marketplaces"))).scalars().all())
+    unknown_mps = sorted(mps - known_mps)
+    if unknown_mps:
+        raise ValueError(f"caps sheet: unknown marketplace(s) {unknown_mps}")
+
+    watch = {
+        (w.tenant_id, w.brand_slug): w
+        for w in (await db.execute(
+            select(TenantWatchlist).where(TenantWatchlist.tenant_id.in_(tids or [None]))
+        )).scalars().all()
+    }
+    missing = sorted(f"{t}/{b}" for t, b, _ in desired if (t, b) not in watch)
+    if missing:
+        raise ValueError(f"caps sheet: brand(s) not on the watchlist (add them to the brands "
+                         f"sheet first): {missing}")
+    for (tid, brand, mp) in desired:
+        if watch[(tid, brand)].relationship != "own":
+            warnings.append(f"caps: {brand} is a competitor — caps are only read for own "
+                            f"brands, so its row on {mp} has no effect")
+
+    ids = {w.id: key for key, w in watch.items()}
+    existing = {
+        (ids[c.watchlist_id][0], ids[c.watchlist_id][1], c.mp_slug): c
+        for c in (await db.execute(
+            select(TenantWatchlistCap).where(
+                TenantWatchlistCap.watchlist_id.in_(list(ids) or [None]),
+                TenantWatchlistCap.mp_slug.in_(mps or [None]),
+            )
+        )).scalars().all()
+    }
+    added = updated = deleted = 0
+    for (tid, brand, mp), (kw, br) in desired.items():
+        cur = existing.get((tid, brand, mp))
+        if cur is None:
+            db.add(TenantWatchlistCap(watchlist_id=watch[(tid, brand)].id, mp_slug=mp,
+                                      keyword_cap=kw, brand_cap=br))
+            added += 1
+        elif (cur.keyword_cap, cur.brand_cap) != (kw, br):
+            cur.keyword_cap, cur.brand_cap, cur.updated_at = kw, br, now_ist()
+            updated += 1
+    if prune:
+        for key, cur in existing.items():
+            if key not in desired:
+                await db.delete(cur)
+                deleted += 1
+    await db.flush()
+    return {"added": added, "updated": updated, "deleted": deleted, "warnings": warnings}
 
 
 async def _sync_coverage(db, rows, tenants, prune) -> dict:
@@ -425,7 +546,9 @@ def _tenant_marketplaces(rows, tenants) -> dict:
 async def _do_sync(data, dry_run, prune) -> dict:
     async with AsyncSessionLocal() as db:
         tenants = {t.name: t.id for t in (await db.execute(select(Tenant))).scalars().all()}
-        referenced = {_str(r.get("tenant")) for r in data["brands"] + data["coverage"] if _str(r.get("tenant"))}
+        referenced = {_str(r.get("tenant"))
+                      for r in data["brands"] + data["coverage"] + data.get("caps", [])
+                      if _str(r.get("tenant"))}
         unknown = sorted(referenced - set(tenants))
         if unknown:
             raise ValueError(
@@ -449,6 +572,9 @@ async def _do_sync(data, dry_run, prune) -> dict:
 
         loc = await _sync_locations(db, data["locations"], prune)
         brands = await _sync_brands(db, data["brands"], tenants, prune, tenant_mps)
+        # After brands: a caps row names a watchlist row that the brands sheet may have just
+        # created.
+        caps = await _sync_caps(db, data.get("caps") or [], tenants, prune)
         cov = await _sync_coverage(db, data["coverage"], tenants, prune)
         cmap = await _sync_city_map(db, data.get("city_map") or [], prune)
         # After aliases + prefixes exist, give every store its canonical city.
@@ -458,8 +584,8 @@ async def _do_sync(data, dry_run, prune) -> dict:
             await db.rollback()
         else:
             await db.commit()
-    return {"locations": loc, "brands": brands, "coverage": cov, "city_map": cmap,
-            "store cities": tagged}
+    return {"locations": loc, "brands": brands, "caps": caps, "coverage": cov,
+            "city_map": cmap, "store cities": tagged}
 
 
 # ── template ─────────────────────────────────────────────────────────────────
@@ -475,9 +601,15 @@ def _write_template(path: str) -> None:
                "Block A, Connaught Place, New Delhi, Delhi 110001, India"])
 
     b = wb.create_sheet("brands")
-    b.append(["tenant", "brand", "relationship", "keywords", "aliases", "keyword_cap", "brand_cap"])
-    b.append(["Dobra", "dobra", "own", "dobra, soda, goli soda", "dobra", 12, 60])
-    b.append(["Dobra", "bisleri", "competitor", "", "bisleri", "", ""])
+    b.append(["tenant", "brand", "relationship", "keywords", "aliases"])
+    b.append(["Dobra", "dobra", "own", "dobra, soda, goli soda", "dobra"])
+    b.append(["Dobra", "bisleri", "competitor", "", "bisleri"])
+
+    # Per marketplace: a cap is a number of results, and pages differ (Blinkit 12, Zepto 30).
+    k = wb.create_sheet("caps")
+    k.append(["tenant", "brand", "mp", "keyword_cap", "brand_cap"])
+    k.append(["Dobra", "dobra", "blinkit", 36, 48])
+    k.append(["Dobra", "dobra", "zepto", 30, 60])
 
     c = wb.create_sheet("coverage")
     c.append(["mp", "tenant", "city"])
@@ -507,7 +639,7 @@ def run_sync(
     prune: bool = typer.Option(False, "--prune", help="Also delete DB rows missing from the file"),
     template: bool = typer.Option(False, "--template", help="Write a starter workbook to --file and exit"),
 ):
-    """Reconcile the DB to the config workbook (locations + brands + coverage + city_map)."""
+    """Reconcile the DB to the config workbook (locations + brands + caps + coverage + city_map)."""
     if template:
         _write_template(file)
         console.print(f"[green]Template written to[/green] {file}")
@@ -516,7 +648,8 @@ def run_sync(
     data = _read_config(file)
     console.print(
         f"[dim]Read {len(data['locations'])} locations, {len(data['brands'])} brands, "
-        f"{len(data['coverage'])} coverage, {len(data['city_map'])} city_map rows from {file}[/dim]"
+        f"{len(data['caps'])} caps, {len(data['coverage'])} coverage, "
+        f"{len(data['city_map'])} city_map rows from {file}[/dim]"
     )
     result = asyncio.run(_do_sync(data, dry_run, prune))
 
@@ -526,9 +659,12 @@ def run_sync(
     table.add_column("Added", justify="right")
     table.add_column("Updated", justify="right")
     table.add_column("Deleted", justify="right")
-    for section in ("locations", "brands", "coverage", "city_map", "store cities"):
+    for section in ("locations", "brands", "caps", "coverage", "city_map", "store cities"):
         s = result[section]
         table.add_row(section, str(s.get("added", 0)), str(s.get("updated", 0)), str(s.get("deleted", 0)))
     console.print(table)
+    for section in ("brands", "caps"):
+        for w in result[section].get("warnings", []):
+            console.print(f"[yellow]⚠ {w}[/yellow]")
     if not prune:
         console.print("[dim]Deletions disabled (no --prune): rows missing from the file were kept.[/dim]")

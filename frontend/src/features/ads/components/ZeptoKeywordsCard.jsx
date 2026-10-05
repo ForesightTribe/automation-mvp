@@ -52,7 +52,7 @@ export const ZeptoKeywordsCard = () => {
 	useEffect(() => {
 		setPage(1);
 	}, [matchType, sort, order, selected]);
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const wantsZepto = selected.includes("zepto");
 
 	const { data, isLoading, error, refetch, isFetching } = useZeptoKeywords({
 		sort,

@@ -7,6 +7,7 @@ from app.schemas.ads import (
     AdPerformancePoint,
     AdsSummary,
     BudgetSplitRow,
+    CampaignDayRow,
     CampaignRow,
     CollectionRow,
     KeywordRow,
@@ -105,6 +106,26 @@ async def campaigns(
         sort=sort,
         order=order,
         recent_only=recent_only,
+    )
+
+
+@router.get("/campaigns/daily", response_model=list[CampaignDayRow])
+async def campaigns_daily(
+    session: SessionDep,
+    client: ClientDep,
+    period: PeriodDep,
+    marketplaces: str | None = Query(
+        None, description="Comma-separated marketplace slugs; omit for all."
+    ),
+):
+    """Each campaign's spend per day over the window, for days it spent — the budget-
+    utilisation views' data in one request (they made one `/campaigns` call per day)."""
+    return await ads_service.get_campaigns_daily(
+        session,
+        tenant_id=client.id,
+        start=period.start,
+        end=period.end,
+        marketplaces=_mps(marketplaces),
     )
 
 

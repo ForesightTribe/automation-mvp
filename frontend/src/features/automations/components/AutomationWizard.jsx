@@ -13,6 +13,8 @@ import { scheduleIssues } from "../automation";
 import { WizardContext } from "./WizardContext";
 import { WizardSummary } from "./WizardSummary";
 import { formatMeasuredAt } from "../../../lib/format";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { autoPicksLocation } from "../../../lib/marketplaces";
 import {
 	useCreateBudgetSchedule,
 	useUpdateBudgetSchedule,
@@ -66,16 +68,37 @@ export const AutomationWizard = ({
 	initialKind = "campaign",
 	onActivateCampaign,
 	activationJobId,
+	activationError = null,
 }) => {
 	const isEdit = Boolean(editRow);
 	const [step, setStep] = useState(1);
+	// The one marketplace this wizard creates on — the navbar's choice for the automation
+	// pages. Every save goes to its address; its name goes in the copy; its minimum daily
+	// budget (Zepto ₹500) is checked before the save rather than refused by it.
+	const {
+		marketplace,
+		name: mpName,
+		minDailyBudget,
+	} = useAutomationMarketplace();
+	// Zepto picks one of the campaign's own cities when a keyword rule names none, so there
+	// the city is optional; Blinkit would fall back to a default store nobody chose.
+	const locationOptional = autoPicksLocation(marketplace);
+	// Why the last save failed, in the server's words. A save is several requests (a
+	// schedule, then each extra rule), and without this a refusal left the wizard sitting
+	// on "Create Automation" with nothing said at all (ZC-E11).
+	const [saveError, setSaveError] = useState(null);
 	// Everything below the picker on step 1 describes whatever is being picked, so none of it
 	// is answerable until that list has arrived. Showing the fields first invites someone to
 	// fill them in and then have the step reflow underneath them when the list lands. Each
 	// path waits on its OWN list: the campaign path on campaigns, the keyword path on the
 	// keyword metrics its picker reads.
-	const { isLoading: loadingCampaigns } = useCampaigns();
-	const { isLoading: loadingKeywords } = useAllKeywordMetrics();
+	// Only while open: the wizard is mounted closed on the page, and these used to load
+	// the campaign list and every keyword page on page open for a dialog nobody had opened
+	// (2026-09-25 — part of the burst that exhausted the API's connection pool).
+	const { isLoading: loadingCampaigns } = useCampaigns({ enabled: open });
+	const { isLoading: loadingKeywords } = useAllKeywordMetrics({
+		enabled: open,
+	});
 	const [kind, setKind] = useState(isEdit ? editRow.kind : initialKind);
 	// Declared after `kind`, which it reads: a const is in its temporal dead zone until its
 	// own line, so ordering here is correctness rather than tidiness.
@@ -244,11 +267,13 @@ export const AutomationWizard = ({
 		}
 		setPickerOpen(true);
 		setStep(1);
+		setSaveError(null);
 	}, [open, isEdit, editRow, initialKind]);
 
-	const { mode: writeMode } = useWriteMode();
+	const { mode: writeMode } = useWriteMode({ enabled: open });
 	// What the campaign runs at TODAY, which is what any baseline change is measured against.
-	// Blinkit reports it for only some campaigns, so it is often unknown and never guessed.
+	// The marketplace reports it for only some campaigns, so it is often unknown and never
+	// guessed.
 	const currentBudget = isEdit
 		? (editRow.default_budget ?? null)
 		: (campaign?.daily_budget ?? null);
@@ -268,7 +293,7 @@ export const AutomationWizard = ({
 		createBid.isPending ||
 		updateBid.isPending;
 
-	// ── Keyword context: Blinkit's published floors + the campaign's targeted cities ──
+	// ── Keyword context: the marketplace's published floors + the campaign's cities ──
 	// Both come from the daily scrape and are read-only. An unscraped campaign returns
 	// empty fields rather than 404ing, so every branch below degrades to free text.
 	const campaignId = campaign?.campaign_id ?? null;
@@ -276,21 +301,25 @@ export const AutomationWizard = ({
 		kind === "keyword" ? campaignId : null,
 	);
 
-	// The keyword itself is chosen in <KeywordPicker>, from /ads/keywords (every keyword with
-	// performance data). bid-context only supplies what surrounds it: Blinkit's published
-	// floors (blinkit_ad_campaign_keywords) and the campaign's targeted cities.
-	// Blinkit's published floor for the CHOSEN keyword. It varies per keyword (₹200 on one,
-	// ₹400 on another in the same campaign), so it only resolves once a keyword is picked.
+	// The keyword itself is chosen in <KeywordPicker> — from /ads/keywords on Blinkit, from
+	// the campaign catalogue on Zepto. bid-context only supplies what surrounds it: the
+	// marketplace's published floors and the campaign's targeted cities.
+	// The published floor for the CHOSEN keyword AND match type. It varies per keyword (₹200
+	// on one, ₹400 on another in the same campaign) and, on Zepto, per match type (the same
+	// keyword's PHRASE floor can be double its EXACT one), so it resolves only once both are
+	// known. It used to match EXACT only, which read Zepto's PHRASE/BROAD rules against the
+	// wrong floor.
 	const floor = useMemo(() => {
 		const kw = keyword.trim().toLowerCase();
 		if (!kw) return null;
 		return (
 			(ctx?.keywords ?? []).find(
 				(k) =>
-					k.match_type === "EXACT" && k.keyword.toLowerCase() === kw,
+					k.match_type === matchType &&
+					k.keyword.toLowerCase() === kw,
 			) ?? null
 		);
-	}, [ctx, keyword]);
+	}, [ctx, keyword, matchType]);
 
 	// The campaign's published floors, available the moment a campaign is picked — before
 	// any keyword is typed. Floors differ per keyword within one campaign (₹200–₹400 is
@@ -411,9 +440,17 @@ export const AutomationWizard = ({
 	// Step 1 can only require what step 1 COLLECTS. Target position and min bid belong to
 	// step 2, so requiring them here would hold Continue shut on a keyword automation with no
 	// way to satisfy it. `canAdvanceFrom2` is where those are enforced.
+	// Below the marketplace's published minimum (Zepto ₹500) the API refuses the save, so the
+	// step does not let it through either.
+	const belowMinBudget =
+		kind === "campaign" &&
+		minDailyBudget != null &&
+		defaultBudget !== "" &&
+		Number(defaultBudget) < minDailyBudget;
 	const canAdvanceFrom1 = isEdit
-		? true
-		: Boolean(campaign) && (kind === "campaign" ? defaultBudget : keyword);
+		? !belowMinBudget
+		: Boolean(campaign) &&
+			(kind === "campaign" ? defaultBudget && !belowMinBudget : keyword);
 	// The step labels double as Back/Continue: an earlier step is always reachable (Back),
 	// the next one only when this step is valid (Continue), and never further — Continue
 	// advances one step at a time, so neither do the labels.
@@ -422,9 +459,13 @@ export const AutomationWizard = ({
 	// the engine genuinely cannot act on, hold the step.
 	const blocking =
 		kind === "campaign"
-			? scheduleIssues({ actions, defaultBudget, currentBudget }).filter(
-					(i) => i.level === "block",
-				)
+			? scheduleIssues({
+					actions,
+					defaultBudget,
+					currentBudget,
+					minBudget: minDailyBudget,
+					marketplaceName: mpName,
+				}).filter((i) => i.level === "block")
 			: [];
 	// ⚠️ `actions.length` first, and it is load-bearing: `every` is true of an empty array and
 	// `scheduleIssues` only inspects the actions it is given, so with no actions at all both
@@ -438,7 +479,9 @@ export const AutomationWizard = ({
 						(a.budget != null && a.budget > 0),
 				) &&
 				blocking.length === 0
-			: Boolean(targetPosition && minBid) && hasLocation && !belowFloor;
+			: Boolean(targetPosition && minBid) &&
+				(hasLocation || locationOptional) &&
+				!belowFloor;
 
 	const canAdvanceNow =
 		step === 1 ? canAdvanceFrom1 : step === 2 ? canAdvanceFrom2 : true;
@@ -457,6 +500,8 @@ export const AutomationWizard = ({
 			if (!campaign) return "Pick a campaign to continue.";
 			if (kind === "campaign" && !defaultBudget)
 				return "Set a default daily budget to continue.";
+			if (belowMinBudget)
+				return `${mpName} does not accept a daily budget below ₹${minDailyBudget.toLocaleString("en-IN")}. Raise it to continue.`;
 			if (kind === "keyword" && !keyword)
 				return "Pick a keyword to continue.";
 			return null;
@@ -470,8 +515,8 @@ export const AutomationWizard = ({
 		if (!targetPosition) return "Set a target position to continue.";
 		if (!minBid) return "Set a minimum bid to continue.";
 		if (belowFloor)
-			return "Raise the min bid to Blinkit's published floor to continue.";
-		if (!hasLocation)
+			return `Raise the min bid to ${mpName}'s published floor to continue.`;
+		if (!hasLocation && !locationOptional)
 			return "Choose where to measure position to continue.";
 		return null;
 	};
@@ -513,7 +558,43 @@ export const AutomationWizard = ({
 			})),
 		);
 
+	/**
+	 * Save, and SAY so when it fails (ZC-E11). The server's refusal — a duplicate rule, a
+	 * campaign of the wrong marketplace, a budget below the minimum — is the most specific
+	 * explanation available, so it is shown as sent. The wizard stays open on the summary
+	 * with everything still filled in, so the reader can fix it and save again.
+	 *
+	 * ⚠️ A campaign automation is several requests. If a later one fails, the earlier ones
+	 * have already landed (the schedule exists, some rules may too), and the message says so
+	 * rather than implying nothing happened.
+	 */
 	const submit = async () => {
+		setSaveError(null);
+		// Set once any request of a multi-request save has landed, so a later failure can say
+		// that part of the automation already exists.
+		const progress = { landed: false };
+		try {
+			await save(progress);
+			onClose();
+		} catch (err) {
+			// `lib/axios` rejects with `{ status, data }` — FastAPI's `detail` is a sentence
+			// for a refusal and a list of field errors for a 422.
+			const detail = err?.data?.detail;
+			const said =
+				typeof detail === "string"
+					? detail
+					: Array.isArray(detail)
+						? detail.map((d) => d.msg).join("; ")
+						: (err?.message ?? "The save failed.");
+			setSaveError(
+				progress.landed
+					? `${said} Part of this automation may already be saved — check the list before trying again.`
+					: said,
+			);
+		}
+	};
+
+	const save = async (progress) => {
 		if (kind === "campaign") {
 			const bodies = ruleBodies();
 			// "Stop Campaign" is a schedule flag, not a rule, so it is folded in here.
@@ -531,6 +612,7 @@ export const AutomationWizard = ({
 						stop_after_window: stopFlag,
 					},
 				});
+				progress.landed = true;
 				// A window removed from the cards is a rule that must actually go, or it keeps
 				// firing invisibly.
 				const kept = new Set(
@@ -559,6 +641,7 @@ export const AutomationWizard = ({
 					stop_after_window: stopFlag,
 					rule: first ?? null,
 				});
+				progress.landed = true;
 				for (const body of rest) {
 					await addRule.mutateAsync({
 						scheduleId: schedule.id,
@@ -595,7 +678,6 @@ export const AutomationWizard = ({
 				await createBid.mutateAsync(body);
 			}
 		}
-		onClose();
 	};
 
 	return (
@@ -622,7 +704,11 @@ export const AutomationWizard = ({
 						<h2 className="font-display text-lg font-semibold tracking-tight text-content">
 							{`${isEdit ? "Edit" : "Create"} ${kind === "campaign" ? "Campaign" : "Keyword"} Automation`}
 						</h2>
-						{isEdit && <ChannelBadge platform={editRow.platform} />}
+						{/* Which marketplace this saves to — on create too, where it is the
+						    navbar's choice and nothing else on the dialog says it. */}
+						<ChannelBadge
+							platform={isEdit ? editRow.platform : marketplace}
+						/>
 					</div>
 					<div className="flex gap-8">
 						{STEPS.map((label, i) => {
@@ -733,16 +819,24 @@ export const AutomationWizard = ({
 													null
 												}
 												keyword={keyword}
+												matchType={matchType}
 												onChange={({
 													campaign_id,
 													campaign_name,
 													keyword: kw,
+													match_type,
 												}) => {
 													setCampaign({
 														campaign_id,
 														name: campaign_name,
 													});
 													setKeyword(kw);
+													// Zepto's catalogue rows name their match
+													// type; Blinkit's picker rows do not, and
+													// the rule keeps the engine's default.
+													setMatchType(
+														match_type ?? "EXACT",
+													);
 													setPickerOpen(false);
 												}}
 											/>
@@ -765,6 +859,17 @@ export const AutomationWizard = ({
 															}
 														/>
 													</div>
+												)}
+												{/* A start/stop the queue refused to TAKE
+												    (409: one is already running) — no job,
+												    so the JobLine above has nothing to say. */}
+												{activationError && (
+													<p
+														role="alert"
+														className="mb-2 text-sm text-warning"
+													>
+														{activationError}
+													</p>
 												)}
 												<CampaignPickerList
 													selectedId={
@@ -804,28 +909,37 @@ export const AutomationWizard = ({
 										{kind === "campaign" && (
 											<Field
 												className="w-56"
-												label="Default daily budget (₹)"
+												label={`Default daily budget (₹)${
+													minDailyBudget != null
+														? ` · min ₹${minDailyBudget.toLocaleString("en-IN")}`
+														: ""
+												}`}
 												hint={`The campaign runs at this budget whenever none of your windows is open. It is the amount every window returns to when it ends.${
 													campaign?.name
 														? ` It applies to ${campaign.name}.`
 														: ""
 												}`}
 												note={
-													!campaign
-														? null
-														: currentBudget == null
-															? "Blinkit has not reported what this campaign runs at today, so there is no way to check what this is changing it from."
-															: Number(
-																		defaultBudget,
-																  ) ===
-																  currentBudget
-																? null
-																: `Today it runs at ₹${currentBudget.toLocaleString("en-IN")}. Saving this changes its everyday budget outside your windows too.`
+													belowMinBudget
+														? `${mpName} does not accept less than ₹${minDailyBudget.toLocaleString("en-IN")} a day.`
+														: !campaign
+															? null
+															: currentBudget ==
+																  null
+																? `${mpName} has not reported what this campaign runs at today, so there is no way to check what this is changing it from.`
+																: Number(
+																			defaultBudget,
+																	  ) ===
+																	  currentBudget
+																	? null
+																	: `Today it runs at ₹${currentBudget.toLocaleString("en-IN")}. Saving this changes its everyday budget outside your windows too.`
 												}
 												noteTone={
-													currentBudget != null &&
-													Number(defaultBudget) !==
-														currentBudget
+													belowMinBudget ||
+													(currentBudget != null &&
+														Number(
+															defaultBudget,
+														) !== currentBudget)
 														? "warn"
 														: "subtle"
 												}
@@ -957,6 +1071,8 @@ export const AutomationWizard = ({
 								) : (
 									<KeywordActionCard
 										keyword={keyword}
+										matchType={matchType}
+										locationOptional={locationOptional}
 										targetPosition={targetPosition}
 										onTargetPosition={setTargetPosition}
 										minBid={minBid}
@@ -977,9 +1093,7 @@ export const AutomationWizard = ({
 										regionType={ctx?.region_type ?? null}
 										singleCity={singleCity}
 										hasLocation={hasLocation}
-										existingLocationName={
-											existingLocation
-										}
+										existingLocationName={existingLocation}
 										isEdit={isEdit}
 										timing={timing}
 										onTiming={setTiming}
@@ -1060,18 +1174,28 @@ export const AutomationWizard = ({
 								</Button>
 							</div>
 						) : (
-							<Button
-								variant="brand"
-								className="px-8"
-								disabled={saving}
-								onClick={submit}
-							>
-								{saving
-									? "Saving…"
-									: isEdit
-										? "Save Changes"
-										: "Create Automation"}
-							</Button>
+							<div className="flex items-center gap-3">
+								{saveError && (
+									<span
+										role="alert"
+										className="max-w-xl text-sm text-danger"
+									>
+										{saveError}
+									</span>
+								)}
+								<Button
+									variant="brand"
+									className="px-8"
+									disabled={saving}
+									onClick={submit}
+								>
+									{saving
+										? "Saving…"
+										: isEdit
+											? "Save Changes"
+											: "Create Automation"}
+								</Button>
+							</div>
 						)}
 					</div>
 				</footer>

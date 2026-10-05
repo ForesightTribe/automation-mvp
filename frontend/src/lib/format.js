@@ -122,3 +122,22 @@ export const formatMeasuredAt = (locationName, cityName) => {
 		? store
 		: `${store}, ${city}`;
 };
+
+/**
+ * "Mon 22 Sep" from a YYYY-MM-DD.
+ *
+ * ⚠️ Built from the parts rather than `new Date(iso)`, which parses a bare date
+ * as UTC and can land on the previous day west of Greenwich — putting the wrong
+ * WEEKDAY on the label, which is the one thing this format exists to carry.
+ */
+const WEEKDAY = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+export const formatDayLabel = (iso) => {
+	const [y, m, d] = String(iso).slice(0, 10).split("-").map(Number);
+	if (!y || !m || !d) return "";
+	const date = new Date(y, m - 1, d);
+	return `${WEEKDAY[date.getDay()]} ${date.toLocaleDateString("en-IN", {
+		day: "numeric",
+		month: "short",
+	})}`;
+};

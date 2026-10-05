@@ -9,6 +9,7 @@ not once per search.
 `scraper.py` returns raw extracted fields; `parser.py` types/classifies them.
 """
 import asyncio
+import re
 from typing import Any
 from urllib.parse import urlparse, parse_qs
 
@@ -126,8 +127,10 @@ _FETCH_JS = """async ({url, h, b, timeoutMs}) => {
             return {status: r.status, body: JSON.parse(text)};
         } catch (_) {
             // Non-JSON body: almost always a Cloudflare/HTML challenge. Keep the
-            // real HTTP status so the retry loop + logs see it for what it is.
-            return {status: r.status, body: null, error: "non-JSON body (Cloudflare?)"};
+            // real HTTP status so the retry loop + logs see it for what it is, and the
+            // head of the page, whose <title> says which Cloudflare page it was.
+            return {status: r.status, body: null, error: "non-JSON body (Cloudflare?)",
+                    head: text.slice(0, 600)};
         }
     } catch (e) {
         return {status: 0, body: null, error: e.toString()};
@@ -147,9 +150,49 @@ _RETRY_DELAYS = (0.5, 1.5, 3.0)
 _FETCH_TIMEOUT_S = 20.0
 
 
-async def in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dict:
+def classify(resp: dict) -> str:
+    """What an in-page fetch's answer was: `ok`, a block (`rate` / `challenge` /
+    `forbidden`, see endpoints.py), or `error` (a transport failure or an ordinary
+    non-200 — not something to wait out).
+
+    A non-JSON body is Cloudflare's page standing in for Blinkit's: whatever its status
+    (403 and 503 in practice, a 200 interstitial too), the session's clearance is no
+    longer accepted."""
+    status = resp.get("status") or 0
+    if status == 200 and resp.get("body") is not None:
+        return "ok"
+    if status == 429:
+        return "rate"
+    if status and resp.get("body") is None and "non-JSON" in (resp.get("error") or ""):
+        return "challenge"
+    if status == 403:
+        return "forbidden"
+    return "error"
+
+
+_TITLE = re.compile(r"<title[^>]*>(.*?)</title>", re.I | re.S)
+
+
+def _detail(resp: dict) -> str:
+    """`HTTP 403 · Just a moment...` — the status plus, for a Cloudflare page, its title."""
+    out = f"HTTP {resp.get('status')}"
+    m = _TITLE.search(resp.get("head") or "")
+    if m:
+        out += f" · {' '.join(m.group(1).split())[:80]}"
+    elif resp.get("error"):
+        out += f" · {resp['error']}"
+    return out
+
+
+async def in_page_fetch(page, url: str, headers: dict, body: dict | None,
+                        retry_blocks: bool = True) -> dict:
     """In-page fetch with a hard per-attempt timeout + retry/backoff on transient
     failures. Returns on the first 200; otherwise the last response after retries.
+
+    `retry_blocks=False` returns a BLOCK (see `classify`) at once instead of re-sending
+    it three times within ~5 s — the public scrapes' worker pools pass that (through their
+    session) and wait the block out properly (`block_remedy`). The default keeps the old
+    behaviour for the campaign manager's position checks, which have no such machinery.
 
     PUBLIC on purpose: the campaign manager's live-position scrape calls this too. It is
     the one place that knows how to get a request past Cloudflare (in-page fetch on a
@@ -174,6 +217,8 @@ async def in_page_fetch(page, url: str, headers: dict, body: dict | None) -> dic
         # A 200 with a non-JSON body (Cloudflare challenge) is not a real result —
         # keep retrying rather than accepting it as an empty page.
         if resp.get("status") == 200 and resp.get("body") is not None:
+            return resp
+        if not retry_blocks and classify(resp) in ep.BLOCK_KINDS:
             return resp
     return resp
 
@@ -283,8 +328,40 @@ async def open_session(pw, lat: float, lon: float) -> dict | None:
 
 async def open_context_session(browser, lat: float, lon: float) -> dict | None:
     """One session as an isolated context on a SHARED browser (the concurrent
-    pool). Does not own the browser — close_session() only closes the context."""
-    return await _make_session(browser, lat, lon)
+    pool). Does not own the browser — close_session() only closes the context.
+
+    Pool sessions hand blocks straight back (`retry_blocks=False`): the orchestrators
+    wait them out by kind (`block_remedy`), which beats re-sending them at once."""
+    session = await _make_session(browser, lat, lon)
+    if session:
+        session["retry_blocks"] = False
+    return session
+
+
+def block_remedy(kind: str, streak: int) -> tuple[float, bool]:
+    """How to meet a Blinkit block: (seconds to wait, open a new session?).
+
+    `streak` is how many blocks in a row this worker has hit, this one included. Handed
+    to the orchestrators through `providers.Provider.block_remedy`:
+
+        rate (429)       too fast, right now          wait, SAME session
+        challenge        Cloudflare's page, not JSON  NEW session at once (stale clearance)
+        forbidden (403)  refused, JSON body           wait, then a new session
+
+    A new session costs a homepage load and a warm-up search, so it is the last resort
+    rather than the reflex. Blocks that keep coming walk RECOVERY_WAITS_S, and from the
+    end of the ladder a new session as well. ⚠️ Unmeasured — see endpoints.py.
+    """
+    ladder = ep.RECOVERY_WAITS_S
+    step = float(ladder[min(streak - 1, len(ladder) - 1)])
+    worn = streak >= len(ladder)
+    if kind == "rate":
+        return (ep.RATE_PAUSE_S if streak == 1 else step), worn
+    if kind == "challenge":
+        return (0.0 if streak == 1 else step), True
+    if kind == "forbidden":
+        return (ep.FORBIDDEN_PAUSE_S if streak == 1 else step), True
+    return step, True
 
 
 async def close_session(session: dict) -> None:
@@ -322,8 +399,15 @@ async def search(
     `distinct_ad_slots` decides whether a product's sponsored and organic placements
     are two rows or one — see the dedupe loop below.
 
-    Returns {products, total_results, merchant_id, ok, error}; `ok` is False when
-    the first fetch didn't return 200, `error` carries a short reason.
+    Returns {products, total_results, merchant_id, ok, error, blocked, kind, truncated}.
+    `ok` is False when the FIRST page did not come back; `blocked`/`kind` say whether a
+    failed page was a block (see `classify`); `truncated` says a LATER page failed, so
+    `products` is the head of the list, not all of it.
+
+    ⚠️ `truncated` rows must not be stored as a search result: share of voice and rank
+    are computed over the whole list, and a list cut at 12 of 36 states both wrongly
+    with nothing to show it. The public orchestrators treat it as a failure (and retry);
+    the campaign manager's stock read keeps using what it got, as it always has.
     """
     page = session["page"]
     headers = session["headers"]
@@ -335,6 +419,7 @@ async def search(
     total_results: int | None = None
     ok = False
     error = ""
+    blocked, kind, truncated = False, "ok", False
     url: str | None = ep.first_search_url(keyword)
     body: dict | None = ep.SEARCH_BODY
     requested: set[str] = set()
@@ -355,10 +440,16 @@ async def search(
         pages += 1
         before = len(products)
 
-        resp = await in_page_fetch(page, url, headers, body)
-        if resp.get("status") != 200 or resp.get("body") is None:
-            err_txt = resp.get("error", "")
-            error = f"HTTP {resp.get('status')}" + (f" · {err_txt}" if err_txt else "")
+        resp = await in_page_fetch(page, url, headers, body,
+                                   retry_blocks=session.get("retry_blocks", True))
+        kind = classify(resp)
+        if kind != "ok":
+            error = _detail(resp)
+            blocked = kind in ep.BLOCK_KINDS
+            # A page AFTER the first failed: what we hold is the head of the list.
+            truncated = ok
+            if truncated:
+                error = f"page {pages} failed after {len(products)} products — {error}"
             logger.debug(f"Blinkit search '{keyword}': {error}")
             break
         ok = True
@@ -426,7 +517,9 @@ async def search(
         if p.get("position") is None:
             p["position"] = i
     return {"products": products, "total_results": total_results,
-            "merchant_id": _express_merchant(products), "ok": ok, "error": error}
+            "merchant_id": _express_merchant(products), "ok": ok, "error": error,
+            "blocked": blocked, "kind": "ok" if not error else kind,
+            "truncated": truncated}
 
 
 def _express_merchant(products: list[dict]) -> str:

@@ -1,4 +1,5 @@
 import { useState } from "react";
+import { useAuth } from "../../../context/AuthContext";
 import { Button } from "../../../components/ui/Button";
 import { formatCurrency } from "../../../lib/format";
 import { AddBudgetRuleForm } from "./AddBudgetRuleForm";
@@ -17,7 +18,7 @@ import { DateWindow, TimeRange, WeekPills, timingOf } from "./TimingDisplay";
 import { describeTiming } from "./TimingFields";
 
 /** One scheduled window inside an automation: its budget, when it runs, and its bounds. */
-const WindowRow = ({ rule, onEdit, onRemove }) => {
+const WindowRow = ({ rule, onEdit, onRemove, canWrite = true }) => {
 	const t = timingOf(rule);
 	return (
 		<li
@@ -46,10 +47,10 @@ const WindowRow = ({ rule, onEdit, onRemove }) => {
 				)}
 			</span>
 			<span className="flex shrink-0 items-center gap-3 md:justify-end">
-				<Action tone="primary" onClick={onEdit}>
+				<Action tone="primary" disabled={!canWrite} onClick={onEdit}>
 					Edit
 				</Action>
-				<Action tone="danger" onClick={onRemove}>
+				<Action tone="danger" disabled={!canWrite} onClick={onRemove}>
 					Remove
 				</Action>
 			</span>
@@ -70,6 +71,8 @@ export const BudgetScheduleRow = ({
 	onDelete,
 	onDeleteRule,
 }) => {
+	// Budget automations change live spend, so members see them read-only.
+	const { isAdmin } = useAuth();
 	const [open, setOpen] = useState(false);
 	const [mode, setMode] = useState(null); // null | "schedule" | "add" | rule.id
 
@@ -168,6 +171,7 @@ export const BudgetScheduleRow = ({
 					<Button
 						size="sm"
 						variant="secondary"
+						disabled={!isAdmin}
 						onClick={() => openWith("add")}
 					>
 						+ Window
@@ -175,6 +179,7 @@ export const BudgetScheduleRow = ({
 					<Button
 						size="sm"
 						variant="ghost"
+						disabled={!isAdmin}
 						onClick={() => openWith("schedule")}
 					>
 						Edit
@@ -217,6 +222,7 @@ export const BudgetScheduleRow = ({
 										rule={r}
 										onEdit={() => setMode(r.id)}
 										onRemove={() => onDeleteRule(r.id)}
+										canWrite={isAdmin}
 									/>
 								),
 							)}
@@ -243,21 +249,28 @@ export const BudgetScheduleRow = ({
 						<div className="mt-3 flex flex-wrap items-center gap-x-5 gap-y-2 border-t border-border/70 pt-3">
 							<Action
 								tone="primary"
+								disabled={!isAdmin}
 								onClick={() => setMode("add")}
 							>
 								+ Window
 							</Action>
-							<Action onClick={() => setMode("schedule")}>
+							<Action
+								onClick={() => setMode("schedule")}
+								disabled={!isAdmin}
+							>
 								Edit schedule
 							</Action>
 							<Action
 								onClick={() => onReset(schedule.id)}
-								disabled={schedule.state !== "active"}
+								disabled={
+									!isAdmin || schedule.state !== "active"
+								}
 							>
 								Reset
 							</Action>
 							<span className="ml-auto">
 								<ConfirmDelete
+									disabled={!isAdmin}
 									onConfirm={() => onDelete(schedule.id)}
 								>
 									Delete automation

@@ -17,6 +17,12 @@ doc assumes away**: it cannot refresh, and it permits only one session per user.
 covered where they bite: [Where logins run](#where-logins-run-and-when) and the ladder
 below. Required **no CLI changes** — the registry design absorbed it.
 
+**Blinkit seller-hub added 2026-09-30/10-01, slug `blinkit_seller_new`.** The account's
+own migration off `partnersbiz.com`, not a new marketplace — see "Blinkit seller (NEW)"
+below, right after the `partnersbiz.com` section. Breaks the "both Blinkit dashboards log
+in over plain HTTP with no browser" claim above: this one needs a real browser for
+EVERYTHING, login included, not just the data calls the rest of this doc is scoped to.
+
 ---
 
 ## The finding that shaped this
@@ -81,6 +87,57 @@ card on an "account selection" screen; that selection is pure client state
 
 > **Header spelling differs by service and both are load-bearing:** login calls send
 > `app_client: partnersbiz-web`, data calls `partnerbiz-web` (the typo is Blinkit's).
+
+### Blinkit seller (NEW) — `seller.blinkit.com/seller-hub`
+
+Not a new marketplace — the **same account** migrated off `partnersbiz.com` onto
+Blinkit's new seller portal (Sereko, confirmed migrated 2026-09-29; Dobra and Brik
+Oven are both still on the old domain — migration is per-account, not platform-wide).
+Distinct slug `blinkit_seller_new`, not a repoint of `blinkit_seller`, because the two
+domains are different applications with nothing in common except the brand:
+
+```
+(driven through a real, visible page — see below, not a REST sequence)
+Click "Login" -> fill email -> click "Send OTP"      -> POST .../send_otp
+Fill the 6 OTP digit boxes (auto-submits on the 6th,
+  no visible submit button)                          -> POST .../verify_otp
+   -> access_token/refresh_token + cookies: access_token, refresh_token,
+      user_id, seller_id, device_id
+```
+
+**Everything about this domain is unlike the other two above.** Cloudflare bot
+management fingerprints the connection itself, not just request headers — verified
+twice (2026-09-29 and 2026-09-30): the bare login page 403s over plain httpx before
+any API call, and replaying a live session's FIVE real calls with their exact browser
+headers (including the real Cookie header) still 403s every time. So login, probe, and
+every data call all drive a real Chromium page — there is no REST shortcut anywhere on
+this domain, unlike `blinkit_seller`/marketing above.
+
+**The credential is the session's `storage_state` (cookies), not the specific profile
+folder it came from — corrected 2026-10-01.** An earlier pass concluded the opposite,
+based only on testing plain httpx (which fails regardless of cookie validity — see
+above). Never actually tested with a real, even if freshly-launched, browser context.
+Live-tested directly: cookies lifted from a working persistent profile, injected into a
+brand-new never-used profile, still reached `/dashboard` with no OTP needed. So
+`probe()` and the sales scraper (`scraper/platforms/blinkit/dashboard_data/seller_hub/`)
+both launch a FRESH, non-persistent context seeded with `AuthSession.storage_state`,
+rather than reopening one specific disk folder — confirmed working even with that
+folder renamed out of existence. The only place the persistent profile
+(`_seller_new_profiles/<email>/`, gitignored) still matters is the OTP login itself,
+which needs a real returning-device history to clear Cloudflare's first-contact
+challenge.
+
+**No known refresh endpoint**, unlike `partnersbiz.com`'s `tokens/rotate` — `refresh` is
+not implemented, the registry marks this `refreshable=False`, and `ensure()` falls back
+to a full browser login (a fresh OTP) whenever the stored session goes stale.
+
+Once past login, the SPA's own `fetch()` calls — not raw httpx, but also not a UI click
+for every value — **do work from inside the authenticated page**, with four headers a
+hand-built fetch doesn't normally send: `access_token` (as a header, not just the
+cookie), `app_client`, `x-api-key`, `x-gr-seller-id`. This is what the whole sales
+scraper is built on; see that module's own docstring for the full story (two earlier
+false starts wrongly concluded fetch never works here at all, based on testing a
+different set of endpoints during this auth module's own development).
 
 ## Session lifetime — why sessions kept dying
 
@@ -238,9 +295,24 @@ on demand if the scheduled login fails. But it *is* a real exception — one ema
 single-use secret burned per day, per tenant. **Do not extend `auth.login` to a platform
 that can refresh.**
 
-⚠️ **`auth.login` for Zepto stays DISABLED until the client provisions a service user.**
-Single-session eviction means a nightly login logs the client's own team out of their
-dashboard. Build it, schedule it `--disabled`, enable it when the account is ours.
+⚠️ **Updated 2026-09-21 — there will be no service user, and the client accepts being
+logged out.** So a missed action now counts as worse than an eviction, and Zepto jobs log in
+whenever they have to:
+
+* **At job start** — `ensure()` probes the stored session and logs in if it is dead (always
+  was so).
+* **Mid-run, on a 401** (`campaign_manager/marketplaces/zepto/transport.py`) — first ADOPT a
+  fresher session another job already saved (Zepto's jobs share one login, so one job's
+  login revokes the others' tokens; adopting costs no login and evicts nobody); otherwise LOG
+  IN and resend once. Writes included: a 401 is rejected before Zepto processes anything, so
+  resending cannot double-apply.
+* **Bounds that remain:** `MAX_REAUTH_PER_RUN = 2` (one job cannot loop) and the circuit
+  breaker (3 consecutive FAILED logins stop all logins). The old 30-minute cross-run floor is
+  **off by default** (`CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS=0`); set it to bring it back.
+* **Cost:** anyone in the Zepto dashboard during a bid window is logged out on each tick,
+  and each login mails an OTP.
+
+The daily `auth.login` schedule may now be enabled; its timing is Deepansh's call.
 
 **Everything runs on the VM.** Both logins are now plain HTTP that Render *could* make,
 but shouldn't: Blinkit is India-geo, so a login from Render's US IP shortly before the
@@ -334,12 +406,24 @@ python -m cli auth platforms                              # registry + wiring st
 python -m cli auth login blinkit -t <uuid> [--email x] [--manual]
 python -m cli auth refresh blinkit -t <uuid>              # no email needed
 python -m cli auth probe blinkit -t <uuid>                # is it actually alive?
-python -m cli auth status -t <uuid>                       # all platforms + health
+python -m cli auth status -t <uuid>                       # all platforms + health + logins in the last 24 h
 ```
+
+`logins 24h` (2026-09-23) counts full logins in the last day, from a 7-day history kept inside
+the encrypted session envelope (`__logins`, carried forward by `store.save()` — no column, no
+migration). On Zepto each login evicts the client's dashboard, and since the 30-minute re-login
+floor was removed a job that keeps losing its session would do so repeatedly while every login
+SUCCEEDS, so the circuit breaker never trips. Above `AUTH_LOGINS_PER_DAY_WARN` (4) `save()` logs a
+warning and `status` shows the count in red.
 
 `auth blinkit` / `auth blinkit-seller` still work as aliases. **First login for a tenant
 should be `--manual`** — it captures the address and is where anything unexpected
 surfaces; every later one can be automatic.
+
+`blinkit_seller_new` (the seller-hub domain, see above) uses the same commands with that
+slug — `cli auth login blinkit_seller_new -t <uuid>`, `cli auth probe blinkit_seller_new
+-t <uuid>`. No `refresh`: it isn't implemented for this domain, so `refresh` is a no-op
+here and `ensure()` does a fresh browser login instead whenever the session goes stale.
 
 ## Credentials — per tenant, per platform
 

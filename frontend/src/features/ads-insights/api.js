@@ -13,15 +13,6 @@ export * from "../ads/api";
 import { api } from "../../lib/axios";
 
 /**
- * Campaign actions, reached through the Campaign Manager endpoints the Automations page
- * uses. Declared here rather than imported from that feature: an endpoint is a contract we
- * may both call, whereas another feature's internals are not ours to depend on.
- *
- * Both ENQUEUE a job and return its id; nothing has happened when the promise resolves.
- */
-const cm = (clientId) => `/clients/${clientId}/campaign-manager`;
-
-/**
  * One page of keyword rows for CURRENT campaigns only (`recent_only`).
  *
  * The keyword table groups every row by search term in the browser, so it needs them all,
@@ -44,8 +35,18 @@ export const getKeywordRowsPage = (clientId, { marketplaces, page, limit }) =>
 		},
 	});
 
-export const setCampaignActivation = (clientId, campaignId, status) =>
-	api.post(`${cm(clientId)}/campaigns/${campaignId}/activation`, { status });
-
-export const setCampaignBudget = (clientId, campaignId, budget) =>
-	api.post(`${cm(clientId)}/set-budget`, { campaign_id: campaignId, budget });
+/**
+ * Every campaign's spend per day over [start, end], for the days it spent — the
+ * budget-utilisation views' data in ONE request. They used to call `/ads/campaigns` once
+ * per day (up to 31), each holding a pooled API connection (2026-09-25).
+ */
+export const getCampaignsDaily = (clientId, { start, end, marketplaces }) =>
+	api.get(`/clients/${clientId}/ads/campaigns/daily`, {
+		params: {
+			start,
+			end,
+			marketplaces: marketplaces?.length
+				? marketplaces.join(",")
+				: undefined,
+		},
+	});

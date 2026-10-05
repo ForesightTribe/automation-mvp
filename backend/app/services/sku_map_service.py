@@ -1,12 +1,21 @@
 """Build and maintain `sku_map`: private `item_id` ↔ public `platform_product_id`.
 
-The two Blinkit id systems share no key (verified: seller item_id is 8-digit, the
-consumer product_id is 6-digit, zero overlap, and the consumer API exposes no UPC),
-so the bridge is built by NORMALIZED NAME matching. Private names carry a container
-suffix "(PET Bottle)"/"(Cup)" the public ones don't, and public combos carry
-"- Pack of N" markers, so normalization strips parentheticals and non-alphanumerics
-but keeps pack markers — that way a private single maps to a public single and never
-to a multipack. Whatever doesn't auto-resolve is left for manual confirmation.
+The private/public id systems share no key on any marketplace (verified for
+Blinkit: seller item_id is 8-digit, the consumer product_id is 6-digit, zero
+overlap, and the consumer API exposes no UPC), so the bridge is built by
+NORMALIZED NAME matching. Private names carry a container suffix "(PET
+Bottle)"/"(Cup)" the public ones don't, and public combos carry "- Pack of N"
+markers, so normalization strips parentheticals and non-alphanumerics but
+keeps pack markers — that way a private single maps to a public single and
+never to a multipack. Whatever doesn't auto-resolve is left for manual
+confirmation.
+
+Everything — private-SKU gathering, the public-name index, matching, and the
+`sku_map` row itself — is scoped per `mp_slug`. A tenant selling the same
+product on two marketplaces has two different private ids and two different
+public listings for it; without the per-marketplace scope an Instamart SKU
+can match a Zepto listing of the same product name and the two would fight
+over one row (see the c7f2a9d13e56 migration).
 """
 import re
 import uuid
@@ -15,6 +24,8 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.blinkit_seller import BlinkitSellerSale
+from app.models.blinkit_seller_hub import BlinkitSellerHubSalesOrderRO
+from app.models.instamart_seller import InstamartSellerStoreDaily
 from app.models.zepto_seller import ZeptoSellerSales
 from app.models.search import SkuMap, SkuSnapshot
 from app.models.tenant import TenantWatchlist
@@ -46,105 +57,144 @@ async def _own_aliases(session: AsyncSession, tenant_id: uuid.UUID) -> set[str]:
     return {a for a in aliases if a}
 
 
-async def build_map(session: AsyncSession, tenant_id: uuid.UUID) -> dict:
-    """Auto-match own private items to public products by normalized name, upserting
-    `sku_map`. Preserves existing `manual` mappings. Returns a report."""
-    aliases = await _own_aliases(session, tenant_id)
+async def _private_skus(
+    session: AsyncSession, tenant_id: uuid.UUID
+) -> dict[str, list[tuple[str, str]]]:
+    """Own private (item_id, name) pairs, grouped by `mp_slug`. Each marketplace's
+    seller dashboard has its own disjoint id system — Zepto's calls Artisinal
+    Sourdough `5e4a9b9b-…` on the seller side and `06d0fc37-…` on the shopper
+    side, same as Blinkit's 8-digit vs 6-digit split — so the source table, not
+    the id shape, is what determines `mp_slug` here.
 
-    # Private items (own only — filter out other brands the seller also stocks).
-    priv = (await session.execute(
+    Blinkit is TWO source tables under the one "blinkit" slug — BlinkitSellerSale
+    (partnersbiz.com, the old domain) and BlinkitSellerHubSalesOrderRO
+    (seller.blinkit.com/seller-hub, e.g. Sereko). A tenant is only ever on one
+    domain, so in practice exactly one of the two queries returns rows for any
+    given tenant — concatenating them is safe, never a collision. Added
+    2026-10-01: until this, a seller-hub tenant's items were invisible to
+    build_map entirely, since this function never looked at their table.
+    """
+    blinkit_old = (await session.execute(
         select(BlinkitSellerSale.item_id, BlinkitSellerSale.item_name)
         .where(BlinkitSellerSale.tenant_id == tenant_id)
         .distinct()
     )).all()
 
-    # Zepto's private ids live in their own table, and its id systems are just as
-    # disjoint as Blinkit's: the seller dashboard calls Artisinal Sourdough
-    # `5e4a9b9b-…` while the shopper app calls it `06d0fc37-…`. Same table, same
-    # name-matching — only the source of the private list differs.
-    #
-    # `sku_map` carries no marketplace column, so a tenant selling on BOTH
-    # marketplaces would have the two fight over one row per item_id. No tenant
-    # does today; adding `mp_slug` is the fix when one does.
-    priv = [
-        *priv,
-        *(await session.execute(
-            select(
-                ZeptoSellerSales.product_variant_id,
-                # `product_name`, NOT `sku_name`. sku_name carries the pack
-                # ("… 400.0 GRAM") which the public listing omits, so matching on
-                # it fails every row. product_name is already the pack-free form
-                # the shopper app uses, so the two normalise identically.
-                ZeptoSellerSales.product_name,
-            )
-            .where(ZeptoSellerSales.tenant_id == tenant_id)
-            .distinct()
-        )).all(),
-    ]
-    own_priv = [
-        (str(iid), name) for iid, name in priv
-        if any(a in (name or "").lower() for a in aliases)
-    ]
-
-    # Public products, indexed by normalized name (prefer singles over combos).
-    pub = (await session.execute(
-        select(
-            SkuSnapshot.platform_product_id,
-            SkuSnapshot.product_name,
-            SkuSnapshot.is_combo,
-        ).where(SkuSnapshot.tenant_id == tenant_id).distinct()
+    blinkit_new = (await session.execute(
+        select(BlinkitSellerHubSalesOrderRO.item_id, BlinkitSellerHubSalesOrderRO.product_name)
+        .where(BlinkitSellerHubSalesOrderRO.tenant_id == tenant_id)
+        .distinct()
     )).all()
-    by_norm: dict[str, list[tuple]] = {}
-    for pid, name, is_combo in pub:
-        by_norm.setdefault(_norm(name), []).append((pid, name, is_combo))
+
+    zepto = (await session.execute(
+        select(
+            ZeptoSellerSales.product_variant_id,
+            # `product_name`, NOT `sku_name`. sku_name carries the pack
+            # ("… 400.0 GRAM") which the public listing omits, so matching on
+            # it fails every row. product_name is already the pack-free form
+            # the shopper app uses, so the two normalise identically.
+            ZeptoSellerSales.product_name,
+        )
+        .where(ZeptoSellerSales.tenant_id == tenant_id)
+        .distinct()
+    )).all()
+
+    instamart = (await session.execute(
+        select(InstamartSellerStoreDaily.item_code, InstamartSellerStoreDaily.product_name)
+        .where(InstamartSellerStoreDaily.tenant_id == tenant_id)
+        .distinct()
+    )).all()
+
+    return {
+        "blinkit": (
+            [(str(iid), name) for iid, name in blinkit_old]
+            + [(str(iid), name) for iid, name in blinkit_new]
+        ),
+        "zepto": [(str(iid), name) for iid, name in zepto],
+        "instamart": [(str(iid), name) for iid, name in instamart],
+    }
+
+
+async def build_map(session: AsyncSession, tenant_id: uuid.UUID) -> dict:
+    """Auto-match own private items to public products by normalized name, upserting
+    `sku_map`. Preserves existing `manual` mappings. Matching is scoped per
+    `mp_slug` end to end: a marketplace's private SKUs are only ever compared
+    against that SAME marketplace's public listings, so two marketplaces selling
+    a product under the same name can't cross-match. Returns a report."""
+    aliases = await _own_aliases(session, tenant_id)
+    priv_by_mp = await _private_skus(session, tenant_id)
 
     existing = {
-        m.item_id: m
+        (m.mp_slug, m.item_id): m
         for m in (await session.execute(
             select(SkuMap).where(SkuMap.tenant_id == tenant_id)
         )).scalars().all()
     }
 
     matched = unmatched = preserved = 0
+    private_own_items = 0
     now = now_ist()
-    for item_id, item_name in own_priv:
-        cur = existing.get(item_id)
-        if cur and cur.match_method == "manual":
-            preserved += 1
-            continue
 
-        cands = by_norm.get(_norm(item_name), [])
-        singles = [c for c in cands if not c[2]]
-        pick = None
-        if len(singles) == 1:
-            pick = singles[0]
-        elif len(cands) == 1:
-            pick = cands[0]
+    for mp_slug, priv in priv_by_mp.items():
+        own_priv = [
+            (str(iid), name) for iid, name in priv
+            if any(a in (name or "").lower() for a in aliases)
+        ]
+        private_own_items += len(own_priv)
 
-        pid = pick[0] if pick else None
-        pname = pick[1] if pick else ""
-        if pid:
-            matched += 1
-        else:
-            unmatched += 1
+        # Public products for THIS marketplace only, indexed by normalized name
+        # (prefer singles over combos).
+        pub = (await session.execute(
+            select(
+                SkuSnapshot.platform_product_id,
+                SkuSnapshot.product_name,
+                SkuSnapshot.is_combo,
+            )
+            .where(SkuSnapshot.tenant_id == tenant_id, SkuSnapshot.mp_slug == mp_slug)
+            .distinct()
+        )).all()
+        by_norm: dict[str, list[tuple]] = {}
+        for pid, name, is_combo in pub:
+            by_norm.setdefault(_norm(name), []).append((pid, name, is_combo))
 
-        if cur:
-            cur.platform_product_id = pid
-            cur.item_name = item_name
-            cur.product_name = pname
-            cur.match_method = "auto" if pid else ""
-            cur.confidence = 1.0 if pid else None
-            cur.updated_at = now
-        else:
-            session.add(SkuMap(
-                tenant_id=tenant_id, item_id=item_id, platform_product_id=pid,
-                item_name=item_name, product_name=pname,
-                match_method="auto" if pid else "", confidence=1.0 if pid else None,
-            ))
+        for item_id, item_name in own_priv:
+            cur = existing.get((mp_slug, item_id))
+            if cur and cur.match_method == "manual":
+                preserved += 1
+                continue
+
+            cands = by_norm.get(_norm(item_name), [])
+            singles = [c for c in cands if not c[2]]
+            pick = None
+            if len(singles) == 1:
+                pick = singles[0]
+            elif len(cands) == 1:
+                pick = cands[0]
+
+            pid = pick[0] if pick else None
+            pname = pick[1] if pick else ""
+            if pid:
+                matched += 1
+            else:
+                unmatched += 1
+
+            if cur:
+                cur.platform_product_id = pid
+                cur.item_name = item_name
+                cur.product_name = pname
+                cur.match_method = "auto" if pid else ""
+                cur.confidence = 1.0 if pid else None
+                cur.updated_at = now
+            else:
+                session.add(SkuMap(
+                    tenant_id=tenant_id, mp_slug=mp_slug, item_id=item_id,
+                    platform_product_id=pid, item_name=item_name, product_name=pname,
+                    match_method="auto" if pid else "", confidence=1.0 if pid else None,
+                ))
 
     await session.commit()
     return {
-        "private_own_items": len(own_priv),
+        "private_own_items": private_own_items,
         "matched": matched,
         "unmatched": unmatched,
         "preserved_manual": preserved,
@@ -158,20 +208,23 @@ async def list_map(session: AsyncSession, tenant_id: uuid.UUID) -> list[SkuMap]:
 
 
 async def apply_corrections(
-    session: AsyncSession, tenant_id: uuid.UUID, pairs: list[tuple[str, str]]
+    session: AsyncSession, tenant_id: uuid.UUID, triples: list[tuple[str, str, str]]
 ) -> dict:
-    """Set `platform_product_id` (method='manual') for the given (item_id,
-    platform_product_id) pairs — the human-confirmed corrections. Fills
-    `product_name` from the public snapshot where available."""
+    """Set `platform_product_id` (method='manual') for the given (mp_slug, item_id,
+    platform_product_id) triples — the human-confirmed corrections. Fills
+    `product_name` from that SAME marketplace's public snapshot where available —
+    scoped for the same reason `build_map` is: two marketplaces can list a
+    product under an identical name, and an unscoped lookup would happily
+    label a correction with the wrong marketplace's product."""
     pub = {
-        str(pid): name
-        for pid, name in (await session.execute(
-            select(SkuSnapshot.platform_product_id, SkuSnapshot.product_name)
+        (mp, str(pid)): name
+        for mp, pid, name in (await session.execute(
+            select(SkuSnapshot.mp_slug, SkuSnapshot.platform_product_id, SkuSnapshot.product_name)
             .where(SkuSnapshot.tenant_id == tenant_id).distinct()
         )).all()
     }
     existing = {
-        m.item_id: m
+        (m.mp_slug, m.item_id): m
         for m in (await session.execute(
             select(SkuMap).where(SkuMap.tenant_id == tenant_id)
         )).scalars().all()
@@ -179,21 +232,22 @@ async def apply_corrections(
 
     applied = 0
     now = now_ist()
-    for item_id, pid in pairs:
+    for mp_slug, item_id, pid in triples:
         item_id, pid = str(item_id), (str(pid) if pid else None)
         if not pid:
             continue
-        cur = existing.get(item_id)
+        cur = existing.get((mp_slug, item_id))
         if cur:
             cur.platform_product_id = pid
-            cur.product_name = pub.get(pid, cur.product_name)
+            cur.product_name = pub.get((mp_slug, pid), cur.product_name)
             cur.match_method = "manual"
             cur.confidence = None
             cur.updated_at = now
         else:
             session.add(SkuMap(
-                tenant_id=tenant_id, item_id=item_id, platform_product_id=pid,
-                product_name=pub.get(pid, ""), match_method="manual",
+                tenant_id=tenant_id, mp_slug=mp_slug, item_id=item_id,
+                platform_product_id=pid,
+                product_name=pub.get((mp_slug, pid), ""), match_method="manual",
             ))
         applied += 1
 

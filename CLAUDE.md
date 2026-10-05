@@ -21,7 +21,7 @@
 | [docs/exports.md](docs/exports.md)                                 | **Exports — public report SHIPPED 2026-08-10** (Phases 1–3). `python -m cli export public -t <uuid>` builds a 13-sheet client workbook from stored data; **`export raw` dumps the underlying rows to CSV as a SEPARATE command** (~300k rows/79 MB per week — deliberately never bundled into the report, so the future download button stays small); `export sample` renders a fixture with no DB; `export sections` lists what's buildable. `backend/exports/` (top-level package, sibling of `jobs/`) = theme + workbook (**the one Excel writer — Explorer renders through it too**) + glossary (wording **guard**, raises at render on "reach"/"distribution"/"SoV", for every consumer) + registry + sections. Numbers come from the read services, never new SQL (one documented exception: Product Families projects `_latest_per_store` for family×store grain). Doc covers the design system, clarity rules, gotchas, phases. Artifacts land in `backend/out/` (gitignored). **Marketing/Ads + Sales/Ops reports are PLANNED** in the doc (two reports, Indian ₹ grouping, 28-day window, KPI deltas; Sales report will delete `export_to_excel.py`). Legacy `build_public_analysis.py`/`build_sku_analysis.py` deleted                    |
 | [docs/per-unit-price.md](docs/per-unit-price.md)                   | **Per-unit price** (shipped 2026-07-24) — parse Blinkit's `unit` string into pack_size/uom/count, derive ₹/100 ml·100 g·piece; supersedes `grammage`; `is_combo` from `pack_count`                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                   |
 | [docs/platform-auth.md](docs/platform-auth.md)                     | **Platform auth** — logging in to marketplace dashboards. Both Blinkit logins are browserless REST; session synthesis, the 7-day expiry gate, the `platform_auth/` layout, inbox reader, CLI                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                         |
-| [docs/onboarding.md](docs/onboarding.md)                           | **Onboarding — self-serve marketplace connections (built, not merged)** — the admin-only Settings modal that captures a brand's marketplace login and starts the login job (forwarding is arranged by hand; the UI shows no address). The API surface (first use of `require_admin` on any route), why disconnect deletes the credentials too, and the known gaps: tenant separation resting on the login email, the login job that cannot be polled, no rate limit, forwarding scope                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                |
+| [docs/onboarding.md](docs/onboarding.md)                           | **Onboarding a new brand — THE checklist.** Step-by-step with exact commands: account/tenant/users, mail forwarding, marketplace credentials + login + probe, `config.xlsx` + `cli sync`, schedules (with `--catchup` where needed), first runs, SKU map, Campaign Manager (**advertiser id capture + cross-check**, sync-campaigns, dry-run → `cm arm`), final checks + common failures. Ends with the Settings UI (Connect modal, on `dev`), its API, and known gaps |
 | [docs/campaign-manager.md](docs/campaign-manager.md)               | **Campaign Manager — the ONE CM doc** (the v1 audit, the v2 build plan and the activation design were folded in and deleted 2026-08-29). What it is, the reconciler, the budget + bid engines (window floors, **the marketplace's own per-keyword bid floor**, drift-down, unreachable-target fallback, bounds invariants), **the canonical city registry** that turns a campaign's city targeting into a real store to measure at, **multi-store bidding** (§7.6c — a frozen per-city store SET, ranks 1–3, global + per-client, set only via `cm stores`; the bid aims for target at EVERY store where the campaign is listed and in stock, so the worst such store binds; hourly brand-search stock per store; unreadable/doubtful stores are left out of that tick; a store unwinnable at `max_bid` is given up for the window), the gated write choke-point, the Blinkit API surface + contract (a bid write is a whole-campaign PUT; `DELETE` = stop, not delete; ⚠️ `min_cpm_config` is a BUDGET input, never a bid floor), **what happens when an automation ends** (§5b — the calendar axis, edge-triggered resets, settle-once, reopening), **a full edge-case reference**, config + kill switches, how to roll it out, and the known gaps |
 | [docs/jobs.md](docs/jobs.md)                                       | Jobs, scheduler & observability — the VM job queue + runner, `job_schedules`, per-run logs → Cloud Logging, monitoring; design, decisions, build phases                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                              |
 | [docs/jobs-runbook.md](docs/jobs-runbook.md)                       | Jobs & scheduler **runbook** — full CLI reference, how to run it local vs VM, where to view logs, edge cases, troubleshooting                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                        |
@@ -97,8 +97,11 @@ The things that bite:
   whose _login_ is scheduled — `auth.login`, 00:05 IST, and `refresh-all` correctly
   reports it `not_refreshable`. And it permits **one session per user**: a new login
   revokes the previous one, so our login evicts a human's dashboard and theirs kills our
-  session mid-run. Trust `auth probe`, never `expires_at` alone. The Zepto schedule stays
-  **disabled** until the client provisions a service user.
+  session mid-run. Trust `auth probe`, never `expires_at` alone. **No service user is coming
+  (2026-09-21) and the client accepts evictions**, so Zepto jobs log in whenever they must:
+  on a 401 they first adopt a fresher session another job saved, else log in and resend —
+  writes included. Bounded by 2 re-logins per run + the circuit breaker; the old 30-min
+  floor is off (`CM_ZEPTO_MIN_REAUTH_INTERVAL_SECONDS=0`). See docs/platform-auth.md.
 - **Anything scheduled needs the full interpreter path** and an explicit output
   redirect — cron/systemd never run `activate` and have no terminal, so a bare
   `python` fails with `ModuleNotFoundError` and unredirected output vanishes.
@@ -313,13 +316,18 @@ does not make it browser-valid** — that gap cost the scorecard four weeks whil
 
 ## Public Scraper — Key Facts
 
-Blinkit-only (Instamart/Zepto are out of scope). Fully per-tenant and DB-driven.
-Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refactor.md).
+Blinkit and Zepto, through one provider registry (`scraper/public/providers.py`: each
+marketplace supplies its browser, session, search and parse; the orchestrators never branch
+on marketplace). Fully per-tenant and DB-driven. Deep dive + status:
+[docs/public-scraper-refactor.md](docs/public-scraper-refactor.md) (engine, Blinkit) ·
+[docs/zepto-public.md](docs/zepto-public.md) (Zepto).
 
 - **Config is a workbook, applied via `cli sync`.** `config.xlsx` (sheets
   `locations` / `brands` / `coverage`) is the source of truth: the darkstore
-  catalog, each tenant's keywords/aliases, and which stores it covers. The `brands`
-  sheet also carries per-tenant `keyword_cap` / `brand_cap` (own rows). `cli sync`
+  catalog, each tenant's keywords/aliases, and which stores it covers. The `caps`
+  sheet carries `keyword_cap` / `brand_cap` per own brand **per marketplace**
+  (`tenant_watchlist_caps`, read only via `scraper/public/caps.py`; the old columns on
+  `tenant_watchlist` are retired, dropped once prod runs the new code). `cli sync`
   reconciles the DB (upsert; `--dry-run`, `--prune`). **The catalog is the ONLY source
   of store locations** — `scraper/utils/cities.py` (hardcoded placeholder coordinates)
   was deleted 2026-09-04 with the `GET /reference/cities` endpoint that served them;
@@ -354,7 +362,7 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   is derived from `pack_count > 1` (the parsed `unit` string), falling back to a name
   regex only when the unit is unparseable — the name alone missed ~13% of multipacks.
   Combos are stocked selectively, so views filter `?kind=main|combo|all` (default main).
-  `keyword_cap`/`brand_cap` live on the `brands` config sheet.
+  `keyword_cap`/`brand_cap` live on the `caps` config sheet, per marketplace.
 - **Paid vs organic (`is_ad`)** — search results interleave bought and earned
   placements and both marketplaces say which is which (Blinkit:
   `tracking.common_attributes.ads_campaign_id`; Zepto: `meta.tagsV2`). Without it SoV
@@ -375,7 +383,17 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
 - **`sku_map` bridges private↔public** (`item_id` ↔ `platform_product_id`) — different
   Blinkit id systems, no shared UPC, built by name-match (`cli sku-map build`/`apply`).
   Powers the Products page public panel (`/products/{item_id}/public`).
-- **Cloudflare** blocks direct httpx (403, TLS fingerprint) even with cookies — must
+- **Zepto differs in four ways** ([docs/zepto-public.md](docs/zepto-public.md)):
+  a search is bound to a store by the `merchant_id` HEADER — a coordinate alone returns a
+  generic catalog with a valid 200; the anonymous allowance is small (HTTP 299
+  `LOGIN_REQUIRED` clears in ~1 min, 202 = the WAF pass expired → re-mint it, never wait),
+  so one worker at 2 s pacing; the browser must be the **full Chromium, headless**
+  (`endpoints.BROWSER_CHANNEL`) — Zepto's firewall refuses Playwright's default headless
+  shell (found 2026-09-24); and **sold-out products are hidden from search entirely**, so a
+  product missing from a Zepto brand search is not sellable at that store. No Zepto public
+  schedule runs yet; public scraping is to move to separate infra and must never share the
+  bidding VM's IP or search allowance (agreed 2026-09-26).
+- **Cloudflare** (Blinkit) blocks direct httpx (403, TLS fingerprint) even with cookies — must
   fetch via in-page `page.evaluate(fetch(...))` in a real browser session. **One
   session is reused across all locations** by swapping the lat/lon headers (no
   per-location relaunch); ~0.4s/fetch. Retry-with-backoff on transient 403/429/5xx.
@@ -386,6 +404,11 @@ Deep dive + status: [docs/public-scraper-refactor.md](docs/public-scraper-refact
   longer dies with the database, and the scrape phase needs **zero** DB connections.
   A scraped file sitting unloaded is the new failure mode — `cli scrape staged` lists
   them. See [docs/staging.md](docs/staging.md).
+- **A public scrape's status comes from COVERAGE** (`scraper/public/outcome.py`), not
+  from having finished: `success` / `partial` (stores unattempted or under the
+  `PUBLIC_MIN_COVERAGE_PCT` floor — kept on disk, NOT auto-loaded, finish with `--resume`,
+  CLI exit 4) / `failed` (nothing scraped, exit 1). Never stamp a run `success` because
+  the worker pool returned — a pool returns when every worker has died, too.
 - **Orchestrators**: `scraper/public/orchestrator.py` (keyword, `run_tenant`/`run_all`)
     - `scraper/public/targeted.py` (brand, `run_targeted`/`run_all_targeted`) — worker
       pool (`--workers`), `--resume` continues an interrupted run (reads the staging file,
@@ -412,7 +435,12 @@ python -m cli auth probe   blinkit -t <uuid>                  # is the session A
 python -m cli auth refresh blinkit -t <uuid>                  # extend, no email
 python -m cli auth refresh-all -t <uuid>                      # what the auth.refresh job runs
 python -m cli auth reset   blinkit -t <uuid>                  # clear the circuit breaker
-python -m cli auth status  --tenant <uuid>
+python -m cli auth status  --tenant <uuid>                    # + "logins 24h" (Zepto logins evict the client)
+
+# Campaign manager — -m blinkit|zepto is REQUIRED everywhere; there is no default marketplace
+# (CLI flag, API path /campaign-manager/<mp>/…, cm.* job param — a job without it fails). See docs/CLI.md.
+python -m cli cm rules list -t <uuid> -m blinkit
+python -m cli cm reconcile -t <uuid> -m zepto [--live]
 
 python -m cli scrape blinkit --tenant <uuid>
 python -m cli scrape blinkit-seller --tenant <uuid> [--sales] [--po] [--soh]
@@ -421,8 +449,8 @@ python -m cli scrape blinkit-scorecard --tenant <uuid>
 python -m cli sync --file config.xlsx [--dry-run] [--prune]   # apply config workbook → DB
 python -m cli locations list [--city <slug>] [--tenant <uuid>]
 python -m cli watchlist list --tenant <uuid>
-python -m cli scrape public-run --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors → STAGING FILE
-python -m cli scrape public-skus --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → STAGING FILE
+python -m cli scrape public-run -m <mp> --tenant <uuid> [--resume] [--city <slug>] [--keyword <kw>] [--cap N]     # keyword scrape: SoV/rank + competitors → STAGING FILE
+python -m cli scrape public-skus -m <mp> --tenant <uuid> [--resume] [--city <slug>] [--brand-cap N] [--workers N]  # targeted own-SKU scrape → STAGING FILE
 
 # Public scrapes land in a local SQLite file — push them to Postgres afterwards:
 python -m cli scrape staged [--pending]                  # review; Stores/Err flag a bad run

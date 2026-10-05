@@ -100,6 +100,79 @@ re-mints on a 4-minute timer rather than discovering expiry as a wall of 202s.
 > invents a plausible, well-formed, wrong answer — a store that stocks the brand
 > reported as not stocking it.
 
+### How the scrapes meet a block (2026-10-01)
+
+Until 1 Oct every block got one reflex — wait a minute, then open a **new session** —
+and a worker quit after 4 failed waits, losing the rest of the run. A new session
+loads the homepage, fires a warm-up search and a store lookup: three requests sent
+straight into a 429 or 299, which are about the *connection*, not the session. On
+2026-09-29 a Brik Oven keyword run took **8.4 h** for what had taken ~1 h: 48 streaks
+of block → recover → block, a median of **7** searches between blocks.
+
+Now `scraper.block_remedy(kind, streak)` decides, and the orchestrators follow it:
+
+| Block | First time | Again and again |
+|---|---|---|
+| `rate` (429) | wait 30 s, **same session** | walk 60/60/120/180 s; from the 4th in a row, also a new session |
+| `gate` (299) | wait 60 s, **same session** | same ladder |
+| `challenge` (202) | `search()` re-mints once; if that fails, **new session at once** | ladder wait, new session |
+
+- **Adaptive pacing** (`scraper/public/pacing.py`). The pace is measured start-to-start
+  from a floor of `PACE_FLOOR_S` (2.3 s — what the clean 2 s runs actually did,
+  request time included). Each block multiplies it by 1.5, up to `GAP_MAX_S` (8 s); 20
+  clean searches in a row ease it back a step. Mornings allow about half the
+  afternoon's rate, so a fixed pace that is clean at 15:00 overshoots at 11:00.
+- **A worker stops only after `BLOCK_GIVE_UP_S` (30 min) of nothing but blocks.** That
+  is a wall, not a rate limit (those clear in about a minute). The run then ends
+  `partial` and `--resume` continues it.
+- **Every block is recorded** — the log line names the kind and Zepto's own words
+  (e.g. `LOGIN_REQUIRED`), and the staging file's `blocks` table keeps one row per
+  block (time, store, keyword, kind, detail, how many in a row). The run summary
+  breaks Blocked down by kind.
+- **Pool sessions skip the store lookup** (`get_page`) at open — the pools name the
+  store on every search, so the answer was never read.
+
+The Explorer still uses the old fixed pacing and its own block handling.
+
+### A fourth block: the browser itself (2026-09-24)
+
+From 24 Sept every session failed before its first search: the warm-up's
+**homepage and search page answered HTTP 429** (a blank page), so no search headers
+were captured ("no session headers captured"). Not the ~60 s `429` above — it
+persisted for 30+ minutes, and a human's browser on the same connection was fine.
+
+Diagnosed 26 Sept, same machine, same IP, seconds apart: since Playwright 1.49,
+`chromium.launch(headless=True)` runs a stripped-down **`chromium-headless-shell`**,
+and Zepto's firewall refuses it — it solves the 202 challenge, gets the pass cookie,
+then 429s every page. A visible browser went straight through, and so did the
+**full Chromium in headless mode** (`channel="chromium"`): 50 Bengaluru stores,
+50/50 OK, 0 blocks, ~740 MB RAM, ~4% of a core.
+
+So every Zepto shopper session — this scrape, the own-SKU scrape, the Explorer and
+the bid engine's rank checks — launches through ONE function,
+`platforms/zepto/public_data/scraper.launch_browser`, with
+`endpoints.BROWSER_CHANNEL = "chromium"` (the worker pools reach it via
+`providers.Provider.launch_browser`; Blinkit keeps the default). It needs
+Playwright ≥ 1.49 and `playwright install chromium` on the machine. Pinned by
+`public_data/tests/test_browser_launch.py`.
+
+Nothing noticed this for days: the last Zepto scrape had run on 1 Sept and there is
+no schedule, so a daily "can a session open?" check is on the list.
+
+### A fifth: the VM's address, and replaying through a proxy (2026-09-28/30)
+
+The GCP VM's own address is refused outright: the warm-up gets a 202 challenge and then a
+CloudFront 403. That is why public scrapes run on a residential laptop, not the VM.
+
+The bid engine's rank checks have to run on the VM, so they can go through a consumer-line
+proxy. Through a proxy, the **replayed** search this scraper is built on is refused (429, and
+the proxy's address stayed flagged afterwards), while the page's own requests are answered.
+So a session opened with `typed=True` searches by typing into Zepto's search box instead
+(`public_data/typed_search.py`), and `search()` hands such a session over transparently.
+
+Only the bid engine opens one; the scrapes never do. The switch, the rules and the cost are
+in [campaign-manager.md](campaign-manager.md), "Zepto's shopper search through a proxy".
+
 ---
 
 ## Tunables, and the measurements behind them
@@ -126,8 +199,18 @@ Throughput vs pacing, 4-minute arms, riding through blocks:
 | `MAX_WORKERS` | 1 | 4 workers = 1.02× of 1, wasting 76% of requests |
 | `RESULT_CAP` | 30 | One page. Only 1.9% of own-brand placements sit deeper |
 | `PAUSE_EVERY` | None | No volume quota exists to rest before |
-| `GATE_PAUSE_S` | 60 | Measured recovery |
+| `GATE_PAUSE_S` | 60 | Measured recovery, after a first 299 |
+| `RATE_PAUSE_S` | 30 | After a first 429 |
+| `RECOVERY_WAITS_S` | 60/60/120/180 | Blocks that keep coming; a new session from the 4th |
+| `BLOCK_GIVE_UP_S` | 1800 | Half an hour of only blocks is a wall, not a limit |
+| `PACE_FLOOR_S` | 2.3 | Adaptive pace floor, start-to-start (= the clean 2 s + request time) |
+| `GAP_MAX_S` | 8.0 | Widest adaptive pace — the slowest arm still worth its time |
+| `GAP_BACKOFF` / `GAP_EASE` / `GAP_EASE_AFTER` | 1.5 / 1.25 / 20 | Widen per block; ease back after 20 clean |
 | `PASS_REFRESH_S` | 240 | Pass lives 4-6 min |
+
+`SEARCH_GAP_S` (2.0, slept after each search) still paces the Explorer; the keyword and
+own-SKU scrapes use the adaptive pace above. Lowering `PACE_FLOOR_S` needs a measurement
+first: 1.0 s measured 21% clean, 2.0 s 99%, and nothing in between has been tried.
 
 `--workers` is inert on Zepto: any value runs single-worker, logged once at INFO.
 Blinkit is unaffected (`max_workers=None` means no ceiling).
@@ -231,6 +314,20 @@ It marks Zepto's organic "flywheel" re-ranking. Reading it as the ad flag is wha
 made ads look invisible for two days — and is most of why the paragraph above was
 written.
 
+**Sold-out products are not shown at all.** Unlike Blinkit, Zepto's search leaves a
+sold-out product out of the results rather than flagging it: 0 `outOfStock` rows in
+6,073 keyword results, 1,495 own-SKU rows (165 stores, 1-9 Brik Oven products each)
+and 1,479 results of a 50-store test. So on Zepto:
+
+* **Distribution % (in-stock ÷ listed) is not measurable** from public data — every
+  listed row is in stock by construction. What varies is how MANY products a store
+  lists, which is the stock signal.
+* **A product missing from a search is either out of stock or not sold there** — the
+  two cannot be told apart, and neither can "outbid" from "sold out" when an ad is
+  missing. This is why the bid engine confirms stock with a brand search before
+  raising, and moves to another store when the product is not there
+  (docs/campaign-manager.md, "Zepto rotates through its stores").
+
 ---
 
 ## What a run costs
@@ -273,7 +370,10 @@ Rule of thumb: **a keyword costs ~6 minutes per 160 stores**; one IP delivers
 **Bidding must be sized for the WORST hour**, not the best — it runs continuously
 and hits the ~10/min morning every day. Safe budget is ~100 requests per cycle
 across all automations, which is ~100 automations at 1 store each, or ~16-20 at
-5-6 stores.
+5-6 stores. The bid engine therefore reads ONE store per automation per tick
+(rotating through a city's frozen stores only when one cannot sell the product) —
+1 search a tick, 2 when our ad is missing and stock has to be checked; a brand
+search is cached ~1 h per store and serves every automation there.
 
 ### Throughput across the day
 
@@ -330,6 +430,17 @@ whose real result set was 11 items.
 
 **Prices are in PAISE.** `mrp: 11000` is ₹110.00.
 
+**`total_results` is not Blinkit's `total_results`.** A Zepto snapshot's `total_results`
+is the number of rows we kept (at most the cap); Blinkit's is Blinkit's own count. Zepto
+does send a `totalProductCount`, but it includes the Similar Products tail (`mozzarella`:
+79, where the real results end at 26), so it is not a match count and is not stored.
+Never compare or sum `total_results` across marketplaces. Nothing reads it today.
+
+**A short page is not the end of the results.** Page 0 often comes back with fewer than
+30 rows and plenty behind it (`almonds` 27 of 220, `sourdough` 18 of 212, all with
+`hasReachedEnd: false`). Paging stops on Zepto's own `hasReachedEnd`, or on the Similar
+Products break — never on the row count.
+
 **`position` is 0-based** in the payload; the shared contract is 1-based.
 
 **`availableQuantity` lives on `productResponse`**, not on `productVariant`.
@@ -348,14 +459,25 @@ trips the rate limit within a minute.
 
 ## Open
 
-* **`public-skus` has never run end to end on Zepto.** The brand query is
-  verified (it finds strictly more own SKUs than the keyword set at the same
-  store), but the `targeted.py` → `sku_snapshots` path is untested.
-* **Overnight rate (22:00-10:00)** unmeasured.
-* **`search_listings.extra` is not written for Zepto** — deliberately. At ~212k
-  rows per national run a JSON blob costs ~85 MB against a 500 MB quota, for
-  fields nothing queries. The richness goes on `sku_snapshots.extra` instead,
-  which is 6-17× smaller.
-* **Bidding storage.** At 15-minute cadence, storing full listings is ~1 GB/month
-  against a 500 MB quota. Store own-SKU rank and price only, plus a retention
-  policy — a schema decision to make before the automation is built.
+* **No schedule.** The last keyword scrape ran 2026-09-01 and the last own-SKU
+  scrape 2026-09-02, so every Zepto public view shows early-September data. Public
+  scraping is to move to separate infra — never the bidding VM, whose IP and search
+  allowance the bid engine needs (agreed 2026-09-26; the guard that enforces this on
+  the VM is not built yet).
+* **No daily "can a session open?" check** — the 24 Sept browser block went
+  unnoticed because nothing was running (see "A fourth block" above).
+* **Overnight rate (22:00-10:00)** unmeasured — needed before any overnight Zepto
+  bid window.
+* **`is_ad` unproven on stored rows** — all 6,073 were loaded before the marker; the
+  first scheduled run is the check.
+
+Closed since this page was written:
+
+* ~~`public-skus` has never run end to end~~ — it ran 2026-09-02: 1,495
+  `sku_snapshots` rows across 165 Bengaluru stores.
+* ~~`search_listings.extra` is not written for Zepto~~ — it is, but only the
+  engine's small generic keys (`unit`, `category`, `group_id`, `match_reason`…).
+  Zepto's detail (`brand_id`, manufacturer, scores…) still goes only on
+  `sku_snapshots.extra`, for the size reason: ~212k rows per national run.
+* ~~Bidding storage~~ — the bid engine stores per-store READINGS
+  (`cm_bid_store_reads`: position, stock verdict, bid; 30-day trim), never listings.

@@ -3,10 +3,12 @@ import { InsightsKpiStrip } from "./components/InsightsKpiStrip";
 import { InsightsTrendChart } from "./components/InsightsTrendChart";
 import { InsightsBudgetDonut } from "./components/InsightsBudgetDonut";
 import { ZeptoBudgetSplitDonut } from "../ads/components/ZeptoBudgetSplitDonut";
+import { InstamartBudgetSplitDonut } from "../ads/components/InstamartBudgetSplitDonut";
 import { useState } from "react";
 import { CampaignInsightsCard } from "./components/CampaignInsightsCard";
 import { CampaignDrawer } from "./components/CampaignDrawer";
 import { ZeptoAssetPerformanceCard } from "../ads/components/ZeptoAssetPerformanceCard";
+import { InstamartAssetPerformanceCard } from "../ads/components/InstamartAssetPerformanceCard";
 import { SovTable } from "../ads/components/SovTable";
 import { ZeptoSovTable } from "../ads/components/ZeptoSovTable";
 import { KeywordInsightsCard } from "./components/KeywordInsightsCard";
@@ -45,12 +47,11 @@ export const InsightsPage = () => {
 
 	// The keyword tables are per-marketplace and cannot be merged: Blinkit's rows are per
 	// campaign with a direct/indirect sales split, Zepto's are brand-wide with neither.
-	// Each is shown only when its marketplace is in scope; an empty selection means all.
+	// Each is shown only when its marketplace is in scope.
 	const [detailCampaign, setDetailCampaign] = useState(null);
 	const { selected } = useMarketplaces();
 	const { range } = useDateRange();
-	const all = !selected?.length;
-	const showBlinkit = all || selected.includes("blinkit");
+	const showBlinkit = selected.includes("blinkit");
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -148,12 +149,14 @@ export const InsightsPage = () => {
 				<InsightsTrendChart />
 				{showBlinkit && <InsightsBudgetDonut />}
 				<ZeptoBudgetSplitDonut />
+				<InstamartBudgetSplitDonut />
 			</div>
 
 			<CampaignInsightsCard onOpenCampaign={setDetailCampaign} />
 			{showBlinkit && <KeywordInsightsCard />}
 			<CategoryInsightsCard />
 			<ZeptoAssetPerformanceCard />
+			<InstamartAssetPerformanceCard />
 
 			<div className="flex flex-col gap-6">
 				{showBlinkit && <SovTable barClass="bg-brand" />}

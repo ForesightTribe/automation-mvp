@@ -4,6 +4,8 @@ import { useAllKeywordMetrics, useCampaignNames, useCampaigns } from "../hooks";
 import { Loading } from "../../../components/feedback/Loading";
 import { Button } from "../../../components/ui/Button";
 import { formatCurrency, formatNumber } from "../../../lib/format";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { bidUnit } from "../../../lib/marketplaces";
 
 const TH =
 	"whitespace-nowrap px-3 py-2 text-left text-[11px] font-semibold uppercase tracking-[0.08em] text-content-subtle";
@@ -32,6 +34,11 @@ const fmtRoas = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
 const byActiveThenSpend = (a, b) =>
 	(b.status === "ACTIVE") - (a.status === "ACTIVE") ||
 	b.metrics.spend - a.metrics.spend;
+
+// Catalogue mode has no spend to rank by, so active first and then alphabetical.
+const byActiveThenName = (a, b) =>
+	(b.status === "ACTIVE") - (a.status === "ACTIVE") ||
+	a.label.localeCompare(b.label);
 
 /** Status + ID under a campaign's name. The name alone cannot tell two same-named
  *  campaigns apart, and a bid rule binds to exactly one of them. */
@@ -126,6 +133,46 @@ const MetricCells = ({ m }) => (
 );
 
 /**
+ * Catalogue mode — the marketplace has no per-campaign keyword PERFORMANCE (Zepto: its
+ * keyword metrics are brand grain), so the picker shows what the campaign catalogue does
+ * know: which match types are bid, the live bid and the marketplace's floor. `m` here is
+ * `catalogSummary(rows)`, not `aggregate(rows)`.
+ */
+const catalogSummary = (rows) => {
+	const bids = rows.map((r) => r.bid).filter((v) => v != null);
+	const floors = rows.map((r) => r.min_bid).filter((v) => v != null);
+	const range = (v) =>
+		!v.length
+			? null
+			: Math.min(...v) === Math.max(...v)
+				? formatCurrency(Math.min(...v))
+				: `${formatCurrency(Math.min(...v))}–${formatCurrency(Math.max(...v))}`;
+	return {
+		matchTypes: [...new Set(rows.map((r) => r.match_type))]
+			.sort()
+			.join(" · "),
+		bid: range(bids),
+		floor: range(floors),
+	};
+};
+
+const CatalogHeaders = ({ unit }) => (
+	<>
+		<th className={TH}>Match</th>
+		<th className={NUM_H}>Current bid ({unit.code})</th>
+		<th className={NUM_H}>Min bid ({unit.code})</th>
+	</>
+);
+
+const CatalogCells = ({ m }) => (
+	<>
+		<td className={TD}>{m.matchTypes || "—"}</td>
+		<td className={NUM}>{m.bid ?? "—"}</td>
+		<td className={NUM}>{m.floor ?? "—"}</td>
+	</>
+);
+
+/**
  * The drill-in: the other axis of whatever row was clicked, over a modal.
  *
  * Single-select: a bid rule targets exactly one (campaign, keyword) pair, so clicking a row
@@ -144,6 +191,8 @@ const DrillModal = ({
 	freeText,
 	onApply,
 	onClose,
+	catalog = false,
+	unit,
 }) => {
 	const [search, setSearch] = useState("");
 	const [scrolled, setScrolled] = useState(false);
@@ -204,7 +253,7 @@ const DrillModal = ({
 				>
 					<table
 						className="w-full border-collapse"
-						style={{ minWidth: 1180 }}
+						style={{ minWidth: catalog ? 720 : 1180 }}
 					>
 						<thead className="bg-card">
 							<tr className="border-b border-border">
@@ -219,7 +268,11 @@ const DrillModal = ({
 										? "Keyword"
 										: "Campaign"}
 								</th>
-								<MetricHeaders />
+								{catalog ? (
+									<CatalogHeaders unit={unit} />
+								) : (
+									<MetricHeaders />
+								)}
 							</tr>
 						</thead>
 						<tbody>
@@ -235,18 +288,28 @@ const DrillModal = ({
 							)}
 							{shown.map((r) => {
 								const on = initial === r.key;
+								// A campaign automations may not touch (Zepto Display / auto-bid)
+								// stays listed — someone may be looking for it — but cannot be
+								// chosen, and says why rather than failing on save.
+								const blocked = r.notAutomatable;
 								const cellBg = on
 									? "bg-muted"
-									: "bg-card group-hover:bg-muted";
+									: blocked
+										? "bg-card"
+										: "bg-card group-hover:bg-muted";
 								return (
 									<tr
 										key={r.key}
-										onClick={() => onApply(r)}
+										onClick={() => !blocked && onApply(r)}
 										aria-selected={on}
-										className={`group cursor-pointer border-b border-border/60 last:border-0 ${
-											on
-												? "bg-muted shadow-[inset_3px_0_0_0_var(--color-brand)]"
-												: "hover:bg-muted"
+										aria-disabled={Boolean(blocked)}
+										title={blocked || undefined}
+										className={`group border-b border-border/60 last:border-0 ${
+											blocked
+												? "cursor-not-allowed opacity-50"
+												: on
+													? "cursor-pointer bg-muted shadow-[inset_3px_0_0_0_var(--color-brand)]"
+													: "cursor-pointer hover:bg-muted"
 										}`}
 									>
 										<td
@@ -267,8 +330,17 @@ const DrillModal = ({
 													status={r.status}
 												/>
 											)}
+											{blocked && (
+												<div className="truncate text-[11px] text-content-subtle">
+													{blocked}
+												</div>
+											)}
 										</td>
-										<MetricCells m={r.metrics} />
+										{catalog ? (
+											<CatalogCells m={r.metrics} />
+										) : (
+											<MetricCells m={r.metrics} />
+										)}
 									</tr>
 								);
 							})}
@@ -296,11 +368,17 @@ const DrillModal = ({
  * drill-in is single-select.
  *
  * Every number comes from one `/ads/keywords` response, grouped client-side — switching
- * pivots costs no request. Reach and AOV are the two columns from the design with no source
+ * pivots costs no request. On a marketplace with no keyword performance (Zepto) the rows
+ * come from the campaign catalogue instead and the columns are bid, floor and match type. Reach and AOV are the two columns from the design with no source
  * at all, so they are absent rather than blank.
  */
-export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
+export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 	const { data: rows, isLoading, isComplete, total } = useAllKeywordMetrics();
+	const { marketplace } = useAutomationMarketplace();
+	const unit = bidUnit(marketplace);
+	// No keyword performance on this marketplace — rows come from the campaign catalogue
+	// (see useAllKeywordMetrics), so the columns and the drill-in change with them.
+	const catalog = marketplace !== "blinkit";
 	const { data: campaigns } = useCampaignNames();
 	const { data: selectableCampaigns } = useCampaigns();
 	const [view, setView] = useState(BY_KEYWORD);
@@ -330,6 +408,17 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 			),
 		[selectableCampaigns],
 	);
+	// Why a campaign cannot carry an automation, from the same `/ads/campaigns` rows (ZC-D3).
+	// The catalogue keyword rows carry it too; either source is enough to block the pick.
+	const refusalOf = useMemo(
+		() =>
+			new Map(
+				(selectableCampaigns ?? [])
+					.filter((c) => c.automatable === false)
+					.map((c) => [c.campaign_id, c.not_automatable_reason]),
+			),
+		[selectableCampaigns],
+	);
 
 	const groups = useMemo(() => {
 		const by = new Map();
@@ -346,7 +435,7 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 				label: view === BY_KEYWORD ? String(key) : nameOf(key),
 				status: view === BY_CAMPAIGN ? statusOf.get(key) : undefined,
 				members,
-				metrics: aggregate(members),
+				metrics: catalog ? catalogSummary(members) : aggregate(members),
 			}))
 			.filter(
 				(g) =>
@@ -356,15 +445,49 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 					(view === BY_CAMPAIGN && String(g.key).includes(q)),
 			)
 			.sort(
-				view === BY_CAMPAIGN
-					? byActiveThenSpend
-					: (a, b) => b.metrics.spend - a.metrics.spend,
+				catalog
+					? byActiveThenName
+					: view === BY_CAMPAIGN
+						? byActiveThenSpend
+						: (a, b) => b.metrics.spend - a.metrics.spend,
 			);
-	}, [rows, view, search, nameOf, statusOf]);
+	}, [rows, view, search, nameOf, statusOf, catalog]);
 
 	if (isLoading) return <Loading label="Loading keywords…" />;
 
 	const selectedKey = view === BY_KEYWORD ? keyword : campaignId;
+
+	/**
+	 * Catalogue mode keeps each MATCH TYPE as its own drill row. On Zepto one keyword can be
+	 * bid as EXACT, PHRASE and BROAD in the same campaign, each its own bid with its own
+	 * floor, and a rule binds exactly one of them — so the match type is part of the choice.
+	 */
+	const catalogDrillRows = (group) =>
+		group.members
+			.map((r) => {
+				const other = view === BY_KEYWORD ? r.campaign_id : r.target;
+				return {
+					key: `${other}|${r.match_type}`,
+					label: `${view === BY_KEYWORD ? nameOf(other) : other}`,
+					campaign_id: r.campaign_id,
+					keyword: r.target,
+					match_type: r.match_type,
+					isCampaign: view === BY_KEYWORD,
+					status: statusOf.get(r.campaign_id),
+					notAutomatable:
+						r.automatable === false
+							? r.not_automatable_reason ||
+								"Automations cannot run on this campaign."
+							: (refusalOf.get(r.campaign_id) ?? null),
+					metrics: catalogSummary([r]),
+				};
+			})
+			.sort(
+				(a, b) =>
+					Boolean(a.notAutomatable) - Boolean(b.notAutomatable) ||
+					a.label.localeCompare(b.label) ||
+					a.match_type.localeCompare(b.match_type),
+			);
 
 	// ONE row per key. `/ads/keywords` merges Blinkit's per-sub-campaign rows server-side
 	// now, but still returns one row per MATCH TYPE, so a keyword run as both EXACT and
@@ -385,6 +508,7 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 				keyword: members[0].target,
 				isCampaign: view === BY_KEYWORD,
 				status: view === BY_KEYWORD ? statusOf.get(key) : undefined,
+				notAutomatable: refusalOf.get(members[0].campaign_id) ?? null,
 				metrics: aggregate(members),
 			}))
 			.sort(
@@ -435,7 +559,7 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 			>
 				<table
 					className="w-full border-collapse"
-					style={{ minWidth: 1240 }}
+					style={{ minWidth: catalog ? 720 : 1240 }}
 				>
 					<thead className="bg-card">
 						<tr className="border-b border-border">
@@ -448,7 +572,11 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 							>
 								{view === BY_KEYWORD ? "Keyword" : "Campaign"}
 							</th>
-							<MetricHeaders />
+							{catalog ? (
+								<CatalogHeaders unit={unit} />
+							) : (
+								<MetricHeaders />
+							)}
 						</tr>
 					</thead>
 					<tbody>
@@ -519,7 +647,11 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 											</>
 										)}
 									</td>
-									<MetricCells m={g.metrics} />
+									{catalog ? (
+										<CatalogCells m={g.metrics} />
+									) : (
+										<MetricCells m={g.metrics} />
+									)}
 								</tr>
 							);
 						})}
@@ -535,16 +667,25 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 							: "Select keyword for campaign:"
 					}
 					subtitle={drill.label}
-					rows={drillRows(drill)}
-					// Only the keyword direction accepts a typed value; you cannot invent a campaign.
-					freeText={view === BY_CAMPAIGN}
+					rows={catalog ? catalogDrillRows(drill) : drillRows(drill)}
+					catalog={catalog}
+					unit={unit}
+					// Only the keyword direction accepts a typed value; you cannot invent a
+					// campaign. Not in catalogue mode: a typed keyword has no match type or
+					// floor to carry, and the Zepto adapter bids only on keywords the campaign
+					// already has.
+					freeText={view === BY_CAMPAIGN && !catalog}
 					initial={
 						view === BY_KEYWORD
 							? drill.key === keyword
-								? campaignId
+								? catalog
+									? `${campaignId}|${matchType}`
+									: campaignId
 								: null
 							: drill.key === campaignId
-								? keyword
+								? catalog
+									? `${keyword}|${matchType}`
+									: keyword
 								: null
 					}
 					onApply={(row) => {
@@ -557,6 +698,9 @@ export const KeywordPicker = ({ campaignId, keyword, onChange }) => {
 							campaign_id: id,
 							campaign_name: nameOf(id),
 							keyword: row.keyword,
+							// Catalogue rows name their match type; Blinkit's merged rows do
+							// not, and the rule then keeps the engine's default (EXACT).
+							match_type: row.match_type ?? null,
 						});
 						setDrill(null);
 					}}

@@ -8,8 +8,13 @@ from datetime import date, datetime, time, timedelta
 from sqlalchemy import case, distinct, func, select, tuple_
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.utils.cache import ttl_cache
+
+# Public-scrape aggregates. Long enough to carry a reading session, short
+# enough that a scrape landing is reflected the same working day.
+_TTL = 6 * 60 * 60
+
 from app.dependencies import Pagination
-from app.utils.time import now_ist
 from app.models.search import SearchListing, SearchSnapshot
 from app.schemas.common import Page
 from app.schemas.competition import CompetitorRankRow
@@ -44,6 +49,16 @@ def _kind_cond(kind: str) -> list:
     return [SearchListing.is_combo.is_(False)]
 
 
+# Only searches that RETURNED RESULTS. Since 2026-09-30 the keyword scrape also stores a
+# snapshot for a search that came back empty (total_results = 0, rank and SoV NULL), so
+# "this keyword returns nothing at this store" can be told apart from "never scraped".
+# Those rows are an audit record, not a measurement: avg() already skips their NULLs, but
+# a bare count() would include them, and "avg share over N searches" would then quote an
+# N larger than the number of searches the average was taken over. Every snapshot query
+# below that reports a sample count carries this condition.
+_HAS_RESULTS = SearchSnapshot.brand_sov.is_not(None)
+
+
 # Per-row price at the pack's display basis: ₹/100 ml, ₹/100 g, ₹/piece. NULL when
 # the pack is unparseable, heterogeneous (pack_uom ""), or size 0 — so the aggregate
 # bands below ignore exactly the rows that can't be compared, without dropping their
@@ -57,6 +72,7 @@ _UNIT_MULT = case(
 _UNIT_PRICE = SearchListing.price / func.nullif(SearchListing.pack_size, 0) * _UNIT_MULT
 
 
+@ttl_cache(_TTL)
 async def get_share_of_voice(
     session: AsyncSession,
     *,
@@ -89,6 +105,7 @@ async def get_share_of_voice(
         SearchSnapshot.brand_slug.in_(own),
         SearchSnapshot.scraped_at >= lo,
         SearchSnapshot.scraped_at < hi,
+        _HAS_RESULTS,
     ]
     if marketplaces:
         conditions.append(SearchSnapshot.mp_slug.in_(marketplaces))
@@ -213,6 +230,7 @@ async def get_rank_matrix(
         SearchSnapshot.brand_slug.in_(own),
         SearchSnapshot.scraped_at >= lo,
         SearchSnapshot.scraped_at < hi,
+        _HAS_RESULTS,
     ]
     if marketplaces:
         cond.append(SearchSnapshot.mp_slug.in_(marketplaces))
@@ -264,6 +282,7 @@ async def get_rank_matrix(
 
 # --- Competitor leaderboard --------------------------------------------------
 
+@ttl_cache(_TTL)
 async def get_top_competitors(
     session: AsyncSession,
     *,
@@ -353,8 +372,92 @@ async def get_top_competitors(
     }
 
 
+@ttl_cache(_TTL)
+async def get_top_competitors_by_marketplace(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    keyword: str | None = None,
+    city: str | None = None,
+    marketplaces: list[str] | None = None,
+    start: date,
+    end: date,
+    limit: int = 15,
+) -> list[dict]:
+    """`get_top_competitors`, split by the marketplace each presence was seen on.
+
+    One query, not one per marketplace: `mp_slug` is already a column on
+    `search_listings`, so it only has to join the GROUP BY. A competitor selling
+    on two marketplaces is two rows — store counts and ranks are per-marketplace
+    and adding them would invent a shelf that does not exist.
+
+    Share is of that MARKETPLACE's competitor presences, so each marketplace's
+    shares add to 100 on their own.
+    """
+    lo, hi = _bounds(start, end)
+    cond = [
+        SearchListing.tenant_id == tenant_id,
+        SearchListing.is_brand.is_(False),
+        SearchListing.scraped_at >= lo, SearchListing.scraped_at < hi,
+        SearchListing.merchant_id != "",
+    ]
+    if keyword:
+        cond.append(SearchListing.keyword == keyword)
+    if city:
+        cond.append(SearchListing.city == city)
+    if marketplaces:
+        cond.append(SearchListing.mp_slug.in_(marketplaces))
+
+    store = SearchListing.merchant_id
+    rows = (
+        await session.execute(
+            select(
+                SearchListing.mp_slug,
+                SearchListing.brand_slug,
+                func.count(distinct(store)),
+                func.count(distinct(SearchListing.keyword)),
+                func.avg(SearchListing.position),
+                func.avg(SearchListing.price),
+            )
+            .where(*cond)
+            .group_by(SearchListing.mp_slug, SearchListing.brand_slug)
+            .order_by(func.count(distinct(store)).desc())
+            .limit(limit)
+        )
+    ).all()
+
+    totals = dict(
+        (
+            await session.execute(
+                select(
+                    SearchListing.mp_slug,
+                    func.count(distinct(tuple_(SearchListing.brand_slug, store))),
+                )
+                .where(*cond)
+                .group_by(SearchListing.mp_slug)
+            )
+        ).all()
+    )
+
+    return [
+        {
+            "marketplace": mp,
+            "competitor": slug or "unknown",
+            "stores": n_stores,
+            "keywords": kw_count,
+            "avg_position": _round(pos, 1),
+            "avg_price": _price(price),
+            "share_pct": (
+                _round(n_stores / totals[mp] * 100, 1) if totals.get(mp) else None
+            ),
+        }
+        for mp, slug, n_stores, kw_count, pos, price in rows
+    ]
+
+
 # --- Price positioning (own vs competitor range, per keyword) ----------------
 
+@ttl_cache(_TTL)
 async def get_price_position(
     session: AsyncSession,
     *,
@@ -365,6 +468,7 @@ async def get_price_position(
     start: date,
     end: date,
     kind: str = "main",
+    by_marketplace: bool = False,
 ) -> dict:
     """Per keyword: the own brand's price band vs the competitor price band, so you
     can see if you're priced into or out of the consideration set. Reports BOTH the
@@ -382,12 +486,21 @@ async def get_price_position(
     if marketplaces:
         base.append(SearchListing.mp_slug.in_(marketplaces))
 
+    # `by_marketplace` adds one column to the grouping: a price band is per
+    # shelf, and both views are built from this one query.
+    keys = (
+        [SearchListing.mp_slug, SearchListing.keyword]
+        if by_marketplace
+        else [SearchListing.keyword]
+    )
+    n_keys = len(keys)
+
     # Own band per keyword — raw rupees + per-unit. mode() gives the keyword's
     # dominant UOM (drinks-with-drinks in practice), for labelling the basis.
     own_rows = (
         await session.execute(
             select(
-                SearchListing.keyword,
+                *keys,
                 func.avg(SearchListing.price),
                 func.min(SearchListing.price),
                 func.max(SearchListing.price),
@@ -396,18 +509,19 @@ async def get_price_position(
                 func.min(_UNIT_PRICE),
                 func.max(_UNIT_PRICE),
                 func.mode().within_group(SearchListing.pack_uom.asc()),
+                func.count(distinct(SearchListing.platform_product_id)),
             )
             .where(*base, SearchListing.is_brand.is_(True))
-            .group_by(SearchListing.keyword)
+            .group_by(*keys)
         )
     ).all()
-    own = {r[0]: r[1:] for r in own_rows}
+    own = {tuple(r[:n_keys]): r[n_keys:] for r in own_rows}
 
     # Competitor band (+ median) per keyword — raw rupees + per-unit.
     comp_rows = (
         await session.execute(
             select(
-                SearchListing.keyword,
+                *keys,
                 func.avg(SearchListing.price),
                 func.min(SearchListing.price),
                 func.percentile_cont(0.5).within_group(SearchListing.price.asc()),
@@ -418,22 +532,23 @@ async def get_price_position(
                 func.percentile_cont(0.5).within_group(_UNIT_PRICE.asc()),
                 func.max(_UNIT_PRICE),
                 func.mode().within_group(SearchListing.pack_uom.asc()),
+                func.count(distinct(SearchListing.platform_product_id)),
             )
             .where(*base, SearchListing.is_brand.is_(False))
-            .group_by(SearchListing.keyword)
+            .group_by(*keys)
         )
     ).all()
-    comp = {r[0]: r[1:] for r in comp_rows}
+    comp = {tuple(r[:n_keys]): r[n_keys:] for r in comp_rows}
 
-    keywords = sorted(set(own) | set(comp))
     rows = []
-    for kw in keywords:
-        o = own.get(kw)
-        c = comp.get(kw)
+    for key in sorted(set(own) | set(comp)):
+        o = own.get(key)
+        c = comp.get(key)
         # UOM label: prefer own's dominant, fall back to competitors'.
         uom = (o[7] if o else None) or (c[9] if c else None) or ""
         rows.append({
-            "keyword": kw,
+            "marketplace": key[0] if by_marketplace else None,
+            "keyword": key[-1],
             "own_avg_price": _price(o[0]) if o else None,
             "own_min_price": _price(o[1]) if o else None,
             "own_max_price": _price(o[2]) if o else None,
@@ -443,6 +558,12 @@ async def get_price_position(
             "comp_max_price": _price(c[3]) if c else None,
             "own_samples": o[3] if o else 0,
             "comp_samples": c[4] if c else 0,
+            # ⚠️ The counts above are LISTING ROWS (product x store x scrape day),
+            # which overstate the basis by three orders of magnitude — "soda"
+            # counts listing rows, not the products behind them.
+            # These are the real basis, and what any confidence gate must use.
+            "own_products": o[8] if o else 0,
+            "comp_products": c[10] if c else 0,
             "unit_uom": uom,
             "own_avg_unit_price": _price(o[4]) if o else None,
             "own_min_unit_price": _price(o[5]) if o else None,

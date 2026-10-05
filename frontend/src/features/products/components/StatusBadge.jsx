@@ -8,6 +8,7 @@ const STYLES = {
 	low_cover: { label: "Low cover", cls: "bg-warning-soft text-warning" },
 	no_sales: { label: "No sales", cls: "bg-warning-soft text-warning" },
 	healthy: { label: "Healthy", cls: "bg-success-soft text-success" },
+	no_stock_data: { label: "No stock data", cls: "bg-muted text-content-muted" },
 };
 
 export const StatusBadge = ({ status }) => {
@@ -31,4 +32,5 @@ export const STATUS_OPTIONS = [
 	{ value: "low_cover", label: "Low cover" },
 	{ value: "no_sales", label: "No sales" },
 	{ value: "healthy", label: "Healthy" },
+	{ value: "no_stock_data", label: "No stock data" },
 ];

@@ -54,6 +54,12 @@ def _date_range(days: int = 90):
     return f"{start.month}/{start.day}/{start.year}", f"{today.month}/{today.day}/{today.year}"
 
 
+def _valid_advertiser_id(value) -> bool:
+    """A real account id: a positive int. `bool` is excluded because it IS an int in
+    Python — `True` would otherwise pass as account 1."""
+    return isinstance(value, int) and not isinstance(value, bool) and value > 0
+
+
 async def _inject_firebase_idb(context, idb_data: list) -> None:
     idb_json = json.dumps(idb_data)
     await context.add_init_script(f"""(function(){{
@@ -482,6 +488,11 @@ class BlinkitClient:
         Live writes do not depend on this at all — they send the tenant's STORED
         `advertiser_id` (set by `writes.arm_live`). This is the derivation shown by
         `cm advertiser` for comparison, and the last-resort path when no id was passed.
+
+        Two sources, in order. The campaign list's `data.advertiser_id` comes first — it is
+        what Dobra's account returns. Not every account's response carries it: Sereko's has
+        no such field anywhere, in a 1-day or a 90-day window (verified 2026-10-03). Then the
+        id comes from the account's advertiser list instead (`_sole_advertiser_id`).
         """
         from_date, to_date = _date_range(1)
         resp = await self._fetch("POST", "/adservice/v1/advertisers/campaigns", {
@@ -490,15 +501,39 @@ class BlinkitClient:
             "campaign_types": ["PRODUCT_LISTING"],
         })
         adv_id = (resp.get("data") or {}).get("advertiser_id")
-        if not isinstance(adv_id, int) or adv_id <= 0:
-            raise RuntimeError(
-                "Blinkit did not report an advertiser_id for this session "
-                f"(got {adv_id!r}). Refusing to guess — a wrong account id spends real "
-                "money against someone else's account. Set the tenant's id explicitly "
-                "with `cli cm set-advertiser`."
-            )
-        log.debug("[get_advertiser_id] advertiser_id=%r", adv_id)
+        if _valid_advertiser_id(adv_id):
+            log.debug("[get_advertiser_id] advertiser_id=%r (campaign list)", adv_id)
+            return adv_id
+        adv_id = await self._sole_advertiser_id()
+        log.debug("[get_advertiser_id] advertiser_id=%r (advertiser list)", adv_id)
         return adv_id
+
+    async def _sole_advertiser_id(self) -> int:
+        """The id from `GET /adservice/v1/advertisers` — trusted ONLY when it lists exactly
+        one advertiser.
+
+        A login that can see several advertisers (an agency user across brands) has no
+        single answer, and picking one is exactly the wrong-account spend this guards
+        against, so it refuses and names them. The status of the one advertiser is not
+        checked: a paused account is still the account."""
+        resp = await self._fetch("GET", "/adservice/v1/advertisers")
+        items = [it for it in ((resp or {}).get("items") or []) if isinstance(it, dict)]
+        if len(items) == 1 and _valid_advertiser_id(items[0].get("id")):
+            return items[0]["id"]
+        if len(items) > 1:
+            listed = ", ".join(f"{it.get('id')} ({it.get('name')})" for it in items)
+            raise RuntimeError(
+                f"This Blinkit login can see {len(items)} advertisers — {listed} — and the "
+                "campaign list names none of them. Refusing to pick one — a wrong account id "
+                "spends real money against someone else's account. Set the tenant's id "
+                "explicitly with `cli cm set-advertiser`."
+            )
+        raise RuntimeError(
+            "Blinkit did not report an advertiser_id for this session — not in the campaign "
+            f"list, and the advertiser list holds {len(items)} usable advertiser(s). Refusing "
+            "to guess — a wrong account id spends real money against someone else's account. "
+            "Set the tenant's id explicitly with `cli cm set-advertiser`."
+        )
 
     async def update_campaign(self, campaign_id: int, changes: dict, *,
                               advertiser_id: int | None = None) -> dict:

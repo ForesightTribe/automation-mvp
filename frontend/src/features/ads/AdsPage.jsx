@@ -21,11 +21,9 @@ export const AdsPage = () => {
 	// The keyword tables are per-marketplace and cannot be merged: Blinkit's
 	// rows are per campaign with a direct/indirect sales split, Zepto's are
 	// brand-wide with neither. Rather than stack an empty card above a full
-	// one, each is shown only when its marketplace is in scope. An empty
-	// selection means "all marketplaces".
+	// one, each is shown only when its marketplace is in scope.
 	const { selected } = useMarketplaces();
-	const all = !selected?.length;
-	const showBlinkit = all || selected.includes("blinkit");
+	const showBlinkit = selected.includes("blinkit");
 
 	return (
 		<div className="flex flex-col gap-6">

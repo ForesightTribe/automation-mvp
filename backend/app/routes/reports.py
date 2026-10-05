@@ -8,7 +8,7 @@ from starlette.background import BackgroundTask
 
 from app.dependencies import ClientDep, PaginationDep, PeriodDep, SessionDep
 from app.schemas.reports import CompetitionReport, MarketingReport, SalesPivot, WeekendPlanning
-from app.services import report_export_service, reports_service
+from app.services import instamart_reports, report_export_service, reports_service
 
 router = APIRouter()
 
@@ -104,21 +104,34 @@ async def raw_ads(
     client: ClientDep,
     period: PeriodDep,
     pagination: PaginationDep,
-    campaign_type: str = Query(..., description="PRODUCT_LISTING | PRODUCT_RECOMMENDATION"),
+    marketplace: str = Query("blinkit", description="blinkit | instamart"),
+    campaign_type: str | None = Query(
+        None, description="PRODUCT_LISTING | PRODUCT_RECOMMENDATION — blinkit only"
+    ),
 ):
     """The platform's own per-day export rows, paginated.
 
     Paginated rather than capped: these sheets run to tens of thousands of rows,
     and a page that silently shows the first few hundred is a page that quietly
     lies about what the export contains.
+
+    Blinkit has two campaign-type sheets (`campaign_type` required); Instamart
+    has one flat sheet (no campaign-type split — see instamart_reports.py).
     """
-    rows = await reports_service.get_raw_ad_rows(
-        session,
-        tenant_id=client.id,
-        start=period.start,
-        end=period.end,
-        campaign_type=campaign_type,
-    )
+    if marketplace == "instamart":
+        rows = await instamart_reports.raw_ad_rows(
+            session, tenant_id=client.id, start=period.start, end=period.end
+        )
+    else:
+        if not campaign_type:
+            raise HTTPException(422, "campaign_type is required for blinkit")
+        rows = await reports_service.get_raw_ad_rows(
+            session,
+            tenant_id=client.id,
+            start=period.start,
+            end=period.end,
+            campaign_type=campaign_type,
+        )
     total = len(rows)
     lo = pagination.offset
     return {

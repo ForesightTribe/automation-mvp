@@ -1,5 +1,7 @@
 import { useState } from "react";
 import { Toggle } from "../../../components/ui/Toggle";
+import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { holdReason } from "../../../lib/marketplaces";
 
 /**
  * The campaign's own on/off, on its own row.
@@ -14,33 +16,42 @@ import { Toggle } from "../../../components/ui/Toggle";
  * because flipping the wrong way stops something live.
  */
 /**
- * Blinkit states this control must NOT offer a Start for, and why in the reader's words.
+ * Decided on `state` — what the status MEANS (`running` / `paused` / `held` / `ended` /
+ * `draft`, from `CampaignRow.state`) — never on the marketplace's raw word (ZC-E4).
  *
- * Both were previously treated as "not running, so offer Start" — the engine then refused
- * every one of them (`writes.status_transition_denied`), and because a refused write still
- * exits cleanly the row reported success. An action that cannot succeed should not be
- * offered at all.
+ * The raw words differ per marketplace, and reading them directly got the one case that
+ * matters most wrong: a campaign the marketplace HELD (Blinkit ON_HOLD, Zepto
+ * DAILY_BUDGET_EXHAUSTED / INSUFFICIENT_WALLET_BALANCE) is still live. Offering Start on it
+ * is offering a write the engine refuses (`writes.status_transition_denied`) — and because a
+ * refused write still exits cleanly, the row used to report success. Held reads as ON, with
+ * Stop available (the engine accepts that) and the reason it is not delivering in the hint.
  *
- * ON_HOLD is the one worth being precise about: it does NOT mean stopped. Blinkit imposes
- * it when the campaign's budget is exhausted, so the campaign is still live and there is
- * nothing to restart — raising its budget is what revives it. That is why the engine
- * answers a start with "there is nothing to restart" and accepts a budget write on it.
+ * `ended` is final on every marketplace, so it offers nothing. A `state` that is missing or
+ * unmapped leaves the control disabled rather than guessing a direction.
  */
-const NOT_STARTABLE = {
-	ON_HOLD:
-		"Its budget is used up, so Blinkit has paused delivery. Raise the campaign's budget to bring it back — there is nothing to restart.",
-	COMPLETED:
-		"This campaign has finished. Blinkit treats that as final, so it cannot be started again.",
-};
+const LIVE = new Set(["running", "held"]);
+const STARTABLE = new Set(["paused", "draft"]);
 
-export const CampaignStateToggle = ({ name, status, busy, onActivate }) => {
+export const CampaignStateToggle = ({
+	name,
+	status,
+	state,
+	refused = null,
+	busy,
+	onActivate,
+}) => {
 	const [confirming, setConfirming] = useState(false);
-	const live = status === "ACTIVE" || status === "SCHEDULED";
-	const known = Boolean(status);
-	// A campaign that is live can always be STOPPED — ON_HOLD included, which the engine
-	// accepts precisely because it is still a running campaign. The block below is only
-	// ever about the Start direction.
-	const blocked = !live ? NOT_STARTABLE[status] : null;
+	const { name: mpName } = useAutomationMarketplace();
+	const live = LIVE.has(state);
+	const known = live || STARTABLE.has(state) || state === "ended";
+	// Only ever about the Start direction: a live campaign — held included — can always be
+	// stopped. `refused` (a campaign automations may not touch) blocks both.
+	const blocked =
+		refused ??
+		(state === "ended"
+			? `This campaign has ended. ${mpName} treats that as final, so it cannot be started again.`
+			: null);
+	const held = state === "held" ? holdReason(status, mpName) : null;
 	// A start/stop of this campaign is already queued or running. Inert until it settles:
 	// the second write would be decided against a state the first is in the middle of
 	// changing, and the two would race on a single-slot lane.
@@ -50,9 +61,11 @@ export const CampaignStateToggle = ({ name, status, busy, onActivate }) => {
 			? "Campaign state unknown"
 			: blocked
 				? blocked
-				: live
-					? "Stop this campaign now"
-					: "Start this campaign now";
+				: held
+					? `${held} Stop it now to halt it completely.`
+					: live
+						? "Stop this campaign now"
+						: "Start this campaign now";
 	return (
 		<>
 			{/* ⚠️ The title sits on the WRAPPER, not the switch. A disabled <button> fires no
@@ -91,7 +104,7 @@ export const CampaignStateToggle = ({ name, status, busy, onActivate }) => {
 						</p>
 						<p className="mt-1.5 text-sm text-content-muted">
 							{live
-								? `“${name}” is running. Stopping it now halts its spend immediately.`
+								? `“${name}” is ${held ? "on hold, but still live" : "running"}. Stopping it now halts its spend immediately.`
 								: `“${name}” is not running. Starting it now lets it spend immediately.`}
 						</p>
 						<div className="mt-4 flex justify-end gap-2">

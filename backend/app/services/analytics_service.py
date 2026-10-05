@@ -11,7 +11,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchSnapshot
-from app.services import watchlist_service, zepto_ads, zepto_analytics
+from app.services import (
+    blinkit_seller_hub_analytics, instamart_ads, instamart_analytics, watchlist_service,
+    zepto_ads, zepto_analytics,
+)
 
 Sale = BlinkitSellerSale
 AdDaily = BlinkitAdCampaignDaily
@@ -78,6 +81,21 @@ async def _sales_agg(
         # the same physical product listed on both is two sellable items.
         rev, units, skus = rev + z_rev, units + z_units, skus + z_skus
 
+    if instamart_analytics.wants_instamart(marketplaces):
+        i_rev, i_units, i_skus = await instamart_analytics.sales_agg(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        rev, units, skus = rev + i_rev, units + i_units, skus + i_skus
+
+    # Sereko and any future seller-hub account: same "blinkit" slug as the old
+    # table (see blinkit_seller_hub_analytics docstring), summed in the same
+    # additive way — a tenant is on one Blinkit domain or the other, never both.
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h_rev, h_units, h_skus = await blinkit_seller_hub_analytics.sales_agg(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        rev, units, skus = rev + h_rev, units + h_units, skus + h_skus
+
     return rev, units, skus
 
 
@@ -117,6 +135,10 @@ async def _ads_agg(
     if zepto_ads.wants_zepto(marketplaces):
         z = await zepto_ads.ads_agg(session, tenant_id=tenant_id, start=start, end=end)
         totals = tuple(a + b for a, b in zip(totals, z))
+
+    if instamart_ads.wants_instamart(marketplaces):
+        i = await instamart_ads.ads_agg(session, tenant_id=tenant_id, start=start, end=end)
+        totals = tuple(a + b for a, b in zip(totals, i))
 
     return totals
 
@@ -255,6 +277,16 @@ async def get_revenue_series(
             session, tenant_id=tenant_id, start=start, end=end
         )
         series = _merge_series(series, z, "date", ("revenue", "units_sold"))
+    if instamart_analytics.wants_instamart(marketplaces):
+        i = await instamart_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        series = _merge_series(series, i, "date", ("revenue", "units_sold"))
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        series = _merge_series(series, h, "date", ("revenue", "units_sold"))
     return series
 
 
@@ -303,6 +335,20 @@ async def get_trends(
             b_sp, b_sa, b_im = ad_map.get(d, (0.0, 0.0, 0))
             ad_map[d] = (b_sp + sp, b_sa + sa, b_im + im)
 
+    # Same gap, same fix, for Instamart's account-daily table — without this
+    # the Overview's "Ad spend vs ad revenue" chart read empty for an
+    # Instamart-only client despite the Ads Insights tiles showing real spend.
+    if instamart_ads.wants_instamart(marketplaces):
+        for row in await instamart_ads.performance(
+            session, tenant_id=tenant_id, start=start, end=end
+        ):
+            b_sp, b_sa, b_im = ad_map.get(row["date"], (0.0, 0.0, 0))
+            ad_map[row["date"]] = (
+                b_sp + row["budget_consumed"],
+                b_sa + row["ad_sales"],
+                b_im + row["impressions"],
+            )
+
     sale_rows = (
         await session.execute(
             select(
@@ -318,6 +364,26 @@ async def get_trends(
 
     if zepto_analytics.wants_zepto(marketplaces):
         for row in await zepto_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        ):
+            prev = sale_map.get(row["date"], (0.0, 0))
+            sale_map[row["date"]] = (
+                prev[0] + row["revenue"],
+                prev[1] + row["units_sold"],
+            )
+
+    if instamart_analytics.wants_instamart(marketplaces):
+        for row in await instamart_analytics.revenue_series(
+            session, tenant_id=tenant_id, start=start, end=end
+        ):
+            prev = sale_map.get(row["date"], (0.0, 0))
+            sale_map[row["date"]] = (
+                prev[0] + row["revenue"],
+                prev[1] + row["units_sold"],
+            )
+
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        for row in await blinkit_seller_hub_analytics.revenue_series(
             session, tenant_id=tenant_id, start=start, end=end
         ):
             prev = sale_map.get(row["date"], (0.0, 0))
@@ -388,6 +454,16 @@ async def get_top_skus(
         # Each side is already its own top-N; re-sort the union and re-cut so
         # the result is the true top-N across both, not 2N rows.
         skus = sorted([*skus, *z], key=lambda r: r["revenue"], reverse=True)[:limit]
+    if instamart_analytics.wants_instamart(marketplaces):
+        i = await instamart_analytics.top_skus(
+            session, tenant_id=tenant_id, start=start, end=end, limit=limit
+        )
+        skus = sorted([*skus, *i], key=lambda r: r["revenue"], reverse=True)[:limit]
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.top_skus(
+            session, tenant_id=tenant_id, start=start, end=end, limit=limit
+        )
+        skus = sorted([*skus, *h], key=lambda r: r["revenue"], reverse=True)[:limit]
     return skus
 
 
@@ -442,6 +518,27 @@ async def get_sales_by_city(
         )
         out.sort(key=lambda r: r["revenue"], reverse=True)
 
+    # Instamart reports plain lowercase city names ("bangalore"); same reasoning
+    # as above — appended, not reconciled with the other marketplaces' spellings.
+    if instamart_analytics.wants_instamart(marketplaces):
+        out.extend(
+            await instamart_analytics.sales_by_city(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        )
+        out.sort(key=lambda r: r["revenue"], reverse=True)
+
+    # Sereko and any future seller-hub account — real city names from the
+    # same Cities filter the live dashboard uses, so no reconciliation with
+    # the old table's city spelling is needed (both are "Blinkit's own" names).
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        out.extend(
+            await blinkit_seller_hub_analytics.sales_by_city(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        )
+        out.sort(key=lambda r: r["revenue"], reverse=True)
+
     return out
 
 
@@ -479,6 +576,17 @@ async def get_sales_by_category(
             session, tenant_id=tenant_id, start=start, end=end
         )
         cats = _merge_series(cats, z, "category", ("revenue", "units_sold"))
+    if instamart_analytics.wants_instamart(marketplaces):
+        i = await instamart_analytics.sales_by_category(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        cats = _merge_series(cats, i, "category", ("revenue", "units_sold"))
+        cats.sort(key=lambda r: r["revenue"], reverse=True)
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.sales_by_category(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        cats = _merge_series(cats, h, "category", ("revenue", "units_sold"))
         cats.sort(key=lambda r: r["revenue"], reverse=True)
     return cats
 
@@ -525,6 +633,16 @@ async def get_category_trend(
             session, tenant_id=tenant_id, start=start, end=end
         )
         trend = _merge_series(trend, z, ("date", "category"), ("revenue", "units_sold"))
+    if instamart_analytics.wants_instamart(marketplaces):
+        i = await instamart_analytics.category_trend(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        trend = _merge_series(trend, i, ("date", "category"), ("revenue", "units_sold"))
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        h = await blinkit_seller_hub_analytics.category_trend(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        trend = _merge_series(trend, h, ("date", "category"), ("revenue", "units_sold"))
     return trend
 
 
@@ -560,13 +678,20 @@ async def get_city_category(
     # here but may have plenty below. Returning early would skip the Zepto
     # branch entirely and leave the heatmap blank for exactly those clients.
     if not top_rows:
-        return (
-            await zepto_analytics.city_category(
-                session, tenant_id=tenant_id, start=start, end=end, limit=limit
+        other: list[dict] = []
+        if zepto_analytics.wants_zepto(marketplaces):
+            other.extend(
+                await zepto_analytics.city_category(
+                    session, tenant_id=tenant_id, start=start, end=end, limit=limit
+                )
             )
-            if zepto_analytics.wants_zepto(marketplaces)
-            else []
-        )
+        if instamart_analytics.wants_instamart(marketplaces):
+            other.extend(
+                await instamart_analytics.city_category(
+                    session, tenant_id=tenant_id, start=start, end=end, limit=limit
+                )
+            )
+        return other
     name_by_id = {cid: (cname or cid) for cid, cname, _ in top_rows}
     top_ids = list(name_by_id)
 
@@ -602,6 +727,15 @@ async def get_city_category(
     if zepto_analytics.wants_zepto(marketplaces):
         out.extend(
             await zepto_analytics.city_category(
+                session, tenant_id=tenant_id, start=start, end=end, limit=limit
+            )
+        )
+    # Instamart carries store (hence city) and category on the SAME sales row,
+    # so unlike Zepto its cells need no cross-grain reconstruction. Appended for
+    # the same naming reason as above.
+    if instamart_analytics.wants_instamart(marketplaces):
+        out.extend(
+            await instamart_analytics.city_category(
                 session, tenant_id=tenant_id, start=start, end=end, limit=limit
             )
         )

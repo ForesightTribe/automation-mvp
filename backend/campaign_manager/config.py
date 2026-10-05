@@ -92,14 +92,22 @@ SETTLE_MAX_AGE_HOURS: float = float(os.getenv("CM_SETTLE_MAX_AGE_HOURS", "24"))
 # ── Multi-store measurement + stock (coverage.py, stock.py) ─────────────────
 #
 # A keyword automation measures at up to BID_MAX_STORES frozen stores per city
-# (`cm_city_stores` ranks 1..N) and bids for target at every one where the campaign is in
-# stock. More stores = more consumer searches per tick; a marketplace with a tight search
-# allowance is capped lower. Zepto's anonymous search allows ~4-5 requests a minute, so it
-# stays on one store.
+# (`cm_city_stores` ranks 1..N). HOW it uses them is the marketplace's store strategy:
+#
+#   EVERY_STORE (Blinkit) — read every store each tick and bid for target at every one where
+#       the campaign is in stock (coverage.py). N stores = N searches a tick.
+#   ROTATE (Zepto, C6) — read ONE store a tick and move to the next only when that one can't
+#       sell the campaign (rotation.py). Zepto's anonymous search allows a few requests a
+#       minute, and its search hides sold-out products, so it can't afford — or use — a read
+#       of every store. The set is still 3 deep: it is the fallback order, not a fan-out.
 BID_MAX_STORES: int = int(os.getenv("CM_BID_MAX_STORES", "3"))
 _MAX_STORES_OVERRIDES: dict[str, int] = {
-    "zepto": int(os.getenv("CM_ZEPTO_BID_MAX_STORES", "1")),
+    "zepto": int(os.getenv("CM_ZEPTO_BID_MAX_STORES", "3")),
 }
+
+EVERY_STORE = "every_store"
+ROTATE = "rotate"
+_STORE_STRATEGY: dict[str, str] = {"zepto": ROTATE}
 
 
 def max_stores(platform: str) -> int:
@@ -107,11 +115,25 @@ def max_stores(platform: str) -> int:
     return max(1, min(BID_MAX_STORES, _MAX_STORES_OVERRIDES.get(platform, BID_MAX_STORES)))
 
 
+def store_strategy(platform: str) -> str:
+    """`EVERY_STORE` or `ROTATE` — see above. Anything unlisted keeps Blinkit's behaviour."""
+    return _STORE_STRATEGY.get(platform, EVERY_STORE)
+
+
+# ROTATE only: once a full cycle of stores has come back unable to sell the campaign, the bid
+# is held and ONE store is checked every this many minutes (in rotation) until one can sell
+# again. The ~15-minute tick keeps running; it just doesn't search while resting.
+# 30, not 60 (2026-10-02): stock at a Zepto store is a unit or two and turns over within
+# hours, so an hourly check left a restock unseen for up to 3 hours across a 3-store set.
+STOCK_REST_MINUTES: int = int(os.getenv("CM_STOCK_REST_MINUTES", "30"))
+
+
 # Stock is one brand search per store, reused across runs until it is this old. Inventory
 # does not flip every 15 minutes, and one read serves every keyword at the store.
 STOCK_MAX_AGE_MINUTES: int = int(os.getenv("CM_STOCK_MAX_AGE_MINUTES", "60"))
-# Cap on that brand search when the client's watchlist row sets no `brand_cap`. Blinkit pads
-# a brand search with other brands' products; walking the whole tail invites HTTP 429.
+# Cap on that brand search when the client sets no `brand_cap` for the marketplace (the
+# config workbook's `caps` sheet). Blinkit pads a brand search with other brands' products;
+# walking the whole tail invites HTTP 429.
 STOCK_DEFAULT_BRAND_CAP: int = int(os.getenv("CM_STOCK_DEFAULT_BRAND_CAP", "48"))
 # `cm_bid_store_reads` grows with time (a row per store per tick), so it is trimmed.
 STORE_READS_RETENTION_DAYS: int = int(os.getenv("CM_STORE_READS_RETENTION_DAYS", "30"))
@@ -122,6 +144,42 @@ BID_GIVE_UP_TICKS: int = int(os.getenv("CM_BID_GIVE_UP_TICKS", "2"))
 # Warn once a store has given no usable reading this many checks in a row — the decision is
 # quietly running on fewer stores. Warning, not error: it is not an outage.
 STORE_PROBLEM_WARN_TICKS: int = int(os.getenv("CM_STORE_PROBLEM_WARN_TICKS", "2"))
+
+# Zepto keyword-bid automations: OFF by default (2026-09-29) — see
+# `marketplaces.keyword_bidding_refusal`. `1` turns them back on (a supervised test).
+ZEPTO_KEYWORD_BIDDING: bool = _flag("CM_ZEPTO_KEYWORD_BIDDING", False)
+
+# Zepto's shopper search through a proxy: OFF by default (2026-09-30).
+#
+# Zepto's firewall refuses the VM's own address outright (a data-centre range), so on the VM
+# — and only there — the bid engine's rank and stock reads go out through a consumer-line
+# proxy. Through a proxy Zepto also refuses our normal replayed search, so a proxied session
+# searches by typing into Zepto's own page
+# (`scraper/platforms/zepto/public_data/typed_search.py`); the switch selects both at once.
+# Nothing else uses it — not the scrapes, not the Explorer, not the ads API.
+#
+#   CM_ZEPTO_SHOPPER_PROXY_ON=1                           the switch
+#   CM_ZEPTO_SHOPPER_PROXY=http://user:pass@host:port     the address. A SECRET: that
+#       machine's .env only — never in git, never logged (host:port is all that is printed).
+#
+# On WITHOUT a usable address holds every bid and says why. It never quietly goes direct.
+ZEPTO_SHOPPER_PROXY_ON: bool = _flag("CM_ZEPTO_SHOPPER_PROXY_ON", False)
+ZEPTO_SHOPPER_PROXY: str = os.getenv("CM_ZEPTO_SHOPPER_PROXY", "").strip()
+# A search Zepto refuses ("login to search") waits about a minute before its one retry. This
+# is the most a single proxied run may spend waiting like that; past it, a refused search
+# fails at once and its bid is held, so one bad spell cannot eat the whole 15-minute tick.
+ZEPTO_SHOPPER_WAIT_BUDGET_S: float = float(os.getenv("CM_ZEPTO_SHOPPER_WAIT_BUDGET_S", "180"))
+
+# ── Prepaid ad wallet (wallet.py, ZC-C12) ───────────────────────────────────
+#
+# Zepto ads spend from a prepaid wallet; when it runs dry every campaign stops delivering
+# whatever its budget says, and topping it up is not in our permissions. Below this balance
+# (₹) each run warns; at zero it is an ERROR, which alerts. Default ≈ a day of Brik Oven's
+# spend (₹5–9k/day in Sept 2026). A marketplace without a wallet is never checked.
+WALLET_WARN_BELOW: float = float(os.getenv("CM_WALLET_WARN_BELOW", "5000"))
+# The engines run every 15–60 minutes; a History line on every run would bury the real
+# changes. Logs get it every run, History at most once per this many hours.
+WALLET_NOTE_EVERY_HOURS: float = float(os.getenv("CM_WALLET_NOTE_EVERY_HOURS", "6"))
 
 # ── Per-marketplace tuning ──────────────────────────────────────────────────
 #

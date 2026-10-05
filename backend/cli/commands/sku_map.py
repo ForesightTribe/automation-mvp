@@ -22,7 +22,7 @@ from app.services import sku_map_service
 app = typer.Typer(help="Map private seller item_id ↔ public platform_product_id.")
 console = Console()
 
-_COLS = ["item_id", "item_name", "platform_product_id", "product_name", "match_method"]
+_COLS = ["mp_slug", "item_id", "item_name", "platform_product_id", "product_name", "match_method"]
 
 
 def _str(v) -> str:
@@ -46,14 +46,14 @@ async def _build(tenant_id: str, file: str) -> None:
     if unmatched:
         console.print(f"\n[yellow]{len(unmatched)} unmatched — fill platform_product_id in the workbook:[/yellow]")
         for r in unmatched:
-            console.print(f"  [dim]{r.item_id}[/dim]  {r.item_name}")
+            console.print(f"  [dim]{r.mp_slug}/{r.item_id}[/dim]  {r.item_name}")
 
     wb = Workbook()
     ws = wb.active
     ws.title = "sku_map"
     ws.append(_COLS)
     for r in rows:
-        ws.append([r.item_id, r.item_name, r.platform_product_id or "",
+        ws.append([r.mp_slug, r.item_id, r.item_name, r.platform_product_id or "",
                    r.product_name, r.match_method])
     wb.save(file)
     console.print(f"\n[green]Wrote {len(rows)} rows to[/green] {file} "
@@ -66,18 +66,20 @@ async def _apply(tenant_id: str, file: str) -> None:
     ws = wb["sku_map"] if "sku_map" in wb.sheetnames else wb.active
     rows = list(ws.iter_rows(values_only=True))
     header = [_str(c).lower() for c in rows[0]]
+    i_mp = header.index("mp_slug")
     i_item = header.index("item_id")
     i_pid = header.index("platform_product_id")
 
-    pairs = []
+    triples = []
     for r in rows[1:]:
+        mp_slug = _str(r[i_mp])
         item_id = _str(r[i_item])
         pid = _str(r[i_pid])
-        if item_id and pid:
-            pairs.append((item_id, pid))
+        if mp_slug and item_id and pid:
+            triples.append((mp_slug, item_id, pid))
 
     async with AsyncSessionLocal() as db:
-        report = await sku_map_service.apply_corrections(db, tid, pairs)
+        report = await sku_map_service.apply_corrections(db, tid, triples)
     console.print(f"[green]Applied {report['applied']} mapping(s) from[/green] {file}")
 
 

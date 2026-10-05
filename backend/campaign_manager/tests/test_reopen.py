@@ -96,17 +96,17 @@ class _Service:
             me.updates.append(fields)
             (await get_budget_rule(rule_id)).__dict__.update(fields)
 
-        async def get_budget_schedules(tenant_id, platform="blinkit", **kwargs):
+        async def get_budget_schedules(tenant_id, platform, **kwargs):
             return [(me.schedule, me.rules)]
 
-        async def get_armed(tenant_id, platform="blinkit"):
+        async def get_armed(tenant_id, platform):
             return True
 
         async def enqueue(session, *, job_type, tenant_id, params=None, priority=100):
             me.enqueued.append(job_type)
             return SimpleNamespace(id="job-1")
 
-        async def reconcile(session, tenant_id):
+        async def reconcile(session, tenant_id, marketplace):
             me.reconciles += 1
 
         async def city_names_for(platform, rules):
@@ -129,7 +129,8 @@ class _Service:
         for (module, name), fake in fakes.items():
             setattr(module, name, fake)
         try:
-            return asyncio.run(action(None, TENANT, *args))
+            # Every fixture here is a Blinkit automation; the URL's marketplace says so (ZC-D1).
+            return asyncio.run(action(None, TENANT, "blinkit", *args))
         finally:
             for (module, name), original in originals.items():
                 setattr(module, name, original)

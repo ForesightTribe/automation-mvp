@@ -1,8 +1,10 @@
 """Aggregations for the Reports feature — the client's Excel views, computed
 server-side. Client-scoped (filtered by `tenant_id`); read-only.
 
-Sales pipeline is Blinkit-only today, so the sales pivot returns one platform
-block per marketplace present in `blinkit_seller_sales` (Blinkit in practice).
+The sales pivot returns one platform block per marketplace with sales in the
+window. Blinkit comes from `blinkit_seller_sales` (old partnersbiz domain) or
+`blinkit_seller_hub_sales_order_ro` (new seller-hub domain, e.g. Sereko) —
+both under the "blinkit" block, since a tenant only ever has one of them.
 """
 import uuid
 from datetime import date, datetime, timedelta
@@ -13,7 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.blinkit_marketing import BlinkitAdCampaign, BlinkitAdCampaignDaily
 from app.models.blinkit_seller import BlinkitSellerSale
 from app.models.search import SearchListing
-from app.services import zepto_ads, zepto_reports
+from app.services import blinkit_seller_hub_analytics, instamart_reports, zepto_ads, zepto_reports
 from scraper.utils.pack import per_unit_price
 from app.schemas.reports import (
     CampaignHalf,
@@ -162,10 +164,26 @@ async def get_sales_pivot(
     # axis, category grouping, subtotals, the weekday/weekend split — runs over
     # both marketplaces without knowing which produced a row. `platform` keeps
     # them in separate top-level blocks.
+    # Seller-hub Blinkit accounts (Sereko) land in the same "blinkit" block —
+    # a tenant is on one Blinkit domain or the other, never both.
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        rows = [
+            *rows,
+            *await blinkit_seller_hub_analytics.pivot_rows(
+                session, tenant_id=tenant_id, start=start, end=end, metric=metric
+            ),
+        ]
     if zepto_reports.wants_zepto(marketplaces):
         rows = [
             *rows,
             *await zepto_reports.pivot_rows(
+                session, tenant_id=tenant_id, start=start, end=end, metric=metric
+            ),
+        ]
+    if instamart_reports.wants_instamart(marketplaces):
+        rows = [
+            *rows,
+            *await instamart_reports.pivot_rows(
                 session, tenant_id=tenant_id, start=start, end=end, metric=metric
             ),
         ]
@@ -340,6 +358,14 @@ async def get_marketing_report(
         ).items():
             b_sp, b_sa, b_im = ad_map.get(d, (0.0, 0.0, 0))
             ad_map[d] = (b_sp + sp, b_sa + sa, b_im + im)
+    if instamart_reports.wants_instamart(marketplaces):
+        for d, (sp, sa, im) in (
+            await instamart_reports.ad_daily(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            b_sp, b_sa, b_im = ad_map.get(d, (0.0, 0.0, 0))
+            ad_map[d] = (b_sp + sp, b_sa + sa, b_im + im)
 
     sale_rows = (
         await session.execute(
@@ -353,9 +379,23 @@ async def get_marketing_report(
     ).all()
     sale_map = {d: float(rev) for d, rev in sale_rows}
 
+    if blinkit_seller_hub_analytics.wants_blinkit_seller_hub(marketplaces):
+        for d, rev in (
+            await blinkit_seller_hub_analytics.sales_daily(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            sale_map[d] = sale_map.get(d, 0.0) + rev
     if zepto_reports.wants_zepto(marketplaces):
         for d, rev in (
             await zepto_reports.sales_daily(
+                session, tenant_id=tenant_id, start=start, end=end
+            )
+        ).items():
+            sale_map[d] = sale_map.get(d, 0.0) + rev
+    if instamart_reports.wants_instamart(marketplaces):
+        for d, rev in (
+            await instamart_reports.sales_daily(
                 session, tenant_id=tenant_id, start=start, end=end
             )
         ).items():
@@ -497,8 +537,9 @@ async def get_competition_report(
 
 # ── Weekend planning ───────────────────────────────────────────────────────
 
-# Blinkit's campaign types in the words the client's own sheet uses. Its enum is
-# precise and unread; these are what someone planning a weekend calls them.
+# Each platform's own campaign-type enum, in the words the client's sheet
+# uses. Blinkit's and Zepto's; Instamart has no type axis (always None, which
+# falls through to the "Other Ads" default below).
 AD_TYPE_LABELS = {
     "PRODUCT_LISTING": "Keyword Ads",
     "PRODUCT_RECOMMENDATION": "Recommendation Ads",
@@ -506,6 +547,8 @@ AD_TYPE_LABELS = {
     "BANNER_DIY": "Banner Ads",
     "SHELF_DIY": "Shelf Ads",
     "SEARCH_SUGGESTION": "Search Suggestion Ads",
+    "PLA": "PLA Ads",
+    "Display": "Display Ads",
 }
 
 # Banner placements carry no revenue attribution, so they are reported on cost
@@ -605,6 +648,41 @@ async def get_weekend_planning(
         ).all()
     )
 
+    # Instamart: same shape, appended into the same `rows`/`names` the loop
+    # below already consumes generically — campaign_id is a UUID string here
+    # (Blinkit's is an int), so the two never collide as dict keys. Sourced
+    # from `instamart_ad_product_daily` alone (not also keyword_daily): the
+    # two are different VIEWS of the same spend, and summing both would
+    # double it — see instamart_ads.py's own campaign-breakdown docstring.
+    # `campaign_type` is always None here (Instamart's ad-type breakdown was
+    # removed upstream as unreliable), so every Instamart campaign lands in
+    # one flat section rather than Blinkit's "Keyword Ads"/"Banner Ads" split.
+    if instamart_reports.wants_instamart(marketplaces):
+        im_rows = await instamart_reports.weekend_rows(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        rows = [*rows, *im_rows]
+        names.update(
+            await instamart_reports.campaign_names(session, tenant_id=tenant_id)
+        )
+
+    # Zepto: same shape again. campaign_id arrives pre-prefixed "zepto:<id>"
+    # (see zepto_reports.weekend_rows) since Zepto's ids, like Blinkit's, are
+    # plain platform-assigned ints that could coincidentally collide for a
+    # different client — the accumulator below keys purely on campaign_id, so
+    # an unprefixed collision would silently merge two campaigns' spend.
+    # campaign_type IS a real axis here (PLA | Display — see
+    # ZeptoAdCampaignDaily's docstring), unlike Instamart's, so Zepto
+    # campaigns split into their own sections below same as Blinkit's do.
+    if zepto_reports.wants_zepto(marketplaces):
+        zp_rows = await zepto_reports.weekend_rows(
+            session, tenant_id=tenant_id, start=start, end=end
+        )
+        rows = [*rows, *zp_rows]
+        names.update(
+            await zepto_reports.campaign_names(session, tenant_id=tenant_id)
+        )
+
     blocks = _weekend_blocks(start, end)
     index = {}
     for i, b in enumerate(blocks):
@@ -629,7 +707,7 @@ async def get_weekend_planning(
         target[1] += float(revenue or 0)
         target[2] += int(impressions or 0)
 
-    def _campaign(cid: int, slot: dict, name: str) -> WeekendCampaign:
+    def _campaign(cid: int | str, slot: dict, name: str) -> WeekendCampaign:
         weekends = [_half(*w) for w in slot["w"]]
         weekday = _half(*slot["d"])
         weekend_total = _half(

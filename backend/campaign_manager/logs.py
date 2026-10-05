@@ -19,8 +19,14 @@ fail/rejected-write. So `severity>=WARNING` surfaces everything alert-worthy.
 
 Dry-run marking changed deliberately: it used to prefix EVERY line, which was noise on the
 90% of lines that never write anything. Now the run header says it loudly once and only the
-lines that would have touched the marketplace carry `[DRY-RUN]` — the one place ambiguity
-would actually be dangerous.
+lines that would have touched the marketplace say `DRY RUN, not sent` — the one place
+ambiguity would actually be dangerous.
+
+CRISP BY DESIGN (2026-10-02). One line per fact, numbers over sentences (`#2`, `₹10 → ₹12`),
+and the decision and its outcome on ONE line (`raise ₹10 → ₹12 (+₹2) · #2 vs target #1 ·
+applied`). The full sentences still exist — they are the History reasons a client reads in
+the dashboard (`cm_run_log`), which this module never touches. Everything about one
+automation is indented under its header; run-level lines sit at the margin.
 """
 import uuid
 from typing import Any
@@ -28,7 +34,7 @@ from typing import Any
 from app.utils.logger import logger
 
 _TAG = "cm"
-_INDENT = "      "                      # rule-detail lines sit under their block header
+_INDENT = "  "                          # rule-detail lines sit under their block header
 
 # Job key → how it reads in the run header.
 _JOB_TITLES = {
@@ -61,13 +67,14 @@ def _emit(level: str, event: str, dry_run: bool, msg: str, *, indent: bool = Fal
 def run_start(run_id: str, job: str, tenant, *, dry_run: bool,
               tenant_name: str | None = None, **fields: Any) -> None:
     title = _JOB_TITLES.get(job, job.replace("_", " ").capitalize())
-    banner = f"─── {title} · run {run_id} ───"
-    if dry_run:
-        banner = f"─── {title} · run {run_id} · DRY RUN, nothing will be written ───"
-    _emit("info", "run.start", dry_run, banner,
+    parts = [title, tenant_name or str(tenant)]
+    if fields.get("platform"):
+        parts.append(str(fields["platform"]))
+    parts += ["DRY RUN" if dry_run else "LIVE", f"run {run_id}"]
+    _emit("info", "run.start", dry_run, f"── {' · '.join(parts)} ──",
           run_id=run_id, job=job, tenant=str(tenant), **fields)
-    who = f"{tenant_name} ({tenant})" if tenant_name else str(tenant)
-    _emit("info", "run.tenant", dry_run, f"Tenant: {who}",
+    # The id behind the name, for whoever needs it — not for the reader of every run.
+    _emit("debug", "run.tenant", dry_run, f"tenant {tenant}",
           run_id=run_id, job=job, tenant=str(tenant))
 
 
@@ -76,23 +83,51 @@ def blank(run_id: str, *, dry_run: bool = False) -> None:
     _emit("info", "spacer", dry_run, "", run_id=run_id)
 
 
-def note(run_id: str, msg: str, *, dry_run: bool = False, level: str = "info") -> None:
-    """A run-level line that isn't part of a rule block (counts, readiness, …)."""
-    _emit(level, "note", dry_run, msg, run_id=run_id)
+def note(run_id: str, msg: str, *, dry_run: bool = False, level: str = "info",
+         indent: bool = False) -> None:
+    """A run-level line that isn't part of a rule block (counts, readiness, …). `indent` when
+    it is said from INSIDE one (a stock check made for that automation)."""
+    _emit(level, "note", dry_run, msg, indent=indent, run_id=run_id)
 
 
-def session_ok(run_id: str, *, dry_run: bool, platform: str = "blinkit") -> None:
-    # `platform` defaults for the callers that predate a second marketplace. It said
-    # "Blinkit session loaded" unconditionally, which is actively misleading in a
-    # Zepto run — the one line that tells you WHOSE account you are about to touch.
-    _emit("info", "session.ok", dry_run, f"{platform} session loaded",
+def session_ok(run_id: str, *, dry_run: bool, platform: str) -> None:
+    # `platform` is required — no default marketplace (ZC-D1). It once said "Blinkit
+    # session loaded" unconditionally, which is actively misleading in a Zepto run — the
+    # one line that tells you WHOSE account you are about to touch.
+    # DEBUG: the run header already names the marketplace, and the bid engine's `ready`
+    # line says the session is up.
+    _emit("debug", "session.ok", dry_run, f"{platform} session loaded",
           run_id=run_id, platform=platform)
 
 
-def live_armed(run_id: str, *, advertiser: int) -> None:
-    _emit("warning", "live.armed", False,
-          f"LIVE writes armed — advertiser {advertiser} (stored account config)",
+def _count(n: int, unit: str) -> str:
+    """`1 automation`, `2 automations` — `unit` is given plural."""
+    return f"{n} {unit[:-1] if n == 1 and unit.endswith('s') else unit}"
+
+
+def _short_id(value) -> str:
+    """An advertiser id as a reader needs it — a UUID's first block is enough to recognise."""
+    s = str(value)
+    return s.split("-")[0] if "-" in s else s
+
+
+def live_armed(run_id: str, *, advertiser: int, quiet: bool = False) -> None:
+    """`quiet` when the caller says it in its own `ready` line (the bid engine)."""
+    _emit("debug" if quiet else "warning", "live.armed", False,
+          f"LIVE armed · advertiser {_short_id(advertiser)}",
           run_id=run_id, advertiser=advertiser)
+
+
+def ready(run_id: str, *, dry_run: bool, automations: int, advertiser=None,
+          unit: str = "automations") -> None:
+    """The bid engine's one setup line: session up, armed (or not), how much work there is.
+    WARNING on a live run — the level the separate "LIVE armed" line had, so filtering on
+    severity finds live runs exactly as before."""
+    armed = (f" · LIVE armed (advertiser {_short_id(advertiser)})"
+             if advertiser is not None and not dry_run else "")
+    _emit("warning" if armed else "info", "run.ready", dry_run,
+          f"ready · session ok{armed} · {_count(automations, unit)} in window",
+          run_id=run_id, automations=automations)
 
 
 def live_refused(run_id: str, *, reason: str) -> None:
@@ -100,9 +135,14 @@ def live_refused(run_id: str, *, reason: str) -> None:
           f"LIVE write refused — {reason}", run_id=run_id, reason=reason)
 
 
-def session_expired(run_id: str, *, dry_run: bool) -> None:
+def session_expired(run_id: str, *, dry_run: bool, platform: str) -> None:
+    # Named the marketplace unconditionally ("Blinkit session expired — re-auth with `cli
+    # auth blinkit`") — on a Zepto run that is the wrong account AND a command that does
+    # not exist. Same bug `session_ok` had.
     _emit("error", "session.expired", dry_run,
-          "Blinkit session expired — re-auth with `cli auth blinkit`", run_id=run_id)
+          f"{platform.title()} session expired · re-auth: python -m cli auth login "
+          f"{platform} -t <tenant>",
+          run_id=run_id, platform=platform)
 
 
 def decision(run_id: str, *, dry_run: bool, campaign_id, verdict: str, reason: str,
@@ -119,65 +159,79 @@ def decision(run_id: str, *, dry_run: bool, campaign_id, verdict: str, reason: s
 # ── Per-rule narration (the bid engine's block) ─────────────────────────────
 
 def rule_header(run_id: str, *, dry_run: bool, index: int, total: int,
-                campaign_name: str | None, campaign_id) -> None:
-    name = campaign_name or f"campaign {campaign_id}"
-    _emit("info", "rule.start", dry_run, f"[{index}/{total}] {name}  (campaign {campaign_id})",
-          run_id=run_id, campaign_id=campaign_id)
+                campaign_name: str | None, campaign_id, keyword: str | None = None,
+                match_type: str | None = None, target: int | None = None) -> None:
+    """`[1/2] Foresight | Sour Cream (TP) · #2443333 · "sour cream" EXACT · target #1`."""
+    parts = [f"[{index}/{total}] {campaign_name or f'campaign {campaign_id}'}",
+             f"#{campaign_id}"]
+    if keyword:
+        parts.append(f'"{keyword}"' + (f" {match_type.upper()}" if match_type else ""))
+    if target is not None:
+        parts.append(f"target #{target}")
+    _emit("info", "rule.start", dry_run, " · ".join(parts),
+          run_id=run_id, campaign_id=campaign_id, keyword=keyword)
 
 
 def rule_context(run_id: str, *, dry_run: bool, campaign_id, keyword: str, target: int,
                  current_cpm: int, min_bid: int, max_bid: int | None,
                  location_name: str | None, lat: float, lon: float,
-                 store_source: str | None = None, store_count: int = 1) -> None:
-    limits = f"₹{min_bid}–₹{max_bid}" if max_bid else f"₹{min_bid}–none"
-    _emit("info", "rule.config", dry_run,
-          f'keyword "{keyword}" · target position {target} · current bid ₹{current_cpm} '
-          f"· limits {limits}",
-          indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
-          target_position=target, current_cpm=current_cpm)
-    where = location_name or "default store"
+                 store_source: str | None = None, store_count: int = 1,
+                 rotation: list[str] | None = None,
+                 store_names: list[str] | None = None) -> None:
+    """`bid ₹10 (₹10–50) · stores: J. P. Nagar → VIJAY NAGAR → Kadugodi (client set)`.
+
+    `rotation` = a rotating marketplace's set, one store per check, in turn (→). Otherwise
+    `store_names` (or the single `location_name`) — every store read each tick (commas)."""
+    limits = f"₹{min_bid}–{max_bid}" if max_bid else f"₹{min_bid}+"
     why = _STORE_SOURCE.get(store_source)
-    more = store_count - 1
-    _emit("info", "rule.store", dry_run,
-          f"measuring at {where} ({lat}, {lon})" + (f" · {why}" if why else "")
-          + (f" · plus {more} validation store{'s' if more > 1 else ''}" if more > 0 else ""),
+    tail = f" ({why})" if why else ""
+    if rotation:
+        where = f"stores: {' → '.join(rotation)}{tail}"
+    elif store_names and len(store_names) > 1:
+        where = f"stores: {', '.join(store_names)}{tail} · worst counts"
+    else:
+        where = f"store: {location_name or 'default store'}{tail}"
+    _emit("info", "rule.config", dry_run, f"bid ₹{current_cpm} ({limits}) · {where}",
           indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
-          lat=lat, lon=lon, store_source=store_source, store_count=store_count)
+          target_position=target, current_cpm=current_cpm, lat=lat, lon=lon,
+          store_source=store_source, store_count=store_count)
 
 
 # Why a rule measured where it did — `bid.measurement_stores`' `source`, in words. A store
 # that moved because someone changed a city's setting should be explainable from the log.
 _STORE_SOURCE = {
-    "tenant": "this client's store set for the city",
-    "global": "the default store set for the city",
-    "rule": "the store saved on the automation",
-    "default": "no store set, so the Bengaluru fallback",
+    "tenant": "client set",
+    "global": "default set",
+    "rule": "the automation's store",
+    "default": "no store set — Bengaluru fallback",
 }
 
 
 def store_reading(run_id: str, *, dry_run: bool, campaign_id, keyword: str, reading,
-                  many: bool) -> None:
-    """What one measurement store showed this tick (campaign_manager/coverage.py `Reading`).
-    `many` = the rule measures at several stores, so each line says which one it is."""
+                  many: bool = False, of: int | None = None) -> None:
+    """What one measurement store showed this tick (campaign_manager/coverage.py `Reading`):
+    `J. P. Nagar (1/3): ad #2 of 30`. `of` = how many stores the rule has, so the line says
+    which one this is (`many` is the older yes/no form of the same thing)."""
     s = reading.store
     name = getattr(s, "label", "") or getattr(s, "merchant_id", "") or "store"
-    if many:
-        name = f"store {getattr(s, 'rank', 1)} · {name}"
+    n = of if of is not None else (2 if many else 1)
+    if n > 1:
+        name = f"{name} ({getattr(s, 'rank', 1)}/{n})" if of else f"{name} ({getattr(s, 'rank', 1)})"
     verdict = reading.verdict
     if verdict == "sponsored":
-        msg = f"{name}: our ad at position {reading.position:g} of {reading.results}"
+        msg = f"{name}: ad #{reading.position:g} of {reading.results}"
     elif verdict == "absent":
-        msg = f"{name}: no sponsored slot for us — {reading.detail}"
+        msg = f"{name}: ad missing — {reading.detail}"
         if reading.eligibility == "unknown":
-            msg += " (stock not confirmed, so it still counts)"
+            msg += " · stock unknown, still counts"
     elif verdict == "skipped":
-        msg = f"{name}: skipped — {reading.detail}"
+        msg = f"{name}: can't sell — {reading.detail}"
     elif verdict == "untrusted":
         msg = f"{name}: not counted — {reading.detail}"
     elif verdict == "gave_up":
         msg = f"{name}: not chased — {reading.detail}"
     else:
-        msg = f"{name}: could not read — {reading.detail}"
+        msg = f"{name}: unreadable — {reading.detail}"
     _emit("info" if verdict in ("sponsored", "absent") else "warning", "rule.store_reading",
           dry_run, msg, indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
           merchant_id=getattr(s, "merchant_id", ""), rank=getattr(s, "rank", 1),
@@ -214,10 +268,10 @@ def decided(run_id: str, *, dry_run: bool, campaign_id, msg: str,
 
 def applied(run_id: str, *, dry_run: bool, campaign_id, ok: bool, msg: str,
             keyword: str | None = None) -> None:
-    """The outcome of the write. `[DRY-RUN]` lives here and nowhere else — this is the
-    only line where confusing 'would have' with 'did' could actually cost money."""
-    _emit("info" if ok else "error", "rule.applied", dry_run,
-          f"{_prefix(dry_run)}{msg}", indent=True,
+    """The decision AND the outcome of its write, on one line. The caller's `msg` ends in
+    `applied`, `DRY RUN, not sent` or `NOT applied — why` (see `bid._outcome`) — the only
+    line where confusing 'would have' with 'did' could actually cost money."""
+    _emit("info" if ok else "error", "rule.applied", dry_run, msg, indent=True,
           run_id=run_id, campaign_id=campaign_id, keyword=keyword, applied=ok)
 
 
@@ -302,23 +356,19 @@ def reconcile_change(run_id: str, *, dry_run: bool, action: str, name: str,
 def run_summary(run_id: str, job: str, *, dry_run: bool, processed: int,
                 applied: int, skipped: int, errors: int,
                 seconds: float | None = None, unit: str = "items",
-                note: str | None = None) -> None:
+                note: str | None = None, skipped_word: str = "skipped") -> None:
     """Closing banner. Zero-valued parts are left out so the line says only what happened."""
-    parts = []
-    if seconds is not None:
-        parts.append(f"Done in {seconds:.0f}s")
-    else:
-        parts.append("Done")
-    parts.append(f"{processed} {unit}")
+    parts = [f"done {seconds:.0f}s" if seconds is not None else "done",
+             _count(processed, unit)]
     if applied:
         parts.append(f"{applied} changed")
     if skipped:
-        parts.append(f"{skipped} skipped")
+        parts.append(f"{skipped} {skipped_word}")
     if errors:
         parts.append(f"{errors} error" + ("s" if errors != 1 else ""))
     if note:
         parts.append(note)
     _emit("info" if not errors else "warning", "run.summary", dry_run,
-          f"─── {' · '.join(parts)} ───",
+          f"── {' · '.join(parts)} ──",
           run_id=run_id, job=job, processed=processed, applied=applied,
           skipped=skipped, errors=errors, seconds=seconds)

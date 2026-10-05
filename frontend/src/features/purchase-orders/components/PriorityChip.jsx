@@ -19,7 +19,10 @@ export const PriorityChip = ({ priority }) => (
 
 /** The marketplace's own word for where the PO stands. */
 const STATE_TONE = {
-	Scheduled: "bg-info-soft text-info",
+	// Green because a slot is booked: the delivery is arranged and on its way,
+	// which is the good end of an OPEN PO. Unscheduled is the amber one — live,
+	// undelivered, and nobody has booked an appointment for it.
+	Scheduled: "bg-success-soft text-success",
 	Unscheduled: "bg-warning-soft text-warning",
 	Fulfilled: "bg-success-soft text-success",
 	Expired: "bg-muted text-content-muted",
@@ -29,7 +32,10 @@ const STATE_TONE = {
 export const StatusChip = ({ state }) => (
 	<span
 		className={`inline-flex items-center gap-1.5 rounded-full px-2.5 py-0.5 text-xs font-medium whitespace-nowrap ${
-			STATE_TONE[state] ?? "bg-muted text-content-muted"
+			STATE_TONE[state] ??
+			(state?.startsWith("Cancel")
+				? STATE_TONE.Cancelled
+				: "bg-muted text-content-muted")
 		}`}
 	>
 		<span aria-hidden className="h-1.5 w-1.5 rounded-full bg-current" />

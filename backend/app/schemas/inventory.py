@@ -2,6 +2,8 @@ from datetime import date, datetime
 
 from pydantic import BaseModel, ConfigDict, Field
 
+from app.schemas.analytics import Metric
+
 
 class SohRow(BaseModel):
     item_id: str
@@ -81,6 +83,31 @@ class DistributionRow(BaseModel):
     distribution_pct: float
     avg_price: float | None
     avg_discount: float | None
+
+
+class ReachMarketplaceRow(BaseModel):
+    """One marketplace's reach for the window, shaped like the Overview's
+    marketplace rows so one table component renders it.
+
+    `stores_scraped` is that marketplace's own denominator — the coverage
+    differs per marketplace, so two reach figures are not read against the same
+    base.
+    """
+
+    slug: str
+    name: str
+    color: str | None = None
+    connected: bool = True
+    reach: Metric | None = None
+    in_stock: Metric | None = None
+    # Distinct stores: those that answered for this brand, and those holding at
+    # least one of its SKUs in stock.
+    stores_scraped: int = 0
+    stores_stocked: int = 0
+    skus: int = 0
+    # SKU x store placements, so one store holding six SKUs is six listings.
+    # Deliberately not a store count — `stores_stocked` is that.
+    listings: int = 0
 
 
 class DistributionResponse(BaseModel):

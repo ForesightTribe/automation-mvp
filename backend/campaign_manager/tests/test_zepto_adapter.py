@@ -68,6 +68,18 @@ def test_set_advertiser_is_a_noop_when_nothing_is_stored():
         adapter.set_advertiser(_FakeClient([_BRAND]), empty)
 
 
+def test_the_engine_reads_bids_by_keyword_and_match_type():
+    detail = {"keyword_config": [
+        {"keyword": "sour dough", "match_type": "EXACT", "bid_value": 10},
+        {"keyword": "sour dough", "match_type": "PHRASE", "bid_value": 15},
+        {"keyword": "sour dough", "match_type": "BROAD", "bid_value": 15},
+        {"keyword": "cheap bread", "match_type": "EXACT", "bid_value": 0, "is_negative": True},
+    ]}
+    assert adapter.bids_by_match_from_detail(detail) == {
+        ("sour dough", "EXACT"): 10, ("sour dough", "PHRASE"): 15,
+        ("sour dough", "BROAD"): 15}
+
+
 def test_bids_from_detail_keeps_one_entry_per_keyword_text():
     detail = {"keyword_config": [
         {"keyword": "pink toffee", "match_type": "EXACT", "bid_value": 10,

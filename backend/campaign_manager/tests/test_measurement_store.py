@@ -190,11 +190,12 @@ class _FakeMarketplace:
     products, `truncated` ones return a page-1-only result."""
 
     def __init__(self, positions: dict, fail=(), empty=(), truncated=()):
-        self.positions, self.fetched = positions, []
+        self.positions, self.fetched, self.merchant_ids = positions, [], []
         self.fail, self.empty, self.truncated = set(fail), set(empty), set(truncated)
 
-    async def fetch_positions(self, session, keyword, lat, lon):
+    async def fetch_positions(self, session, keyword, lat, lon, *, merchant_id=None):
         self.fetched.append(lat)
+        self.merchant_ids.append(merchant_id)
         if lat in self.fail:
             raise RuntimeError("HTTP 429")
         if lat in self.empty:
@@ -224,6 +225,30 @@ def _read(market, stores, stock=None, cache=None, products=PRODUCTS, brand_name=
 def _three():
     return [_store(merchant_id="a", rank=1, lat=1.0), _store(merchant_id="b", rank=2, lat=2.0),
             _store(merchant_id="c", rank=3, lat=3.0)]
+
+
+def test_the_store_id_reaches_the_marketplace():
+    """ZC-A3. Zepto binds a search to a store by id; with only the coordinate its scraper
+    resolves the store through `get_page`, a scarce separate allowance, on every search.
+    The id was on every MeasurementStore and never passed."""
+    market = _FakeMarketplace({1.0: 5})
+    _read(market, _three())
+    assert market.merchant_ids == ["a", "b", "c"]
+
+
+def test_a_store_without_an_id_passes_none_not_an_empty_string():
+    # A rule's own saved coordinate may have no catalogue id; "" would be sent as a header.
+    market = _FakeMarketplace({1.0: 5})
+    _read(market, [_store(merchant_id="", lat=1.0)])
+    assert market.merchant_ids == [None]
+
+
+def test_two_stores_sharing_a_coordinate_are_searched_separately():
+    """The cache is keyed by store id as well as coordinate: on Zepto the id IS the store,
+    and one catalogue coordinate can front two stores (express + longtail hubs)."""
+    market = _FakeMarketplace({1.0: 5})
+    _read(market, [_store(merchant_id="a", lat=1.0), _store(merchant_id="b", lat=1.0, rank=2)])
+    assert market.merchant_ids == ["a", "b"]
 
 
 def test_a_confirmed_stock_out_is_never_searched():

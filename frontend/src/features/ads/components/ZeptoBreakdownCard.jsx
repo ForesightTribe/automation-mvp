@@ -25,7 +25,7 @@ export const ZeptoBreakdownCard = ({ dimension, title, label }) => {
 	const [adType, setAdType] = useState("");
 
 	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const wantsZepto = selected.includes("zepto");
 
 	const { data, isLoading, error, refetch } = useZeptoBreakdown({
 		dimension,

@@ -10,10 +10,48 @@ import asyncio
 
 from campaign_manager import writes
 from campaign_manager.marketplaces.blinkit import adapter
+from campaign_manager.marketplaces.blinkit.client import BlinkitClient
+
+_CAMPAIGNS = "/adservice/v1/advertisers/campaigns"
+_ADVERTISERS = "/adservice/v1/advertisers"
 
 
 def _r(coro):
     return asyncio.run(coro)
+
+
+def _client(campaigns_resp, advertisers_resp=None):
+    """A real BlinkitClient whose network call is replaced, so `get_advertiser_id`'s own
+    logic runs. Records every path it was asked for."""
+    c = object.__new__(BlinkitClient)
+    c.calls = []
+
+    async def fake_fetch(method, path, body=None, **_):
+        c.calls.append(path)
+        if path == _CAMPAIGNS:
+            return campaigns_resp
+        if path == _ADVERTISERS:
+            return advertisers_resp
+        raise AssertionError(f"unexpected call {method} {path}")
+
+    c._fetch = fake_fetch
+    return c
+
+
+def _raises(coro) -> str:
+    try:
+        _r(coro)
+    except RuntimeError as e:
+        return str(e)
+    raise AssertionError("expected RuntimeError")
+
+
+# The advertiser list exactly as Blinkit returned it for Sereko (2026-10-03), trimmed.
+_ONE_ADVERTISER = {"success": True, "items": [
+    {"id": 1996, "name": "SUSH ESSENTIALS PRIVATE LIMITED", "status": "ACTIVE"},
+]}
+# Sereko's campaign list: campaigns, but no advertiser_id anywhere.
+_NO_ID = {"data": {"campaigns": [{"id": 1}]}}
 
 
 class DeriveClient:
@@ -82,6 +120,41 @@ def test_budget_write_without_stored_sends_none():   # dry/unarmed path → fall
     c = WriteCaptureClient()
     _r(adapter.apply_budget(c, 574687, 800))
     assert c.captured is None
+
+
+# ── get_advertiser_id: campaign list first, then a SINGLE-advertiser list ─────────────
+
+def test_campaign_list_id_wins_without_a_second_call():   # Dobra's shape
+    c = _client({"data": {"advertiser_id": 19802, "campaigns": []}})
+    assert _r(c.get_advertiser_id()) == 19802
+    assert c.calls == [_CAMPAIGNS]
+
+
+def test_falls_back_to_the_sole_advertiser():   # Sereko's shape
+    c = _client(_NO_ID, _ONE_ADVERTISER)
+    assert _r(c.get_advertiser_id()) == 1996
+    assert c.calls == [_CAMPAIGNS, _ADVERTISERS]
+
+
+def test_refuses_to_pick_between_several_advertisers():   # an agency login across brands
+    c = _client(_NO_ID, {"items": [{"id": 1996, "name": "SUSH ESSENTIALS"},
+                                   {"id": 19802, "name": "DOBRA"}]})
+    msg = _raises(c.get_advertiser_id())
+    assert "2 advertisers" in msg and "1996 (SUSH ESSENTIALS)" in msg and "19802 (DOBRA)" in msg
+
+
+def test_refuses_when_the_list_is_empty():
+    assert "0 usable" in _raises(_client(_NO_ID, {"items": []}).get_advertiser_id())
+
+
+def test_refuses_a_missing_list():
+    assert "Refusing to guess" in _raises(_client(_NO_ID, {"success": False}).get_advertiser_id())
+
+
+def test_rejects_ids_that_are_not_positive_ints():
+    for bad in (0, -5, True, "1996", None, 1996.0):
+        c = _client({"data": {"advertiser_id": bad}}, {"items": [{"id": bad}]})
+        _raises(c.get_advertiser_id())
 
 
 def _run() -> int:

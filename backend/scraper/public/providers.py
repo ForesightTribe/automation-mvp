@@ -53,6 +53,9 @@ from typing import Any, Awaitable, Callable
 from scraper.platforms.blinkit.public_data import endpoints as bl_ep
 from scraper.platforms.blinkit.public_data import parser as bl_parser
 from scraper.platforms.blinkit.public_data import scraper as bl_scraper
+from scraper.platforms.instamart.public_data import endpoints as im_ep
+from scraper.platforms.instamart.public_data import parser as im_parser
+from scraper.platforms.instamart.public_data import scraper as im_scraper
 from scraper.platforms.zepto.public_data import endpoints as ze_ep
 from scraper.platforms.zepto.public_data import parser as ze_parser
 from scraper.platforms.zepto.public_data import scraper as ze_scraper
@@ -61,6 +64,14 @@ OpenSession = Callable[..., Awaitable[dict | None]]
 Search = Callable[..., Awaitable[dict]]
 CloseSession = Callable[[dict], Awaitable[None]]
 Parse = Callable[[dict], dict]
+LaunchBrowser = Callable[[Any], Awaitable[Any]]
+
+
+async def _default_launch(pw):
+    """Playwright's default headless browser — what every marketplace used until
+    2026-09-26, and what Blinkit still uses."""
+    from scraper.utils.browser import PLAYWRIGHT_ARGS
+    return await pw.chromium.launch(headless=True, args=PLAYWRIGHT_ARGS)
 
 
 @dataclass(frozen=True)
@@ -76,10 +87,13 @@ class Provider:
     close_session: CloseSession | None = None
     parse: Parse | None = None
     # Cap FLOORS, from the marketplace's own endpoints.py. These apply only when the
-    # tenant configures no `keyword_cap`/`brand_cap` and the CLI passes no override —
-    # they are the last fallback, not the usual value.
+    # tenant configures no cap for THIS marketplace (`tenant_watchlist_caps`, read via
+    # scraper/public/caps.py) and the CLI passes no override — the last fallback.
     result_cap: int = 48
     brand_cap: int = 60
+    # Results per page, where known. Only used to warn about a configured cap that is not
+    # a whole number of pages (`cli sync`); None = no such check.
+    page_size: int | None = None
 
     # ── Pacing and concurrency, per marketplace ──────────────────────────────
     # These were module constants in orchestrator.py, tuned for Blinkit, which
@@ -113,6 +127,29 @@ class Provider:
     # sleep wastes 10 minutes of every block.
     probe_every_s: int = 0
     max_block_waits: int = 0         # consecutive block waits before giving up
+    # How to meet a block, when one remedy does not fit all: `(kind, streak) -> (wait
+    # seconds, rebuild the session?)` for the `streak`-th block in a row. Zepto's three
+    # mechanisms want three different things (see zepto scraper.block_remedy). None = the
+    # generic remedy above — wait `probe_every_s`, rebuild, up to `max_block_waits` times.
+    block_remedy: Callable[[str, int], tuple[float, bool]] | None = None
+    # With a `block_remedy`: a worker that has seen nothing but blocks for this long stops,
+    # and the run ends `partial`. Replaces the `max_block_waits` count, which gave up on an
+    # ordinary bad patch and lost the rest of the run.
+    block_give_up_s: float = 0
+    # Adaptive pacing. None = fixed: `search_gap_s` slept after every search, as always.
+    # Set, the pace is START-to-START, from `gap_floor_s` up to `gap_max_s`: x`gap_backoff`
+    # after every block, /`gap_ease` after `gap_ease_after` clean searches in a row. See
+    # scraper/public/pacing.py.
+    gap_max_s: float | None = None
+    gap_floor_s: float = 0.0
+    gap_backoff: float = 1.5
+    gap_ease_after: int = 20
+    gap_ease: float = 1.25
+    # How to start this marketplace's browser. The worker pools (keyword scrape, own-SKU
+    # scrape, Explorer) all launch through this, so a marketplace that needs a different
+    # browser changes it in ONE place. Zepto needs the full Chromium — its WAF blocks the
+    # default headless shell (see zepto/public_data/endpoints.BROWSER_CHANNEL).
+    launch_browser: LaunchBrowser = _default_launch
 
 
 _PROVIDERS: dict[str, Provider] = {
@@ -126,10 +163,37 @@ _PROVIDERS: dict[str, Provider] = {
         parse=bl_parser.parse,
         result_cap=bl_ep.RESULT_CAP,
         brand_cap=bl_ep.BRAND_RESULT_CAP,
+        page_size=bl_ep.PAGE_SIZE,
+        # 2026-10-02: Cloudflare's blocks are recognised and met by kind instead of
+        # re-sent at once (see blinkit scraper.block_remedy). Pacing stays fixed and
+        # the pool stays 5 wide — those want measuring on the laptop first (B2/B3).
+        block_remedy=bl_scraper.block_remedy,
+        block_give_up_s=bl_ep.BLOCK_GIVE_UP_S,
     ),
-    # Modules exist but on the old one-shot interface — not yet on the session-reuse
-    # interface the worker pool needs. See docs/zepto.md.
-    "instamart": Provider(slug="instamart", name="Instamart", wired=False),
+    "instamart": Provider(
+        slug="instamart",
+        name="Instamart",
+        wired=True,
+        open_session=im_scraper.open_context_session,
+        search=im_scraper.search,
+        close_session=im_scraper.close_session,
+        parse=im_parser.parse,
+        result_cap=im_ep.RESULT_CAP,
+        brand_cap=im_ep.BRAND_RESULT_CAP,
+        # Rewritten 2026-09-17 onto instamart.in (the old module hit swiggy.com and
+        # never returned a product). Store binding is in the search URL, so the
+        # session re-targets by params alone; transport is in-page fetch() only.
+        # Pacing measured on a 40-call probe (30/30 at 1 s, no blocks) — a light
+        # probe. Single worker until the first full Bengaluru run says which
+        # limiter model Instamart follows; see endpoints.py.
+        search_gap_s=im_ep.SEARCH_GAP_S,
+        store_gap_s=im_ep.STORE_GAP_S,
+        pause_every=im_ep.PAUSE_EVERY,
+        pause_s=im_ep.PAUSE_S,
+        probe_every_s=im_ep.PROBE_EVERY_S,
+        max_block_waits=len(im_ep.RECOVERY_WAITS_S),
+        max_workers=im_ep.MAX_WORKERS,
+    ),
     "zepto": Provider(
         slug="zepto",
         name="Zepto",
@@ -140,6 +204,7 @@ _PROVIDERS: dict[str, Provider] = {
         parse=ze_parser.parse,
         result_cap=ze_ep.RESULT_CAP,
         brand_cap=ze_ep.BRAND_RESULT_CAP,
+        page_size=ze_ep.PAGE_SIZE,
         # Re-measured from scratch 31-Aug-2026 and validated on a full-city run:
         # 169 stores x 9 keywords = 1,521 requests in 56.6 min, 100% success, zero
         # blocks. 2 s pacing, one worker, no scheduled rests — the previous 12 s /
@@ -152,11 +217,19 @@ _PROVIDERS: dict[str, Provider] = {
         probe_every_s=ze_ep.PROBE_EVERY_S,
         max_block_waits=len(ze_ep.RECOVERY_WAITS_S),
         max_workers=ze_ep.MAX_WORKERS,
+        launch_browser=ze_scraper.launch_browser,
+        # 2026-10-01: a block is met by its kind, not by one reflex, and the pace adapts —
+        # the 2026-09-29 run spent 8.4 h bouncing between blocks at a fixed 2 s. See
+        # zepto endpoints.py, "Adaptive pacing".
+        block_remedy=ze_scraper.block_remedy,
+        block_give_up_s=ze_ep.BLOCK_GIVE_UP_S,
+        gap_floor_s=ze_ep.PACE_FLOOR_S,
+        gap_max_s=ze_ep.GAP_MAX_S,
+        gap_backoff=ze_ep.GAP_BACKOFF,
+        gap_ease_after=ze_ep.GAP_EASE_AFTER,
+        gap_ease=ze_ep.GAP_EASE,
     ),
 }
-
-DEFAULT_MARKETPLACE = "blinkit"
-
 
 def get_provider(slug: str) -> Provider:
     """The wired provider for `slug`, or a clear error if unknown / not yet wired."""

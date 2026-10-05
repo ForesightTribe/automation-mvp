@@ -189,7 +189,7 @@ records **what to run, when, and how it went**, and points at the detail row via
 | `log_path` | path to this run's log file |
 | `peak_rss_mb` | child **and its descendants** — how you size lane slots |
 | `ref_job_id` | → `scrape_jobs.id` / `explorer_runs.id` |
-| `error` | short reason (`auth_expired`, `oom`, `timeout`, `runner_died`, exception head) |
+| `error` | short reason (`auth_expired`, `partial`, `oom`, `timeout`, `runner_died`, exception head). `partial` = a public scrape that ran but left gaps (exit code 4): its data is on disk, not loaded — re-queue with `resume=true`. See [staging.md](staging.md). |
 | `started_at` / `completed_at` / `created_at` | |
 
 **Overlap guard** — the DB refuses to queue a second run of the same job for the same
@@ -239,21 +239,38 @@ ignores it until its `next_run_at` passes.
 
 ## Job types
 
-`params` maps 1:1 onto existing CLI flags — no new scraper code.
+`params` maps 1:1 onto existing CLI flags — no new scraper code. The registry is
+`backend/jobs/types.py` (`JOB_TYPES`); this table mirrors it.
 
 | `job_type` | Lane | Command it runs |
 |---|---|---|
 | `scrape.blinkit_marketing` | `dashboard` | `cli scrape blinkit --tenant … [--from --to]` |
 | `scrape.blinkit_seller` | `dashboard` | `cli scrape blinkit-seller --tenant … [--sales --po --soh]` |
 | `scrape.blinkit_scorecard` | `dashboard` | `cli scrape blinkit-scorecard --tenant … [--week]` |
-| `scrape.public_keyword` | `batch` | `cli scrape public-run --tenant … [--city --cap --workers]` |
-| `scrape.public_skus` | `batch` | `cli scrape public-skus --tenant … [--city --brand-cap --workers]` |
-| `explore` | `interactive` | `cli explore …` (ExplorerSpec → flags) |
+| `scrape.zepto` | `dashboard` | `cli scrape zepto --tenant … [--sales --po --ads --category --all-cities]` — ONE type for Zepto's single console (sales, ads + campaign catalogue, POs). Shares Blinkit's one-slot `dashboard` lane on purpose: Zepto allows one session per account, and that slot is what stops two Zepto jobs evicting each other |
+| `scrape.public_keyword` | `batch` | `cli scrape public-run --tenant … --marketplace … [--city --keyword --cap --workers --resume]` |
+| `scrape.public_skus` | `batch` | `cli scrape public-skus --tenant … --marketplace … [--city --brand-cap --workers --resume]` |
+| `cm.budget_scheduler` | `cm_ops` | `cli cm budget-scheduler --tenant … --marketplace … [--live]` |
+| `cm.bid_optimizer` | `cm_bid` | `cli cm bid-optimizer --tenant … --marketplace … [--live --reset]` |
+| `cm.set_budget` | `cm_ops` | `cli cm set-budget …` — the dashboard's one-off budget change |
+| `cm.set_bid` | `cm_ops` | `cli cm set-bid …` — Reset / Delete-with-reset (cm_ops, not cm_bid, so it never waits behind the tick it countermands) |
+| `cm.set_activation` | `cm_ops` | `cli cm set-activation …` — Start / Pause |
+| `cm.sync_campaigns` | `cm_ops` | `cli cm sync-campaigns --tenant … --marketplace …` — the campaign list Refresh (a read) |
+| `cm.reconcile` | `interactive` | `cli cm reconcile --tenant … --marketplace …` — rewrites the engine schedules after an edit |
 | `maint.log_cleanup` | `batch` | prune `logs/jobs/**` older than N days |
 | `monitor.heartbeat` | `interactive` | deadman check — see [Monitoring](#monitoring) |
 | `auth.refresh` | `interactive` | `cli auth refresh-all --tenant …` — keeps platform sessions warm so they never expire. Seconds of work, so `interactive`: it must never queue behind a multi-hour scrape. Skips if the tenant has another job active (a seller token rotation kills the previous token). See [platform-auth.md](platform-auth.md) |
-| *reserved* `campaign.budget_scheduler` | `live` | coworker's, later |
-| *reserved* `campaign.bid_optimizer` | `live` | coworker's, later |
+| `auth.login` | `interactive` | `cli auth login <platform> --tenant …` — **Zepto only**: it has no refresh and its token dies at midnight IST, so a daily login just after midnight (`5 0 * * *`) is the only way to hold a session. Not scheduled yet (a timing decision). Do not add platforms that can refresh |
+
+**The `marketplace` param.** Every `cm.*` job must carry `marketplace` (`blinkit` \| `zepto`)
+— there is **no default** (ZC-D1, 2026-09-24): a `cm.*` job without one fails at argv-build
+time (`MissingMarketplace`) rather than driving Blinkit's account by accident. The API stamps
+it on every job it queues and the reconciler on every schedule it writes. The two public
+scrapes keep a Blinkit fallback on purpose — they are reads, and their stored schedules
+predate the param. `scrape.zepto` needs none: the job type names the marketplace.
+
+The Explorer is not a job type: it runs on demand and logs to `explorer_runs` (see
+[explorer.md](explorer.md)).
 
 ---
 
@@ -324,6 +341,13 @@ On boot, systemd restarts the runner (`Restart=always` + `systemctl enable`). Th
 **first act is the reaper**: it finds rows marked `running` whose `locked_by` names this
 host but whose PID no longer exists, and marks them `failed`, `error='runner_died'`. The
 overlap index is released and the next scheduled run proceeds.
+
+A **live** runner also checks itself every 3 minutes (added 2026-09-25): any of its own
+`running` rows that no task is driving any more (`runner_lost_track`), or that stayed open 10
+minutes past their type's time limit (`stuck_past_timeout`), is failed and logged as an
+ERROR. Every job-row write is retried, and a job whose handling breaks is marked failed
+rather than left `running`. The startup reaper alone could not help the 2026-09-24 case: the
+runner process was alive, only one job's task had died, so bidding stayed blocked ~8 h.
 
 ### The VM crashes hard (power loss, kernel panic)
 

@@ -84,7 +84,7 @@ export const ZeptoAssetPerformanceCard = () => {
 	const menuRef = useRef(null);
 
 	const { selected } = useMarketplaces();
-	const wantsZepto = !selected?.length || selected.includes("zepto");
+	const wantsZepto = selected.includes("zepto");
 
 	useEffect(() => {
 		setPage(1);
