@@ -150,7 +150,7 @@ def test_the_campaign_list_follows_every_page():
             return {"data": {"campaigns": allc[(p - 1) * 8:p * 8], "total_count": 21,
                              "has_next": True}}
 
-    got = asyncio.run(zc.get_campaigns(_C()))
+    got = asyncio.run(S.get_campaigns(_C()))
     assert sorted(c["campaign_id"] for c in got) == list(range(21))
 
 
@@ -166,7 +166,7 @@ def test_the_campaign_list_stops_when_paging_is_ignored():
             return {"data": {"campaigns": [{"campaign_id": 1}], "total_count": 50,
                              "has_next": True}}
 
-    asyncio.run(zc.get_campaigns(_C()))
+    asyncio.run(S.get_campaigns(_C()))
     assert calls["n"] == 2
 
 
@@ -184,7 +184,7 @@ def test_keyword_floors_parse():
                                          {"keyword": "bread", "match_type": "BROAD"}]}
             return _R()
 
-    got = asyncio.run(zc.get_keyword_floors(_C(), [("bread", "EXACT"), ("bread", "BROAD")]))
+    got = asyncio.run(S.get_keyword_floors(_C(), [("bread", "EXACT"), ("bread", "BROAD")]))
     assert got == {("bread", "EXACT"): 9, ("bread", "BROAD"): 10}
 
 
@@ -207,13 +207,21 @@ def test_keyword_floors_batch_at_zeptos_cap():
             return _R()
 
     pairs = [(f"kw{i}", "EXACT") for i in range(1203)]
-    got = asyncio.run(zc.get_keyword_floors(_C(), pairs))
+    got = asyncio.run(S.get_keyword_floors(_C(), pairs))
     assert sizes == [500, 500, 203]
     assert len(got) == 1203 and got[("kw1202", "EXACT")] == 5
-    assert asyncio.run(zc.get_keyword_floors(_C(), [])) == {} and sizes == [500, 500, 203]
+    assert asyncio.run(S.get_keyword_floors(_C(), [])) == {} and sizes == [500, 500, 203]
 
 
-def _fake_zc(details: dict, *, fail_once=(), fail_always=()):
+def test_the_campaign_manager_uses_the_scrapes_reads():
+    """P12b: one definition of each read. The campaign manager re-exports the scrape's, so
+    a fix to the list's paging or the detail read reaches the write path too."""
+    for name in ("get_campaigns", "get_campaign_detail", "get_keyword_floors",
+                 "get_targeting_options"):
+        assert getattr(zc, name) is getattr(S, name), name
+
+
+def _fake_reads(details: dict, *, fail_once=(), fail_always=()):
     seen = {"detail": [], "floors": 0, "options": 0}
     failed_once: set = set()
 
@@ -235,26 +243,26 @@ def _fake_zc(details: dict, *, fail_once=(), fail_always=()):
         seen["options"] += 1
         return {"cities": [{"id": k, "name": v} for k, v in NAMES.items()]}
 
-    orig = (zc.get_campaigns, zc.get_campaign_detail, zc.get_keyword_floors,
-            zc.get_targeting_options, S._CATALOG_GAP_S, S.asyncio.sleep)
+    orig = (S.get_campaigns, S.get_campaign_detail, S.get_keyword_floors,
+            S.get_targeting_options, S.asyncio.sleep)
 
     async def no_sleep(_s):
         return None
 
-    (zc.get_campaigns, zc.get_campaign_detail, zc.get_keyword_floors,
-     zc.get_targeting_options) = (get_campaigns, get_campaign_detail, get_keyword_floors,
-                                  get_targeting_options)
+    (S.get_campaigns, S.get_campaign_detail, S.get_keyword_floors,
+     S.get_targeting_options) = (get_campaigns, get_campaign_detail, get_keyword_floors,
+                                 get_targeting_options)
     S.asyncio.sleep = no_sleep
     return seen, orig
 
 
 def _unfake(orig):
-    (zc.get_campaigns, zc.get_campaign_detail, zc.get_keyword_floors,
-     zc.get_targeting_options, S._CATALOG_GAP_S, S.asyncio.sleep) = orig
+    (S.get_campaigns, S.get_campaign_detail, S.get_keyword_floors,
+     S.get_targeting_options, S.asyncio.sleep) = orig
 
 
 def test_only_pla_campaigns_get_a_detail_read():
-    seen, orig = _fake_zc({})
+    seen, orig = _fake_reads({})
     try:
         cat = asyncio.run(S.fetch_campaign_catalog(object()))
     finally:
@@ -266,7 +274,7 @@ def test_only_pla_campaigns_get_a_detail_read():
 
 
 def test_a_failed_detail_is_retried_then_reported():
-    seen, orig = _fake_zc({}, fail_once={2427461}, fail_always={2222222})
+    seen, orig = _fake_reads({}, fail_once={2427461}, fail_always={2222222})
     try:
         cat = asyncio.run(S.fetch_campaign_catalog(object()))
     finally:

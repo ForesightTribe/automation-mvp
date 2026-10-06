@@ -38,17 +38,21 @@ source of most confusion.
 | **Lifetime** | dies at **local midnight IST**, or the instant another login evicts it | **~5 minutes** (alive at 4, dead at 6) |
 | **Refreshable?** | **No.** No endpoint exists | n/a — re-minted on demand |
 | **Stored?** | Yes, encrypted in `platform_sessions` | **Never.** Every job interval outlives it |
-| **Failure signal** | `401` | `202` (challenge) or `429` |
+| **Failure signal** | `401` | `202` (challenge) or CloudFront's `429` (empty body) |
 | **Recovery** | re-login, bounded | re-mint, unbounded |
 
 > Burning an OTP on a problem a missing header would have fixed is the concrete cost
 > of mixing these up. `401` and `429` are **not** the same class of failure here.
+>
+> A third failure looks like the WAF one and is not: Zepto's **own** rate limit, a `429`
+> with a JSON body `{"error":"rate limit exceeded"}`. A fresh token does nothing for it;
+> the client waits (5 s, 15 s, 30 s) and resends with the same token (P53, 2026-10-06).
 
 ---
 
 ## 3. Where the browser actually is
 
-`campaign_manager/marketplaces/zepto/transport.py::mint_waf_token`
+`scraper/platforms/zepto/dashboard_data/seller/client.py::mint_waf_token`
 
 ```
 headless Chromium loads brands.zepto.co.in  →  aws-waf-token cookie  →  browser closed
@@ -87,12 +91,14 @@ backend/
 │       └── endpoints.py                    login URLs, app ids, header rules
 │
 ├── campaign_manager/marketplaces/zepto/
-│   ├── transport.py                        ★ ZeptoClient, mint_waf_token, setup()
-│   └── endpoints.py                        API host, ads paths, WAF header constants
+│   ├── client.py                           writes (PUT / pause / activate); re-exports the reads
+│   └── endpoints.py                        CM-only paths + platform bounds
 │
 ├── scraper/platforms/zepto/dashboard_data/seller/
-│   ├── endpoints.py                        every data URL + page sizes + view names
-│   ├── scraper.py                          fetch_* — raw JSON out, no parsing
+│   ├── client.py                           ★ ZeptoClient, mint_waf_token, setup()
+│   ├── endpoints.py                        every data URL, API host, WAF header constants
+│   ├── scraper.py                          fetch_* — raw JSON out, no parsing; the
+│   │                                       campaign reads the CM shares (get_campaigns …)
 │   ├── parser.py                           parse_* — raw JSON → row dicts + upsert_key
 │   └── storage.py                          save_* — chunked ON CONFLICT upserts
 │
@@ -101,10 +107,11 @@ backend/
 └── cli/commands/scrape.py                  zepto-sales · zepto-ads · zepto-po
 ```
 
-`transport.py` living under `campaign_manager/` is a wart, not a design: the seller
-scraper imports its client from the campaign-manager tree. It works, but it means the
-scraper depends on a package it otherwise has nothing to do with. Worth a move if
-anyone touches both.
+The client used to live in `campaign_manager/marketplaces/zepto/transport.py`, so the
+scrape imported the campaign manager to get it. Moved 2026-10-06 (P12): the client and the
+four campaign reads now sit with the scrape, and the campaign manager imports them — the
+same direction Blinkit's campaign manager imports from `platform_auth`. Not under
+`platform_auth/` because the WAF token is not identity (§2).
 
 ---
 
@@ -113,7 +120,7 @@ anyone touches both.
 ```
 cli scrape zepto-sales -t <tenant>
 │
-├─ zepto_setup(tenant)                       transport.py::setup
+├─ zepto_setup(tenant)                       seller/client.py::setup
 │    ├─ auth_service.ensure(db, tenant, "zepto")
 │    │    ├─ load encrypted session ────────────── platform_sessions
 │    │    ├─ probe it (GET get-user-by-token)
@@ -143,20 +150,23 @@ parsers never do I/O.** It is what makes a scrape replayable from a captured pay
 
 ## 6. The one request path
 
-Everything goes through `ZeptoClient.request()`. It recovers from exactly the two
+Everything goes through `ZeptoClient.request()`. It recovers from exactly the three
 recoverable failures, and nothing else:
 
 ```python
-r = await http.request(method, url, headers=self.headers(...))
+r = await send()        # every send waits out Zepto's own JSON 429: 5 s, 15 s, 30 s
 
-if r.status_code in (202, 429) and not brand_analytics:
+if r.status_code in (202, 429) and not brand_analytics and not is_rate_limited(r):
     await self._remint()                      # browser proof gone
-    r = await http.request(...)
+    r = await send()
 
-if r.status_code == 401 and (retry_writes or method == "GET"):
+if r.status_code == 401:                      # writes too: a 401 applied nothing
     if await self._reauth():                  # identity gone, bounded
-        r = await http.request(...)
+        r = await send()
 ```
+
+The counters `remint_count`, `reauth_count` and `ratelimit_count` show up on each scrape
+section's closing line ("2 WAF renewal(s) · 1 rate-limit wait(s)").
 
 **Recovery is per-call, not per-run.** That matters more than it sounds: on the shared
 `varun@brikoven.com` account the session was evicted **three times in ten minutes** on
@@ -252,7 +262,7 @@ Flagged rather than fixed, because changing them is not this document's job:
 | Location | Says | Reality |
 |---|---|---|
 | `cli/commands/scrape.py` `zepto-sales` docstring | "Requires a session saved by `cli auth zepto-seller`" | that command was deleted; it is `cli auth login zepto` |
-| `cli/commands/scrape.py` `zepto-ads` docstring | "this needs a browser … headers are harvested from one short page load" | the browser is now only the WAF faucet in `transport.py` |
+| `cli/commands/scrape.py` `zepto-ads` docstring | "this needs a browser … headers are harvested from one short page load" | the browser is now only the WAF faucet in `seller/client.py` |
 | `jobs/types.py` `scrape.zepto_seller_sales` | "run separately, wherever there's a real display" | no display is needed anywhere |
 | `app/models/zepto_seller.py` `ZeptoPO` | "per-PO detail call that has not been captured" | it was captured; `zepto_po_items` exists |
 | `docs/zepto-auth.md` (repo root docs) | Xvfb, `selectors.py`, `auth.py`, Zepto outside `platform_auth` | all deleted / now false |

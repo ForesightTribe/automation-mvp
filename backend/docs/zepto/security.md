@@ -192,11 +192,11 @@ anything on Zepto.
 
 The write path — budgets, bids, campaign start/stop — is the **Campaign Manager**, a
 separate system behind a gated choke-point with a `--live` flag that defaults off. It
-shares this transport but nothing in `docs/zepto/` grants write access.
+shares this client but nothing in `docs/zepto/` grants write access.
 
-Worth knowing because they share `transport.py`: `retry_writes=False` is passed by
-every scrape call precisely so that flag stays honest if one of these paths ever gains
-a write.
+Worth knowing because they share one client (`seller/client.py`): it resends a request
+only when the first attempt was refused unread — a 401, a WAF challenge, or Zepto's own
+rate limit — so a resent write cannot apply twice. A timeout is never resent.
 
 ---
 

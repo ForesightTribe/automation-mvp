@@ -32,7 +32,7 @@ import httpx
 
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
-from campaign_manager.marketplaces.zepto.transport import setup
+from scraper.platforms.zepto.dashboard_data.seller.client import setup
 from platform_auth.errors import AuthError
 from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
 from scraper.platforms.zepto.dashboard_data.seller import parser as zp
@@ -98,15 +98,19 @@ class _Recoveries:
         self.client = client
         self.remint0 = getattr(client, "remint_count", 0)
         self.reauth0 = getattr(client, "reauth_count", 0)
+        self.ratelimit0 = getattr(client, "ratelimit_count", 0)
 
     def note(self) -> str:
         bits = []
         remints = getattr(self.client, "remint_count", 0) - self.remint0
         reauths = getattr(self.client, "reauth_count", 0) - self.reauth0
+        waits = getattr(self.client, "ratelimit_count", 0) - self.ratelimit0
         if remints:
             bits.append(f"{remints} WAF renewal(s)")
         if reauths:
             bits.append(f"{reauths} re-login(s)")
+        if waits:
+            bits.append(f"{waits} rate-limit wait(s)")
         return (" · " + " · ".join(bits)) if bits else ""
 
 

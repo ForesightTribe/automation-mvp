@@ -274,9 +274,11 @@ Read backend/docs/zepto/architecture.md and database.md before touching anything
 Key context you will otherwise get wrong:
 - Two independent credentials: the JWT (identity, from platform_auth, dies at
   midnight IST, NOT refreshable) and the aws-waf-token (anonymous proof-of-browser,
-  ~5 min, minted by a headless Chromium in transport.py). 401 = re-login,
+  ~5 min, minted by a headless Chromium in seller/client.py). 401 = re-login,
   202/429 = re-mint. Never confuse them.
-- 429 here usually means a MISSING `waf-enabled: false` header, not rate limiting.
+- 429 here usually means a MISSING `waf-enabled: false` header, not rate limiting. The
+  exception is a 429 with JSON `{"error":"rate limit exceeded"}` — Zepto's real limit,
+  which the client waits out instead of re-minting.
 - Three endpoint families need three different header sets. See prompts.md §2.
 - Client is Brik Oven, tenant fa53082e-7e83-424d-aab9-086fe1b4c680.
 - One shared Supabase DB behind every branch. A migration affects every branch.
@@ -378,7 +380,7 @@ Check specifically:
 - Is upsert_key unique at the true grain?
 - Are new failure paths logged at ERROR? Below that the alert never fires.
 - Does it hardcode a brand/city/category id?
-- Does it add a browser to the data path? (Only transport.py may launch one.)
+- Does it add a browser to the data path? (Only seller/client.py may launch one.)
 - Does it print a JWT, password or OTP anywhere?
 
 Cite file:line for each finding.

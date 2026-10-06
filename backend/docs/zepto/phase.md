@@ -297,14 +297,15 @@ Named honestly. None of these are blocking, all are real.
 
 ### Debt
 - **No automated tests.** Everything here was verified live, by hand.
-- `transport.py` lives under `campaign_manager/` but is imported by the scraper —
-  works, but the dependency is backwards.
+- ~~`transport.py` lives under `campaign_manager/` but is imported by the scraper —
+  works, but the dependency is backwards.~~ Fixed 2026-10-06 (P12): the client is
+  `seller/client.py` and the campaign manager imports it.
 - The UAT compatibility shim (`scripts/uat_zepto_compat.sql`) can be dropped once
   `main` carries the renamed tables.
 - **Stale comments** in five places — listed in
   [architecture.md §11](architecture.md#11-known-stale-comments-in-the-code).
 
 ### To tell the team
-- `seller/scraper.py` now imports from
-  `campaign_manager/marketplaces/zepto/transport.py`
+- The shared Zepto client is `scraper/platforms/zepto/dashboard_data/seller/client.py`
+  (was `campaign_manager/marketplaces/zepto/transport.py` until 2026-10-06)
 - `docs/CLI.md` and `docs/zepto-auth.md` are both behind the code

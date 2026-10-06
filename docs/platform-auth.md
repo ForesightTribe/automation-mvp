@@ -301,7 +301,7 @@ whenever they have to:
 
 * **At job start** — `ensure()` probes the stored session and logs in if it is dead (always
   was so).
-* **Mid-run, on a 401** (`campaign_manager/marketplaces/zepto/transport.py`) — first ADOPT a
+* **Mid-run, on a 401** (`scraper/platforms/zepto/dashboard_data/seller/client.py`, the shared Zepto client) — first ADOPT a
   fresher session another job already saved (Zepto's jobs share one login, so one job's
   login revokes the others' tokens; adopting costs no login and evicts nobody); otherwise LOG
   IN and resend once. Writes included: a 401 is rejected before Zepto processes anything, so

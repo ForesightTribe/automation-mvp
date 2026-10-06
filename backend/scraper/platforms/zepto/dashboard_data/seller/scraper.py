@@ -7,6 +7,7 @@ from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
 from scraper.utils.retry import retry_call
 from platform_auth.errors import AuthError
 from app.utils.logger import logger
+from app.utils.time import now_ist
 
 
 # ── ID discovery ─────────────────────────────────────────────────────────────
@@ -475,7 +476,7 @@ async def fetch_product_performance_by_city(
 
 # ── Ads (`ads-bff`) ──────────────────────────────────────────────────────────
 # ads-bff needs the AWS WAF token on top of the session; the shared Zepto client
-# holds it and re-mints it on a 202/429 (campaign_manager/.../zepto/transport.py),
+# holds it and re-mints it on a 202/429 (seller/client.py),
 # so these are plain HTTP calls with no browser of their own.
 
 # ads-bff answers a small share of calls with a bare 500 and then answers the
@@ -693,18 +694,138 @@ async def fetch_campaign_keywords(
     return out
 
 
+# ── Campaign reads (shared with the campaign manager) ───────────────────────
+#
+# The four reads the catalogue needs, defined once here. The campaign manager re-exports
+# them (`campaign_manager/marketplaces/zepto/client.py`) — its write path builds every
+# budget / bid PUT from `get_campaign_detail` and verifies against it — so the scrape
+# owns the reads and no longer imports the campaign manager.
+
+def unwrap(body: dict) -> dict:
+    """Zepto's response envelope. Most endpoints wrap in `data`; the campaign DETAIL does
+    not — a real inconsistency, handled once here rather than at every call site."""
+    inner = body.get("data")
+    return inner if isinstance(inner, dict) else body
+
+
+# A bound, not an expectation: rows come ~10 a page, so 30 pages = ~300 campaigns.
+_MAX_PAGES = 30
+
+
+async def get_campaigns(client, days: int = 90) -> list[dict]:
+    """Every campaign on the account (all tabs — `categoryType` is ignored), all pages.
+
+    ⚠️ The list is DATE-SCOPED. A narrow window silently omits campaigns rather than
+    erroring, so anything reading this to decide "what exists" must pass a generous
+    window — the same hazard `cm sync-campaigns` guards with MIN_DAYS on Blinkit.
+
+    ⚠️ PAGED, and `limit` is ignored: this used to ask once with `limit=200` and got the
+    first page only (a recorded dashboard call: 8 of 21, `has_next: true`). Only `page`
+    works (1-based). The loop stops on `total_count`, on a page that adds no new ids, or
+    at `_MAX_PAGES`: `has_next` alone has been seen staying true after the last campaign.
+    """
+    today = now_ist().date()
+    by_id: dict = {}
+    total = None
+    for page in range(1, _MAX_PAGES + 1):
+        params = {
+            "selectedBrand": client.brand_id,
+            "brand_id": client.brand_id,
+            "categoryType": "sponsored_products",
+            "campaign_category": "sponsored_products",
+            "from_date": str(today - timedelta(days=days)),
+            "to_date": str(today),
+            "page": str(page),
+            "sort_field": "nudges",
+            "sort_order": "ASC",
+            "date_field": "",
+            "campaign_sub_types": "",
+        }
+        data = unwrap(await client.get_json(ep.ADS_CAMPAIGNS_API, params=params))
+        rows = data.get("campaigns") or []
+        if total is None:
+            total = data.get("total_count")
+        before = len(by_id)
+        for r in rows:
+            if r.get("campaign_id") is not None:
+                by_id[r["campaign_id"]] = r
+        if not rows or len(by_id) == before or (total and len(by_id) >= total):
+            break
+    campaigns = list(by_id.values())
+    if total and len(campaigns) < total:
+        logger.warning(f"Zepto returned {len(campaigns)} of {total} campaigns — paging "
+                       "stopped early; treat this as a partial account.")
+    return campaigns
+
+
+async def get_keyword_floors(client, keywords: list[tuple[str, str]]
+                             ) -> dict[tuple[str, str], int]:
+    """Zepto's minimum bid per `(keyword, match_type)` — one request per
+    `ep.KEYWORD_CONFIG_MAX` keywords (Zepto refuses a larger list with a 400).
+
+    `POST /ads-bff/api/v1/keyword/config` {"keywords": [{keyword, match_type}]} →
+    {"keywords": [{keyword, match_type, min_bid}]}. The direct analogue of Blinkit's
+    `keywords/attributes`. Answers EXACT, PHRASE and BROAD (verified 2026-09-21).
+
+    A keyword Zepto leaves out is simply ABSENT from the result. Absent means "unknown",
+    never "no floor" — `pink toffee` was once absent and a write was still refused at ₹10.
+    """
+    out: dict[tuple[str, str], int] = {}
+    for i in range(0, len(keywords), ep.KEYWORD_CONFIG_MAX):
+        batch = keywords[i:i + ep.KEYWORD_CONFIG_MAX]
+        body = {"keywords": [{"keyword": k, "match_type": m} for k, m in batch]}
+        r = await client.request("POST", ep.ADS_KEYWORD_CONFIG_API, json=body)
+        if r.status_code != 200:
+            raise RuntimeError(f"Zepto keyword/config -> {r.status_code}: {r.text[:200]}")
+        for k in (r.json() or {}).get("keywords") or []:
+            if k.get("keyword") and k.get("match_type") and k.get("min_bid") is not None:
+                try:
+                    out[(k["keyword"], k["match_type"])] = int(round(float(k["min_bid"])))
+                except (TypeError, ValueError):
+                    continue
+    return out
+
+
+async def get_campaign_detail(client, campaign_id: int) -> dict:
+    """One campaign's full configuration — the input to every campaign-manager write.
+
+    NOT wrapped in `data`, unlike most Zepto responses.
+    """
+    return unwrap(await client.get_json(ep.ADS_CAMPAIGN_PLA_API.format(id=campaign_id)))
+
+
+async def get_targeting_options(client, *, campaign_type: str = "PLA",
+                                campaign_sub_type: str = "AUCTION_UP_SELL") -> dict:
+    """The brand's targeting vocabulary — `cities[{id, name}]` and categories.
+
+    Needed by the catalogue, to turn a campaign's city ids into names, and by the campaign
+    manager's `translate.to_put` (an all-cities campaign's PUT carries the full city list).
+
+    ⚠️ The params are the dashboard's own, and ALL of them matter (ZC-A12). With only
+    `brand_id` the endpoint answers 200 with `{"cities": [], "categories": []}` —
+    verified live 2026-09-21: 0 cities that way, 9 this way.
+    """
+    return await client.get_json(ep.ADS_TARGETING_OPTIONS_API, params={
+        "brand_id": client.brand_id,
+        "include": "category,geo",
+        "campaign_type": campaign_type or "PLA",
+        "campaign_sub_type": campaign_sub_type or "AUCTION_UP_SELL",
+    })
+
+
 # ── Campaign CATALOGUE ──────────────────────────────────────────────────────
 #
 # What every campaign is configured to do NOW — for `zepto_ad_campaigns` /
 # `zepto_ad_campaign_keywords`, the campaign manager's catalogue. Zepto's answer to what
-# Blinkit's marketing scrape does for `blinkit_ad_campaigns`.
-#
-# Goes through the campaign manager's Zepto calls rather than its own copies, so one
-# definition of each endpoint serves both: the list's paging, `targeting-options`' required
-# params (ZC-A12), the detail read the write path verifies against.
+# Blinkit's marketing scrape does for `blinkit_ad_campaigns`. Built from the shared reads
+# above, so the list's paging, `targeting-options`' params and the detail read are the
+# same ones the write path uses.
 
 CATALOG_WINDOW_DAYS = 90          # the list is date-scoped; same window `cm sync` uses
-_CATALOG_GAP_S = 0.4              # between per-campaign detail reads
+# Between per-campaign detail reads. Was 0.4: Sereko's ~60 campaigns at that pace drew
+# Zepto's own 429 "rate limit exceeded" seven times in 90 s (P53, 2026-10-05). 1.5 s matches
+# the per-day pace the rest of the ads section keeps.
+_CATALOG_GAP_S = 1.5
 
 
 async def fetch_campaign_catalog(client) -> dict:
@@ -720,10 +841,7 @@ async def fetch_campaign_catalog(client) -> dict:
     so it alerts). Such a campaign still gets its LIST row, and keeps whatever detail the
     last good read stored.
     """
-    from campaign_manager.marketplaces.zepto import client as zc
-    from campaign_manager.marketplaces.zepto import translate
-
-    campaigns = await zc.get_campaigns(client, days=CATALOG_WINDOW_DAYS)
+    campaigns = await get_campaigns(client, days=CATALOG_WINDOW_DAYS)
     pla = [c for c in campaigns
            if (c.get("campaign_type") or "").upper() == "PLA" and c.get("campaign_id")]
 
@@ -733,15 +851,17 @@ async def fetch_campaign_catalog(client) -> dict:
     seen_types: set[tuple[str, str]] = set()
 
     async def _one(cid: int) -> None:
-        detail = await zc.get_campaign_detail(client, cid)
-        pairs = sorted(translate.bids_from_detail(detail))
-        floors[cid] = await zc.get_keyword_floors(client, pairs) if pairs else {}
+        detail = await get_campaign_detail(client, cid)
+        # The bidding pairs — negatives carry no bid (as `translate.bids_from_detail`).
+        pairs = sorted({(k["keyword"], k["match_type"])
+                        for k in detail.get("keyword_config") or [] if not k.get("is_negative")})
+        floors[cid] = await get_keyword_floors(client, pairs) if pairs else {}
         key = (detail.get("campaign_type") or "PLA",
                detail.get("campaign_sub_type") or "AUCTION_UP_SELL")
         if key not in seen_types:
             seen_types.add(key)
-            opts = await zc.get_targeting_options(client, campaign_type=key[0],
-                                                  campaign_sub_type=key[1])
+            opts = await get_targeting_options(client, campaign_type=key[0],
+                                               campaign_sub_type=key[1])
             for c in (opts.get("data", opts) or {}).get("cities") or []:
                 if c.get("id"):
                     city_names[c["id"]] = c.get("name")

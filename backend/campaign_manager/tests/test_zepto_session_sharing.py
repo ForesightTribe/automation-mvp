@@ -22,14 +22,14 @@ from types import SimpleNamespace
 import httpx
 
 from app.utils.time import now_ist
-from campaign_manager.marketplaces.zepto import transport as zt
+from scraper.platforms.zepto.dashboard_data.seller import client as zt
 
 LIVE_JWT = "fresh-token"          # what Zepto accepts right now
 TENANT = "fa53082e-7e83-424d-aab9-086fe1b4c680"
 
 
 class _Env:
-    """Fakes for the store, the login and Zepto, installed on the transport module."""
+    """Fakes for the store, the login and Zepto, installed on the client module."""
 
     def __init__(self, *, stored_jwt: str, last_login_minutes_ago: float = 5,
                  login_works: bool = True):

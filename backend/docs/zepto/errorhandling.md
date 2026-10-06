@@ -77,12 +77,14 @@ filterable in Cloud Logging instead of hiding among anonymous `exit_1`s.
 
 ## 3. The recovery ladder
 
-Two independent failures, two different recoveries, handled **per call** inside
+Three different failures, three different recoveries, handled **per call** inside
 `ZeptoClient.request()`.
 
 ```
-        ┌─ 202 / 429 ──→ WAF token gone ──→ _remint()  ──→ retry
-call ───┤                                    (unbounded, ~10s Chromium)
+        ┌─ 429 JSON "rate limit exceeded" → Zepto says slow down → wait, same token → retry
+        │                                    (5 s, 15 s, 30 s, then give up — since 2026-10-06)
+call ───┼─ 202 / 429 ──→ WAF token gone ──→ _remint()  ──→ retry
+        │                                    (unbounded, ~10s Chromium)
         └─ 401 ────────→ identity gone ───→ _reauth()  ──→ retry
                                              (bounded — see below)
 ```
@@ -164,7 +166,8 @@ Reset by hand with `cli auth reset`.
 |---|---|---|---|
 | `401` | auth | auth — session evicted or past midnight IST | `_reauth`, bounded |
 | `202` | success | AWS WAF **challenge** — no valid token | `_remint` |
-| `429` | **rate limiting** | **missing `waf-enabled: false` header** | `_remint` |
+| `429` (empty body) | **rate limiting** | **missing `waf-enabled: false` header** | `_remint` |
+| `429` JSON `{"error":"rate limit exceeded"}` | rate limiting | **real** rate limiting, Zepto's own | wait 5/15/30 s, same token |
 | `404` bare `text/plain` | wrong URL | missing `x-proxy-target: brand-analytics` | not automatic — fix the call |
 | `500` on `/vendor/*` | our bug | Zepto's upstream exceeded its own gateway timeout | `_post_5xx_retry` |
 | `200` + `{"data": null}` | empty error | genuinely **no rows** for that filter | `or {}` — returns empty |
@@ -178,6 +181,12 @@ unverified token) before the cause turned out to be a header visible in the very
 capture.
 
 > **If you see a 429 here, check the headers before theorising about the network.**
+
+The one exception, found 2026-10-05: a 429 whose body is Zepto's JSON
+`{"error":"rate limit exceeded","data":null}` is a genuine limit (the campaign catalogue
+reading a campaign every 0.4 s drew it). Re-minting does nothing for it; until P53 the
+client re-minted anyway and the ~10 s browser launch hid the problem. It now waits it
+out, and the waits are counted on the section's closing line.
 
 ### The 200-with-null-data case
 

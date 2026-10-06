@@ -1,4 +1,46 @@
-BASE_URL = "https://fcc.zepto.co.in"
+"""Zepto seller-console endpoints, headers and the client's constants.
+
+Everything volatile about the console's APIs lives here — the sales, PO and ads-bff
+endpoints the scrape reads, and the hosts / headers the shared client (`client.py`)
+sends. The campaign manager imports the shared ones from here
+(`campaign_manager/marketplaces/zepto/endpoints.py`), so each is defined once. Auth
+endpoints are not here; they belong to `platform_auth/marketplaces/zepto/endpoints.py`.
+"""
+
+# The SPA is served from one host and talks to another. Both matter: the API checks
+# Origin/Referer, so the console URL is not decoration.
+CONSOLE = "https://brands.zepto.co.in"
+API = "https://fcc.zepto.co.in"
+BASE_URL = API
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+)
+
+# ── the three load-bearing headers (client.py sends them) ───────────────────
+#
+# 1. `authorization` carries the RAW jwt with NO "Bearer " prefix, despite the login
+#    response advertising tokenType "Bearer". Prefixing it fails at base64 decode.
+#
+# 2. `/brand-analytics-web/*` needs `x-proxy-target: brand-analytics`. WITHOUT it the
+#    gateway answers a bare text/plain 404 — which reads like a wrong URL and sends
+#    you hunting for an endpoint that was correct all along.
+#
+# 3. `/ads-bff/*` sits behind AWS WAF and needs BOTH a valid `x-aws-waf-token` AND
+#    `waf-enabled: false`. Missing EITHER, CloudFront answers 429 — which reads like
+#    rate limiting and is not. That misreading cost a full afternoon; see the
+#    `waf-enabled` note in client.py.
+PROXY_TARGET_HEADER = "x-proxy-target"
+PROXY_TARGET_BRAND_ANALYTICS = "brand-analytics"
+WAF_TOKEN_HEADER = "x-aws-waf-token"
+WAF_ENABLED_HEADER = "waf-enabled"
+WAF_ENABLED_VALUE = "false"
+
+# The AWS WAF challenge token lives ~5 minutes (measured: alive at 4 min, dead at 6).
+# Never cached across runs — every job interval we have is longer than that, so a
+# stored token would be expired essentially every time it was read.
+WAF_TOKEN_TTL_SECONDS = 300
 
 # Cheapest real authenticated call found (no filters/params, small response) —
 # used purely as a "is this session still accepted" probe, not for real data.
@@ -97,7 +139,15 @@ ASN_PAGE_SIZE = 25
 # A different service from the analytics endpoints above, and stricter: it needs
 # an AWS WAF token on top of the session (202 without one). The shared Zepto
 # client mints it once per run and re-mints it on a 202/429.
-ADS_CAMPAIGNS_API = "/ads-bff/api/v1/campaigns"
+ADS_CAMPAIGNS_API = "/ads-bff/api/v1/campaigns"                   # GET list (all pages)
+ADS_CAMPAIGN_PLA_API = "/ads-bff/api/v1/campaigns/pla/{id}"       # GET detail · PUT update
+ADS_TARGETING_OPTIONS_API = "/ads-bff/api/v1/brands/targeting-options"   # the city list
+# Zepto's published minimum bid per keyword — POST {"keywords": [{keyword, match_type}]}.
+ADS_KEYWORD_CONFIG_API = "/ads-bff/api/v1/keyword/config"
+# ⚠️ Capped at 500 keywords per request — more is a 400 "max 500 keywords allowed per
+# request" (seen 2026-10-03 on Sereko's 2428159, which failed the catalogue every day
+# from 2026-09-29). `scraper.get_keyword_floors` batches on this.
+KEYWORD_CONFIG_MAX = 500
 ADS_WALLET_API = "/ads-bff/api/v1/wallet/details"
 ADS_CATEGORIES_API = "/ads-bff/api/v1/campaign-categories"
 

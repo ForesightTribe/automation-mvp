@@ -362,8 +362,8 @@ JOB_TYPES: dict[str, JobTypeSpec] = {
     ),
     # ── Zepto, mirroring Blinkit's three ────────────────────────────────────
     # Data calls are plain HTTP, but each run still launches headless Chromium
-    # ONCE (~10s) to mint an AWS WAF token — campaign_manager/marketplaces/
-    # zepto/transport.py::mint_waf_token, called unconditionally by setup(),
+    # ONCE (~10s) to mint an AWS WAF token — scraper/platforms/zepto/dashboard_data/
+    # seller/client.py::mint_waf_token, called unconditionally by setup(),
     # so sales and PO pay for it too even though only /ads-bff/* needs it.
     # Transient, unlike Blinkit's browser-driven scrapes which hold ~950 MB for
     # the whole run, hence the tighter ceilings below.
