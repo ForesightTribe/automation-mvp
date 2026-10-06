@@ -2790,7 +2790,7 @@ async def _scrape_instamart_sales(
                 f"[cyan]Instamart sales {start} → {end} "
                 f"({span} day{'s' if span > 1 else ''})[/cyan]"
             )
-            async with PortalSession(tenant_id, creds.email, account_id,
+            async with PortalSession(db, tenant_id, creds.email, account_id,
                                      headless=not headed) as portal:
                 brand_account_id = (portal.brand_account_id()
                                     or (creds.extra or {}).get("brand_account_id"))
@@ -2945,7 +2945,7 @@ async def _scrape_instamart_ads(tenant_id: str, days_back: int, headed: bool) ->
             today = _date.today()
             start, end = today - timedelta(days=days_back), today
 
-            async with PortalSession(tenant_id, creds.email, account_id,
+            async with PortalSession(db, tenant_id, creds.email, account_id,
                                      headless=not headed) as portal:
                 console.print("[cyan]Fetching Instamart campaigns...[/cyan]")
                 raw = await im_campaigns.fetch_campaigns(portal, account_id)
@@ -3101,11 +3101,16 @@ async def _scrape_instamart_po(tenant_id: str, headed: bool, force_token: bool) 
         async with AsyncSessionLocal() as db:
             job_id = await create_scrape_job(db, tenant_id, "instamart_po", platform="instamart")
 
-        with console.status("[cyan]Getting a Supply Portal token...[/cyan]"):
-            token, brand_company_id = await supply_session.get_token(
-                tenant_id, creds.email, account_id,
-                headless=not headed, force=force_token,
-            )
+        # Short-lived, like the two `db` blocks above — PortalSession's own
+        # browser work happens inside get_token(), and this function
+        # deliberately never holds a db session open across a network-bound
+        # phase (see the comment above this function).
+        async with AsyncSessionLocal() as db:
+            with console.status("[cyan]Getting a Supply Portal token...[/cyan]"):
+                token, brand_company_id = await supply_session.get_token(
+                    db, tenant_id, creds.email, account_id,
+                    headless=not headed, force=force_token,
+                )
         console.print(f"[green]Token ready (brand {brand_company_id}).[/green]")
 
         async with httpx.AsyncClient(timeout=30) as client:

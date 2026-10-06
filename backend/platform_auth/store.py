@@ -387,6 +387,41 @@ async def save_session(
     )
 
 
+async def update(db: AsyncSession, tenant_id: str, session: AuthSession) -> None:
+    """Replace a stored session after a token RENEWAL, which is not a login.
+
+    `save` appends to the login history and stamps `last_login_at`, so routing
+    renewals through it made every refresh look like a fresh login (IM-03: the
+    daily 06:20 Instamart refresh counted as a login) and fed the logins-per-day
+    warning. This keeps the history and `last_login_at` as they were and only
+    marks the session validated. With no row yet there is nothing to renew, so
+    it falls back to `save`.
+    """
+    row = await _row(db, tenant_id, session.platform)
+    if row is None:
+        await save(db, tenant_id, session)
+        return
+    envelope = session.to_envelope()
+    envelope[LOGIN_HISTORY_KEY] = _login_history(row.encrypted_session)
+    now = now_ist()
+    row.encrypted_session = encrypt(json.dumps(envelope))
+    row.status = STATUS_ACTIVE
+    row.last_validated_at = now
+    row.consecutive_failures = 0
+    row.last_error = None
+    row.updated_at = now
+    await db.commit()
+    logger.info(f"Session renewed: tenant={tenant_id} platform={session.platform}")
+
+
+async def update_session_state(
+    db: AsyncSession, tenant_id: str, platform: str, storage_state: dict
+) -> None:
+    """`update` for a browser storage_state (see `save_session`)."""
+    await update(db, tenant_id, AuthSession(platform=platform, email="", raw={},
+                                            storage_state=storage_state))
+
+
 async def load_session(db: AsyncSession, tenant_id: str, platform: str) -> dict | None:
     session = await load(db, tenant_id, platform)
     if session is None:

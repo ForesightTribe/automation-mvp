@@ -26,18 +26,30 @@ and keeps the resulting storage state; the OTP is read from the shared mailbox
 by the same `platform_auth.inbox.imap` reader the API login uses, so there is
 still nothing manual.
 
-The saved state is reused until it stops working, then we log in again. State
-lives beside the module (one file per tenant) — it is a browser profile, not a
-credential store, and `platform_sessions` stays the home of the API session.
+The saved state is reused until it stops working, then we log in again.
+
+CORRECTED 2026-10-01 — it used to say "State lives beside the module (one
+file per tenant) — it is a browser profile, not a credential store, and
+`platform_sessions` stays the home of the API session." That was true, and it
+was a real bug: this session only ever worked from the one machine that
+logged in, same "credential is a folder on one machine" problem found and
+fixed for Blinkit's seller-hub domain the same day. Now saved via
+`platform_auth.store.save_session`/`load_session` under its own slug
+(`_SESSION_SLUG`, NOT the `"instamart"` slug `platform_auth/marketplaces/
+instamart/brand_portal.py` already owns — a separate REST-based login that
+produces a different, thinner session; sharing a row would mean one
+overwriting the other). `platform_sessions` really is the home of this
+session now, same as everywhere else in the codebase.
 """
 import asyncio
 import json
 import time
-from pathlib import Path
 
 from playwright.async_api import async_playwright
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.logger import logger
+from platform_auth import store
 from platform_auth.inbox import imap
 from platform_auth.types import LoginChallenge, SecretKind
 from app.utils.time import now_ist
@@ -45,14 +57,26 @@ from scraper.platforms.instamart.dashboard_data.seller import endpoints as ep
 from scraper.platforms.instamart.dashboard_data.seller.signer import get_signer
 
 _PLATFORM = "instamart"
+# Deliberately NOT "instamart" — see module docstring.
+_SESSION_SLUG = "instamart_portal_session"
+
+# The app keeps its token pair in localStorage, each value JSON-encoded. The
+# access token lives 5 hours. IM-01: every run used to fall back to an email OTP
+# once those 5 hours passed. The browser login's OWN refresh token is no help --
+# Swiggy rejects it (401 INVALID_TOKEN) within the hour, verified 2026-10-05 --
+# but the API login (`platform_auth/marketplaces/instamart/brand_portal.py`,
+# platform "instamart", renewed daily by `auth refresh`) refreshes reliably,
+# and the portal accepts its tokens for signed data calls (verified the same
+# day). So the page runs on the API login's tokens, put into its localStorage.
+_ACCESS_KEY = "__IM_ADS_ACCESS_TOKEN__"
+_REFRESH_KEY = "__IM_ADS_REFRESH_TOKEN__"
+# Renew when less than this is left, so a 20-minute ads run never starts on a
+# token that dies halfway through.
+_RENEW_HEADROOM_S = 30 * 60
 
 
 class PortalError(RuntimeError):
     """The portal refused a call, or the login could not be completed."""
-
-
-def _state_path(tenant_id: str) -> Path:
-    return ep.SESSION_STATE_DIR / f"portal_state_{tenant_id}.json"
 
 
 def _claims(token: str) -> dict:
@@ -62,17 +86,54 @@ def _claims(token: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(payload))
 
 
+def _ls_items(state: dict | None, create: bool = False) -> list[dict]:
+    """The portal origin's localStorage entries in a storage_state."""
+    for origin in (state or {}).get("origins", []):
+        if origin.get("origin") == ep.PORTAL:
+            return origin.setdefault("localStorage", [])
+    if not create:
+        return []
+    origin = {"origin": ep.PORTAL, "localStorage": []}
+    state.setdefault("origins", []).append(origin)
+    return origin["localStorage"]
+
+
+def _ls_get(state: dict | None, key: str) -> str | None:
+    for item in _ls_items(state):
+        if item["name"] == key:
+            v = item["value"]
+            return json.loads(v) if v.startswith('"') else v
+    return None
+
+
+def _ls_set(state: dict, key: str, value: str) -> None:
+    items = _ls_items(state, create=True)
+    for item in items:
+        if item["name"] == key:
+            item["value"] = json.dumps(value)
+            return
+    items.append({"name": key, "value": json.dumps(value)})
+
+
+def _seconds_left(token: str) -> float:
+    try:
+        return float(_claims(token)["exp"]) - time.time()
+    except (KeyError, ValueError, IndexError, TypeError):
+        return -1.0
+
+
 class PortalSession:
     """A logged-in page, plus `signed_post` to run data calls through it.
 
     Use as an async context manager so the browser always closes:
 
-        async with PortalSession(tenant_id, email, account_id) as portal:
+        async with PortalSession(db, tenant_id, email, account_id) as portal:
             body = await portal.signed_post(ep.SALES_REPORTS, {...})
     """
 
-    def __init__(self, tenant_id: str, email: str, account_id: str,
+    def __init__(self, db: AsyncSession, tenant_id: str, email: str, account_id: str,
                  headless: bool = True) -> None:
+        self.db = db
         self.tenant_id = tenant_id
         self.email = email
         self.account_id = account_id
@@ -85,6 +146,9 @@ class PortalSession:
         self._session_id: str | None = None
         self._token_exp = 0.0
         self._last_call = 0.0
+        # Whatever storage_state we last loaded or saved — brand_account_id()
+        # reads from this instead of a disk file now.
+        self._state_dict: dict | None = None
 
     # -- lifecycle -----------------------------------------------------------
     async def __aenter__(self) -> "PortalSession":
@@ -124,6 +188,14 @@ class PortalSession:
         return self
 
     async def __aexit__(self, *exc) -> None:
+        # Keep whatever the page holds now: the app may have rotated its tokens
+        # during the run, and the copy saved at login would then be stale.
+        try:
+            state = await self._ctx.storage_state()
+            if _ls_get(state, _ACCESS_KEY):
+                await store.update_session_state(self.db, self.tenant_id, _SESSION_SLUG, state)
+        except Exception as e:  # noqa: BLE001 — teardown must not mask the real error
+            logger.warning(f"Instamart portal: could not save the session at exit ({e})")
         for closer in (self._browser, self._pw):
             try:
                 await (closer.close() if closer is self._browser else closer.stop())
@@ -136,10 +208,18 @@ class PortalSession:
                 await self._ctx.close()
             except Exception:  # noqa: BLE001
                 pass
-        state = _state_path(self.tenant_id)
         kwargs = {"viewport": {"width": 1440, "height": 900}}
-        if reuse and state.exists():
-            kwargs["storage_state"] = str(state)
+        if reuse:
+            # The saved state keeps the app's own settings (picked brand etc.);
+            # its tokens are replaced by the API login's. With nothing saved
+            # yet, the tokens alone are tried -- the health check decides.
+            self._state_dict = (await store.load_session(self.db, self.tenant_id, _SESSION_SLUG)
+                                or {"cookies": [], "origins": []})
+            pair = await self._api_pair()
+            if pair:
+                _ls_set(self._state_dict, _ACCESS_KEY, pair[0])
+                _ls_set(self._state_dict, _REFRESH_KEY, pair[1])
+            kwargs["storage_state"] = self._state_dict
         self._ctx = await self._browser.new_context(**kwargs)
         # The signer carries a `webdriver` tripwire; it never fires for signing,
         # but the login page is a normal anti-bot surface, so stay quiet.
@@ -149,8 +229,40 @@ class PortalSession:
         self._page = await self._ctx.new_page()
 
     async def _save_state(self) -> None:
-        ep.SESSION_STATE_DIR.mkdir(parents=True, exist_ok=True)
-        await self._ctx.storage_state(path=str(_state_path(self.tenant_id)))
+        """After a real OTP login only — it counts as a login in the history."""
+        self._state_dict = await self._ctx.storage_state()
+        await store.save_session(self.db, self.tenant_id, _SESSION_SLUG, self._state_dict)
+
+    async def _api_pair(self, fresh: bool = False) -> tuple[str, str] | None:
+        """(access, refresh) of the tenant's API login, with at least
+        _RENEW_HEADROOM_S left -- renewed without an OTP when it has less (or
+        when `fresh`). The usual ladder (stored -> refresh -> OTP login) applies,
+        so an OTP is only spent if Swiggy has revoked the API session itself.
+        None when no API login can be had; the page then falls back to its own
+        OTP login."""
+        from platform_auth import service as auth_service
+
+        try:
+            s = await auth_service.ensure(self.db, self.tenant_id, _PLATFORM)
+            if fresh or _seconds_left(s.raw["access_token"]) < _RENEW_HEADROOM_S:
+                s = await auth_service.refresh_if_possible(self.db, self.tenant_id, _PLATFORM) or s
+            return s.raw["access_token"], s.raw["refresh_token"]
+        except Exception as e:  # noqa: BLE001 -- the page's own login is the fallback
+            logger.warning(f"Instamart portal: no API login to borrow tokens from ({e})")
+            return None
+
+    async def _renew_live_token(self) -> None:
+        """Mid-run: put a renewed pair into the page's own localStorage, which
+        is where `_read_token` (and the app) take it from."""
+        pair = await self._api_pair(fresh=True)
+        if pair is None or _seconds_left(pair[0]) < 60:
+            raise PortalError("The portal token is expiring and could not be renewed.")
+        await self._page.evaluate(
+            "([ak, av, rk, rv]) => { localStorage.setItem(ak, av); localStorage.setItem(rk, rv); }",
+            [_ACCESS_KEY, json.dumps(pair[0]), _REFRESH_KEY, json.dumps(pair[1])],
+        )
+        await self._read_token()
+        logger.info("Instamart portal: token renewed mid-run (no OTP)")
 
     # -- login ---------------------------------------------------------------
     async def _goto_transport(self) -> None:
@@ -269,13 +381,14 @@ class PortalSession:
         from the session the browser built. Falls back to whatever the caller
         configured when the picker has never been touched.
         """
-        state = json.loads(_state_path(self.tenant_id).read_text())
-        store = {
+        # Whatever was last loaded (an existing session) or saved (a fresh
+        # login) — see _open_context/_save_state. Not a disk re-read anymore.
+        local_storage = {
             item["name"]: item["value"]
-            for origin in state.get("origins", [])
+            for origin in (self._state_dict or {}).get("origins", [])
             for item in origin.get("localStorage", [])
         }
-        raw = store.get("__IM_ADS_SELECTED_BRAND_KEYS__")
+        raw = local_storage.get("__IM_ADS_SELECTED_BRAND_KEYS__")
         if not raw:
             return None
         try:
@@ -309,6 +422,8 @@ class PortalSession:
 
         # The app may have rotated its token since the last call.
         await self._read_token()
+        if self._token_exp - time.time() < _RENEW_HEADROOM_S:
+            await self._renew_live_token()
 
         # Keep a floor between signed calls; the edge throttles bursts.
         gap = ep.SIGNED_CALL_GAP_S - (time.monotonic() - self._last_call)

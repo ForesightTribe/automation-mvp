@@ -26,6 +26,8 @@ import json
 import time
 from pathlib import Path
 
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.utils.logger import logger
 from scraper.platforms.instamart.dashboard_data.seller.session import PortalSession
 from scraper.platforms.instamart.dashboard_data.supply import endpoints as ep
@@ -70,10 +72,16 @@ def _save_cache(tenant_id: str, token: str, brand_company_id: str) -> None:
     }))
 
 
-async def get_token(tenant_id: str, email: str, account_id: str,
+async def get_token(db: AsyncSession, tenant_id: str, email: str, account_id: str,
                     *, headless: bool = True, force: bool = False) -> tuple[str, str]:
     """Returns (abacus_token, brand_company_id). Reuses a cached token that
-    still has headroom unless `force` asks for a fresh one."""
+    still has headroom unless `force` asks for a fresh one.
+
+    `db` is only for PortalSession's own session persistence (see its module
+    docstring) — this function's own short-lived abacus-token cache stays a
+    local file, deliberately: it's a derived, ~5-hour API token, not a
+    credential, and cheap to re-mint, unlike the Brand Portal login itself.
+    """
     if not force:
         cached = _load_cached(tenant_id)
         if cached:
@@ -83,7 +91,7 @@ async def get_token(tenant_id: str, email: str, account_id: str,
     logger.info("Instamart Supply Portal: minting a fresh abacus-token via the Brand Portal session")
     captured: dict = {}
 
-    async with PortalSession(tenant_id, email, account_id, headless=headless) as portal:
+    async with PortalSession(db, tenant_id, email, account_id, headless=headless) as portal:
         page = portal._page
 
         def on_request(req):
