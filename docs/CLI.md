@@ -285,6 +285,28 @@ The `--week` date must be a Monday (`YYYY-MM-DD`). A non-Monday will return empt
 
 ---
 
+### Zepto seller console — sales + PO + ads (one command)
+
+```bash
+# Daily run — all three sections on ONE login (each Zepto login logs the client's dashboard out)
+python -m cli scrape zepto --tenant <tenant_id>
+
+# Pick sections (any combination)
+python -m cli scrape zepto --tenant <tenant_id> --sales
+python -m cli scrape zepto --tenant <tenant_id> --po --po-days-back 60
+python -m cli scrape zepto --tenant <tenant_id> --ads --from 2026-09-19 --to 2026-09-28
+
+# Sales per-city split for EVERY city on EVERY day (backfills only — ~145 calls a day)
+python -m cli scrape zepto --tenant <tenant_id> --sales --all-cities --from 2026-09-14
+
+# Dry run
+python -m cli scrape zepto --tenant <tenant_id> --no-save
+```
+
+Zepto has one console, so it is one command and one job (`scrape.zepto`) — unlike Blinkit's two dashboards. Default windows: **sales** 8 days to yesterday · **ads** the 7 days up to `--to` · **PO** `--po-days-back` (30) through today. Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved — re-run the same window), **3** = login gone. The code is `scraper/platforms/zepto/dashboard_data/seller/run.py`; full reference: [backend/docs/zepto/cli.md](../backend/docs/zepto/cli.md). (`zepto-sales` / `zepto-ads` / `zepto-po` were removed 2026-10-05.)
+
+---
+
 ### Public product search (Blinkit) — no login required
 
 Per-tenant and config-driven. The store catalog and each tenant's

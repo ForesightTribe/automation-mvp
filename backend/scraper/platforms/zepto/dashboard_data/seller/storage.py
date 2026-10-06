@@ -5,7 +5,10 @@ Mirrors blinkit/dashboard_data/seller/storage.py — same ON CONFLICT
 layer here, unlike Blinkit's: this parser emits real `date`/`uuid.UUID` objects
 rather than strings, so there is nothing to convert.
 """
-from sqlalchemy import delete, func
+import uuid
+from datetime import date
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -124,6 +127,30 @@ _KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
         "month_on_month_growth",
     ),
 }
+
+
+# ── reads the run needs ──────────────────────────────────────────────────────
+
+async def known_cities(session: AsyncSession, tenant_id: str) -> list[str]:
+    """City ids that have ever recorded sales for this tenant — the cities the
+    per-city split re-asks for the older days of its window (run._city_split)."""
+    rows = await session.execute(
+        select(ZeptoSellerProductCityDaily.city_id)
+        .where(ZeptoSellerProductCityDaily.tenant_id == uuid.UUID(str(tenant_id)))
+        .distinct()
+    )
+    return list(rows.scalars().all())
+
+
+async def stored_ad_spend(session: AsyncSession, tenant_id: str, day: str) -> float:
+    """Total ad spend already stored for this tenant and day (0 when none) — what
+    run.blank_ads_day needs to tell the blank-list glitch from a spend-less day."""
+    total = await session.execute(
+        select(func.coalesce(func.sum(ZeptoAdCampaignDaily.spend), 0))
+        .where(ZeptoAdCampaignDaily.tenant_id == uuid.UUID(str(tenant_id)),
+               ZeptoAdCampaignDaily.date == date.fromisoformat(day))
+    )
+    return float(total.scalar() or 0)
 
 
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:

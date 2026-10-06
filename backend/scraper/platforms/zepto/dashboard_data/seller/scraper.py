@@ -4,6 +4,7 @@ from datetime import date, timedelta
 import httpx
 
 from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
+from scraper.utils.retry import retry_call
 from platform_auth.errors import AuthError
 from app.utils.logger import logger
 
@@ -60,16 +61,10 @@ async def discover_ids(client) -> dict:
     return result
 
 
-# ── Browser fallback ─────────────────────────────────────────────────────────
-# Only reached for 401/403 (auth-shaped) failures on an otherwise-healthy
-# session — a 400/429/500/timeout can't be fixed by touching a browser, so
-# those are never routed here (see classify_sales_error / the caller in
-# cli/commands/scrape.py). Kept as a rare exception path, not the routine
-# daily behavior, given the WAF-challenge risk observed from browser page
-# loads on this site.
+# ── Requests (sales analytics + the /vendor PO app) ─────────────────────────
 
-async def _get_with_auth_fallback(client, url: str, params: dict, label: str) -> dict:
-    """GET one Sales-Analytics endpoint through the shared Zepto client.
+async def _get(client, url: str, params: dict, label: str) -> dict:
+    """GET one Sales-Analytics endpoint through the shared Zepto client, -> `data`.
 
     The client owns recovery, and it distinguishes the two failures that look
     alike but are not:
@@ -77,19 +72,15 @@ async def _get_with_auth_fallback(client, url: str, params: dict, label: str) ->
       401       identity gone   -> re-login (bounded, see MAX_REAUTH_PER_RUN)
       202/429   browser proof gone -> re-mint the WAF token
 
-    This replaces a browser-relaunch fallback that could only fix the first and
-    burned ~15s doing it. It also matters more than it used to: on a shared Zepto
-    account the session is evicted mid-run routinely — three times in ten minutes
-    on 2026-09-01 — so recovering per-CALL rather than per-RUN is the difference
-    between finishing and dying halfway.
+    Per-CALL recovery matters on a shared Zepto account: the session is evicted
+    mid-run routinely — three times in ten minutes on 2026-09-01. (This replaced a
+    browser-relaunch fallback that could only fix the first and burned ~15 s.)
 
     `brand_analytics=True` sends `x-proxy-target` and NO WAF token; these paths
     were measured returning 200 without one.
     """
     path = url.replace(ep.BASE_URL, "", 1)
-    resp = await client.request(
-        "GET", path, brand_analytics=True, params=params, retry_writes=False
-    )
+    resp = await client.request("GET", path, brand_analytics=True, params=params)
     if resp.status_code >= 400:
         logger.debug(f"{label}: HTTP {resp.status_code}")
     resp.raise_for_status()
@@ -100,17 +91,11 @@ async def _get_with_auth_fallback(client, url: str, params: dict, label: str) ->
     return resp.json().get("data") or {}
 
 
-async def _post_with_auth_fallback(client, url: str, body: dict, label: str) -> dict:
-    """POST twin of the above, for the /vendor PO endpoints.
-
-    `retry_writes=False`: these are filter/search POSTs and idempotent in
-    practice, but the flag is about intent — a timeout is never safe to replay
-    blindly, because the call may have landed and only the answer was lost.
-    """
+async def _post(client, url: str, body: dict, label: str) -> dict:
+    """POST twin of `_get`, for the /vendor PO endpoints (filter/search POSTs —
+    reads, despite the verb). The client never replays a timeout."""
     path = url.replace(ep.BASE_URL, "", 1)
-    resp = await client.request(
-        "POST", path, brand_analytics=True, json=body, retry_writes=False
-    )
+    resp = await client.request("POST", path, brand_analytics=True, json=body)
     if resp.status_code >= 400:
         logger.debug(f"{label}: HTTP {resp.status_code}")
     resp.raise_for_status()
@@ -127,13 +112,12 @@ async def _post_with_auth_fallback(client, url: str, body: dict, label: str) -> 
 # window succeeded 5/5), not the payload (every variant worked), not the call
 # order (it failed alone and succeeded after po+grn).
 #
-# Without this, one blip discarded an entire dataset. `_scrape_zepto_po`'s
-# `_try` guard catches the exception so a flaky endpoint cannot kill the whole
-# run — correct, but it has no retry, so a single 500 wrote ZERO ASNs while the
-# API held 76. Silent except for one warning line.
+# Without this, one blip discarded an entire dataset. run_po's `_try` guard
+# catches the exception so a flaky endpoint cannot kill the whole run — correct,
+# but it has no retry, so a single 500 wrote ZERO ASNs while the API held 76.
 #
-# Only 5xx is retried. A 4xx will not fix itself, and auth errors already have
-# their own browser fallback inside _post_with_auth_fallback.
+# Only 5xx is retried. A 4xx will not fix itself, and a 401 is already handled
+# inside the shared Zepto client (re-login, resend once).
 #
 # The waits are deliberately long. The endpoint does not fail in isolated blips:
 # measured the same day, four consecutive attempts each timed out at ~23s and
@@ -147,23 +131,17 @@ async def _post_with_auth_fallback(client, url: str, body: dict, label: str) -> 
 _PO_RETRY_WAITS_S = (5, 15, 45)
 
 
-async def _post_5xx_retry(
-    client: dict, url: str, payload: dict, label: str
-) -> dict:
-    last: Exception | None = None
-    for attempt, wait in enumerate((*_PO_RETRY_WAITS_S, None)):
-        try:
-            return await _post_with_auth_fallback(client, url, payload, label)
-        except httpx.HTTPStatusError as e:
-            if e.response.status_code < 500 or wait is None:
-                raise
-            last = e
-            logger.warning(
-                f"{label} got {e.response.status_code} "
-                f"(attempt {attempt + 1}), retrying in {wait}s"
-            )
-            await asyncio.sleep(wait)
-    raise last  # unreachable; the final iteration re-raises
+def _is_5xx(e: Exception) -> bool:
+    """The one failure class these endpoints recover from on their own."""
+    return (isinstance(e, httpx.HTTPStatusError) and e.response is not None
+            and e.response.status_code >= 500)
+
+
+async def _post_5xx_retry(client, url: str, payload: dict, label: str) -> dict:
+    return await retry_call(
+        lambda: _post(client, url, payload, label),
+        waits=_PO_RETRY_WAITS_S, retry_if=_is_5xx, label=label,
+    )
 
 
 async def _fetch_po_paged(
@@ -281,7 +259,7 @@ async def fetch_po_items(
         rows: list[dict] = []
         try:
             for page in range(ep.PO_MAX_PAGES):
-                data = await _get_with_auth_fallback(
+                data = await _get(
                     client,
                     f"{ep.BASE_URL}{ep.PO_ITEMS_API.format(po_id=po_id)}",
                     {"offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE},
@@ -332,7 +310,7 @@ async def fetch_sales_overview(client: dict, date_from: str, date_to: str, ids: 
         "viewType": "BRAND",
         "aggregationLevel": "DAY",
     }
-    data = await _get_with_auth_fallback(
+    data = await _get(
         client, f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}", params, "Sales-overview"
     )
 
@@ -367,57 +345,6 @@ async def fetch_sales_overview(client: dict, date_from: str, date_to: str, ids: 
     return data
 
 
-async def fetch_sales_by_city(
-    client: dict,
-    date_from: str,
-    date_to: str,
-    ids: dict,
-    city_ids: list[str] | None = None,
-) -> dict[str, dict]:
-    """Per-city GMV/units. Returns {city_id: raw sales-overview response}.
-
-    Zepto exposes no city breakdown in a single response — `viewType=CITY` is
-    rejected by the parameter's `oneof` validation — but `cityIds` accepts ONE
-    id and returns that city's full daily series. So a city split means one call
-    per city, each covering the whole date range.
-
-    `city_ids` defaults to every city the account can see (138 on this one). A
-    sweep on 21-Aug-2026 found sales in exactly one of them, so callers should
-    normally pass the short list of cities already known to sell and only sweep
-    everything occasionally.
-    """
-    targets = city_ids if city_ids is not None else ids["city_ids"]
-    out: dict[str, dict] = {}
-    for i, city_id in enumerate(targets, 1):
-        params = {
-            "brandIds": ids["brand_id"],
-            "brandNames": ids["brand_name"],
-            "subcategoryNames": "|".join(ids["subcategory_names"]),
-            "subcategoryIds": ",".join(ids["subcategory_ids"]),
-            "cityIds": city_id,
-            "startDate": date_from,
-            "endDate": date_to,
-            "viewType": "BRAND",
-            "aggregationLevel": "DAY",
-        }
-        try:
-            out[city_id] = await _get_with_auth_fallback(
-                client,
-                f"{ep.BASE_URL}{ep.SALES_OVERVIEW_API}",
-                params,
-                f"Sales-by-city[{city_id[:8]}]",
-            )
-        except Exception as e:
-            logger.warning(f"Zepto sales-by-city failed for {city_id}: {e}")
-        if i < len(targets):
-            await asyncio.sleep(0.6)
-
-    logger.info(
-        f"Zepto sales-by-city [{date_from}..{date_to}]: {len(out)}/{len(targets)} cities fetched"
-    )
-    return out
-
-
 async def fetch_product_performance(
     client: dict, date_from: str, date_to: str, ids: dict, limit: int = 50
 ) -> list[dict]:
@@ -431,8 +358,9 @@ async def fetch_product_performance(
     SKUs summing to ₹18,31,040 / 16,882 units for 17 Jul–16 Aug, matching the
     overview to the rupee). Do not reinstate it.
 
-    `stockOnHand` always comes back null — Stock View is subscription-gated on
-    this account.
+    `stockOnHand` IS returned (2026-10-05: on 561 of 625 Brik Oven rows and all
+    195 Sereko rows) — it is a reading at the time of the call, not a fact about
+    the sales day; see storage._KEEP_IF_NULL.
     """
     params = {
         "brandIds": ids["brand_id"],
@@ -442,19 +370,46 @@ async def fetch_product_performance(
         "cityIds": ",".join(ids["city_ids"]),
         "startDate": date_from,
         "endDate": date_to,
-        "limit": limit,
-        "offset": 0,
     }
-    data = await _get_with_auth_fallback(
-        client, f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}", params, "Product-performance"
-    )
-    # Without `viewType` the response covers the whole catalog, so it includes
-    # products with no sales in the window (gmv/qtySold come back null). Those
-    # are dropped: a zero-sales row adds nothing to any chart, and keeping them
-    # would inflate the "Active SKUs" count with products that sold nothing.
-    products = [p for p in (data["data"] or []) if p.get("gmv")]
+    products = await _product_rows(client, params, "Product-performance", limit)
     logger.info(f"Zepto product-performance [{date_from}..{date_to}]: {len(products)} products with sales")
     return products
+
+
+# Bound on product-performance pages: 20 x 50 = 1,000 selling SKUs in one day/city.
+_PRODUCT_MAX_PAGES = 20
+
+
+async def _product_rows(client, params: dict, label: str, limit: int) -> list[dict]:
+    """Every selling product for one product-performance query, page by page (P47).
+
+    It used to ask for one page of `limit` and stop, so a brand with more selling
+    SKUs than that on a day would have been cut short with nothing said (max seen:
+    12). It now asks for the next `offset` only while a page comes back FULL, so a
+    normal day still costs one call. Bounded by new rows as well as page count: if
+    Zepto ignored `offset` and repeated page 1, paging stops instead of looping.
+
+    Without `viewType` the response covers the whole catalog, including products
+    with no sales in the window (gmv/qtySold null). Those are dropped: a zero-sales
+    row adds nothing to any chart and would inflate "Active SKUs".
+    """
+    out: list[dict] = []
+    seen: set = set()
+    for page in range(_PRODUCT_MAX_PAGES):
+        data = await _get(
+            client, f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}",
+            {**params, "limit": limit, "offset": page * limit}, f"{label} p{page + 1}",
+        )
+        rows = data.get("data") or []
+        new = [r for r in rows if r.get("productVariantId") not in seen]
+        seen.update(r.get("productVariantId") for r in new)
+        out.extend(new)
+        if len(rows) < limit or not new:
+            break
+    else:
+        logger.error(f"Zepto {label}: stopped after {_PRODUCT_MAX_PAGES} full pages — "
+                     "more products than the page bound; raise _PRODUCT_MAX_PAGES")
+    return [p for p in out if p.get("gmv")]
 
 
 async def fetch_product_performance_by_city(
@@ -481,12 +436,9 @@ async def fetch_product_performance_by_city(
     This is the only way to get city and category onto the same row; no single
     Zepto response carries both.
 
-    `city_ids` defaults to every city the account can see (138 on this account),
-    which is a lot of calls. Callers should normally pass the short list of
-    cities already known to sell and sweep everything only occasionally — the
-    same trade-off `fetch_sales_by_city` documents. A sweep is worth running
-    periodically: Hosur went unnoticed for weeks because it was not in the known
-    list (found 2026-08-26, Rs 220 on 21-Aug).
+    `city_ids` defaults to every city the account can see (~145), one call each.
+    Which cities to ask on which day is the caller's decision — see
+    run._city_split (every city for the newest day, the known ones for the rest).
     """
     targets = city_ids if city_ids is not None else ids["city_ids"]
     out: dict[str, list[dict]] = {}
@@ -499,17 +451,10 @@ async def fetch_product_performance_by_city(
             "cityIds": city_id,
             "startDate": date_from,
             "endDate": date_to,
-            "limit": limit,
-            "offset": 0,
         }
         try:
-            data = await _get_with_auth_fallback(
-                client,
-                f"{ep.BASE_URL}{ep.PRODUCT_PERFORMANCE_API}",
-                params,
-                f"Product-performance/city[{city_id[:8]}]",
-            )
-            rows = [p for p in (data["data"] or []) if p.get("gmv")]
+            rows = await _product_rows(
+                client, params, f"Product-performance/city[{city_id[:8]}]", limit)
             if rows:
                 out[city_id] = rows
         except AuthError:
@@ -529,21 +474,9 @@ async def fetch_product_performance_by_city(
 
 
 # ── Ads (`ads-bff`) ──────────────────────────────────────────────────────────
-# Unlike the analytics endpoints above, ads-bff will not accept the saved
-# session's WAF token — it answers 202, an AWS WAF challenge. Only a live
-# browser produces a token it accepts, so ads scraping harvests headers from
-# one short page load and then makes plain HTTP calls with them, the same
-# shape as blinkit/dashboard_data/seller/scraper.py::_capture_headers.
-#
-# Header set matters too: the request must look like the app's own. Sending
-# `accept: application/json, text/plain, */*` (httpx-ish) or omitting
-# referer/user-agent also draws a 202, even with a good token.
-
-_ADS_HEADER_KEYS = frozenset(
-    {"accept", "accept-language", "authorization", "referer", "user-agent",
-     "waf-enabled", "x-aws-waf-token"}
-)
-
+# ads-bff needs the AWS WAF token on top of the session; the shared Zepto client
+# holds it and re-mints it on a 202/429 (campaign_manager/.../zepto/transport.py),
+# so these are plain HTTP calls with no browser of their own.
 
 # ads-bff answers a small share of calls with a bare 500 and then answers the
 # identical call cleanly a minute later. Measured across the 2026-09-11 backfill:
@@ -559,21 +492,17 @@ async def _ads_request(client, method: str, path: str, label: str, **kw) -> http
     """client.request + raise_for_status, retrying 5xx. The client already
     handles 202/429 (re-mint) and 401 (re-login); this covers the one class it
     passes through untouched."""
-    last: Exception | None = None
-    for attempt, wait in enumerate((*_ADS_RETRY_WAITS_S, None)):
-        resp = await client.request(method, path, retry_writes=False, **kw)
-        if resp.status_code < 500:
-            resp.raise_for_status()
-            return resp
-        last = httpx.HTTPStatusError(
-            f"{resp.status_code} from {path}", request=resp.request, response=resp
-        )
-        if wait is None:
-            break
-        logger.warning(f"Zepto ads {label}: HTTP {resp.status_code} "
-                       f"(attempt {attempt + 1}), retrying in {wait}s")
-        await asyncio.sleep(wait)
-    raise last
+    async def _once() -> httpx.Response:
+        resp = await client.request(method, path, **kw)
+        if resp.status_code >= 500:
+            raise httpx.HTTPStatusError(
+                f"{resp.status_code} from {path}", request=resp.request, response=resp
+            )
+        resp.raise_for_status()
+        return resp
+
+    return await retry_call(_once, waits=_ADS_RETRY_WAITS_S, retry_if=_is_5xx,
+                            label=f"Zepto ads {label}")
 
 
 async def fetch_ad_campaigns(
@@ -662,43 +591,6 @@ def _has_metrics(c: dict) -> bool:
         except (TypeError, ValueError):
             continue
     return False
-
-
-async def fetch_ad_daily_metrics(
-    client, brand_id: str, date_from: str, date_to: str, category: str
-) -> dict[str, list[dict]]:
-    """Per-day brand-level ad metrics for one category.
-
-    `breakdown: true` is what returns the time series; `summary: true` would
-    give only window totals. Metrics are requested one at a time because that
-    is how the portal itself asks — a combined request returns the series for
-    just one of them.
-
-    Note the grain: this is per brand per day, NOT per campaign per day (which
-    is what Blinkit's blinkit_ad_campaign_daily holds). Zepto exposes no
-    per-campaign time series that we have found.
-    """
-    series: dict[str, list[dict]] = {}
-    for metric in ep.ADS_METRIC_NAMES:
-        body = {
-            "from": f"{date_from} 00:00:00",
-            "to": f"{date_to} 23:59:59",
-            "interval": "day",
-            "campaign_category": category,
-            "metrics": [metric],
-            "breakdown": True,
-            "brand_id": brand_id,
-        }
-        resp = await _ads_request(
-            client, "POST", ep.ADS_METRICS_API, f"metrics/{metric}", json=body
-        )
-        m = ((resp.json().get("data") or {}).get("metrics") or {}).get(metric) or {}
-        series[metric] = m.get("interval_breakdown") or []
-        await asyncio.sleep(1.5)
-
-    days = max((len(v) for v in series.values()), default=0)
-    logger.info(f"Zepto ad daily metrics [{category}] [{date_from}..{date_to}]: {days} days")
-    return series
 
 
 async def fetch_ads_tabular(

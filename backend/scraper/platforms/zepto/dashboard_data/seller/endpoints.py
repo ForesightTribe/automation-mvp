@@ -1,10 +1,5 @@
 BASE_URL = "https://fcc.zepto.co.in"
 
-# Page path used for the browser-fallback header re-capture (only reached if
-# a browser-free call gets a 401/403 that a fresh session apparently doesn't
-# explain — see scraper.py's _recapture_auth_via_browser).
-SALES_ANALYTICS_PAGE = "/vendor/dashboard/sales-analytics"
-
 # Cheapest real authenticated call found (no filters/params, small response) —
 # used purely as a "is this session still accepted" probe, not for real data.
 USER_INFO_API = "/brand-analytics-web/api/v1/access-management/user"
@@ -30,7 +25,6 @@ PRODUCT_PERFORMANCE_API = "/brand-analytics-web/api/v1/sales-analytics/product-p
 # value because the UI is on a status tab; an empty list has NOT been verified
 # to widen it. If a scrape returns fewer POs than the dashboard shows, this is
 # the first thing to check.
-PO_PAGE = "/vendor/po/lifecycle"
 PO_FILTER_API = "/api/v1/po/filter"
 PO_LISTING_STAT_API = "/api/v1/po/listing-stat"
 PO_SCHEDULED_API = "/api/v1/po/scheduled"
@@ -100,14 +94,10 @@ ASN_PAGE_SIZE = 25
 
 
 # ── Ads (`ads-bff`) ─────────────────────────────────────────────────────────────
-# A different service from the analytics endpoints above, and stricter: it
-# rejects the saved session's WAF token with 202 (an AWS WAF challenge), so ads
-# calls need headers harvested from a live browser first. See
-# scraper.py::capture_ads_headers.
-ADS_PAGE = "/ads/campaign-management"
-ADS_ANALYTICS_PAGE = "/ads/analytics"
+# A different service from the analytics endpoints above, and stricter: it needs
+# an AWS WAF token on top of the session (202 without one). The shared Zepto
+# client mints it once per run and re-mints it on a 202/429.
 ADS_CAMPAIGNS_API = "/ads-bff/api/v1/campaigns"
-ADS_METRICS_API = "/ads-bff/api/v1/brands/analytics/metrics"
 ADS_WALLET_API = "/ads-bff/api/v1/wallet/details"
 ADS_CATEGORIES_API = "/ads-bff/api/v1/campaign-categories"
 
@@ -139,7 +129,3 @@ ADS_TABULAR_PAGE_SIZE = 50
 
 # The three tabs on Campaign Management. Campaigns are scoped to one at a time.
 ADS_CATEGORIES = ("sponsored_products", "sponsored_display", "sponsored_brands")
-
-# Metrics the analytics endpoint accepts. `impressions_per_thousand` is Zepto's
-# name for the impressions series, not a derived per-mille figure.
-ADS_METRIC_NAMES = ("spends", "ctr", "impressions_per_thousand", "clicks", "ecpm")

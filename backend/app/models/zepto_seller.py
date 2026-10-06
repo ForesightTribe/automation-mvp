@@ -515,8 +515,8 @@ class ZeptoSellerProductCityDaily(SQLModel, table=True):
     Zepto exposes no city dimension inside a single product-performance
     response, but `cityIds` does filter it (verified 2026-08-26: Bengaluru
     returned 9 SKUs / Rs 52,215 for 25-Aug while three other cities returned
-    nothing). So a city split means one call per city, the same shape as
-    `fetch_sales_by_city`.
+    nothing). So a city split means one call per city — see
+    seller/run.py::_city_split for which cities each run asks.
 
     This is what the Analytics "Revenue by category & city" heatmap needs: it
     requires city and category on one row, which no other Zepto table has.
