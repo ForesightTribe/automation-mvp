@@ -65,6 +65,14 @@ _X_API_KEY = "0d0b54c3-8d3a-48fc-a433-1648b22e7e8d"
 DEFAULT_WINDOW = "Last 30 days"
 
 
+class SessionDead(RuntimeError):
+    """The stored session was logged out mid-run, after the auth probe passed.
+
+    Seen live 2026-10-06 (Sereko): the probe reached /dashboard at 12:30:54 and
+    the scrape was bounced to the login page 8 s later. The CLI catches this,
+    forces a fresh login and retries once."""
+
+
 async def scrape_sales(email: str, storage_state: dict, time_range_filter: str = DEFAULT_WINDOW) -> dict:
     """Fetch the item-grain rolling-window totals (products/performance) and
     the order-level report (reports/download), both via direct in-page
@@ -109,7 +117,7 @@ async def scrape_sales(email: str, storage_state: dict, time_range_filter: str =
                 f"{ep.BASE_URL}/dashboard/home", wait_until="networkidle", timeout=_NAV_TIMEOUT_MS
             )
             if "/dashboard" not in page.url:
-                raise RuntimeError(
+                raise SessionDead(
                     f"Not on a dashboard route — session may be dead. Landed on {page.url}. "
                     "Check `cli auth probe blinkit_seller_new -t <uuid>` before re-logging in."
                 )
@@ -152,7 +160,7 @@ async def _auth_headers(context) -> dict:
     access_token = cookies.get("access_token")
     seller_id = cookies.get("seller_id")
     if not access_token or not seller_id:
-        raise RuntimeError(
+        raise SessionDead(
             "Missing access_token/seller_id cookie — session may be dead. "
             "Check `cli auth probe blinkit_seller_new -t <uuid>` before re-logging in."
         )

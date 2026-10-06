@@ -9,6 +9,7 @@ from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
 from platform_auth import service as auth_service
+from platform_auth import store as auth_store
 from campaign_manager.marketplaces.zepto.transport import setup as zepto_setup
 from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE, AuthError
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
@@ -743,9 +744,24 @@ async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: boo
             job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_sales")
 
             with console.status("[cyan]Scraping seller-hub sales...[/cyan]"):
-                raw = await seller_hub_scraper.scrape_sales(
-                    email, session.storage_state, time_range_filter=window
-                )
+                try:
+                    raw = await seller_hub_scraper.scrape_sales(
+                        email, session.storage_state, time_range_filter=window
+                    )
+                except seller_hub_scraper.SessionDead as e:
+                    # The probe passed but the scrape was logged out (Sereko,
+                    # 2026-10-06). ensure() has already returned, so its auto-login
+                    # never runs — force one here and retry once. A failed login
+                    # raises and fails the job as before; the breaker still applies.
+                    logger.warning(f"Seller-hub session died after its probe ({e}) — logging in again")
+                    await auth_store.mark_failed(
+                        db, tenant_id, "blinkit_seller_new", "logged out mid-scrape",
+                        login_attempt=False,
+                    )
+                    session = await auth_service.login(db, tenant_id, "blinkit_seller_new", auto=True)
+                    raw = await seller_hub_scraper.scrape_sales(
+                        session.email or email, session.storage_state, time_range_filter=window
+                    )
 
             by_product = parse_seller_hub_sales_by_product(
                 raw["products"], raw["window_label"], tenant_id, job_id
