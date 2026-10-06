@@ -19,7 +19,7 @@ async def create_scrape_job(session: AsyncSession, tenant_id: str, dashboard: st
     session.add(job)
     await session.commit()
     await session.refresh(job)
-    logger.info(f"Scrape job created: {job.id} tenant={tenant_id} dashboard={dashboard}")
+    logger.debug(f"Scrape job created: {job.id} tenant={tenant_id} dashboard={dashboard}")
     return str(job.id)
 
 
@@ -31,7 +31,7 @@ async def complete_scrape_job(session: AsyncSession, job_id: str, records_writte
         job.completed_at = now_ist()
         job.records_written = records_written
         await session.commit()
-    logger.info(f"Scrape job completed: {job_id} records={records_written}")
+    logger.debug(f"Scrape job completed: {job_id} records={records_written}")
 
 
 async def fail_scrape_job(

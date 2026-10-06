@@ -1,10 +1,9 @@
 """Zepto private scrape — the run: one login, then sales, PO and ads.
 
 Moved out of `cli/commands/scrape.py` in Phase 1 (2026-10-05,
-zepto-cm-exp/plans/PLAN-private-scrape.md §6). The CLI keeps flags, printing and exit
-codes; everything that fetches, parses, retries and saves is here, so it can be tested
-without a terminal and new work (per-campaign keyword detail) has somewhere to go that
-is not a 450-line CLI function.
+zepto-cm-exp/plans/PLAN-private-scrape.md §6). The CLI keeps flags and exit codes;
+everything that fetches, parses, retries, saves and LOGS is here, so it can be tested
+without a terminal and new work (per-campaign keyword detail) has a place to go.
 
 Shape (same four files as Blinkit's seller scrape, plus this one):
     endpoints.py   URLs and constants
@@ -13,15 +12,18 @@ Shape (same four files as Blinkit's seller scrape, plus this one):
     storage.py     upserts, and the two reads the run needs
     run.py         the loops — this file
 
-Each section returns a `SectionResult` and never prints. One result drives three things
-that used to disagree: the exit code (anything lost -> 1, auth gone -> 3), the
-`scrape_jobs` row (P35: a run that lost fetches used to complete its row as success and
-then exit 1), and the report the CLI prints.
+Each section returns a `SectionResult`. One result drives the exit code (anything lost
+-> 1, auth gone -> 3) and the `scrape_jobs` row (P35: a run that lost fetches used to
+complete its row as success and then exit 1).
+
+Logging follows scraper/utils/run_log.py: one INFO line per step, tagged
+`zepto·<tenant>·<section>`; per-request detail at DEBUG.
 
 Zepto has ONE console behind ONE login, so it is one job and one command, with every
 section on a single session — each Zepto login logs the client's own dashboard out.
 """
 import asyncio
+import time
 from dataclasses import dataclass, field
 from datetime import date, timedelta
 from typing import Awaitable, Callable
@@ -37,6 +39,7 @@ from scraper.platforms.zepto.dashboard_data.seller import parser as zp
 from scraper.platforms.zepto.dashboard_data.seller import scraper as zs
 from scraper.platforms.zepto.dashboard_data.seller import storage as zst
 from scraper.utils.jobs import complete_scrape_job, create_scrape_job, fail_scrape_job
+from scraper.utils.run_log import rupees, short, tag, tenant_slug, took
 
 # Gap between per-day calls. Paces multi-day windows: a burst of back-to-back requests
 # is the kind of pattern this site's WAF reacts to.
@@ -47,22 +50,23 @@ DAY_GAP_S = 1.5
 # fault is not a two-second blip. Only what fails the replay too fails the run.
 RECHECK_WAIT_S = 20
 
-# Default windows (P37). Ads: the 7 days up to yesterday — like Blinkit's ads, so a
-# missed run heals and late attribution lands (P1). Sales: 8 days, Zepto recomputes
+# Default windows (P37). Ads: the 3 days up to yesterday — more than one, so a failed
+# or interrupted run heals on the next run (P1: one day lost every missed day for good);
+# not 7, because each ads day costs ~19 calls / ~1m50s and a 7-day window made a run
+# ~17 min (P54, Deepansh 2026-10-06). A day missed for 3 runs in a row, or attribution
+# revised after 3 days, needs a manual `--from` re-run. Sales: 8 days, Zepto recomputes
 # days late. PO: 30 days back through TODAY — POs are forward-looking, an order raised
 # today expires in ~3 weeks.
-ADS_DAYS = 7
+ADS_DAYS = 3
 SALES_DAYS = 8
 PO_DAYS = 30
 
-Progress = Callable[[str], None]
 Lost = list[tuple[str, Callable[[], Awaitable[None]]]]
 
 
 @dataclass
 class SectionResult:
-    """What one section did. `lines` are (level, text) for the CLI to print —
-    level is "info", "good" or "warn"; no markup in the text."""
+    """What one section did."""
     name: str
     window: str = ""
     saved: bool = True
@@ -71,62 +75,79 @@ class SectionResult:
     recovered: list[str] = field(default_factory=list)  # failed once, fine on re-check
     not_ready: list[str] = field(default_factory=list)  # Zepto has not computed it yet
     error: str | None = None                            # the section aborted
-    lines: list[tuple[str, str]] = field(default_factory=list)
 
     @property
     def ok(self) -> bool:
         return self.error is None and not self.lost
-
-    def say(self, text: str, level: str = "info") -> None:
-        self.lines.append((level, text))
-
-
-def _noop(_msg: str) -> None:
-    return None
 
 
 def _days(start: date, end: date) -> list[str]:
     return [(start + timedelta(days=i)).isoformat() for i in range((end - start).days + 1)]
 
 
-def _short(items: list[str], n: int = 5) -> str:
-    return ", ".join(items[:n]) + (" …" if len(items) > n else "")
+def _md(day: str) -> str:
+    """'2026-09-29' -> '09-29' — the year is noise in a daily log."""
+    return day[5:]
 
 
-async def _recheck(lost: Lost, recovered: list[str], progress: Progress, what: str) -> Lost:
+class _Recoveries:
+    """The client's own recovery counters, read as a difference across a section, so
+    the summary can say "3 WAF renewals" instead of logging each one."""
+
+    def __init__(self, client):
+        self.client = client
+        self.remint0 = getattr(client, "remint_count", 0)
+        self.reauth0 = getattr(client, "reauth_count", 0)
+
+    def note(self) -> str:
+        bits = []
+        remints = getattr(self.client, "remint_count", 0) - self.remint0
+        reauths = getattr(self.client, "reauth_count", 0) - self.reauth0
+        if remints:
+            bits.append(f"{remints} WAF renewal(s)")
+        if reauths:
+            bits.append(f"{reauths} re-login(s)")
+        return (" · " + " · ".join(bits)) if bits else ""
+
+
+async def _recheck(lost: Lost, recovered: list[str]) -> Lost:
     """Replay every lost fetch once, after RECHECK_WAIT_S. Returns what is still lost.
     An AuthError is not a lost fetch — the session is gone — so it propagates."""
     if not lost:
         return lost
-    progress(f"{len(lost)} {what} fetch(es) lost — re-checking in {RECHECK_WAIT_S}s")
+    logger.info(f"re-check · {len(lost)} lost fetch(es) in {RECHECK_WAIT_S}s")
     await asyncio.sleep(RECHECK_WAIT_S)
     still: Lost = []
     for label, fn in lost:
-        progress(f"Re-checking {label}")
         try:
             await fn()
         except AuthError:
             raise
         except Exception as e:
-            logger.warning(f"Zepto {what} {label} failed on re-check: {e}")
+            logger.debug(f"{label} failed on re-check: {e}")
             still.append((label, fn))
         else:
             recovered.append(label)
         await asyncio.sleep(DAY_GAP_S)
+    logger.info(f"re-check · {len(lost) - len(still)} of {len(lost)} recovered")
     return still
 
 
-async def _finish(db, job_id: str, res: SectionResult) -> None:
-    """Close the `scrape_jobs` row from the result (P35): success only when nothing
-    was lost; otherwise failed, naming what was lost, with the rows that DID land."""
+async def _finish(db, job_id: str, res: SectionResult, recoveries: _Recoveries) -> None:
+    """Close the `scrape_jobs` row from the result (P35) and log the section's last line:
+    success only when nothing was lost; otherwise failed, naming what was lost, with the
+    rows that DID land."""
     total = sum(res.written.values())
     if res.lost:
         await fail_scrape_job(
-            db, job_id, f"partial: {len(res.lost)} fetch(es) lost — {_short(res.lost)}",
+            db, job_id, f"partial: {len(res.lost)} fetch(es) lost — {short(res.lost)}",
             records_written=total,
         )
+        logger.warning(f"lost after re-check: {short(res.lost)}")
     else:
         await complete_scrape_job(db, job_id, total)
+    saved = f"saved {total:,} rows" if res.saved else "not saved (--no-save)"
+    logger.info(f"done · {saved}{recoveries.note()}")
 
 
 # ── the run ──────────────────────────────────────────────────────────────────
@@ -143,7 +164,6 @@ async def run(
     category: str = "all",
     all_cities: bool = False,
     save: bool = True,
-    progress: Progress | None = None,
     on_section: Callable[[SectionResult], None] | None = None,
 ) -> list[SectionResult]:
     """One login, then each chosen section in turn on the same client.
@@ -152,59 +172,63 @@ async def run(
     data, not the run. An `AuthError` does stop everything: the session is gone and no
     later section can work either; the CLI turns it into exit 3 (`auth_expired`).
     """
-    progress = progress or _noop
-    progress("Pre-flight: Zepto session…")
-    # ensure() the session, then mint the WAF token. The client recovers PER CALL
-    # (401 -> re-login, 202/429 -> re-mint): the account is shared and on 2026-09-01
-    # the session was evicted three times in ten minutes.
-    _, _, client = await setup(str(tenant_id))
+    started = time.monotonic()
+    async with AsyncSessionLocal() as db:
+        slug = await tenant_slug(db, tenant_id)
+    wanted = [n for n, w in (("sales", sales), ("po", po), ("ads", ads)) if w]
 
-    plan = [
-        ("sales", sales, lambda: run_sales(client, tenant_id, date_from, date_to,
-                                           all_cities, save, progress)),
-        ("po", po, lambda: run_po(client, tenant_id, po_days_back, save, progress)),
-        ("ads", ads, lambda: run_ads(client, tenant_id, date_from, date_to, category,
-                                     save, progress)),
-    ]
-    results: list[SectionResult] = []
-    for name, wanted, go in plan:
-        if not wanted:
-            continue
-        logger.info(f"Zepto: {name} section starting")
-        try:
-            res = await go()
-        except AuthError:
-            raise
-        except Exception as e:                 # sections catch their own; belt and braces
-            res = SectionResult(name, error=str(getattr(e, "orig", None) or e))
-        if not res.ok:
-            # ERROR, not WARNING: the alert matches severity>=ERROR, and this line is
-            # what names WHICH section broke.
-            logger.error(
-                f"Zepto {name} section FAILED: "
-                + (res.error or f"{len(res.lost)} fetch(es) lost — {_short(res.lost)}")
-            )
-        results.append(res)
-        if on_section:
-            on_section(res)
+    with tag("zepto", slug):
+        logger.info(f"start · {', '.join(wanted)}")
+        # ensure() the session, then mint the WAF token. The client recovers PER CALL
+        # (401 -> re-login, 202/429 -> re-mint): the account is shared and on 2026-09-01
+        # the session was evicted three times in ten minutes.
+        _, _, client = await setup(str(tenant_id))
+        logger.info("session ready")
+
+        plan = {
+            "sales": lambda: run_sales(client, tenant_id, date_from, date_to, all_cities, save),
+            "po": lambda: run_po(client, tenant_id, po_days_back, save),
+            "ads": lambda: run_ads(client, tenant_id, date_from, date_to, category, save),
+        }
+        results: list[SectionResult] = []
+        for name in wanted:
+            with tag("zepto", slug, name):
+                try:
+                    res = await plan[name]()
+                except AuthError:
+                    raise
+                except Exception as e:             # sections catch their own; belt and braces
+                    res = SectionResult(name, error=str(getattr(e, "orig", None) or e))
+                if res.error:
+                    # ERROR, not WARNING: the alert matches severity>=ERROR.
+                    logger.error(f"FAILED · {res.error}")
+            results.append(res)
+            if on_section:
+                on_section(res)
+
+        failed = [r.name for r in results if not r.ok]
+        if failed:
+            logger.error(f"finished · FAILED: {', '.join(failed)} · {took(started)}")
+        else:
+            logger.info(f"finished · ok · {took(started)}")
     return results
 
 
 # ── sales ────────────────────────────────────────────────────────────────────
 
 async def run_sales(client, tenant_id: str, date_from: str | None, date_to: str | None,
-                    all_cities: bool, save: bool, progress: Progress = _noop) -> SectionResult:
+                    all_cities: bool, save: bool) -> SectionResult:
     """Brand totals per day, per-product sales per day, and the per-city split."""
     yesterday = date.today() - timedelta(days=1)
     end = date.fromisoformat(date_to) if date_to else yesterday
     start = (date.fromisoformat(date_from) if date_from
              else date.today() - timedelta(days=SALES_DAYS))
     res = SectionResult("sales", saved=save)
+    recoveries = _Recoveries(client)
 
     async with AsyncSessionLocal() as db:
         job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
         try:
-            progress("Discovering brand / city / category ids")
             ids = await zs.discover_ids(client)
 
             # Zepto computes a day once each morning; ask too early and the overview
@@ -213,24 +237,25 @@ async def run_sales(client, tenant_id: str, date_from: str | None, date_to: str 
             # window covers the day that was not ready.
             data = None
             for _ in range(2):
-                progress(f"Sales overview {start}..{end}")
                 try:
                     data = await zs.fetch_sales_overview(client, start.isoformat(),
                                                          end.isoformat(), ids)
                     break
                 except zs.NoDataYet:
                     res.not_ready.append(end.isoformat())
+                    logger.info(f"{_md(end.isoformat())} not computed by Zepto yet · left for the next run")
                     if end <= start:
                         break
                     end -= timedelta(days=1)
             res.window = f"{start}..{end}"
             if data is None:
                 # Not a failure — only a matter of timing; the job completes empty.
-                res.say(f"Zepto has not computed {_short(res.not_ready)} yet — "
-                        "nothing to scrape this run", "warn")
-                await _finish(db, job_id, res)
+                await _finish(db, job_id, res, recoveries)
                 return res
             days = _days(start, end)
+            logger.info(f"overview {_md(start.isoformat())}→{_md(end.isoformat())} · "
+                        f"{len(days)} days · GMV {data['headers']['gmv']['value']} · "
+                        f"{data['headers']['units']['value']} units")
 
             product_rows: list[dict] = []
             lost: Lost = []
@@ -242,57 +267,40 @@ async def run_sales(client, tenant_id: str, date_from: str | None, date_to: str 
             # Per-SKU sales are fetched one day at a time so rows land at day grain;
             # the overview already returns the whole window by day in one call.
             for i, day in enumerate(days, 1):
-                progress(f"Product breakdown {day} ({i}/{len(days)})")
                 try:
                     await _product_day(day)
                 except AuthError:
                     raise
                 except Exception as e:
-                    logger.warning(f"Zepto product-performance failed for {day}: {e}")
+                    logger.info(f"products {_md(day)} failed ({e}) · re-check later")
                     lost.append((f"products {day}", lambda day=day: _product_day(day)))
                 if i < len(days):
                     await asyncio.sleep(DAY_GAP_S)
+            logger.info(f"products · {len(days)} days · {len(product_rows)} rows")
 
             daily_rows = zp.parse_sales_daily(data, ids, tenant_id, job_id,
                                               start.isoformat(), end.isoformat())
             city_rows = await _city_split(db, client, tenant_id, job_id, ids, days,
-                                          all_cities, lost, res, progress)
+                                          all_cities, lost)
 
-            lost = await _recheck(lost, res.recovered, progress, "sales")
+            lost = await _recheck(lost, res.recovered)
             res.lost = [label for label, _ in lost]
 
             if save:
                 res.written = {"sales rows": await zst.save_sales_results(
                     db, daily_rows, product_rows, city_rows)}
-            await _finish(db, job_id, res)
+            await _finish(db, job_id, res, recoveries)
         except AuthError:
             await fail_scrape_job(db, job_id, "auth_expired")
             raise
         except Exception as e:
             await fail_scrape_job(db, job_id, str(e))
             res.error = str(e)
-            return res
-
-    gmv = data["headers"]["gmv"]["value"]
-    units = data["headers"]["units"]["value"]
-    res.say(f"GMV {gmv}   Units {units}   ({len(daily_rows)} days)")
-    res.say(f"Product rows {len(product_rows)} over {len(days)} day(s)   "
-            f"Product-by-city rows {len(city_rows)}")
-    if city_rows:
-        by_name: dict[str, float] = {}
-        for r in city_rows:
-            by_name[r["city_name"] or r["city_id"]] = by_name.get(r["city_name"] or r["city_id"], 0) + r["gmv"]
-        top = sorted(by_name.items(), key=lambda kv: -kv[1])
-        res.say("Cities: " + ", ".join(f"{n} ₹{v:,.0f}" for n, v in top[:3])
-                + (f" (+{len(top) - 3} more)" if len(top) > 3 else ""))
-    if res.not_ready:
-        res.say(f"Not computed by Zepto yet, left for the next run: {_short(res.not_ready)}", "warn")
     return res
 
 
 async def _city_split(db, client, tenant_id: str, job_id: str, ids: dict, days: list[str],
-                      all_cities: bool, lost: Lost, res: SectionResult,
-                      progress: Progress) -> list[dict]:
+                      all_cities: bool, lost: Lost) -> list[dict]:
     """Zepto sales per product per city per day — `zepto_seller_product_city_daily` rows.
 
     Why it is its own scrape: SKU x city x day is the only Zepto source with city AND
@@ -328,39 +336,40 @@ async def _city_split(db, client, tenant_id: str, job_id: str, ids: dict, days: 
             async def _again(day=day, city=city) -> None:
                 if await _city_day(day, [city]):
                     raise RuntimeError(f"city {city} failed again")
-            lost.append((f"{city_names.get(city, city)} {day}", _again))
+            name = city_names.get(city, city)
+            logger.info(f"cities {_md(day)} · {name} failed · re-check later")
+            lost.append((f"{name} {day}", _again))
 
     if not days:
         return rows
     if all_cities:
         targets, city_days = ids["city_ids"], days
+        logger.info(f"cities · every one of {len(targets)} on all {len(days)} days (--all-cities)")
     else:
         sweep_day = days[-1]
-        progress(f"Sweeping all {len(ids['city_ids'])} cities for {sweep_day}")
         _queue(sweep_day, await _city_day(sweep_day, ids["city_ids"]))
         swept = {r["city_id"] for r in rows}
         known = set(await zst.known_cities(db, tenant_id))
         targets, city_days = sorted(known | swept), days[:-1]
         new = sorted(swept - known)
-        logger.info(f"Zepto: city sweep for {sweep_day} — {len(swept)} selling, {len(new)} new: "
-                    f"{', '.join(city_names.get(c, c) for c in new) or 'none'}")
-        res.say(f"City sweep {sweep_day}: {len(swept)} selling city(ies)"
-                + (f", new: {', '.join(city_names.get(c, c) for c in new)}" if new else ""))
+        logger.info(f"cities · sweep {_md(sweep_day)}: {len(swept)} of {len(ids['city_ids'])} "
+                    f"selling, {len(new)} new"
+                    + (f" ({', '.join(city_names.get(c, c) for c in new)})" if new else ""))
         await asyncio.sleep(DAY_GAP_S)
 
     if targets:
         for i, day in enumerate(city_days, 1):
-            progress(f"Product-by-city {day} ({i}/{len(city_days)}), {len(targets)} cities")
             _queue(day, await _city_day(day, targets))
             if i < len(city_days):
                 await asyncio.sleep(DAY_GAP_S)
+    n = len({r['city_id'] for r in rows})
+    logger.info(f"cities · {n} {'city' if n == 1 else 'cities'} · {len(rows)} rows")
     return rows
 
 
 # ── purchase orders ──────────────────────────────────────────────────────────
 
-async def run_po(client, tenant_id: str, po_days_back: int, save: bool,
-                 progress: Progress = _noop) -> SectionResult:
+async def run_po(client, tenant_id: str, po_days_back: int, save: bool) -> SectionResult:
     """Purchase orders, goods receipts, shipping notices and PO lines.
 
     The window runs through TODAY, unlike sales and ads: POs are forward-looking, so
@@ -369,6 +378,7 @@ async def run_po(client, tenant_id: str, po_days_back: int, save: bool,
     start = date.today() - timedelta(days=po_days_back)
     end = date.today()
     res = SectionResult("po", window=f"{start}..{end}", saved=save)
+    recoveries = _Recoveries(client)
 
     async with AsyncSessionLocal() as db:
         job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")
@@ -382,46 +392,39 @@ async def run_po(client, tenant_id: str, po_days_back: int, save: bool,
                     raise              # not a flaky endpoint — the session is gone (P46)
                 except Exception as e:
                     res.lost.append(label)
-                    logger.warning(f"Zepto {label} failed, continuing without it: {e}")
+                    logger.info(f"{label} failed after retries ({e}) · continuing without it")
                     return []
 
             f, t = start.isoformat(), end.isoformat()
-            progress(f"POs {f}..{t}")
             raw_pos = await _try("po/filter", zs.fetch_pos(client, f, t))
-            progress(f"GRNs {f}..{t}")
             raw_grns = await _try("grn/filter", zs.fetch_grns(client, f, t))
-            progress(f"ASNs {f}..{t}")
             raw_asns = await _try("asn/filter", zs.fetch_asns(client, f, t))
 
             pos = zp.parse_pos(raw_pos, tenant_id, job_id)
             grns = zp.parse_grns(raw_grns, tenant_id, job_id)
             asns = zp.parse_asns(raw_asns, tenant_id, job_id)
+            logger.info(f"last {po_days_back} days · {len(pos)} POs · {len(grns)} GRNs · "
+                        f"{len(asns)} ASNs")
 
             # One GET per PO: carries unit_price (cost) and mrp, which appear on no
             # other Zepto endpoint, plus per-SKU fill rate.
-            progress(f"Line items for {len(pos)} POs")
             items = zp.parse_po_items(
                 await zs.fetch_po_items(client, [p["po_id"] for p in pos]), tenant_id, job_id)
+            po_q = sum(g["po_qty"] or 0 for g in grns)
+            grn_q = sum(g["grn_qty"] or 0 for g in grns)
+            fill = f" · fill {100 * grn_q / po_q:.0f}%" if po_q else ""
+            logger.info(f"lines · {len(items)} across {len(pos)} POs · "
+                        f"value {rupees(sum(p['total_value'] or 0.0 for p in pos))}{fill}")
 
             if save:
                 res.written = await zst.save_po_results(db, pos, grns, asns, items)
-            await _finish(db, job_id, res)
+            await _finish(db, job_id, res, recoveries)
         except AuthError:
             await fail_scrape_job(db, job_id, "auth_expired")
             raise
         except Exception as e:
             await fail_scrape_job(db, job_id, str(e))
             res.error = str(e)
-            return res
-
-    res.say(f"POs {len(pos)}   units ordered {sum(p['total_qty'] or 0 for p in pos):,}   "
-            f"value ₹{sum(p['total_value'] or 0.0 for p in pos):,.0f}")
-    res.say(f"GRNs {len(grns)}   units received {sum(g['grn_qty'] or 0 for g in grns):,}   "
-            f"ASNs {len(asns)}   PO lines {len(items)}")
-    po_q = sum(g["po_qty"] or 0 for g in grns)
-    grn_q = sum(g["grn_qty"] or 0 for g in grns)
-    if po_q:
-        res.say(f"Fill rate {grn_q:,}/{po_q:,} = {100 * grn_q / po_q:.1f}%")
     return res
 
 
@@ -447,7 +450,7 @@ def blank_ads_day(day: str, stored_spend: float, today: date | None = None) -> s
     runs (Brik Oven 09-19 -> 09-28, P28). Decided by date instead:
 
       not_ready    yesterday or later — may genuinely not exist yet. Skipped; the
-                   7-day window fetches it again on the next run.
+                   ads window fetches it again on the next run.
       keep_stored  an older day we already hold real spend for — a blank answer for
                    it can only be the glitch. Skipped, the stored rows stay.
       zero         an older day with no stored spend — the brand spent nothing.
@@ -475,7 +478,7 @@ class _SessionGone(Exception):
 
 
 async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | None,
-                  category: str, save: bool, progress: Progress = _noop) -> SectionResult:
+                  category: str, save: bool) -> SectionResult:
     """Per day: the campaign list (operational fields + spend) and six analytics views
     per ad category (campaign, keyword, product, retail category, city, page) — plus,
     once per run, the campaign CATALOGUE the campaign manager reads.
@@ -490,13 +493,15 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
     if not days:
         res.error = f"empty ads window: --from {date_from} is after --to {date_to}"
         return res
+    recoveries = _Recoveries(client)
 
     async with AsyncSessionLocal() as db:
         job_id = await create_scrape_job(db, tenant_id, "zepto_ads", platform="zepto")
         job_closed = False
         try:
-            progress("Discovering brand")
             brand_id = (await zs.discover_ids(client))["brand_id"]
+            logger.info(f"{_md(days[0])}→{_md(days[-1])} · {len(days)} days · "
+                        f"{', '.join(c.replace('sponsored_', '') for c in categories)}")
 
             rows: list[dict] = []
             kw_rows: list[dict] = []
@@ -506,14 +511,7 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
             zero_days: list[str] = []      # blank older day, saved as genuine zeros
             lost: Lost = []
             catalog: dict = {}
-            total_calls = len(days) * (1 + 6 * len(categories))
-            n = 0
             auth_fails = 0
-
-            def _tick(msg: str) -> None:
-                nonlocal n
-                n += 1
-                progress(f"{msg} ({n}/{total_calls})" if n <= total_calls else f"{msg} (re-check)")
 
             def _note(exc: Exception) -> None:
                 # A dead session fails every remaining call; carrying on burned ~150
@@ -537,7 +535,7 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                 except (AuthError, _SessionGone):
                     raise
                 except Exception as e:
-                    logger.warning(f"Zepto {label} failed: {e}")
+                    logger.info(f"{label} failed ({e}) · re-check later")
                     lost.append((label, fn))
                     _note(e)
 
@@ -547,7 +545,6 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                 return {r["campaign_id"]: r for r in rows if r["date"].isoformat() == day}
 
             async def _campaign_list(day: str) -> None:
-                _tick(f"Campaigns {day}")
                 camps = await zs.fetch_ad_campaigns(client, brand_id, day, day, categories[0])
                 day_rows = zp.parse_ad_campaigns(camps, tenant_id, job_id, day, categories[0])
                 # ads-bff sometimes returns every metric as "-", then real figures
@@ -574,8 +571,9 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                 """The six analytics views per category; each its own _attempt, so one
                 lost view does not cost the other five."""
                 for cat in categories:
+                    short_cat = cat.replace("sponsored_", "")
+
                     async def _analytics(cat=cat, day=day) -> None:
-                        _tick(f"Analytics {cat} {day}")
                         tab = await zs.fetch_ads_tabular(client, brand_id, day, day,
                                                          ep.ADS_VIEW_CAMPAIGN, cat)
                         by_id = _day_campaigns(day)
@@ -583,8 +581,8 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                             row = by_id.get(cid)
                             if row is None:
                                 logger.warning(
-                                    f"Zepto campaign {cid} is in the {cat} analytics table "
-                                    f"but not in the campaign list for {day} — metrics dropped")
+                                    f"campaign {cid} is in the {cat} analytics table but "
+                                    f"not in the campaign list for {day} — metrics dropped")
                                 continue
                             row.update(patch)
                             # The tabs partition properly, unlike the list, so this is
@@ -592,20 +590,18 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                             row["campaign_category"] = cat
 
                     async def _keywords(cat=cat, day=day) -> None:
-                        _tick(f"Keywords {cat} {day}")
                         kws = await zs.fetch_ads_tabular(client, brand_id, day, day,
                                                          ep.ADS_VIEW_KEYWORD, cat)
                         kw_rows.extend(zp.parse_ad_keywords(kws, tenant_id, job_id, day, cat, brand_id))
 
                     async def _products(cat=cat, day=day) -> None:
-                        _tick(f"Products {cat} {day}")
                         tab = await zs.fetch_ads_tabular(client, brand_id, day, day,
                                                          ep.ADS_VIEW_PRODUCT, cat)
                         prod_rows.extend(zp.parse_ad_products(tab, tenant_id, job_id, day, cat, brand_id))
 
-                    for label, fn in ((f"{cat}/{day} analytics", _analytics),
-                                      (f"{cat}/{day} keywords", _keywords),
-                                      (f"{cat}/{day} products", _products)):
+                    for label, fn in ((f"{_md(day)} {short_cat} analytics", _analytics),
+                                      (f"{_md(day)} {short_cat} keywords", _keywords),
+                                      (f"{_md(day)} {short_cat} products", _products)):
                         await _attempt(label, fn)
                         await asyncio.sleep(DAY_GAP_S)
 
@@ -614,11 +610,10 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                                       (ep.ADS_VIEW_CITY, "city"),
                                       (ep.ADS_VIEW_PAGE, "page")):
                         async def _breakdown(cat=cat, day=day, view=view, dim=dim) -> None:
-                            _tick(f"{dim.title()} {cat} {day}")
                             tab = await zs.fetch_ads_tabular(client, brand_id, day, day, view, cat)
                             bd_rows.extend(zp.parse_ad_breakdown(tab, tenant_id, job_id, day,
                                                                  cat, brand_id, dim))
-                        await _attempt(f"{cat}/{day} {dim}", _breakdown)
+                        await _attempt(f"{_md(day)} {short_cat} {dim}", _breakdown)
                         await asyncio.sleep(DAY_GAP_S)
 
             async def _day(day: str) -> None:
@@ -627,30 +622,42 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                 await _campaign_list(day)
                 # A blank day skips the tabs: with no spend anywhere they can only come
                 # back empty (a paused brand would spend ~18 calls a day on nothing).
-                if day in res.not_ready or day in kept_stored or day in zero_days:
+                if day in res.not_ready:
+                    logger.info(f"{_md(day)} · not computed by Zepto yet · skipped")
+                    return
+                if day in kept_stored:
+                    logger.info(f"{_md(day)} · came back blank · kept the stored rows")
+                    return
+                if day in zero_days:
+                    logger.info(f"{_md(day)} · no ad activity · saved as zero")
                     return
                 await asyncio.sleep(DAY_GAP_S)
                 await _day_tabs(day)
+                day_rows = _day_campaigns(day).values()
+                logger.info(f"{_md(day)} · {len(day_rows)} campaigns · "
+                            f"{rupees(sum(r['spend'] for r in day_rows))} spend")
 
             # The campaign CATALOGUE — every campaign's current configuration, for the
             # campaign manager. Once per run: it is "now", not a series.
             async def _catalog() -> None:
-                _tick("Campaign catalogue")
                 catalog.clear()
                 catalog.update(await zs.fetch_campaign_catalog(client))
+                kws = sum(len(d.get("keyword_config") or []) for d in (catalog.get("details") or {}).values())
+                logger.info(f"catalogue · {len(catalog.get('campaigns') or [])} campaigns · "
+                            f"{len(catalog.get('details') or {})} with detail · {kws} keywords")
 
             auth_error: AuthError | None = None
             session_note = None
             try:
                 for day in days:
-                    await _attempt(day, lambda day=day: _day(day))
-                await _attempt("campaign catalogue", _catalog)
-                lost = await _recheck(lost, res.recovered, progress, "ads")
+                    await _attempt(f"{_md(day)} campaign list", lambda day=day: _day(day))
+                await _attempt("catalogue", _catalog)
+                lost = await _recheck(lost, res.recovered)
             except _SessionGone as e:
                 session_note = str(e)
             except AuthError as e:
                 # Re-login exhausted. Save what was fetched, then fail as auth_expired.
-                auth_error, session_note = e, f"Zepto auth failed mid-run: {e}"
+                auth_error = e
 
             res.lost = [label for label, _ in lost]
             # A campaign whose detail read failed even on retry keeps its last good
@@ -671,8 +678,16 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                 raise auth_error
             if session_note:
                 res.lost.append("session gone — remaining fetches skipped")
-                res.say(session_note, "warn")
-            await _finish(db, job_id, res)
+                logger.warning(session_note)
+
+            # Totals on de-duplicated rows, matching what storage writes.
+            unique = list({r["upsert_key"]: r for r in rows}.values())
+            logger.info(f"total · {rupees(sum(r['spend'] for r in unique))} spend · "
+                        f"{sum(r['clicks'] for r in unique):,} clicks · "
+                        f"{rupees(sum(r.get('revenue') or 0 for r in unique))} revenue · "
+                        f"{len(unique)} campaign rows · {len({r['upsert_key'] for r in kw_rows})} "
+                        f"keyword rows")
+            await _finish(db, job_id, res, recoveries)
         except AuthError:
             if not job_closed:                 # e.g. brand discovery, before the loop
                 await fail_scrape_job(db, job_id, "auth_expired")
@@ -680,31 +695,4 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
         except Exception as e:
             await fail_scrape_job(db, job_id, str(e))
             res.error = str(e)
-            return res
-
-    # Report on de-duplicated rows, matching what storage writes.
-    unique = list({r["upsert_key"]: r for r in rows}.values())
-    kw_u = list({r["upsert_key"]: r for r in kw_rows}.values())
-    prod_u = list({r["upsert_key"]: r for r in prod_rows}.values())
-    bd_u = {r["upsert_key"] for r in bd_rows}
-    res.say(f"Categories: {', '.join(categories)}")
-    res.say(f"Campaign rows {len(unique)}   Spend ₹{sum(r['spend'] for r in unique):,.0f}   "
-            f"Clicks {sum(r['clicks'] for r in unique):,}   "
-            f"Revenue ₹{sum(r.get('revenue') or 0 for r in unique):,.0f}")
-    res.say(f"Keywords {len(kw_u)} row(s), spend ₹{sum(k['spend'] for k in kw_u):,.0f}   "
-            f"Products {len(prod_u)} row(s), spend ₹{sum(k['spend'] for k in prod_u):,.0f}   "
-            f"Breakdown {len(bd_u)} row(s)")
-    if catalog.get("campaigns"):
-        res.say(f"Catalogue: {len(catalog['campaigns'])} campaign(s), "
-                f"{len(catalog.get('details') or {})} with full detail"
-                + (f", {len(catalog['failed'])} detail read(s) failed" if catalog.get("failed") else ""))
-    if res.not_ready:
-        res.say(f"{len(res.not_ready)} day(s) not computed by Zepto yet, skipped (the next "
-                f"run fetches them): {_short(res.not_ready)}", "warn")
-    if zero_days:
-        res.say(f"{len(zero_days)} day(s) with no ad activity on any campaign, saved as "
-                f"zero: {_short(zero_days)}")
-    if kept_stored:
-        res.say(f"{len(kept_stored)} day(s) came back blank but already have stored spend "
-                f"— kept the stored rows: {_short(kept_stored)}", "warn")
     return res

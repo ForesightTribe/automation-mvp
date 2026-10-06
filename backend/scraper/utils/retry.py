@@ -27,7 +27,7 @@ async def retry_call(
         except Exception as e:
             if wait is None or not retry_if(e):
                 raise
-            logger.warning(f"{label} failed ({e}) — attempt {attempt + 1}, retrying in {wait}s")
+            logger.debug(f"{label} failed ({e}) — attempt {attempt + 1}, retrying in {wait}s")
             await asyncio.sleep(wait)
 
 
@@ -44,7 +44,7 @@ def retry(max_attempts: int = 3, delay: float = 2.0, backoff: float = 2.0):
                     if attempt == max_attempts:
                         logger.error(f"{func.__name__} failed after {max_attempts} attempts: {e}")
                         raise
-                    logger.warning(
+                    logger.debug(
                         f"{func.__name__} attempt {attempt}/{max_attempts} failed: {e}. "
                         f"Retrying in {current_delay}s..."
                     )

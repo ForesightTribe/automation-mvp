@@ -2,7 +2,7 @@
 
 What each section does with what Zepto gives back, and what it records:
 
-  P1   ads scrape the 7 days up to yesterday, not yesterday alone
+  P1   ads scrape the 3 days up to yesterday, not yesterday alone (7 until P54)
   P28  a blank ads day is "not ready" only if it is yesterday; an older one is saved as
        zeros, unless we already hold real spend for it (then the stored rows stay)
   P29  the city split sweeps every city for the newest day (a new tenant and a new
@@ -112,14 +112,14 @@ def _go(coro):
 
 # ── P1 · the ads window ──────────────────────────────────────────────────────
 
-def test_ads_window_defaults_to_the_7_days_up_to_yesterday():
+def test_ads_window_defaults_to_the_3_days_up_to_yesterday():
     days = zr.ads_window(None, None, today=TODAY)
-    assert days[0] == "2026-09-28" and days[-1] == "2026-10-04"
-    assert len(days) == zr.ADS_DAYS == 7
+    assert days == ["2026-10-02", "2026-10-03", "2026-10-04"]
+    assert len(days) == zr.ADS_DAYS == 3
 
 
 def test_ads_window_counts_back_from_to_and_honours_from():
-    assert zr.ads_window(None, "2026-09-28", today=TODAY)[0] == "2026-09-22"
+    assert zr.ads_window(None, "2026-09-28", today=TODAY)[0] == "2026-09-26"
     assert zr.ads_window("2026-09-19", "2026-09-21", today=TODAY) == [
         "2026-09-19", "2026-09-20", "2026-09-21"]
     assert zr.ads_window("2026-09-22", "2026-09-21", today=TODAY) == []
@@ -193,8 +193,8 @@ def test_ads_lost_tab_fails_the_section_and_its_scrape_job():
     with _patched(**fakes) as jobs:
         res = _go(zr.run_ads(object(), TENANT, d1, d1, "all", True))
     assert not res.ok
-    assert res.lost == [f"sponsored_products/{d1} keywords"]
-    assert res.recovered == [f"sponsored_brands/{d1} city"]
+    assert res.lost == [f"{d1[5:]} products keywords"]
+    assert res.recovered == [f"{d1[5:]} brands city"]
     status, error, records = jobs.closed[-1]
     assert status == "failed" and error.startswith("partial: 1 fetch(es) lost") and records == 2
 
@@ -426,6 +426,52 @@ def test_run_isolates_a_failing_section_and_stops_on_auth():
             raise AssertionError("AuthError was swallowed")
     assert order == ["sales", "po", "ads"]                    # sales' failure did not stop po
     assert [(r.name, r.ok) for r in reported] == [("sales", False), ("po", True)]
+
+
+# ── the log (scraper/utils/run_log.py — "Steps" level, 2026-10-06) ───────────
+
+@contextlib.contextmanager
+def _captured_log():
+    from loguru import logger
+    lines: list[str] = []
+    sink = logger.add(lambda m: lines.append(m.rstrip("\n")), level="INFO",
+                      format="{level}|{extra[tag]}|{message}")
+    try:
+        yield lines
+    finally:
+        logger.remove(sink)
+
+
+def test_a_run_logs_tagged_steps_not_requests():
+    d1, d2 = _days(2, 1)
+    sales_patches, _, _ = _sales_fakes(known=["c1"], sells={"c1"})
+    saved, tab_calls = {}, []
+    ads_patches = _ads_fakes(set(), {}, saved, tab_calls)
+    setup = _async(lambda *_: (None, None, object()))
+    fakes = {**sales_patches, **ads_patches, "zs__discover_ids": _async(lambda *_: IDS)}
+    with _captured_log() as lines, _patched(run_attrs={"setup": setup}, **fakes):
+        _go(zr.run(TENANT, po=False, date_from=d1, date_to=d2))
+
+    tags = {line.split("|")[1] for line in lines}
+    assert tags <= {f"zepto·{TENANT[:8]}", f"zepto·{TENANT[:8]}·sales", f"zepto·{TENANT[:8]}·ads"}
+    assert not any(line.startswith(("WARNING", "ERROR")) for line in lines)   # nothing was lost
+    # Steps, not requests: 2 days x 18 analytics calls happened, but the ads section
+    # logs one line per day plus a handful of section lines.
+    assert len(tab_calls) == 2 * 18
+    ads_lines = [line for line in lines if line.split("|")[1].endswith("·ads")]
+    assert len(ads_lines) <= 6, ads_lines
+    assert lines[0].endswith("start · sales, ads") and "finished · ok" in lines[-1]
+
+
+def test_a_lost_fetch_is_one_warning():
+    d1 = _days(2)[0]
+    saved, tab_calls = {}, []
+    fakes = _ads_fakes(set(), {}, saved, tab_calls,
+                       fail_tabs={(d1, "keyword_table", "sponsored_products"): 99})
+    with _captured_log() as lines, _patched(**fakes):
+        _go(zr.run_ads(object(), TENANT, d1, d1, "all", True))
+    warnings = [line for line in lines if line.startswith("WARNING")]
+    assert len(warnings) == 1 and "products keywords" in warnings[0]
 
 
 # ── the fetchers ─────────────────────────────────────────────────────────────

@@ -144,7 +144,7 @@ class ZeptoClient:
     async def _remint(self) -> None:
         self.waf = await mint_waf_token()
         self.remint_count += 1
-        logger.info(f"Zepto WAF token re-minted (#{self.remint_count})")
+        logger.debug(f"Zepto WAF token re-minted (#{self.remint_count})")
 
     async def _adopt_stored(self) -> bool:
         """Take a FRESHER session another job already saved, instead of logging in. (ZC-P25)
@@ -172,7 +172,7 @@ class ZeptoClient:
             return False
         self.jwt = jwt
         self.brand_ids = raw.get("brand_ids") or self.brand_ids
-        logger.info("Zepto session was replaced by another job's login — adopted the "
+        logger.debug("Zepto session was replaced by another job's login — adopted the "
                     "fresher stored session instead of logging in again")
         return True
 
@@ -215,7 +215,9 @@ class ZeptoClient:
                     return False
 
             self.reauth_count += 1
-            logger.warning(
+            # DEBUG: a recovery. Scrapes count it into their section summary
+            # ("1 re-login(s)", scraper/utils/run_log.py); giving up is the ERROR above.
+            logger.debug(
                 f"Zepto session rejected (401) — logging in again ({self.reauth_count}/"
                 f"{MAX_REAUTH_PER_RUN} this run). This logs out anyone using the Zepto "
                 "dashboard on the same account."

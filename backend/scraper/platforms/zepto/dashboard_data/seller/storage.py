@@ -44,7 +44,7 @@ async def save_sales_results(
     await _upsert(session, ZeptoSellerSales, products)
     await _upsert(session, ZeptoSellerProductCityDaily, product_cities)
     await session.commit()
-    logger.info(
+    logger.debug(
         f"Zepto seller sales saved — days:{len(daily)} products:{len(products)} "
         f"product-city-days:{len(product_cities)}"
     )
@@ -76,7 +76,7 @@ async def save_ad_results(
     await _upsert(session, ZeptoAdProductDaily, products)
     await _upsert(session, ZeptoAdBreakdownDaily, breakdown)
     await session.commit()
-    logger.info(
+    logger.debug(
         "Zepto ads saved — " + " ".join(f"{k}:{v}" for k, v in written.items())
     )
     return written
@@ -167,7 +167,7 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
     if rows and "upsert_key" in rows[0]:
         deduped = {r["upsert_key"]: r for r in rows}
         if len(deduped) != len(rows):
-            logger.info(
+            logger.debug(
                 f"{model.__tablename__}: collapsed {len(rows) - len(deduped)} duplicate "
                 f"upsert_key row(s) before insert"
             )
@@ -244,7 +244,7 @@ async def save_po_results(
     await session.commit()
     written = {"pos": len(pos), "grns": len(grns), "asns": len(asns),
                "po_items": len(po_items or [])}
-    logger.info(
+    logger.debug(
         f"Zepto PO saved — pos:{written['pos']} grns:{written['grns']} "
         f"asns:{written['asns']} items:{written['po_items']}"
     )
@@ -295,7 +295,7 @@ async def save_campaign_catalog(
     await session.commit()
     written = {"campaigns": len(full_rows) + len(list_only_rows),
                "campaigns_with_detail": len(full_rows), "keywords": kw_written}
-    logger.info("Zepto campaign catalogue saved — "
+    logger.debug("Zepto campaign catalogue saved — "
                 + " ".join(f"{k}:{v}" for k, v in written.items()))
     return written
 

@@ -82,7 +82,7 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
             # names (V7). Resolving the names here is what spares us a city lookup table.
             config = await _account_config(page, token)
             cities = (config or {}).get("cities") or {}
-            logger.info(f"City directory: {len(cities)} cities")
+            logger.debug(f"City directory: {len(cities)} cities")
 
             body = {
                 "from_date": from_str,
@@ -102,7 +102,7 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
                     "no campaigns in this window, or the session belongs to a different "
                     "advertiser than expected (see the advertiser logged above)."
                 )
-            logger.info(f"Captured {len(campaigns)} campaigns")
+            logger.info(f"campaigns · {len(campaigns)} captured")
 
             sov_resp = await _post(page, ep.SPONSORED_SOV_API, body, token)
             sov = ((sov_resp or {}).get("data") or {}).get("sponsored_sov") or []
@@ -134,10 +134,10 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
             }
             no_metrics = len(campaigns) - len(runnable_ids)
             if no_metrics:
-                logger.info(
+                logger.debug(
                     f"{no_metrics} campaign(s) {sorted(_NO_DATA_STATUSES)} — config only, no metrics"
                 )
-            logger.info(f"Per-campaign pulls for {len(targets)}/{len(campaigns)} campaigns")
+            logger.info(f"per-campaign pulls · {len(targets)} of {len(campaigns)} campaigns")
 
             daily: dict[int, list] = {}
             detail: dict[int, dict] = {}
@@ -146,7 +146,7 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
             total = len(targets)
             for i, c in enumerate(targets, 1):
                 cid = c["id"]
-                logger.info(f"  campaign {i}/{total} (id {cid})")
+                logger.debug(f"  campaign {i}/{total} (id {cid})")
                 referrer = f"{ep.BASE_URL}/diy/campaign/{cid}"
 
                 # Configuration — every campaign.
@@ -179,9 +179,9 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
                 detail[cid] = (report or {}).get("data") or {}
             got_config = sum(1 for v in campaign_detail.values() if v)
             logger.info(
-                f"Fetched config for {got_config}/{len(campaign_detail)} campaigns "
-                f"({sum(len(v) for v in keyword_attributes.values())} keyword bid ranges), "
-                f"metrics for {len(daily)}"
+                f"per-campaign pulls · config {got_config}/{len(campaign_detail)} · "
+                f"{sum(len(v) for v in keyword_attributes.values())} keywords with bid ranges · "
+                f"metrics {len(daily)}"
             )
             # A campaign whose detail call failed has its targeting/floor columns written
             # NULL (the upsert replaces every updatable column, and a batch insert cannot
@@ -318,7 +318,7 @@ async def _log_advertiser(page, token: str) -> None:
         logger.warning("Could not identify advertiser for this session")
         return
     named = ", ".join(f"{a.get('name')} (id {a.get('id')})" for a in items)
-    logger.info(f"Advertiser: {named}")
+    logger.debug(f"Advertiser: {named}")
 
 
 async def _account_config(page, token: str) -> dict:
@@ -346,7 +346,7 @@ def _enabled_campaign_types(config: dict) -> list[str]:
         )
         return ep.ALL_CAMPAIGN_TYPES
     disabled = sorted(set(ep.ALL_CAMPAIGN_TYPES) - set(types))
-    logger.info(f"Enabled campaign types: {len(types)} ({', '.join(types)})")
+    logger.debug(f"Enabled campaign types: {len(types)} ({', '.join(types)})")
     if disabled:
         logger.debug(f"Not enabled for this advertiser: {', '.join(disabled)}")
     return types
@@ -457,4 +457,4 @@ async def _inject_firebase_idb(context, idb_data: list) -> None:
             IDB_DATA.forEach(function(item) {{ store.put(item); }});
         }};
     }})();""")
-    logger.info(f"IndexedDB injection: {len(idb_data)} Firebase items")
+    logger.debug(f"IndexedDB injection: {len(idb_data)} Firebase items")

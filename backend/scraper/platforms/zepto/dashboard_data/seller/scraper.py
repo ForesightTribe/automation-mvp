@@ -54,7 +54,7 @@ async def discover_ids(client) -> dict:
         # the names, and re-fetching the list to get them would be wasteful.
         "city_list": city_list,
     }
-    logger.info(
+    logger.debug(
         f"Zepto IDs discovered: brand={result['brand_name']} "
         f"({len(subcategory_ids)} subcategories, {len(city_ids)} cities)"
     )
@@ -170,7 +170,7 @@ async def _fetch_po_paged(
         if not data.get("hasNext"):
             break
         await asyncio.sleep(0.4)
-    logger.info(f"Zepto {label}: {len(out)} row(s)")
+    logger.debug(f"Zepto {label}: {len(out)} row(s)")
     return out
 
 
@@ -280,7 +280,7 @@ async def fetch_po_items(
         if i < len(po_ids):
             await asyncio.sleep(0.4)
 
-    logger.info(
+    logger.debug(
         f"Zepto po items: {sum(len(v) for v in out.values())} line(s) "
         f"across {len(out)}/{len(po_ids)} POs"
     )
@@ -341,7 +341,7 @@ async def fetch_sales_overview(client: dict, date_from: str, date_to: str, ids: 
     gmv = data["headers"]["gmv"]["value"]
     units = data["headers"]["units"]["value"]
     daily = data["metrics"]["gmv"]["data"]
-    logger.info(f"Zepto sales-overview [{date_from}..{date_to}]: GMV={gmv} Units={units} ({len(daily)} days)")
+    logger.debug(f"Zepto sales-overview [{date_from}..{date_to}]: GMV={gmv} Units={units} ({len(daily)} days)")
     return data
 
 
@@ -372,7 +372,7 @@ async def fetch_product_performance(
         "endDate": date_to,
     }
     products = await _product_rows(client, params, "Product-performance", limit)
-    logger.info(f"Zepto product-performance [{date_from}..{date_to}]: {len(products)} products with sales")
+    logger.debug(f"Zepto product-performance [{date_from}..{date_to}]: {len(products)} products with sales")
     return products
 
 
@@ -460,13 +460,13 @@ async def fetch_product_performance_by_city(
         except AuthError:
             raise                      # the session is gone — no other city will work either
         except Exception as e:
-            logger.warning(f"Zepto product-performance failed for city {city_id}: {e}")
+            logger.debug(f"Zepto product-performance failed for city {city_id}: {e}")
             if failed is not None:
                 failed.append(city_id)
         if i < len(targets):
             await asyncio.sleep(0.6)
 
-    logger.info(
+    logger.debug(
         f"Zepto product-performance by city [{date_from}..{date_to}]: "
         f"{len(out)}/{len(targets)} cities with sales"
     )
@@ -568,13 +568,13 @@ async def fetch_ad_campaigns(
     # day of zeros over good data, so say so — the caller decides whether to
     # retry rather than this function looping on its own.
     if out and not any(_has_metrics(c) for c in out):
-        logger.warning(
+        logger.debug(
             f"Zepto ad campaigns [{category}] [{date_from}]: {len(out)} campaigns but every "
             "metric is empty — not computed yet, ads-bff's transient blank, or no spend at all; "
             "the caller retries once and then decides (cli _zepto_blank_ads_day)"
         )
 
-    logger.info(f"Zepto ad campaigns [{category}] [{date_from}..{date_to}]: {len(out)} of {total}")
+    logger.debug(f"Zepto ad campaigns [{category}] [{date_from}..{date_to}]: {len(out)} of {total}")
     return out
 
 
@@ -650,7 +650,7 @@ async def fetch_ads_tabular(
         page += 1
         await asyncio.sleep(1.5)
 
-    logger.info(f"Zepto ads {view} [{date_from}..{date_to}]: {len(out)} rows")
+    logger.debug(f"Zepto ads {view} [{date_from}..{date_to}]: {len(out)} rows")
     return out
 
 
@@ -713,7 +713,7 @@ async def fetch_campaign_catalog(client) -> dict:
         try:
             await _one(int(raw["campaign_id"]))
         except Exception as e:
-            logger.warning(f"Zepto catalogue: campaign {raw['campaign_id']} detail failed ({e})")
+            logger.debug(f"Zepto catalogue: campaign {raw['campaign_id']} detail failed ({e})")
             failed.append(int(raw["campaign_id"]))
         await asyncio.sleep(_CATALOG_GAP_S)
 
@@ -724,12 +724,12 @@ async def fetch_campaign_catalog(client) -> dict:
             try:
                 await _one(cid)
             except Exception as e:
-                logger.warning(f"Zepto catalogue: campaign {cid} detail failed again ({e})")
+                logger.debug(f"Zepto catalogue: campaign {cid} detail failed again ({e})")
                 still.append(cid)
             await asyncio.sleep(_CATALOG_GAP_S)
         failed = still
 
-    logger.info(f"Zepto catalogue: {len(campaigns)} campaign(s), {len(details)} with detail, "
+    logger.debug(f"Zepto catalogue: {len(campaigns)} campaign(s), {len(details)} with detail, "
                 f"{len(failed)} detail read(s) failed")
     return {"campaigns": campaigns, "details": details, "floors": floors,
             "city_names": city_names, "failed": failed}

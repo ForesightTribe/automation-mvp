@@ -303,7 +303,7 @@ python -m cli scrape zepto --tenant <tenant_id> --sales --all-cities --from 2026
 python -m cli scrape zepto --tenant <tenant_id> --no-save
 ```
 
-Zepto has one console, so it is one command and one job (`scrape.zepto`) — unlike Blinkit's two dashboards. Default windows: **sales** 8 days to yesterday · **ads** the 7 days up to `--to` · **PO** `--po-days-back` (30) through today. Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved — re-run the same window), **3** = login gone. The code is `scraper/platforms/zepto/dashboard_data/seller/run.py`; full reference: [backend/docs/zepto/cli.md](../backend/docs/zepto/cli.md). (`zepto-sales` / `zepto-ads` / `zepto-po` were removed 2026-10-05.)
+Zepto has one console, so it is one command and one job (`scrape.zepto`) — unlike Blinkit's two dashboards. Default windows: **sales** 8 days to yesterday · **ads** the 3 days up to `--to` · **PO** `--po-days-back` (30) through today. Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved — re-run the same window), **3** = login gone. The code is `scraper/platforms/zepto/dashboard_data/seller/run.py`; full reference: [backend/docs/zepto/cli.md](../backend/docs/zepto/cli.md). (`zepto-sales` / `zepto-ads` / `zepto-po` were removed 2026-10-05.)
 
 ---
 
