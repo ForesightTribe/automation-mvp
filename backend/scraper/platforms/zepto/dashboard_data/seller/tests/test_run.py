@@ -135,13 +135,18 @@ def test_blank_day_verdicts():
 
 
 def _campaign(cid: int, *, blank: bool) -> dict:
+    # Campaign 1 bids on keywords; campaign 2 is auto-targeted (no keyword detail to read).
     v = "-" if blank else "100"
     return {"campaign_id": cid, "brand_id": "brand-1", "campaign_name": f"C{cid}",
+            "campaign_type": "PLA", "bid_targeting_type": "KEYWORD" if cid == 1 else "AUTO",
             "spend": v, "impressions": v, "clicks": v}
 
 
-def _ads_fakes(blank_days: set, stored: dict, saved: dict, tab_calls: list, *, fail_tabs=None):
+def _ads_fakes(blank_days: set, stored: dict, saved: dict, tab_calls: list, *, fail_tabs=None,
+               detail_calls: list | None = None, fail_detail: dict | None = None):
     fail_tabs = dict(fail_tabs or {})
+    fail_detail = dict(fail_detail or {})
+    detail_calls = detail_calls if detail_calls is not None else []
 
     async def fetch_campaigns(_c, _b, day, _to, _cat):
         return [_campaign(1, blank=day in blank_days), _campaign(2, blank=day in blank_days)]
@@ -154,8 +159,18 @@ def _ads_fakes(blank_days: set, stored: dict, saved: dict, tab_calls: list, *, f
             raise RuntimeError("500 from ads-bff")
         return []
 
-    async def save_ads(_db, rows, kws, prods, bds):
-        saved["rows"] = rows
+    async def fetch_detail(_c, _b, cid, day, cat):
+        detail_calls.append((cid, day, cat))
+        if fail_detail.get((cid, day), 0) > 0:
+            fail_detail[(cid, day)] -= 1
+            raise RuntimeError("500 from ads-bff")
+        return [{"keyword_name": "sour cream", "keyword_match_type": "EXACT",
+                 "keyword_spend": 50, "keyword_impressions": 40, "keyword_clicks": 3,
+                 "keyword_revenue": 180, "keyword_orders": 1, "keyword_atc": 1,
+                 "keyword_same_skus": 1, "keyword_other_skus": 0, "keyword_robas": 3.6}]
+
+    async def save_ads(_db, rows, kws, prods, bds, detail=None):
+        saved["rows"], saved["detail"] = rows, detail or []
         return {"campaigns": len({r["upsert_key"] for r in rows})}
 
     return dict(
@@ -163,6 +178,7 @@ def _ads_fakes(blank_days: set, stored: dict, saved: dict, tab_calls: list, *, f
         zs__fetch_ad_campaigns=fetch_campaigns,
         zs__fetch_ads_tabular=fetch_tab,
         zs__fetch_campaign_catalog=_async(lambda *_: {"campaigns": [], "failed": []}),
+        zs__fetch_campaign_keywords=fetch_detail,
         zst__save_ad_results=save_ads,
         zst__stored_ad_spend=_async(lambda _db, _t, day: stored.get(day, 0.0)),
     )
@@ -219,6 +235,36 @@ def test_ads_auth_error_saves_what_came_back_then_propagates():
             assert jobs.closed == [("failed", "auth_expired", 2)]
             return
     raise AssertionError("AuthError was swallowed")
+
+
+# ── P38 · keyword performance per campaign ───────────────────────────────────
+
+def test_keyword_detail_is_read_for_active_keyword_campaigns_only():
+    zero_day, d1, d2 = _days(3, 2, 1)
+    saved, tab_calls, detail_calls = {}, [], []
+    fakes = _ads_fakes({zero_day}, {}, saved, tab_calls, detail_calls=detail_calls)
+    with _patched(**fakes):
+        res = _go(zr.run_ads(object(), TENANT, zero_day, d2, "all", True))
+    assert res.ok
+    # campaign 1 (keyword-bid, active) on each day with activity; never campaign 2 (auto),
+    # never the zero day (no impressions anywhere).
+    assert detail_calls == [(1, d1, "sponsored_products"), (1, d2, "sponsored_products")]
+    detail = saved["detail"]
+    assert [(r["campaign_id"], r["date"].isoformat(), r["keyword"]) for r in detail] == [
+        (1, d1, "sour cream"), (1, d2, "sour cream")]
+    assert detail[0]["spend"] == 50 and detail[0]["same_skus"] == 1
+
+
+def test_a_lost_keyword_detail_fetch_is_rechecked():
+    d1 = _days(1)[0]
+    saved, tab_calls, detail_calls = {}, [], []
+    fakes = _ads_fakes(set(), {}, saved, tab_calls, detail_calls=detail_calls,
+                       fail_detail={(1, d1): 1})
+    with _patched(**fakes):
+        res = _go(zr.run_ads(object(), TENANT, d1, d1, "all", True))
+    # the newest day blank-checks first; d1 is yesterday but has activity, so it is read
+    assert res.ok and res.recovered == [f"{d1[5:]} campaign 1 keywords"]
+    assert len(saved["detail"]) == 1
 
 
 # ── sales ────────────────────────────────────────────────────────────────────

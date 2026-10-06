@@ -507,6 +507,7 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
             kw_rows: list[dict] = []
             prod_rows: list[dict] = []
             bd_rows: list[dict] = []
+            detail_rows: list[dict] = []   # per-campaign keyword performance (P38)
             kept_stored: list[str] = []    # blank older day, stored spend kept (glitch)
             zero_days: list[str] = []      # blank older day, saved as genuine zeros
             lost: Lost = []
@@ -616,6 +617,28 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                         await _attempt(f"{_md(day)} {short_cat} {dim}", _breakdown)
                         await asyncio.sleep(DAY_GAP_S)
 
+            async def _keyword_detail(day: str) -> int:
+                """Keyword performance PER CAMPAIGN for one day (P38): one call for each
+                keyword-bid PLA campaign that had impressions that day — a campaign with none
+                has no keyword rows, and Zepto answers one campaign-day per call. Each call is
+                its own _attempt, so one lost campaign does not cost the others."""
+                active = [r for r in _day_campaigns(day).values()
+                          if r["impressions"]
+                          and (r.get("campaign_type") or "").upper() == "PLA"
+                          and (r.get("bid_targeting_type") or "").upper() == "KEYWORD"]
+                for r in active:
+                    cid = r["campaign_id"]
+                    cat = r.get("campaign_category") or categories[0]
+
+                    async def _one(cid=cid, cat=cat, day=day) -> None:
+                        kws = await zs.fetch_campaign_keywords(client, brand_id, cid, day, cat)
+                        detail_rows.extend(zp.parse_campaign_keyword_detail(
+                            kws, tenant_id, job_id, day, cid, cat, brand_id))
+
+                    await _attempt(f"{_md(day)} campaign {cid} keywords", _one)
+                    await asyncio.sleep(DAY_GAP_S)
+                return len(active)
+
             async def _day(day: str) -> None:
                 """The list, then the tabs. Raises if the LIST is lost — the tabs mean
                 nothing without it, so the whole day is one re-check item."""
@@ -633,9 +656,11 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                     return
                 await asyncio.sleep(DAY_GAP_S)
                 await _day_tabs(day)
+                detail_n = await _keyword_detail(day)
                 day_rows = _day_campaigns(day).values()
                 logger.info(f"{_md(day)} · {len(day_rows)} campaigns · "
-                            f"{rupees(sum(r['spend'] for r in day_rows))} spend")
+                            f"{rupees(sum(r['spend'] for r in day_rows))} spend · "
+                            f"keywords for {detail_n} active keyword campaign(s)")
 
             # The campaign CATALOGUE — every campaign's current configuration, for the
             # campaign manager. Once per run: it is "now", not a series.
@@ -665,7 +690,8 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
             res.lost += [f"catalogue detail {cid}" for cid in catalog.get("failed") or []]
 
             if save:
-                res.written = dict(await zst.save_ad_results(db, rows, kw_rows, prod_rows, bd_rows))
+                res.written = dict(await zst.save_ad_results(db, rows, kw_rows, prod_rows, bd_rows,
+                                                             detail=detail_rows))
                 if catalog.get("campaigns"):
                     cat_written = await zst.save_campaign_catalog(
                         db, *zp.parse_campaign_catalog(catalog, tenant_id, job_id))
@@ -686,7 +712,8 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                         f"{sum(r['clicks'] for r in unique):,} clicks · "
                         f"{rupees(sum(r.get('revenue') or 0 for r in unique))} revenue · "
                         f"{len(unique)} campaign rows · {len({r['upsert_key'] for r in kw_rows})} "
-                        f"keyword rows")
+                        f"keyword rows · {len({r['upsert_key'] for r in detail_rows})} "
+                        f"campaign-keyword rows")
             await _finish(db, job_id, res, recoveries)
         except AuthError:
             if not job_closed:                 # e.g. brand discovery, before the loop

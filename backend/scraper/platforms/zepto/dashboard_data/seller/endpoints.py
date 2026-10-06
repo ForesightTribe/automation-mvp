@@ -110,6 +110,13 @@ ADS_CATEGORIES_API = "/ads-bff/api/v1/campaign-categories"
 # earlier "Zepto does not expose X" conclusions were wrong for that reason.
 ADS_TABULAR_API = "/ads-bff/api/v1/brands/analytics/metrics/tabular"
 
+# The same tables scoped to ONE campaign — what the campaign detail page asks for. Takes
+# `campaign_id` in the body. With view=keyword_table it is keyword performance PER
+# CAMPAIGN (P38): one row per keyword × match type, for the window asked. Probed
+# 2026-10-06: a multi-day window is one total per keyword, and `interval`/`breakdown`
+# are refused (400) — so one call per campaign per DAY.
+ADS_CAMPAIGN_TABULAR_API = "/ads-bff/api/v1/brands/campaigns/analytics/metrics/tabular"
+
 # `view` values. campaign/product/city/page load with the Analytics page;
 # category and keyword load when their tab is selected.
 ADS_VIEW_CAMPAIGN = "campaign_table"

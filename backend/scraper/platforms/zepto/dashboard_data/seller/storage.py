@@ -19,6 +19,7 @@ from app.models.zepto_seller import (
     ZeptoPOItem,
     ZeptoAdCampaign,
     ZeptoAdCampaignDaily,
+    ZeptoAdCampaignDetail,
     ZeptoAdCampaignKeyword,
     ZeptoAdBreakdownDaily,
     ZeptoAdKeywordDaily,
@@ -57,6 +58,7 @@ async def save_ad_results(
     keywords: list[dict] | None = None,
     products: list[dict] | None = None,
     breakdown: list[dict] | None = None,
+    detail: list[dict] | None = None,
 ) -> dict[str, int]:
     """Returns rows actually written per table — i.e. after duplicates are
     collapsed, not the length of the input. Reporting the input length made a
@@ -65,16 +67,19 @@ async def save_ad_results(
     keywords = keywords or []
     products = products or []
     breakdown = breakdown or []
+    detail = detail or []
     written = {
         "campaigns": len({r["upsert_key"] for r in campaigns}),
         "keywords": len({r["upsert_key"] for r in keywords}),
         "products": len({r["upsert_key"] for r in products}),
         "breakdown": len({r["upsert_key"] for r in breakdown}),
+        "keyword detail": len({r["upsert_key"] for r in detail}),
     }
     await _upsert(session, ZeptoAdCampaignDaily, campaigns)
     await _upsert(session, ZeptoAdKeywordDaily, keywords)
     await _upsert(session, ZeptoAdProductDaily, products)
     await _upsert(session, ZeptoAdBreakdownDaily, breakdown)
+    await _upsert(session, ZeptoAdCampaignDetail, detail)
     await session.commit()
     logger.debug(
         "Zepto ads saved — " + " ".join(f"{k}:{v}" for k, v in written.items())

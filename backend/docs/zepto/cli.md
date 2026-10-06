@@ -122,7 +122,7 @@ section failed or lost fetches (what came back is still saved; re-run the same w
 |---|---|---|
 | sales | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily` | 8 days to yesterday |
 | po | `zepto_po`, `zepto_grn`, `zepto_asn`, `zepto_po_items` | `--po-days-back` through **today** |
-| ads | `zepto_ad_campaign_daily`, `zepto_ad_keyword_daily`, `zepto_ad_product_daily`, `zepto_ad_breakdown_daily` + the campaign catalogue (`zepto_ad_campaigns`, `zepto_ad_campaign_keywords`) | 3 days to yesterday |
+| ads | `zepto_ad_campaign_daily`, `zepto_ad_keyword_daily`, `zepto_ad_product_daily`, `zepto_ad_breakdown_daily`, `zepto_ad_campaign_detail` (keyword performance per campaign per day — one call per keyword campaign that had impressions that day) + the campaign catalogue (`zepto_ad_campaigns`, `zepto_ad_campaign_keywords`) | 3 days to yesterday |
 
 ### Sales — the per-city split
 

@@ -150,6 +150,22 @@ def test_keyword_rows_key_on_category():
     assert a[0]["upsert_key"] != b[0]["upsert_key"]
 
 
+def test_campaign_keyword_detail_takes_campaign_and_day_from_the_request():
+    # The per-campaign report carries neither (probed 2026-10-06), so the caller passes them.
+    rows = p.parse_campaign_keyword_detail(
+        [_kw("cheesy dip", "BROAD", "324", "39", "18", "4.44", "1440"),
+         _kw("sourcream", "BROAD", "15", "30", "1", "0")],
+        T, JOB, "2026-10-05", 2443333, "sponsored_products", "brand-1")
+    assert [(r["campaign_id"], r["date"], r["keyword"], r["match_type"]) for r in rows] == [
+        (2443333, date(2026, 10, 5), "cheesy dip", "BROAD"),
+        (2443333, date(2026, 10, 5), "sourcream", "BROAD")]
+    assert (rows[0]["spend"], rows[0]["revenue"], rows[0]["clicks"]) == (324.0, 1440.0, 18)
+    other_campaign = p.parse_campaign_keyword_detail(
+        [_kw("cheesy dip", "BROAD", "1", "1", "1", "1")],
+        T, JOB, "2026-10-05", 999, "sponsored_products", "brand-1")
+    assert rows[0]["upsert_key"] != other_campaign[0]["upsert_key"]   # campaign is in the key
+
+
 def test_product_and_breakdown_rows():
     prod = p.parse_ad_products(
         [{"product_details": {"id": "pv1", "name": "Bread", "image_link": "x"},

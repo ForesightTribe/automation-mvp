@@ -654,6 +654,45 @@ async def fetch_ads_tabular(
     return out
 
 
+async def fetch_campaign_keywords(
+    client, brand_id: str, campaign_id: int, day: str, category: str = "sponsored_products"
+) -> list[dict]:
+    """One campaign's keyword performance for ONE day — `keyword_table` rows (P38).
+
+    One day per call on purpose: a longer window comes back as a single total per keyword
+    (no date in the rows), and a per-day breakdown is refused — probed 2026-10-06. Only
+    keywords with activity are returned, so a campaign with no impressions that day has
+    nothing to fetch (the caller skips it). Paged like `fetch_ads_tabular`, bounded by
+    `total_count`; a page holds 50 and one campaign-day has rarely more than a dozen.
+    """
+    out: list[dict] = []
+    page = 1
+    while True:
+        body = {
+            "from": f"{day} 00:00:00",
+            "to": f"{day} 23:59:59",
+            "view": ep.ADS_VIEW_KEYWORD,
+            "size": ep.ADS_TABULAR_PAGE_SIZE,
+            "page": page,
+            "campaign_category": category,
+            "brand_id": brand_id,
+            "campaign_id": campaign_id,
+        }
+        resp = await _ads_request(
+            client, "POST", ep.ADS_CAMPAIGN_TABULAR_API,
+            f"campaign {campaign_id} keywords p{page}", json=body,
+        )
+        data = resp.json().get("data") or {}
+        rows = data.get("rows") or []
+        out.extend(rows)
+        if not rows or len(out) >= (data.get("total_count") or 0):
+            break
+        page += 1
+        await asyncio.sleep(1.5)
+    logger.debug(f"Zepto campaign {campaign_id} keywords [{day}]: {len(out)} rows")
+    return out
+
+
 # ── Campaign CATALOGUE ──────────────────────────────────────────────────────
 #
 # What every campaign is configured to do NOW — for `zepto_ad_campaigns` /

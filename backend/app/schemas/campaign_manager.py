@@ -311,6 +311,20 @@ class CatalogKeywordOut(BaseModel):
     automatable: bool = True
     not_automatable_reason: str | None = None
     scraped_at: datetime | None = None
+    # Performance over the requested window (the navbar's dates) — Zepto only (P43), from
+    # the per-campaign keyword report (P38). None on a marketplace with no per-campaign
+    # keyword data in this table (Blinkit's picker reads `/ads/keywords` instead); 0 on
+    # Zepto means "no activity in the window". Names follow `/ads/keywords` where the
+    # meaning is the same (`impressions`, `budget_consumed` = spend). Ratios (ROAS, CTR,
+    # CPC) are for the reader to rebuild from these sums.
+    budget_consumed: float | None = None
+    total_sales: float | None = None
+    impressions: int | None = None
+    clicks: int | None = None
+    orders: int | None = None
+    direct_orders: int | None = None      # same-SKU orders (the advertised product)
+    indirect_orders: int | None = None    # other-SKU (halo) orders
+    atc: int | None = None
 
 
 # ── Actions ─────────────────────────────────────────────────────────────────

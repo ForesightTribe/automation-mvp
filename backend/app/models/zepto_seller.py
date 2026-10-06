@@ -323,6 +323,72 @@ class ZeptoAdKeywordDaily(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
+class ZeptoAdCampaignDetail(SQLModel, table=True):
+    """One row per campaign × keyword × match type × DAY — keyword performance PER
+    CAMPAIGN (P38, 2026-10-06). Named after Blinkit's `blinkit_ad_campaign_detail`, which
+    holds the same thing — but Blinkit's rows are one total for the scraped window, while
+    these are per day.
+
+    From the campaign detail page's own report: `POST .../brands/campaigns/analytics/
+    metrics/tabular` with `campaign_id` + `view=keyword_table`, one call per campaign per
+    day (a multi-day window comes back as ONE total, and a per-day breakdown is refused —
+    probed 2026-10-06 on campaign 2443333). Rows carry no date and no campaign id; both come
+    from the request. Only keywords with activity that day come back, so a missing row means
+    "no activity", never "not scraped".
+
+    Verified additive: a campaign-day's rows sum to its `zepto_ad_campaign_daily` row on
+    spend, impressions, clicks, revenue and orders (10-05: ₹354 / 317 / 20 / ₹1,440 / 8).
+
+    `same_skus` + `other_skus` = `orders`: they are ORDER COUNTS — direct (the advertised
+    product) and halo (another product of the brand) — not sales. Revenue has no such split.
+    `ctr`/`cpc`/`cpm`/`roas` are rebuilt from the row's own figures and `robas` spend-weighted
+    (`parser._keyword_groups`, shared with `zepto_ad_keyword_daily`) — equal to Zepto's values
+    up to its rounding, since one campaign-day reports each keyword × match type once.
+
+    `zepto_ad_keyword_daily` holds the same metrics at BRAND grain (no campaign id) and is
+    kept until this table is shown to cover every ad type (P38).
+    """
+
+    __tablename__ = "zepto_ad_campaign_detail"
+
+    __table_args__ = (
+        # "zacdet", not "zacd": index names are database-wide in Postgres, and
+        # `idx_zacd_tenant_date` already belongs to zepto_ad_campaign_daily.
+        Index("idx_zacdet_tenant_date", "tenant_id", "date"),
+        Index("idx_zacdet_tenant_campaign_date", "tenant_id", "campaign_id", "date"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    brand_id: str
+    campaign_id: int
+    campaign_category: str
+
+    keyword: str
+    match_type: str | None = None      # BROAD | PHRASE | EXACT
+
+    spend: float = 0.0
+    revenue: float | None = None
+    impressions: int = 0
+    clicks: int = 0
+    orders: int | None = None
+    atc: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    cpm: float | None = None
+    roas: float | None = None
+    robas: float | None = None
+    same_skus: int | None = None       # direct orders
+    other_skus: int | None = None      # halo orders
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
 class ZeptoSellerSales(SQLModel, table=True):
     """One row per tenant per SKU per scraped window.
 

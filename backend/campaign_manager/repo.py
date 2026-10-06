@@ -1727,6 +1727,45 @@ async def list_catalog_keywords(tenant_id: uuid.UUID, platform: str, *, db=None)
     return [(k, c) for k, c in rows]
 
 
+async def zepto_keyword_performance(tenant_id: uuid.UUID, start, end, *, db=None
+                                    ) -> dict[tuple[int, str, str | None], dict]:
+    """Zepto keyword performance per (campaign, keyword, match type), summed over
+    `start`..`end` (inclusive) — the keyword picker's numbers (P43). From
+    `zepto_ad_campaign_detail` (P38), one row per campaign-keyword-day. DB only.
+
+    Only the additive figures are summed; ratios (ROAS, CTR, CPC) are left to the reader to
+    rebuild from the sums, never averaged. A key with no row in the window is simply absent:
+    the keyword had no activity, which the picker shows as zeros.
+    """
+    from sqlalchemy import func
+    from app.models.zepto_seller import ZeptoAdCampaignDetail as D
+
+    async with _session(db) as db:
+        rows = (await db.execute(
+            select(
+                D.campaign_id, D.keyword, D.match_type,
+                func.coalesce(func.sum(D.spend), 0.0),
+                func.coalesce(func.sum(D.revenue), 0.0),
+                func.coalesce(func.sum(D.impressions), 0),
+                func.coalesce(func.sum(D.clicks), 0),
+                func.coalesce(func.sum(D.orders), 0),
+                func.coalesce(func.sum(D.same_skus), 0),
+                func.coalesce(func.sum(D.other_skus), 0),
+                func.coalesce(func.sum(D.atc), 0),
+            )
+            .where(D.tenant_id == tenant_id, D.date >= start, D.date <= end)
+            .group_by(D.campaign_id, D.keyword, D.match_type)
+        )).all()
+    return {
+        (cid, kw, mt): {
+            "spend": float(spend), "revenue": float(rev), "impressions": int(impr),
+            "clicks": int(clicks), "orders": int(orders), "direct_orders": int(direct),
+            "indirect_orders": int(indirect), "atc": int(atc),
+        }
+        for cid, kw, mt, spend, rev, impr, clicks, orders, direct, indirect, atc in rows
+    }
+
+
 async def get_keyword_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,
                             match_type: str = "EXACT", *, platform: str) -> int | None:
     """The marketplace's published minimum bid for one keyword, or None when we have not
