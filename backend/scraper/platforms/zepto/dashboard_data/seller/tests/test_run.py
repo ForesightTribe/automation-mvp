@@ -24,6 +24,7 @@ import uuid
 from datetime import date, timedelta
 
 from platform_auth.errors import AuthError
+from scraper.platforms.zepto.dashboard_data.seller import parser as zp
 from scraper.platforms.zepto.dashboard_data.seller import run as zr
 from scraper.platforms.zepto.dashboard_data.seller import scraper as zs
 from scraper.platforms.zepto.dashboard_data.seller import storage as zst
@@ -77,8 +78,8 @@ class _Jobs:
 
 @contextlib.contextmanager
 def _patched(jobs: _Jobs | None = None, run_attrs: dict | None = None, **module_attrs):
-    """Patch run.py's own names plus attributes of the scraper / storage modules
-    (given as 'zs__name' / 'zst__name'), restoring all of them afterwards."""
+    """Patch run.py's own names plus attributes of the scraper / storage / parser modules
+    (given as 'zs__name' / 'zst__name' / 'zp__name'), restoring all of them afterwards."""
     jobs = jobs or _Jobs()
     targets = {
         (zr, "asyncio"): _FastAsyncio(),
@@ -91,7 +92,7 @@ def _patched(jobs: _Jobs | None = None, run_attrs: dict | None = None, **module_
         targets[(zr, k)] = v
     for k, v in module_attrs.items():
         mod, name = k.split("__", 1)
-        targets[({"zs": zs, "zst": zst}[mod], name)] = v
+        targets[({"zs": zs, "zst": zst, "zp": zp}[mod], name)] = v
     saved = {key: getattr(*key) for key in targets}
     for (mod, name), v in targets.items():
         setattr(mod, name, v)
@@ -287,8 +288,9 @@ def _overview(start: str, end: str) -> dict:
             "metrics": {"gmv": {"data": pts}, "units": {"data": pts}}}
 
 
-def _product(pv: str = "pv-1") -> dict:
-    return {"productVariantId": pv, "productName": "Sereko Serum", "gmv": 500, "qtySold": 2}
+def _product(pv: str = "pv-1", stock: int | None = None) -> dict:
+    return {"productVariantId": pv, "productName": "Sereko Serum", "gmv": 500, "qtySold": 2,
+            "stockOnHand": stock, "weekOnWeekGrowth": None, "monthOnMonthGrowth": None}
 
 
 def _sales_fakes(*, known: list[str], sells: set, fail: dict | None = None,
@@ -320,11 +322,12 @@ def _sales_fakes(*, known: list[str], sells: set, fail: dict | None = None,
         if product_fail.get(day, 0) > 0:
             product_fail[day] -= 1
             raise RuntimeError("500 from product-performance")
-        return [_product()]
+        # Zepto answers every day of a run with the stock of the moment (P8).
+        return [_product(stock=102)]
 
-    async def save(_db, daily, prods, cities):
-        saved.update(daily=daily, products=prods, cities=cities)
-        return len(daily) + len(prods) + len(cities)
+    async def save(_db, daily, prods, cities, soh=None):
+        saved.update(daily=daily, products=prods, cities=cities, soh=soh)
+        return len(daily) + len(prods) + len(cities) + len(soh or [])
 
     patches = dict(
         zs__discover_ids=_async(lambda *_: IDS),
@@ -342,6 +345,16 @@ def _sales(d_from, d_to, *, all_cities=False, **fakes):
     with _patched(**patches) as jobs:
         res = _go(zr.run_sales(object(), TENANT, d_from, d_to, all_cities, True))
     return res, calls, saved, jobs
+
+
+def test_sales_saves_one_stock_reading_per_product_for_today():
+    """P41: 3 sales days carry the same stock; one zepto_soh row, dated the day asked."""
+    d1, d2, d3 = _days(3, 2, 1)
+    res, _, saved, _ = _sales(d1, d3, known=["c2"], sells={"c2"})
+    assert res.ok and len(saved["products"]) == 3
+    (soh,) = saved["soh"]
+    assert soh["product_variant_id"] == "pv-1" and soh["stock_on_hand"] == 102
+    assert soh["date"] == zr.now_ist().date()
 
 
 def test_new_tenant_sweeps_every_city_once_then_uses_the_sellers():
@@ -384,7 +397,8 @@ def test_lost_sales_fetches_fail_the_section_after_saving_what_came_back():
     assert len(saved["cities"]) == 3                          # the rest was still saved
     assert [r["period_start"].isoformat() for r in saved["products"]] == [d2]
     status, error, records = jobs.closed[-1]
-    assert status == "failed" and "partial" in error and records == len(saved["daily"]) + 1 + 3
+    assert status == "failed" and "partial" in error \
+        and records == len(saved["daily"]) + 1 + 3 + len(saved["soh"])   # + stock (P41)
 
 
 def test_not_computed_yet_trims_the_window_instead_of_failing():
@@ -442,6 +456,67 @@ def test_po_auth_error_propagates_and_a_flaky_endpoint_does_not():
             assert jobs.closed == [("failed", "auth_expired", None)]
             return
     raise AssertionError("AuthError was swallowed (P46)")
+
+
+def _po_section(fail_first: set, fail_always: set = frozenset()):
+    """run_po over two POs whose line fetch fails as told: `fail_first` POs fail on the
+    first pass only, `fail_always` on the re-check too. Returns (result, jobs, saved lines)."""
+    calls: list[list[str]] = []
+    saved: dict = {}
+
+    async def fetch_po_items(_client, po_ids, failed=None):
+        calls.append(list(po_ids))
+        first = len(calls) == 1
+        out = {}
+        for p in po_ids:
+            if p in fail_always or (first and p in fail_first):
+                failed.append(p)
+            else:
+                out[p] = [{"sku": f"{p}-a"}]
+        return out
+
+    async def save(_db, _pos, _grns, _asns, items):
+        saved["items"] = items
+        return {"pos": 2, "po_items": len(items)}
+
+    with _patched(zs__fetch_pos=_async(lambda *_: []), zs__fetch_grns=_async(lambda *_: []),
+                  zs__fetch_asns=_async(lambda *_: []), zs__fetch_po_items=fetch_po_items,
+                  zp__parse_pos=lambda *_: [{"po_id": "po-1", "total_value": 1.0},
+                                            {"po_id": "po-2", "total_value": 2.0}],
+                  zp__parse_po_items=lambda raw, *_: [{"po_id": k} for k in sorted(raw)],
+                  zst__save_po_results=save) as jobs:
+        res = _go(zr.run_po(object(), TENANT, 30, True))
+    return res, jobs, saved.get("items"), calls
+
+
+def test_a_po_whose_lines_failed_once_is_recovered_on_the_recheck():
+    """P15: a failed line fetch used to be skipped with a warning — the PO then looked
+    like one with no lines. Now it is re-checked, and its lines are saved."""
+    res, jobs, items, calls = _po_section(fail_first={"po-2"})
+    assert calls == [["po-1", "po-2"], ["po-2"]], "only the failed PO is asked again"
+    assert res.ok and res.recovered == ["PO po-2 lines"]
+    assert [i["po_id"] for i in items] == ["po-1", "po-2"]
+    assert jobs.closed[-1][0] == "success"
+
+
+def test_a_po_whose_lines_fail_twice_fails_the_section_but_saves_the_rest():
+    res, jobs, items, _ = _po_section(fail_first={"po-2"}, fail_always={"po-2"})
+    assert not res.ok and res.lost == ["PO po-2 lines"]
+    assert [i["po_id"] for i in items] == ["po-1"], "the other PO's lines still land"
+    assert jobs.closed[-1][0] == "failed" and "PO po-2 lines" in jobs.closed[-1][1]
+
+
+def test_po_items_fetcher_reports_failed_pos():
+    class _POClient:
+        async def request(self, _method, path, **_k):
+            if "po-2" in path:
+                return _Resp(500, {})
+            return _Resp(200, {"data": {"poItems": [{"sku": "x"}], "hasNext": False}})
+
+    failed: list[str] = []
+    with _fast_fetchers():
+        out = _go(zs.fetch_po_items(_POClient(), ["po-1", "po-2", "po-3"], failed=failed))
+    assert sorted(out) == ["po-1", "po-3"] and failed == ["po-2"]
 
 
 # ── run(): one login, sections isolated ──────────────────────────────────────

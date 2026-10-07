@@ -32,6 +32,7 @@ import httpx
 
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
+from app.utils.time import now_ist
 from scraper.platforms.zepto.dashboard_data.seller.client import setup
 from platform_auth.errors import AuthError
 from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
@@ -290,9 +291,14 @@ async def run_sales(client, tenant_id: str, date_from: str | None, date_to: str 
             lost = await _recheck(lost, res.recovered)
             res.lost = [label for label, _ in lost]
 
+            # Stock + growth as of NOW, one per product (P41) — built after the re-check,
+            # which may have added product rows.
+            soh_rows = zp.parse_soh(product_rows, tenant_id, job_id, now_ist().date())
+            logger.info(f"stock · {len(soh_rows)} products")
+
             if save:
                 res.written = {"sales rows": await zst.save_sales_results(
-                    db, daily_rows, product_rows, city_rows)}
+                    db, daily_rows, product_rows, city_rows, soh_rows)}
             await _finish(db, job_id, res, recoveries)
         except AuthError:
             await fail_scrape_job(db, job_id, "auth_expired")
@@ -411,9 +417,23 @@ async def run_po(client, tenant_id: str, po_days_back: int, save: bool) -> Secti
                         f"{len(asns)} ASNs")
 
             # One GET per PO: carries unit_price (cost) and mrp, which appear on no
-            # other Zepto endpoint, plus per-SKU fill rate.
-            items = zp.parse_po_items(
-                await zs.fetch_po_items(client, [p["po_id"] for p in pos]), tenant_id, job_id)
+            # other Zepto endpoint, plus per-SKU fill rate. A PO whose lines failed is
+            # re-checked once, then fails the section (P15) — it used to be skipped with
+            # a warning, indistinguishable from a PO with no lines.
+            failed: list[str] = []
+            raw_items = await zs.fetch_po_items(client, [p["po_id"] for p in pos],
+                                                failed=failed)
+            lost: Lost = []
+            for po_id in failed:
+                async def _again(po_id=po_id) -> None:
+                    again: list[str] = []
+                    raw_items.update(await zs.fetch_po_items(client, [po_id], failed=again))
+                    if again:
+                        raise RuntimeError(f"PO {po_id} lines failed again")
+                logger.info(f"lines · PO {po_id} failed · re-check later")
+                lost.append((f"PO {po_id} lines", _again))
+            res.lost += [label for label, _ in await _recheck(lost, res.recovered)]
+            items = zp.parse_po_items(raw_items, tenant_id, job_id)
             po_q = sum(g["po_qty"] or 0 for g in grns)
             grn_q = sum(g["grn_qty"] or 0 for g in grns)
             fill = f" · fill {100 * grn_q / po_q:.0f}%" if po_q else ""

@@ -72,6 +72,25 @@ def test_product_perf_rows_key_on_product_and_window():
     assert r["upsert_key"] != other_day[0]["upsert_key"]
 
 
+def test_soh_takes_one_reading_per_product_dated_the_day_asked():
+    """P41: stock + growth are readings of the moment of the call (P8), so a run's 3 sales
+    days give ONE zepto_soh row per product — from its newest day with a reading — keyed on
+    the day the scrape asked, not a sales day."""
+    rows = []
+    for day, stock in (("2026-10-01", 7), ("2026-10-03", 9), ("2026-10-02", 8)):
+        rows += p.parse_product_perf([_sku("pv1", 500, stockOnHand=stock)], T, JOB, day, day)
+    rows += p.parse_product_perf(                     # no reading at all → no row, not zero
+        [_sku("pv2", 100, stockOnHand=None, weekOnWeekGrowth=None, monthOnMonthGrowth=None)],
+        T, JOB, "2026-10-03", "2026-10-03")
+    (soh,) = p.parse_soh(rows, T, JOB, date(2026, 10, 7))
+    assert soh["product_variant_id"] == "pv1" and soh["date"] == date(2026, 10, 7)
+    assert (soh["stock_on_hand"], soh["week_on_week_growth"], soh["month_on_month_growth"]) \
+        == (9, 5, -2), "the newest sales day's reading"
+    assert soh["upsert_key"] == f"{T}:zepto:soh:pv1:2026-10-07"
+    again = p.parse_soh(rows, T, JOB, date(2026, 10, 8))
+    assert again[0]["upsert_key"] != soh["upsert_key"], "one row per scrape day"
+
+
 def test_product_city_rows_carry_city_and_key_on_it():
     rows = p.parse_product_city({"c1": [_sku("pv1", 300)], "c2": [_sku("pv1", 200)]},
                                 {"c1": "BLR - Bengaluru"}, T, JOB, "2026-10-01")

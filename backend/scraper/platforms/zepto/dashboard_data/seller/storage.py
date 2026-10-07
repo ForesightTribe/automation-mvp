@@ -27,6 +27,7 @@ from app.models.zepto_seller import (
     ZeptoSellerProductCityDaily,
     ZeptoSellerSales,
     ZeptoSellerSalesSummary,
+    ZeptoSOH,
 )
 from app.utils.logger import logger
 
@@ -36,20 +37,25 @@ async def save_sales_results(
     daily: list[dict],
     products: list[dict],
     product_cities: list[dict] | None = None,
+    soh: list[dict] | None = None,
 ) -> int:
     # SKU x city x day. A finer grain than `products` (SKU x day, all cities)
     # and deliberately its own table — see ZeptoSellerProductCityDaily. The two
     # hold the same money at different resolutions; never sum across them.
     product_cities = product_cities or []
+    # Stock + growth as of the scrape (P41) — one row per product per scrape day.
+    # Same transaction as the sales rows: both land or neither does.
+    soh = soh or []
     await _upsert(session, ZeptoSellerSalesSummary, daily)
     await _upsert(session, ZeptoSellerSales, products)
     await _upsert(session, ZeptoSellerProductCityDaily, product_cities)
+    await _upsert(session, ZeptoSOH, soh)
     await session.commit()
     logger.debug(
         f"Zepto seller sales saved — days:{len(daily)} products:{len(products)} "
-        f"product-city-days:{len(product_cities)}"
+        f"product-city-days:{len(product_cities)} soh:{len(soh)}"
     )
-    return len(daily) + len(products) + len(product_cities)
+    return len(daily) + len(products) + len(product_cities) + len(soh)
 
 
 async def save_ad_results(
@@ -119,12 +125,10 @@ async def save_ad_results(
 # COALESCE keeps what we already have when the incoming value is null. It does
 # NOT block a genuine update — a non-null reading still overwrites.
 #
-# Longer term these belong in a snapshot table keyed on the scrape JOB rather
-# than the sales date. Deliberately NOT built yet: whether the two growth
-# columns are scrape-time readings or window-level aggregates is still unproven.
-# Stored data cannot settle it — the upsert overwrites in place, so no SKU-day
-# has ever had two rows to compare. That needs a live experiment; see
-# docs/zepto.md. This guard is the containment until then.
+# They now also go to `zepto_soh`, keyed on the day the scrape asked (P41,
+# 2026-10-07; P8 settled that the growth columns are scrape-time readings too).
+# This guard — and the three columns — stay until every reader has moved to
+# `zepto_soh` and every running copy of the scrape writes it (step 3 drops them).
 _KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
     "zepto_seller_sales": (
         "stock_on_hand",

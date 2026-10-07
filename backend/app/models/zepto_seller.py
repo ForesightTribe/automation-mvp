@@ -449,6 +449,46 @@ class ZeptoSellerSales(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
+class ZeptoSOH(SQLModel, table=True):
+    """Stock and growth per product, AS OF THE SCRAPE — one row per product per scrape
+    day (P41, 2026-10-07). Named after Blinkit's `blinkit_soh`, which holds the same
+    idea at facility grain; Zepto reports one figure per product, no facilities.
+
+    `date` is the IST day the scrape ASKED, not a sales day. Zepto's product report
+    returns the same stock and growth for every day a run asks about, and the values
+    move from one run to the next (P8: Brik Oven Sour Cream, sales days 09-29..10-06 all
+    held stock 102 / WoW -53.16 from the 10-07 run). So they describe "now", and live
+    here, keyed on when we asked. Stored on `zepto_seller_sales` too until every reader
+    has moved here (step 2), then dropped there (step 3).
+
+    A product appears only when it sold on some day of the run's window — Zepto's
+    product report omits SKUs with no sales — so a product absent here has no reading,
+    not zero stock. A second run on the same day overwrites that day's row.
+    """
+
+    __tablename__ = "zepto_soh"
+
+    # `idx_zsoh_*`: index names are database-wide; checked free 2026-10-07.
+    __table_args__ = (Index("idx_zsoh_tenant_date", "tenant_id", "date"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date                                  # the scrape's IST day
+    product_variant_id: str
+    sku_name: str | None = None
+
+    stock_on_hand: int | None = None
+    # Percentages, as returned (e.g. -53.16 means -53.16%).
+    week_on_week_growth: float | None = None
+    month_on_month_growth: float | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
 class ZeptoAdProductDaily(SQLModel, table=True):
     """One row per advertised SKU per campaign category per day.
 

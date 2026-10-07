@@ -148,6 +148,47 @@ def parse_product_perf(
     ]
 
 
+_SOH_FIELDS = ("stock_on_hand", "week_on_week_growth", "month_on_month_growth")
+
+
+def parse_soh(
+    product_rows: list[dict],
+    tenant_id: str,
+    scrape_job_id: str | None,
+    asked_on: date,
+) -> list[dict]:
+    """`parse_product_perf` rows → one `zepto_soh` row per product, for the day the
+    scrape ASKED (P41).
+
+    Every per-day product call in a run returns the same stock and growth for a product
+    (they describe the moment of the call, not the sales day — P8), so one reading per
+    product is taken: from its newest sales day that carried any of the three. A product
+    with none of them gets no row — absent means "no reading", never zero stock.
+    """
+    newest: dict[str, dict] = {}
+    for r in product_rows:
+        if all(r.get(f) is None for f in _SOH_FIELDS):
+            continue
+        cur = newest.get(r["product_variant_id"])
+        if cur is None or r["period_start"] > cur["period_start"]:
+            newest[r["product_variant_id"]] = r
+    return [
+        {
+            "upsert_key": make_upsert_key(tenant_id, "zepto", "soh", pv, asked_on.isoformat()),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "date": asked_on,
+            "product_variant_id": pv,
+            "sku_name": r.get("sku_name"),
+            "stock_on_hand": int(r["stock_on_hand"]) if r.get("stock_on_hand") is not None else None,
+            "week_on_week_growth": r.get("week_on_week_growth"),
+            "month_on_month_growth": r.get("month_on_month_growth"),
+            "scraped_at": now_ist(),
+        }
+        for pv, r in sorted(newest.items())
+    ]
+
+
 def parse_product_city(
     by_city: dict[str, list[dict]],
     city_names: dict[str, str],

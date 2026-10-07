@@ -244,7 +244,7 @@ async def fetch_asns(
 
 
 async def fetch_po_items(
-    client: dict, po_ids: list[str]
+    client: dict, po_ids: list[str], failed: list[str] | None = None,
 ) -> dict[str, list[dict]]:
     """Line items for each PO. Returns {po_id: [item, ...]}.
 
@@ -252,8 +252,10 @@ async def fetch_po_items(
     74 POs is 74 calls, which is fine on the vendor API (no WAF challenge, no
     volume cap observed, unlike the public search endpoint).
 
-    A PO whose call fails is skipped with a warning rather than aborting the run:
-    a single bad PO should not cost the other 73.
+    A PO whose call fails is skipped rather than aborting the run (a single bad PO
+    should not cost the other 73), and — when the caller passes a `failed` list — its
+    id is appended there (P15). Without that list a failed PO looked exactly like a PO
+    with no lines: absent from the result, nothing to retry, the run green.
     """
     out: dict[str, list[dict]] = {}
     for i, po_id in enumerate(po_ids, 1):
@@ -274,10 +276,12 @@ async def fetch_po_items(
             # the same way. Let it reach the CLI, which exits 3 (`auth_expired`).
             raise
         except Exception as e:
-            logger.warning(f"Zepto po items failed for {po_id}: {e}")
-            continue
-        if rows:
-            out[po_id] = rows
+            logger.debug(f"Zepto po items failed for {po_id}: {e}")
+            if failed is not None:
+                failed.append(po_id)
+        else:
+            if rows:
+                out[po_id] = rows
         if i < len(po_ids):
             await asyncio.sleep(0.4)
 
