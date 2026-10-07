@@ -35,7 +35,7 @@ const ABOUT = {
 		"Adds to cart the marketplace attributes to these ads. A cart is not an order, so this sits above units sold and the gap between them is abandonment.",
 	"Units sold":
 		"Units the marketplace attributes to these ads. Multiple units of one SKU in a single order each count.",
-	"Active campaigns":
+	"Campaigns that ran":
 		"Campaigns that delivered at least once in this window. A campaign that exists but never served does not appear here.",
 };
 
@@ -325,7 +325,7 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 			delta: m("units_sold").delta_pct,
 		},
 		{
-			label: "Active campaigns",
+			label: "Campaigns that ran",
 			value: formatNumber(m("active_campaigns").value),
 			raw: m("active_campaigns").value,
 			prev: m("active_campaigns").prev,

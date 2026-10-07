@@ -1,5 +1,9 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import { formatCurrency, formatNumber, formatPercent } from "../../../lib/format";
+import {
+	formatCurrency,
+	formatNumber,
+	formatPercent,
+} from "../../../lib/format";
 
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
@@ -61,7 +65,9 @@ export const KpiStrip = ({ summary, performance = [] }) => {
 			delta: m("units_sold").delta_pct,
 		},
 		{
-			label: "Active campaigns",
+			// Campaigns that RAN in the window (spend or impressions) — not "status = active
+			// now", which has no previous window to compare with (BLINKIT-NOTES B3).
+			label: "Campaigns that ran",
 			value: formatNumber(m("active_campaigns").value),
 			delta: m("active_campaigns").delta_pct,
 		},

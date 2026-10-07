@@ -169,10 +169,9 @@ front-end/back-end concept — that is Blinkit's).
 matched.** An apparent mismatch traced to an unapplied date filter on their side.
 
 Still open from this phase:
-- The **"Active campaigns"** tile counts campaigns that **ran** in the window (spend or
-  impressions) — the same rule for Blinkit, Zepto and Instamart, and the only one that has
-  a previous window to compare against. The label reads like "status = active now"; a
-  rename (e.g. "Campaigns that ran") is a cross-marketplace UI call, not yet made.
+- ✅ The tile once labelled "Active campaigns" counts campaigns that **ran** in the window
+  (spend or impressions) — the same rule for Blinkit, Zepto and Instamart. Relabelled
+  **"Campaigns that ran"** on 2026-10-07 (the field stays `active_campaigns`).
 - `CityBreakdown` full-width when `FacilityStock` is hidden — offered, undecided.
 
 ---
@@ -225,7 +224,7 @@ The September list, and where each went:
 | Ads stopped a day short of sales | ✅ ads re-scrape 3 days every run (P1) |
 | NULL stock shown as "Out of stock" | ✅ fixed 2026-10-07 — "No stock data" (P11) |
 | Cover doubled with an unscraped day in the window | ✅ fixed 2026-10-07 — divides by days with data (P11) |
-| "Active campaigns" counts campaigns with spend | not a bug — a label question (Phase 6) |
+| "Active campaigns" counts campaigns with spend | not a bug — relabelled "Campaigns that ran" (2026-10-07) |
 | No automated tests | ✅ `seller/tests/` (parser, run, client) + campaign-manager Zepto tests |
 | `transport.py` under `campaign_manager/` | ✅ moved to `seller/client.py` (P12) |
 | UAT shim `scripts/uat_zepto_compat.sql` | open — its table + 2 views still exist on the shared DB, nothing reads them (P49, left as is) |

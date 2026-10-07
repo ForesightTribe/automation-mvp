@@ -533,7 +533,7 @@ Registry group `ads`. Section keys in sheet order.
 | Impressions | `impressions` | count | high |
 | Add to carts | `atc` | count | high |
 | Units sold | `units_sold` | count | high |
-| Active campaigns | `active_campaigns` | count | neutral |
+| Campaigns that ran | `active_campaigns` | count | neutral |
 
 Each carries `prev` + `delta_pct` from the service. Note `acos` and `roas` arrive
 as a fraction and a multiple respectively — confirm scaling before formatting

@@ -102,7 +102,9 @@ async def _summary_agg(
     marketplaces: list[str] | None,
 ) -> tuple:
     """(spend, impressions, ad_sales, atc, units, active_campaigns) for one window.
-    Active campaigns = distinct campaigns with any daily row in the window."""
+    `active_campaigns` = distinct campaigns that RAN in the window (any daily row — Blinkit's
+    table only holds rows for campaigns that spent). Labelled "Campaigns that ran" in the UI
+    since 2026-10-07: "Active" read like "status = active now" (BLINKIT-NOTES B3)."""
     totals = (
         await session.execute(
             select(

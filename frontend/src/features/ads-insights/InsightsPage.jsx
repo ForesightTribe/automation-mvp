@@ -38,7 +38,7 @@ const SUMMARY_ROWS = [
 	["Impressions", "impressions"],
 	["Add-to-carts", "atc"],
 	["Units sold", "units_sold"],
-	["Active campaigns", "active_campaigns"],
+	["Campaigns that ran", "active_campaigns"],
 ];
 
 export const InsightsPage = () => {
