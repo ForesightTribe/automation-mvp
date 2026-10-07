@@ -55,11 +55,13 @@ RECHECK_WAIT_S = 20
 # or interrupted run heals on the next run (P1: one day lost every missed day for good);
 # not 7, because each ads day costs ~19 calls / ~1m50s and a 7-day window made a run
 # ~17 min (P54, Deepansh 2026-10-06). A day missed for 3 runs in a row, or attribution
-# revised after 3 days, needs a manual `--from` re-run. Sales: 8 days, Zepto recomputes
-# days late. PO: 30 days back through TODAY — POs are forward-looking, an order raised
+# revised after 3 days, needs a manual `--from` re-run. Sales: the 4 days up to yesterday
+# (was 8 — Deepansh, 2026-10-07; the 8 was never measured, and the one late revision ever
+# observed was on ads, 1 day after). A day missed 4 runs running, or a sales figure Zepto
+# revises after 4 days, needs a `--from` re-run. PO: 30 days back through TODAY — POs are forward-looking, an order raised
 # today expires in ~3 weeks.
 ADS_DAYS = 3
-SALES_DAYS = 8
+SALES_DAYS = 4
 PO_DAYS = 30
 
 Lost = list[tuple[str, Callable[[], Awaitable[None]]]]
@@ -400,6 +402,12 @@ async def run_po(client, tenant_id: str, po_days_back: int, save: bool) -> Secti
                     return await coro
                 except AuthError:
                     raise              # not a flaky endpoint — the session is gone (P46)
+                except zs.PageCapHit as e:
+                    # More rows than the page cap: save what came back, but the list is
+                    # incomplete, so it counts as lost and the run alerts (P4).
+                    res.lost.append(f"{label} truncated")
+                    logger.warning(str(e))
+                    return e.rows
                 except Exception as e:
                     res.lost.append(label)
                     logger.info(f"{label} failed after retries ({e}) · continuing without it")

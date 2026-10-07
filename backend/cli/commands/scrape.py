@@ -183,8 +183,8 @@ async def _scrape_blinkit(
 @app.command("blinkit-seller")
 def scrape_blinkit_seller(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: yesterday)"),
-    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: --from)"),
+    date_from: str = typer.Option(None, "--from", help="Sales start date YYYY-MM-DD (default: the 4 days up to --to)"),
+    date_to: str = typer.Option(None, "--to", help="Sales end date YYYY-MM-DD (default: yesterday)"),
     sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
     po: bool = typer.Option(False, "--po", help="Scrape PO data"),
     soh: bool = typer.Option(False, "--soh", help="Scrape stock on hand"),
@@ -199,10 +199,18 @@ def scrape_blinkit_seller(
     asyncio.run(_scrape_blinkit_seller(tenant_id, date_from, date_to, sales, po, soh, po_days_back, refetch_po_items, save))
 
 
+# Blinkit seller sales: re-scrape the 4 days up to yesterday on every run (Deepansh,
+# 2026-10-07; was yesterday only), so a failed or missed run heals on the next one — same
+# reasoning as Zepto's re-scrape windows. A day missed 4 runs running needs a --from re-run.
+BLINKIT_SALES_DAYS = 4
+
+
 def _date_range(date_from: str | None, date_to: str | None) -> list[str]:
-    yesterday = (_date.today() - timedelta(days=1)).isoformat()
-    start = _date.fromisoformat(date_from or yesterday)
-    end = _date.fromisoformat(date_to or yesterday)
+    """--from..--to; --to defaults to yesterday, --from to the BLINKIT_SALES_DAYS days up to
+    --to (counted back from --to, so `--to` alone still gives a full window)."""
+    end = _date.fromisoformat(date_to) if date_to else _date.today() - timedelta(days=1)
+    start = (_date.fromisoformat(date_from) if date_from
+             else end - timedelta(days=BLINKIT_SALES_DAYS - 1))
     days = (end - start).days + 1
     return [(start + timedelta(days=i)).isoformat() for i in range(days)]
 
@@ -224,6 +232,7 @@ async def _scrape_blinkit_seller(
     run_po = po_flag or run_all
     run_soh = soh_flag or run_all
     saved = "saved" if save else "not saved (--no-save)"
+    failed_days: list[str] = []
 
     async with AsyncSessionLocal() as db:
         slug = await tenant_slug(db, tenant_id)
@@ -259,6 +268,10 @@ async def _scrape_blinkit_seller(
                         logger.error(f"{day} FAILED · {e}")
                         if len(days) == 1:
                             raise typer.Exit(1)
+                        # One bad day must not cost the others — but it must fail the
+                        # run (below, after PO and SOH): a multi-day window used to
+                        # exit 0 here, which the runner recorded as success.
+                        failed_days.append(day)
 
         # ── PO (runs once) ────────────────────────────────────────────────────
         if run_po:
@@ -340,6 +353,12 @@ async def _scrape_blinkit_seller(
                         await fail_scrape_job(db, soh_job_id, str(e))
                     logger.error(f"FAILED · {e}")
                     raise typer.Exit(1)
+
+    if failed_days:
+        with tag("blinkit", slug, "sales"):
+            logger.error(f"{len(failed_days)} sales day(s) failed: {', '.join(failed_days)} — "
+                         "re-run them with --from/--to")
+        raise typer.Exit(1)
 
 
 # ── Blinkit Seller Hub (seller.blinkit.com — NEW domain) ───────────────────────
@@ -1212,7 +1231,7 @@ def discard_staged(
 @app.command("zepto")
 def scrape_zepto(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: sales 8 days ago; ads the 3 days up to --to)"),
+    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: sales 4 days ago; ads the 3 days up to --to)"),
     date_to: str = typer.Option(None, "--to", help="Sales/ads end date YYYY-MM-DD (default: yesterday)"),
     sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
     po: bool = typer.Option(False, "--po", help="Scrape PO/ASN/GRN data"),
@@ -1249,7 +1268,7 @@ def scrape_zepto(
     results into the exit code: 0 = everything landed, 1 = a section failed or
     lost fetches (what came back is still saved), 3 = the login is gone.
 
-    The sections keep their own windows on purpose: sales (8 days) and ads (the
+    The sections keep their own windows on purpose: sales (the 4 days) and ads (the
     3 days up to --to) stop at yesterday, because Zepto computes a day once each
     morning; PO runs --po-days-back through TODAY, because POs are
     forward-looking. A section that fails does not stop the others.

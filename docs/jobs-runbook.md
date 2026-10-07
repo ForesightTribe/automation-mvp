@@ -78,7 +78,7 @@ same client at once anyway — the overlap guard rejects the second (see #7).
 | `scrape.blinkit_marketing` | `date_from`                 | `--from`                   | `YYYY-MM-DD` (default: 7 days ago)                      |
 |                            | `date_to`                   | `--to`                     | `YYYY-MM-DD` (default: today)                           |
 |                            | `limit`                     | `--limit`                  | integer — only the N most active campaigns (smoke test) |
-| `scrape.blinkit_seller`    | `date_from` / `date_to`     | `--from` / `--to`          | `YYYY-MM-DD` (default: yesterday)                       |
+| `scrape.blinkit_seller`    | `date_from` / `date_to`     | `--from` / `--to`          | `YYYY-MM-DD` (default: the 4 days up to yesterday)      |
 |                            | `sales`, `po`, `soh`        | `--sales`, `--po`, `--soh` | **presence = on.** Omit for all three                   |
 | `scrape.blinkit_scorecard` | `week`                      | `--week`                   | `YYYY-MM-DD`, **must be a Monday**                      |
 | `scrape.public_keyword`    | `city`                      | `--city`                   | city slug, e.g. `bengaluru`                             |

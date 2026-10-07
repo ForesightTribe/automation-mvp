@@ -367,7 +367,7 @@ Before running:
 - Ads: leave --category at `all`. The analytics tabs return DISJOINT data. Each day
   also fetches keyword detail for every campaign with impressions — ~2 min per ad day.
 - PO: keys have no date, so re-scraping updates a PO in place. There is no history
-  of how a PO evolved. Windows over ~2,000 rows truncate silently at PO_MAX_PAGES.
+  of how a PO evolved. A window past the 100-page cap fails the run loudly (P4).
 - Every login evicts whoever is on the client's dashboard. Do not loop logins.
 
 All writes are idempotent (ON CONFLICT upsert_key), so re-running is safe.

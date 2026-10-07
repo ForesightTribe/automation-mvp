@@ -186,8 +186,17 @@ def test_stock_trend_uses_zepto_soh_points_when_it_has_any():
 
     d = asyncio.run(zp.detail_agg(_S(totals, day_rows, soh), tenant_id=TENANT, item_id="pv1",
                                   start=date(2026, 10, 1), end=date(2026, 10, 7)))
-    assert [p["frontend_qty"] for p in d["stock_trend"]] == [120, 110, 102]
+    # 10-04 is before the first real reading (10-05) → kept from the old series; from 10-05 on,
+    # only real readings.
+    assert [(p["date"].day, p["frontend_qty"]) for p in d["stock_trend"]] == [
+        (4, 102), (5, 120), (6, 110), (7, 102)]
     assert d["stock"]["frontend_qty"] == 102 and d["stock"]["date"] == date(2026, 10, 7)
+
+    one = asyncio.run(zp.detail_agg(_S(totals, day_rows, [(date(2026, 10, 7), 99)]),
+                                    tenant_id=TENANT, item_id="pv1", start=date(2026, 10, 1),
+                                    end=date(2026, 10, 7)))
+    assert [p["frontend_qty"] for p in one["stock_trend"]] == [102, 102, 102, 99], \
+        "one real reading must not wipe the older days (deploy day)"
 
     old_only = asyncio.run(zp.detail_agg(_S(totals, day_rows, []), tenant_id=TENANT,
                                          item_id="pv1", start=date(2026, 10, 1),

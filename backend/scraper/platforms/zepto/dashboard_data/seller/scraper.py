@@ -145,6 +145,20 @@ async def _post_5xx_retry(client, url: str, payload: dict, label: str) -> dict:
     )
 
 
+class PageCapHit(RuntimeError):
+    """A paged list hit `PO_MAX_PAGES` while Zepto still said `hasNext` (P4).
+
+    Carries the rows that DID come back, so the caller can save them and still record
+    the list as lost — the run fails and alerts instead of silently keeping a short list
+    (which is what a plain `break` at the cap used to do)."""
+
+    def __init__(self, label: str, rows: list[dict]):
+        super().__init__(f"{label}: stopped at the {ep.PO_MAX_PAGES}-page cap with more "
+                         f"still to come ({len(rows)} rows kept) — raise PO_MAX_PAGES or "
+                         "narrow the window")
+        self.rows = rows
+
+
 async def _fetch_po_paged(
     client: dict, api: str, body: dict, list_key: str, label: str,
     page_size: int | None = None,
@@ -152,8 +166,9 @@ async def _fetch_po_paged(
     """Page through one PO-app endpoint until `hasNext` is false.
 
     All three (po/grn/asn) share this shape: offset/limit in, `{list_key: [...],
-    total, hasNext}` out. PO_MAX_PAGES bounds the loop so a misreported
-    `hasNext` cannot spin forever.
+    total, hasNext}` out. PO_MAX_PAGES bounds the loop so a misreported `hasNext`
+    cannot spin forever — and reaching it with `hasNext` still true raises
+    `PageCapHit` (with the rows so far) instead of returning a short list (P4).
 
     `page_size` exists because asn/filter cannot take the same page size as its
     siblings — it 500s at 100 and answers in under a second at 50. See
@@ -168,9 +183,11 @@ async def _fetch_po_paged(
         )
         rows = data.get(list_key) or []
         out.extend(rows)
-        if not data.get("hasNext"):
+        if not data.get("hasNext") or not rows:
             break
         await asyncio.sleep(0.4)
+    else:
+        raise PageCapHit(label, out)
     logger.debug(f"Zepto {label}: {len(out)} row(s)")
     return out
 
@@ -268,9 +285,14 @@ async def fetch_po_items(
                     {"offset": page * ep.PO_PAGE_SIZE, "limit": ep.PO_PAGE_SIZE},
                     f"po/{po_id}/items p{page + 1}",
                 )
-                rows.extend(data.get("poItems") or [])
-                if not data.get("hasNext"):
+                page_rows = data.get("poItems") or []
+                rows.extend(page_rows)
+                if not data.get("hasNext") or not page_rows:
                     break
+            else:
+                # More lines than the cap: a short list must not pass for the PO's
+                # lines (P4) — fail this PO like any other failed fetch (P15).
+                raise PageCapHit(f"po/{po_id}/items", rows)
         except AuthError:
             # Not a bad PO: the session is gone, and every remaining PO would fail
             # the same way. Let it reach the CLI, which exits 3 (`auth_expired`).

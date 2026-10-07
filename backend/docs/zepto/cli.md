@@ -99,7 +99,7 @@ Use `auth probe` for that.
 ```
 --tenant, -t     TEXT   required
 --sales / --po / --ads  pick sections; none = all three
---from           DATE   sales: default 8 days ago · ads: default the 3 days up to --to
+--from           DATE   sales: default 4 days ago · ads: default the 3 days up to --to
 --to             DATE   default: yesterday (sales + ads)
 --po-days-back   INT    PO window, counted back from TODAY (default 30)
 --category       TEXT   ads: sponsored_products | sponsored_display | sponsored_brands | all
@@ -122,7 +122,7 @@ section failed or lost fetches (what came back is still saved; re-run the same w
 
 | Section | Writes | Window |
 |---|---|---|
-| sales | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily`, `zepto_soh` (stock + growth as of the scrape, one row per product per scrape day) | 8 days to yesterday |
+| sales | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily`, `zepto_soh` (stock + growth as of the scrape, one row per product per scrape day) | 4 days to yesterday |
 | po | `zepto_po`, `zepto_grn`, `zepto_asn`, `zepto_po_items` | `--po-days-back` through **today** |
 | ads | `zepto_ad_campaign_daily`, `zepto_ad_keyword_daily`, `zepto_ad_product_daily`, `zepto_ad_breakdown_daily`, `zepto_ad_campaign_detail` (keyword performance per campaign per day — one call per campaign that had impressions that day, every kind) + the campaign catalogue (`zepto_ad_campaigns`, `zepto_ad_campaign_keywords`) | 3 days to yesterday |
 
@@ -183,7 +183,7 @@ cli jobs logs <job-id-prefix> -f
 
 Scheduled daily per tenant (2026-10-05): Brik Oven `30 10 * * *`, Sereko `45 10 * * *`,
 `catchup=False` — fine, because a missed run is healed by the next one's 3-day ads /
-8-day sales windows (a day missed 3 runs running needs a `--from` re-run). Cron is five
+4-day sales windows (a day missed 3 runs running needs a `--from` re-run). Cron is five
 fields, **always Asia/Kolkata**.
 
 There is no scheduled Zepto login: the morning `auth.refresh` jobs cannot refresh Zepto

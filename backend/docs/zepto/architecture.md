@@ -146,7 +146,7 @@ cli scrape zepto -t <tenant> [--sales] [--po] [--ads]      (none = all three)
      │    │         POST /vendor/api/v1/auth/validate-mfa-otp/    → JWT + brandIds
      │    └─ mint_waf_token()                  headless Chromium, ~10s
      │
-     ├─ run_sales   overview (8 days) · products one day per call · city split ·
+     ├─ run_sales   overview (4 days) · products one day per call · city split ·
      │              stock readings (zepto_soh)
      ├─ run_po      po / grn / asn filters (30 days back, through today) · lines per PO
      ├─ run_ads     per day (3 days): campaign list + 6 analytics views per category +
@@ -227,7 +227,7 @@ Prefixing it returns a base64 decode error.
 
 | Section | Window (default) | Endpoints | Tables written |
 |---|---|---|---|
-| `--sales` | 8 days to yesterday | `sales-overview`, `product-performance` (per day; per city for the split) | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily`, `zepto_soh` |
+| `--sales` | 4 days to yesterday | `sales-overview`, `product-performance` (per day; per city for the split) | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily`, `zepto_soh` |
 | `--po` | 30 days back, through today | `po/filter`, `grn/filter`, `asn/filter`, `po/{id}/items` | `zepto_po`, `zepto_grn`, `zepto_asn`, `zepto_po_items` |
 | `--ads` | 3 days to yesterday | `/ads-bff/campaigns`, `/metrics/tabular` × 6 views per category, campaign `metrics/tabular` (keyword detail), catalogue reads | `zepto_ad_campaign_daily`, `zepto_ad_keyword_daily`, `zepto_ad_product_daily`, `zepto_ad_breakdown_daily`, `zepto_ad_campaign_detail`, `zepto_ad_campaigns`, `zepto_ad_campaign_keywords` |
 

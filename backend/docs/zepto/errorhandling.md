@@ -258,15 +258,18 @@ That guard was right but incomplete before the retry existed: a single 500 wrote
 
 ```python
 PO_PAGE_SIZE = 100
-PO_MAX_PAGES = 20      # bounds the loop
+PO_MAX_PAGES = 100     # a safety net — reaching it fails the run (P4)
 ```
 
 All three PO endpoints share the shape `{list_key: [...], total, hasNext}`.
 `PO_MAX_PAGES` exists so a misreported `hasNext` cannot spin forever. A 0.4s pause
 sits between pages.
 
-**A window wide enough to exceed 2,000 rows will silently truncate.** Nothing warns
-(P4 — left as is; the 30-day default is far below it). Split the window instead.
+**Hitting the cap is loud, not silent** (P4, 2026-10-07): `PO_MAX_PAGES` is 100 (10,000 POs
+or GRNs, 2,500 ASNs per window — the busiest 30 days so far had 71 / 52 / 68). Reaching it
+with `hasNext` still true raises `PageCapHit`: the rows that came back are saved, the list
+is recorded as lost ("po/filter truncated"), and the run exits 1. A PO whose lines hit it
+fails like any failed PO (re-checked once, then lost).
 
 Product performance pages too (50 a page, P47): a day with more than 50 selling SKUs used
 to be cut off silently.
@@ -303,7 +306,7 @@ The VM sets `Asia/Kolkata` at provision time for the same class of reason.
 The honest caveat is one level up: a Zepto **run** is not all-or-nothing. Sections save
 independently (sales can land while ads fails), and a section saves what it fetched even
 when some fetches were lost. Re-running the window is safe and is the fix — idempotency is
-what makes that true, and the daily re-scrape windows (8 / 30 / 3 days) do it
+what makes that true, and the daily re-scrape windows (sales 4 / PO 30 / ads 3 days) do it
 automatically.
 
 > This differs from the **public** scrape path, which stages to SQLite and pushes in
@@ -354,8 +357,8 @@ Named honestly rather than left to be discovered:
 
 - **Multi-brand.** `discover_ids` takes `brandCategoryList[0]`. An account with several
   brands silently scrapes only the first. Parked: clients are single-brand.
-- **Pagination overflow.** Past `PO_MAX_PAGES × PO_PAGE_SIZE` = 2,000 rows, data is
-  dropped without a warning (P4).
+- **Pagination overflow** — now loud (P4): past the 100-page cap the run fails; raise
+  `PO_MAX_PAGES` or narrow the window.
 - **Partial runs.** See §10 — sections save independently; no staging layer on the
   private path.
 

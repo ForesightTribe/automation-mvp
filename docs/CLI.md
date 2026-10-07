@@ -240,7 +240,7 @@ python -m cli scrape blinkit-seller --tenant <tenant_id> --soh
 python -m cli scrape blinkit-seller --tenant <tenant_id> --no-save
 ```
 
-**Sales** — scrapes day-by-day over the given range (default: yesterday). Each day upserted by `item_id + city + date`; re-running the same date updates in place.
+**Sales** — scrapes day-by-day over the given range (default: the 4 days up to yesterday, so a missed run heals on the next one; a failed day fails the run after the others are saved). Each day upserted by `item_id + city + date`; re-running the same date updates in place.
 
 **PO** — scrapes a rolling window of POs by issue date. Upserted by `po_number` so re-running updates state without duplicating. SKU line items fetched only for POs not already in the DB — first run is expensive, subsequent runs fetch only new POs.
 
@@ -303,7 +303,7 @@ python -m cli scrape zepto --tenant <tenant_id> --sales --all-cities --from 2026
 python -m cli scrape zepto --tenant <tenant_id> --no-save
 ```
 
-Zepto has one console, so it is one command and one job (`scrape.zepto`) — unlike Blinkit's two dashboards. Default windows: **sales** 8 days to yesterday · **ads** the 3 days up to `--to` · **PO** `--po-days-back` (30) through today. Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved — re-run the same window), **3** = login gone. The code is `scraper/platforms/zepto/dashboard_data/seller/run.py`; full reference: [backend/docs/zepto/cli.md](../backend/docs/zepto/cli.md). (`zepto-sales` / `zepto-ads` / `zepto-po` were removed 2026-10-05.)
+Zepto has one console, so it is one command and one job (`scrape.zepto`) — unlike Blinkit's two dashboards. Default windows: **sales** 4 days to yesterday · **ads** the 3 days up to `--to` · **PO** `--po-days-back` (30) through today. Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved — re-run the same window), **3** = login gone. The code is `scraper/platforms/zepto/dashboard_data/seller/run.py`; full reference: [backend/docs/zepto/cli.md](../backend/docs/zepto/cli.md). (`zepto-sales` / `zepto-ads` / `zepto-po` were removed 2026-10-05.)
 
 ---
 

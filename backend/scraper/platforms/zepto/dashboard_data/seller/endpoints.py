@@ -87,8 +87,11 @@ GRN_ITEMS_API = "/api/v1/grn/{grn_no}/items"
 # The UI asks for 14 at a time; 100 is well within what the API accepts and
 # cuts the number of pages for a 30-day window to one on this account.
 PO_PAGE_SIZE = 100
-# Guard against an unbounded loop if `hasNext` ever misbehaves.
-PO_MAX_PAGES = 20
+# Guard against an unbounded loop if `hasNext` ever misbehaves — a safety net, not a
+# limit to live with: reaching it with `hasNext` still true raises `PageCapHit` and the run
+# fails loudly (P4, 2026-10-07; it used to stop silently). 100 pages = 10,000 POs / GRNs or
+# 2,500 ASNs (page 25) in one window; the busiest 30 days so far had 71 / 52 / 68.
+PO_MAX_PAGES = 100
 
 # ⚠️ asn/filter is NOT the same as its two siblings — it 500s at limit=100.
 #

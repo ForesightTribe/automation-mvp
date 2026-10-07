@@ -529,6 +529,69 @@ def test_a_po_whose_lines_fail_twice_fails_the_section_but_saves_the_rest():
     assert jobs.closed[-1][0] == "failed" and "PO po-2 lines" in jobs.closed[-1][1]
 
 
+class _EndlessPOClient:
+    """A PO-app endpoint that always says hasNext — the case the page cap exists for."""
+
+    def __init__(self):
+        self.calls = 0
+
+    async def request(self, _method, path, **_k):
+        self.calls += 1
+        if "items" in path:
+            return _Resp(200, {"data": {"poItems": [{"sku": self.calls}], "hasNext": True}})
+        return _Resp(200, {"data": {"poList": [{"poId": self.calls}], "hasNext": True}})
+
+
+@contextlib.contextmanager
+def _small_page_cap(n: int = 3):
+    real = zs.ep.PO_MAX_PAGES
+    zs.ep.PO_MAX_PAGES = n
+    try:
+        yield
+    finally:
+        zs.ep.PO_MAX_PAGES = real
+
+
+def test_a_paged_po_list_that_hits_the_cap_says_so():
+    """P4: stopping at the cap used to return a short list as if it were complete."""
+    c = _EndlessPOClient()
+    with _fast_fetchers(), _small_page_cap(3):
+        try:
+            _go(zs._fetch_po_paged(c, "/api/v1/po/filter", {}, "poList", "po/filter"))
+        except zs.PageCapHit as e:
+            assert len(e.rows) == 3 and c.calls == 3 and "cap" in str(e)
+            return
+    raise AssertionError("hitting the page cap must not pass silently")
+
+
+def test_run_po_keeps_a_truncated_list_but_fails_the_section():
+    async def truncated(*_a, **_k):
+        raise zs.PageCapHit("po/filter", [{"poId": "po-1"}])
+
+    saved = {}
+
+    async def save(_db, pos, grns, asns, items):
+        saved["pos"] = pos
+        return {"pos": len(pos)}
+
+    with _patched(zs__fetch_pos=truncated, zs__fetch_grns=_async(lambda *_: []),
+                  zs__fetch_asns=_async(lambda *_: []),
+                  zs__fetch_po_items=_async(lambda *_a, **_k: {}),
+                  zp__parse_pos=lambda raw, *_: [{"po_id": r["poId"], "total_value": 0.0} for r in raw],
+                  zst__save_po_results=save) as jobs:
+        res = _go(zr.run_po(object(), TENANT, 30, True))
+    assert res.lost == ["po/filter truncated"] and not res.ok
+    assert [p["po_id"] for p in saved["pos"]] == ["po-1"], "what came back is still saved"
+    assert jobs.closed[-1][0] == "failed"
+
+
+def test_a_po_whose_lines_hit_the_cap_is_a_failed_po():
+    failed: list[str] = []
+    with _fast_fetchers(), _small_page_cap(2):
+        out = _go(zs.fetch_po_items(_EndlessPOClient(), ["po-1"], failed=failed))
+    assert out == {} and failed == ["po-1"]
+
+
 def test_po_items_fetcher_reports_failed_pos():
     class _POClient:
         async def request(self, _method, path, **_k):

@@ -254,9 +254,10 @@ async def detail_agg(
     # One point per scrape day from `zepto_soh` (P41 step 2): the stock each morning.
     # The old series was plotted against the SALES date, but every run wrote that
     # morning's stock onto all 8 days it re-scraped — one flat line for the last 8 days,
-    # and each older point the stock ~8 days AFTER its date. Falls back to that old series
-    # only when `zepto_soh` has no reading in the window (before the deploy that started
-    # filling it); a window that has any real reading shows only real readings.
+    # and each older point the stock ~8 days AFTER its date. Days BEFORE the first
+    # `zepto_soh` reading in the window keep the old series (all there is for them — the
+    # table starts empty on deploy); from that reading on, only real readings. Without the
+    # splice, a window with one reading drew a single dot and lost every older day.
     soh_rows = (
         await session.execute(
             select(SOH.date, SOH.stock_on_hand)
@@ -264,9 +265,12 @@ async def detail_agg(
             .order_by(SOH.date)
         )
     ).all()
+    first_reading = soh_rows[0][0] if soh_rows else None
+    old_points = [(d, s) for d, _, _, s in day_rows
+                  if first_reading is None or d < first_reading]
     stock_trend = [
         {"date": d, "backend_qty": 0, "frontend_qty": int(soh)}
-        for d, soh in (soh_rows or [(d, s) for d, _, _, s in day_rows])
+        for d, soh in old_points + list(soh_rows)
         if soh is not None
     ]
     stock = None
