@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useProductDetail } from "./hooks";
 import { StatusBadge } from "./components/StatusBadge";
 import { SalesStockChart } from "./components/SalesStockChart";
@@ -20,7 +20,12 @@ const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v} days`);
  */
 export const ProductDetailPage = () => {
 	const { itemId } = useParams();
-	const { data, isLoading, error, refetch } = useProductDetail(itemId);
+	// The product's own marketplace, from the list row's link (?mp=). See useProductDetail.
+	const [searchParams] = useSearchParams();
+	const { data, isLoading, error, refetch } = useProductDetail(
+		itemId,
+		searchParams.get("mp") || undefined,
+	);
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -113,7 +118,10 @@ export const ProductDetailPage = () => {
 						/>
 					</div>
 
-					<PoHistory itemId={data.item_id} marketplace={data.marketplace} />
+					<PoHistory
+						itemId={data.item_id}
+						marketplace={data.marketplace}
+					/>
 				</>
 			)}
 		</div>
