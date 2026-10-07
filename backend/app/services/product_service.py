@@ -276,7 +276,13 @@ async def get_products(
     # and average price mean the same thing on both marketplaces. The Blinkit
     # query above already returned nothing when `marketplaces=["zepto"]`, so
     # there is no double counting when both are selected.
+    #
+    # Their average daily sales divide by the days Zepto has data for, not the window's
+    # calendar length (P11) — see `zepto_products.data_days`.
     if zepto_products.wants_zepto(marketplaces):
+        z_days = await zepto_products.data_days(
+            session, tenant_id=tenant_id, start=period.start, end=period.end
+        )
         for z in await zepto_products.list_agg(
             session,
             tenant_id=tenant_id,
@@ -286,7 +292,7 @@ async def get_products(
             category=category,
         ):
             rows.append(
-                _list_row(**z, window_days=window_days, marketplace="zepto")
+                _list_row(**z, window_days=z_days, marketplace="zepto")
             )
 
     # Instamart's sales come from the Brand Portal report (day x store x item,
@@ -354,8 +360,15 @@ async def _zepto_detail(
         return None
 
     frontend_now = d.pop("frontend_qty", 0)
+    stock_known = d.pop("stock_known", True)
     units = d["units_sold"]
-    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+    # Days with data, not calendar days (P11) — see `zepto_products.data_days`.
+    z_days = await zepto_products.data_days(
+        session, tenant_id=tenant_id, start=period.start, end=period.end
+    )
+    avg_daily, cover = cover_metrics(frontend_now, units, z_days)
+    if not stock_known:
+        cover = None
 
     # Genuinely per-SKU now that `zepto_seller_product_city_daily` exists, so no
     # "only show it if there are 2+ cities" guard: a single city is a real
@@ -375,7 +388,11 @@ async def _zepto_detail(
         "avg_price": _avg_price(d["revenue"], units),
         "avg_daily_units": avg_daily,
         "days_of_cover": cover,
-        "status": cover_status(frontend_now, units, cover),
+        "status": (
+            cover_status(frontend_now, units, cover)
+            if stock_known
+            else STATUS_NO_STOCK_DATA
+        ),
         "cities": cities,
     }
 

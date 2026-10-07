@@ -20,7 +20,7 @@ Three kinds of "prompt", in one place:
 | Password entry | `auth credentials set zepto --password` | **One-time only.** Stored encrypted; never asked again |
 | Email | `auth credentials set zepto --email <e>` | No — passed as a flag |
 | 4-digit OTP | `auth login zepto` | **No.** Read from the inbox over IMAP |
-| Confirmations | the three scrapes | None — they prompt for nothing |
+| Confirmations | `scrape zepto` | None — it prompts for nothing |
 
 > **Nothing in the Zepto private path blocks on a human, once credentials are stored.**
 > This is the whole reason it can be scheduled. The old browser login (`cli auth
@@ -122,7 +122,7 @@ GET /api/v1/commons/brand-category-mapping
 ```
 
 ⚠️ `discover_ids` takes `brandCategoryList[0]`. Multi-brand accounts silently use only
-the first. Untested.
+the first. Parked — every client so far is single-brand.
 
 ## Sales
 
@@ -145,6 +145,7 @@ GET /brand-analytics-web/api/v1/sales-analytics/sales-overview
 ```http
 GET /brand-analytics-web/api/v1/sales-analytics/product-performance
     (same params; add cityIds=<one city> for the per-city split)
+    &limit=50&offset=<n>                 ← paged; a full page means ask for the next
 ```
 
 ### The "not computed yet" response
@@ -170,12 +171,13 @@ yesterday.
 GET /ads-bff/api/v1/campaigns
     ?selectedBrand=<brand_id>&brand_id=<brand_id>
     &from_date=2026-09-01&to_date=2026-09-01
-    &categoryType=sponsored_products&page=0
+    &categoryType=sponsored_products&page=1
 ```
 
 ⚠️ **`categoryType` is ignored by this endpoint.** Asking for any of the three returns
 the same 26 campaigns (verified 20-Aug-2026). Only `/metrics/tabular` actually
-partitions.
+partitions. ⚠️ **Paged by `page` (1-based) only** — `limit`, `offset` and friends are
+silently ignored; the loop stops on `total_count`.
 
 ```http
 POST /ads-bff/api/v1/brands/analytics/metrics/tabular
@@ -194,19 +196,34 @@ Six views, all through this one endpoint:
 `campaign_table` · `product_table` · `keyword_table` · `category_table` · `city_table`
 · `page_table`
 
+Per-campaign keyword detail — the campaign detail page's own report:
+
 ```http
-POST /ads-bff/api/v1/brands/analytics/metrics
-{"breakdown": true, "brand_id": "<brand_id>", …}
+POST /ads-bff/api/v1/brands/campaigns/analytics/metrics/tabular
+{ …same body…, "view": "keyword_table", "campaign_id": 2443333 }
 ```
 
-Metrics: `spends`, `ctr`, `impressions_per_thousand`, `clicks`, `ecpm`.
-A 1.5s pause sits between metric calls.
+One call per campaign per **day**: a multi-day window comes back as one total, and
+`interval` / `breakdown` are refused (400). Probed read-only 2026-10-06.
+
+The campaign catalogue (also the campaign manager's reads):
+
+```http
+GET  /ads-bff/api/v1/campaigns/pla/<id>                     ← NOT wrapped in `data`
+POST /ads-bff/api/v1/keyword/config  {"keywords": [{"keyword", "match_type"}]}   ← max 500
+GET  /ads-bff/api/v1/brands/targeting-options
+     ?brand_id=…&include=category,geo&campaign_type=PLA&campaign_sub_type=AUCTION_UP_SELL
+```
+
+`targeting-options` answers 200 with **empty** lists unless every one of those params is
+sent. A 1.5 s pause sits between ads calls; Zepto's own 429 "rate limit exceeded" is
+what a faster loop draws (0.4 s did, on the catalogue).
 
 ## PO / ASN / GRN
 
 All three POST to `/api/v1/{po,grn,asn}/filter`, share the shape
-`{list_key, total, hasNext}`, and page at 100 (max 20 pages = **2,000 rows, then
-silent truncation**).
+`{list_key, total, hasNext}`, and page at 100 — **ASN at 25** (its gateway times out on
+bigger pages) — with max 20 pages, then **silent truncation**.
 
 ```http
 POST /api/v1/po/filter
@@ -280,10 +297,12 @@ Key context you will otherwise get wrong:
   exception is a 429 with JSON `{"error":"rate limit exceeded"}` — Zepto's real limit,
   which the client waits out instead of re-minting.
 - Three endpoint families need three different header sets. See prompts.md §2.
-- Client is Brik Oven, tenant fa53082e-7e83-424d-aab9-086fe1b4c680.
+- Clients: Brik Oven (tenant fa53082e-7e83-424d-aab9-086fe1b4c680) and Sereko.
+- One command, `cli scrape zepto` (sections --sales / --po / --ads); the loops live in
+  scraper/platforms/zepto/dashboard_data/seller/run.py, the CLI only sets flags.
 - One shared Supabase DB behind every branch. A migration affects every branch.
 
-Confirm you have read them by telling me which of the eleven tables triple-counts
+Confirm you have read them by telling me which of the fifteen tables triple-counts
 if you sum it without a filter.
 ```
 
@@ -294,14 +313,18 @@ Add <endpoint> to the Zepto private scraper. Follow the existing shape exactly:
 
 1. URL constant in scraper/platforms/zepto/dashboard_data/seller/endpoints.py
 2. fetch_* in scraper.py — raw JSON out, NO parsing, NO I/O beyond the call.
-   Route it through client.request(..., retry_writes=False). Set
-   brand_analytics=True for /brand-analytics-web/* and /vendor/*; leave it
-   False for /ads-bff/*.
+   Go through the existing helpers (_get / _post, _post_5xx_retry, _ads_request),
+   which call client.request(): brand_analytics=True for /brand-analytics-web/*
+   and /vendor/*, False for /ads-bff/*. Recovery (401, WAF, rate limit) is the
+   client's — do not add your own.
 3. parse_* in parser.py — pure function, raw JSON -> list[dict], each with an
    upsert_key from make_upsert_key(tenant, "zepto", "<kind>", <identity parts>).
 4. save_* in storage.py if a new table is needed.
 5. Model in app/models/zepto_seller.py with the five bookkeeping columns
    (tenant_id, platform, upsert_key, scrape_job_id, scraped_at).
+6. Call it from the section in run.py through `_attempt` / the lost-fetch queue, so a
+   failure is re-checked once and then fails the run — never skipped silently.
+7. Tests in seller/tests/ (parser from a captured response; run with fakes).
 
 Do NOT add a browser. Do NOT hardcode brand/city/category ids — use discover_ids.
 Before proposing a migration, prove the grain: scrape the SAME rows for two
@@ -319,12 +342,14 @@ Decision tree:
   202/429   browser proof gone  -> re-mint the WAF token
   429       ALSO the symptom of a missing `waf-enabled: false` header. CHECK THE
             HEADERS FIRST — this misreading cost an afternoon once already.
+  429 JSON "rate limit exceeded" -> Zepto's real limit; the client waits 5/15/30 s
   404 bare text/plain -> missing `x-proxy-target: brand-analytics`
   500 on /vendor/*    -> Zepto's upstream timing out. Retried at 5/15/45s.
+  500 on /ads-bff/*   -> same, retried at 3/8/20s.
   200 + data:null     -> genuinely no rows. Not an error.
 
 Reproduce with:
-  LOG_LEVEL=DEBUG python -m cli scrape zepto-sales -t <tenant> --no-save
+  LOG_LEVEL=DEBUG python -m cli scrape zepto -t <tenant> --sales --no-save
 
 Test the hypothesis with a real request before recommending a fix. Do not rely on
 what a comment says the behaviour is — comments in this area have gone stale.
@@ -336,9 +361,11 @@ what a comment says the behaviour is — comments in this area have gone stale.
 Backfill Zepto <sales|ads|po> for <range> for tenant <uuid>.
 
 Before running:
-- Sales: period_start/period_end are PART OF THE GRAIN. A 31-day window writes ONE
-  31-day row per SKU, not 31 daily rows. Loop one day at a time for daily rows.
-- Ads: leave --category at `all`. The three tabs return DISJOINT campaigns.
+- Use `cli scrape zepto -t <tenant> --<section> --from <d> --to <d>`; the run asks one
+  day per call, so rows land at day grain whatever the window.
+- Sales: `--all-cities` sweeps every city on every day (one call per city per day).
+- Ads: leave --category at `all`. The analytics tabs return DISJOINT data. Each day
+  also fetches keyword detail per active keyword campaign — ~2 min per ad day.
 - PO: keys have no date, so re-scraping updates a PO in place. There is no history
   of how a PO evolved. Windows over ~2,000 rows truncate silently at PO_MAX_PAGES.
 - Every login evicts whoever is on the client's dashboard. Do not loop logins.
@@ -347,25 +374,20 @@ All writes are idempotent (ON CONFLICT upsert_key), so re-running is safe.
 Show me the command list first; do not run it.
 ```
 
-## Move the private scrapers onto the VM
+## Check a scheduled run on the VM
 
 ```
-Goal: run the Zepto private scrapers on foresight-vm as scheduled jobs.
+Check the last scheduled Zepto run for <tenant>.
 
-Read backend/docs/zepto/phase.md — Phase 5 is exactly this and lists the gaps.
-Known blockers, do not rediscover them:
-  1. The VM runs `main`. `main` has no zepto-po, no scorecard, and still carries
-     the OLD browser auth. dev is 23 commits ahead. This is the real gate.
-  2. jobs/types.py registers only scrape.zepto_seller_sales. zepto-ads and
-     zepto-po have NO job type and cannot be queued at all.
-  3. No Zepto schedule has ever existed; no Zepto job has ever been queued.
-  4. auth.login for Zepto must stay --disabled until Brik Oven provisions a
-     service user. Enabling it logs their own staff out nightly.
-  5. ENCRYPTION_KEY must match exactly or sessions fail SILENTLY.
+Facts: the VM runs `main`; `scrape.zepto` is scheduled daily (Brik Oven 10:30,
+Sereko 10:45 IST). New code reaches the VM only when merged to `main` and pulled.
 
-Every private run launches headless Chromium once (~1 GB, ~10s) to mint the WAF
-token, so Playwright must be installed on the box: `playwright install chromium`
-WITHOUT sudo, `playwright install-deps chromium` WITH sudo.
+1. `cli jobs list` — the run's status, exit code (0 ok · 1 lost fetches · 3 auth),
+   duration and peak RAM.
+2. `cli jobs logs <prefix>` — one line per step, tagged zepto·<tenant>·<section>;
+   each section's closing line says what was saved and what was lost/recovered.
+3. The scrape_jobs rows: a failed one reads "partial: N fetch(es) lost — …".
+Do not re-run anything until you have said what failed and why.
 ```
 
 ## Review a change before it ships
@@ -393,11 +415,12 @@ Update backend/docs/zepto/*.md to match the code as it is NOW.
 
 Rules:
 - Verify every claim against the code or a live query. Do not carry a claim
-  forward because the doc already said it — docs/zepto-auth.md at the repo root
-  is stale in exactly that way and is the cautionary example.
+  forward because the doc already said it — the old docs/zepto-auth.md (deleted)
+  went stale in exactly that way.
 - Where something is unproven, say "unproven" rather than guessing.
 - Keep the live row counts in database.md dated, and re-measure rather than
   editing the numbers by hand.
-- architecture.md §11 lists known-stale CODE comments. If you fix one in code,
-  remove it from that table.
+- If you find a stale CODE comment, fix it in the code rather than listing it here.
+- The plan and decision log is backend/zepto-cm-exp/plans/PLAN-private-scrape.md
+  (gitignored); cite its item ids (P1…) when a doc records a decision.
 ```

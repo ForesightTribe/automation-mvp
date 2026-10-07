@@ -1,9 +1,11 @@
 # Zepto Private Scraping — Phases
 
 Where this work has been, where it is, and what is left. Ticket **FST-10**.
-Client **Brik Oven** (`fa53082e-7e83-424d-aab9-086fe1b4c680`).
+Clients **Brik Oven** (`fa53082e-7e83-424d-aab9-086fe1b4c680`) and **Sereko**.
+Owner: Deepansh (since 2026-10-03).
 
-Status as of **2026-09-02**.
+Status as of **2026-10-07**. Phases 0–5 below are history and keep the command names of
+their time (`zepto-sales` / `zepto-ads` / `zepto-po`, since replaced by `scrape zepto`).
 
 ---
 
@@ -17,10 +19,11 @@ Status as of **2026-09-02**.
 | 3 | Ads scraper | ✅ Done |
 | 4 | PO / ASN / GRN + derived scorecard | ✅ Done |
 | 5 | Migration onto shared `platform_auth` | ✅ Done |
-| 6 | Dashboard integration | 🔶 Mostly done — 4 files uncommitted |
-| 7 | **Ship to `main`** | ❌ **Not started — blocks Phase 8** |
-| 8 | **Run unattended on the VM** | ❌ Not started |
-| 9 | Hardening / known gaps | ❌ Open |
+| 6 | Dashboard integration | ✅ Done |
+| 7 | Ship to `main` | ✅ Done |
+| 8 | Run unattended on the VM | ✅ Daily since 2026-09-10 |
+| 9 | Hardening / known gaps | 🔶 Mostly folded into Phase 10 |
+| 10 | **The refactor** (`PLAN-private-scrape.md`) | 🔶 Built on `fix/zepto-private-refactor`, **not deployed** |
 
 ---
 
@@ -51,10 +54,8 @@ Shipped and worked. Then it was replaced wholesale by Phase 5.
 **Deleted in `6bcfcfc`:** `seller/auth.py` (137 lines), `seller/session_health.py`
 (53), `seller/selectors.py` (26), and the `cli auth zepto-seller` command.
 
-> ⚠️ [`docs/zepto-auth.md`](../../../docs/zepto-auth.md) at the repo root still
-> documents **this phase**. It tells you to install Xvfb and run a command that no
-> longer exists. It should be rewritten or deleted — it is the single most misleading
-> document about this system.
+> `docs/zepto-auth.md` at the repo root documented **this phase** (Xvfb, a command that
+> no longer exists) long after it was gone; it has since been deleted.
 
 ---
 
@@ -156,156 +157,113 @@ old auth).
 
 ---
 
-## Phase 6 — Dashboard integration 🔶
+## Phase 6 — Dashboard integration ✅
 
-Products, Reports, Analytics, Overview and Scorecard all read Zepto data.
+Products, Reports, Analytics, Overview, Ads and Scorecard all read Zepto data.
 
-Done: whole-rupee formatting on Overview for Zepto only; "Stock by facility" hidden for
-Zepto; FE/BE split removed from the Products stock column for Zepto (Zepto has no
+Whole-rupee formatting on Overview for Zepto only; "Stock by facility" hidden for Zepto;
+FE/BE split removed from the Products stock column for Zepto (Zepto has no
 front-end/back-end concept — that is Blinkit's).
 
 **Cross-checked against Zepto's own dashboard in both directions on 29-Aug — all
 matched.** An apparent mismatch traced to an unapplied date filter on their side.
 
-### Outstanding in this phase
-
-- **4 files uncommitted**: `ProductsTable.jsx`, `ProductDetailPage.jsx`,
-  `app/schemas/product.py`, `app/services/product_service.py`
-- `CityBreakdown` full-width when `FacilityStock` is hidden — offered, undecided
-- Rename the Overview tile "Active campaigns" → "Campaigns with spend" (it counts
-  campaigns *with spend*, which is why it reads 7 when the dashboard shows 3 ACTIVE)
+Still open from this phase:
+- The **"Active campaigns"** tile counts campaigns that **ran** in the window (spend or
+  impressions) — the same rule for Blinkit, Zepto and Instamart, and the only one that has
+  a previous window to compare against. The label reads like "status = active now"; a
+  rename (e.g. "Campaigns that ran") is a cross-marketplace UI call, not yet made.
+- `CityBreakdown` full-width when `FacilityStock` is hidden — offered, undecided.
 
 ---
 
-## Phase 7 — Ship to `main` ❌ **The gate**
+## Phase 7 — Ship to `main` ✅
 
-**The VM runs `main`. It never runs `dev`.** Verified 2026-09-02:
+Done in September: `main` carries the `platform_auth` login, the PO scrape and the
+scorecard; the old browser `auth.py` is gone. `docs/zepto-auth.md` (the Phase-1 browser
+login doc) was deleted.
 
-```
-origin/main ... origin/dev   →   0 behind, 23 ahead
-```
+The rule that made this the gate still holds: **the VM runs `main`, never `dev`.** New
+Zepto code reaches the VM only when it is merged to `main` and pulled.
 
-`main` today still has the **old** Zepto:
+---
 
-| | `main` (what the VM runs) | `dev` |
+## Phase 8 — Unattended on the VM ✅
+
+`foresight-vm` (GCP Mumbai, `e2-standard-2`) runs Zepto daily since **2026-09-10**:
+
+| Schedule | Job | Cron (IST) |
 |---|---|---|
-| `zepto-sales` | ✅ | ✅ |
-| `zepto-ads` | ✅ | ✅ |
-| `zepto-po` | ❌ missing | ✅ |
-| `zepto_scorecard.py` | ❌ missing | ✅ |
-| Auth | old browser `auth.py` | `platform_auth` |
-| `seller/auth.py` | still present | deleted |
+| Brik Oven — Zepto private daily | `scrape.zepto` | `30 10 * * *` |
+| Sereko — Zepto private daily | `scrape.zepto` | `45 10 * * *` |
 
-So `main` would try to run a login command that `dev` deleted. **Nothing Zepto can go
-on the VM until this lands.**
+One job type, `scrape.zepto` (all three sections on one login), replaced the per-section
+types. Live record to 2026-10-07: 35 successful runs, 12 failed — the failures were the
+lost-data and silent-failure bugs Phase 10 fixes.
 
-Also outstanding: 7 unpushed commits on
-`feature/zepto-auth-integration-private-data`, and 17 stale staging files to discard.
+**Login.** There is no scheduled Zepto login. The JWT dies at midnight IST and Zepto has
+no refresh, so the morning scrape logs in itself through `ensure()`; the 06:xx
+`auth.refresh` jobs cannot extend a Zepto session. Each login logs the client's dashboard
+user out — accepted since 2026-09-21 (a missed action costs more than a logout); a
+dedicated service user is still the clean fix.
 
----
-
-## Phase 8 — Unattended on the VM ❌
-
-The box (`foresight-vm`, GCP Mumbai, `e2-standard-2`) already runs a systemd job runner
-draining a Postgres queue. Blinkit marketing and seller scrape there daily and have
-succeeded 7/7.
-
-**Zepto has never run there.** Verified against the live DB: no Zepto row in
-`job_schedules`, and **no Zepto job has ever been queued.**
-
-### Gap 1 — two of three scrapers have no job type
-
-`jobs/types.py` registers only:
-
-```python
-"scrape.zepto_seller_sales": JobTypeSpec(
-    Lane.dashboard, 10 * 60, _zepto_sales,
-    param_keys=("date_from", "date_to"),
-)
-```
-
-There is **no** `scrape.zepto_ads` and **no** `scrape.zepto_po`. The runner can only
-execute registered types, so those two are unschedulable. The one that does exist is
-also missing its `label` (logs show the raw type name) and does not expose
-`--all-cities`.
-
-### Gap 2 — the box needs Playwright
-
-Every private run launches headless Chromium **once** (~10s) to mint the WAF token,
-including sales and PO which do not otherwise need one. So:
-
-```bash
-playwright install chromium            # NOT with sudo — it lands in root's cache
-sudo playwright install-deps chromium  # WITH sudo
-```
-
-RAM impact is small and transient (~1 GB for ten seconds) versus Blinkit's browser
-scrapes, which peak at **920–956 MB for the whole run**. Zepto is the cheapest thing
-that could go on that box — but it is **not** browser-free, which an earlier reading of
-the code suggested and which is wrong.
-
-### Gap 3 — the daily login is parked, for a good reason
-
-Zepto cannot refresh (no endpoint; JWT dies at local midnight IST), so holding a
-session means logging in again daily:
-
-```bash
-cli schedules add --name "Zepto daily login" --type auth.login \
-    --cron "5 0 * * *" -t <tenant> --catchup --disabled platform=zepto
-```
-
-> ⚠️ **This must stay `--disabled` until Brik Oven provisions a service user.**
-> Single-session eviction means a nightly login logs the client's own team out of
-> their dashboard. That is a conversation to have with the client, not something to
-> engineer around.
-
-### The ordered path
-
-1. Merge `dev` → `main` *(Phase 7 — the real gate)*
-2. Register `scrape.zepto_ads` + `scrape.zepto_po`; add the missing `label`; fix the
-   stale comment on the existing entry
-3. Rewrite or delete `docs/zepto-auth.md`
-4. On the VM: `git pull`, install Chromium, confirm `ENCRYPTION_KEY`, then
-   `cli auth probe zepto -t <tenant>`
-5. `--no-save` dry run of each of the three
-6. Add schedules **`--disabled`**, enable once the service-user question is settled
-
-Steps 1–5 are code and safe. Step 6 has a human cost and is the TL's call.
+The box needs Playwright for the ~10 s WAF mint (`playwright install chromium` without
+sudo, `sudo playwright install-deps chromium`).
 
 ---
 
-## Phase 9 — Known gaps ❌
+## Phase 9 — Known gaps (as of 2026-09-02) → folded into Phase 10
 
-Named honestly. None of these are blocking, all are real.
+The September list, and where each went:
 
-### Data / correctness
-- **Multi-brand untested.** `discover_ids` takes `brandCategoryList[0]`; an account
-  with several brands silently scrapes only the first.
-- **Pagination truncates silently** past `PO_MAX_PAGES × PO_PAGE_SIZE` = 2,000 rows.
-- **Partial-window writes.** The private path has no staging layer, unlike the public
-  one — a chunk failure leaves earlier chunks committed. Re-running is the fix.
-- **The two growth columns are unproven** — whether scrape-time or window-level cannot
-  be settled from stored data, because the upsert overwrites in place. Needs a live
-  experiment.
-- **All four ad tables stop at 31-Aug** while sales and PO reach 1-Sep. The 1-Sep ads
-  scrape has not been run.
+| Gap | Now |
+|---|---|
+| Multi-brand untested (`brandCategoryList[0]`) | ⏸ parked — every client is single-brand (P5/P26) |
+| PO pagination truncates silently past 2,000 rows | open, left as is (P4) — the 30-day window is far below it |
+| Partial-window writes | each section's save is one transaction; sections save independently — documented ([errorhandling.md](errorhandling.md) §10) |
+| Growth columns unproven | ✅ settled 2026-10-07: readings of the moment, like stock (P8) → `zepto_soh` |
+| Ads stopped a day short of sales | ✅ ads re-scrape 3 days every run (P1) |
+| NULL stock shown as "Out of stock" | ✅ fixed 2026-10-07 — "No stock data" (P11) |
+| Cover doubled with an unscraped day in the window | ✅ fixed 2026-10-07 — divides by days with data (P11) |
+| "Active campaigns" counts campaigns with spend | not a bug — a label question (Phase 6) |
+| No automated tests | ✅ `seller/tests/` (parser, run, client) + campaign-manager Zepto tests |
+| `transport.py` under `campaign_manager/` | ✅ moved to `seller/client.py` (P12) |
+| UAT shim `scripts/uat_zepto_compat.sql` | open — its table + 2 views still exist on the shared DB, nothing reads them (P49, left as is) |
+| Stale code comments | ✅ fixed (P13, P14) |
 
-### Display bugs
-- `zepto_products.py:145` renders NULL stock as `0` → UI says **"Out of stock"**
-- Cover **doubles** when the window includes an unscraped day
-- "Active campaigns" tile actually counts campaigns *with spend*
+---
 
-### Debt
-- **No automated tests.** Everything here was verified live, by hand.
-- ~~`transport.py` lives under `campaign_manager/` but is imported by the scraper —
-  works, but the dependency is backwards.~~ Fixed 2026-10-06 (P12): the client is
-  `seller/client.py` and the campaign manager imports it.
-- The UAT compatibility shim (`scripts/uat_zepto_compat.sql`) can be dropped once
-  `main` carries the renamed tables.
-- **Stale comments** in five places — listed in
-  [architecture.md §11](architecture.md#11-known-stale-comments-in-the-code).
+## Phase 10 — The refactor 🔶
 
-### To tell the team
-- The shared Zepto client is `scraper/platforms/zepto/dashboard_data/seller/client.py`
-  (was `campaign_manager/marketplaces/zepto/transport.py` until 2026-10-06)
-- `docs/CLI.md` and `docs/zepto-auth.md` are both behind the code
+*2026-10-03 → ongoing.* Plan, decisions and item ids (P1…P54):
+`backend/zepto-cm-exp/plans/PLAN-private-scrape.md` (gitignored). Release notes:
+`plans/RELEASE-NOTES-[6.10.26].md`. Branch `fix/zepto-private-refactor`, **not yet
+deployed** — merged to `dev` last, after everyone else.
+
+**Built:**
+- **Stop the data loss.** Ads re-scrape 3 days each run (P1, P54); paused-brand days saved
+  as zero (P28); the city split covers every tenant and finds new cities (P29, P21); lost
+  fetches are re-checked once, then fail the run (P44, P15); `scrape_jobs` rows agree with
+  the exit code (P35); an expired login exits 3 from every section (P46).
+- **Restructure.** All loops moved out of the CLI into `seller/run.py` (one `scrape zepto`
+  command, `SectionResult`); one 5xx retry helper; product paging (P47); dead code gone.
+- **Clean logs** (Zepto and Blinkit dashboard scrapes): one line per step, tagged; no
+  spinners or tables (P52).
+- **Per-campaign keyword performance** → `zepto_ad_campaign_detail` + the automation
+  wizard's Zepto keyword metrics (P38, P43). Migration `c3a9e5d7f2b1` applied.
+- **Shared client** moved to `seller/client.py`; the four campaign reads to
+  `seller/scraper.py` (P12). Zepto's own rate limit waited out, not mistaken for a WAF
+  failure (P53).
+- **Stock and growth** → `zepto_soh` (P41): step 1 (the table, written by the scrape) and
+  step 2 (the Products page reads it, old column as fallback). Migration `e7b2c9d4a6f3`
+  applied 2026-10-07 (after the merge revision `f1a8c3e5b7d2`).
+- **Products page:** cover divides by days with data; unknown stock is "No stock data"
+  (P11).
+
+**Next, in order:** deploy → check the first scheduled run → one backfill pass (30 days of
+keyword detail, Sereko 09-27 city day, Brik Oven 09-14 / 09-17 ad days) → P41 step 3
+(drop the old columns and the fallback, once everything runs the new code).
+
+**Left as is, on purpose:** P24 (settings columns on `zepto_ad_campaign_daily` — Display
+campaigns still need them), the brand-level keyword table (covers campaign kinds the
+detail does not), P4, P49.

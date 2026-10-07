@@ -28,7 +28,7 @@ self-healing; the second needs someone to look. Before this module both arrived 
 
 ### `NoDataYet` — not an auth error, and not a failure
 
-`scraper/platforms/zepto/dashboard_data/seller/scraper.py:299`
+`scraper/platforms/zepto/dashboard_data/seller/scraper.py`
 
 ```python
 class NoDataYet(RuntimeError):
@@ -49,9 +49,11 @@ point in `metrics` is null.
 Reading `data["headers"]` blind raised a bare `KeyError('headers')`, which surfaced as
 `Scrape failed: 'headers'` — no indication that the only problem was asking too early.
 
-**Report this as "try later", not as a broken scrape.** The CLI defaults `--to` to
-yesterday precisely to avoid it; this path is only reached when that default is
-overridden.
+**It is "try later", not a broken scrape.** The sales section drops the unready newest
+day, asks again for the rest of the window, and records the day as *not ready* — not as a
+failure (P45; it used to throw the whole 8-day window away and fail the run). The next
+run's window covers that day. If nothing in the window is ready yet, the section
+completes empty.
 
 ---
 
@@ -63,11 +65,17 @@ runner. The exit code is the entire vocabulary.
 | Code | Meaning | Runner records |
 |---|---|---|
 | `0` | success | `status='success'` |
-| `1` | anything else | `status='failed'` |
+| `1` | a section lost fetches (after the re-check, §4) or failed | `status='failed'` |
 | **`3`** | `AUTH_EXPIRED_EXIT_CODE` | **`jobs.error='auth_expired'`** |
 
 `cli/main.py` catches `AuthError` and exits 3. That is what makes auth failures
-filterable in Cloud Logging instead of hiding among anonymous `exit_1`s.
+filterable in Cloud Logging instead of hiding among anonymous `exit_1`s. An expired session
+in ANY section (PO included, since P46) stops the run — later sections cannot work either.
+
+Each section returns a `SectionResult`, and that one object decides the exit code, the
+section's closing log line and its `scrape_jobs` row: success, or **failed** with
+`partial: N fetch(es) lost — …` and the rows that did land (P35 — rows used to say success
+while the job exited 1).
 
 > ⚠️ **Job failures must log at ERROR or the alert never fires.** The Cloud Monitoring
 > policy matches `severity>=ERROR`; failures used to log at WARNING and were invisible.
@@ -117,22 +125,35 @@ of ~1 GB for the whole run.
 
 ---
 
-## 4. What is never retried, and why
+## 4. Lost fetches and the re-check
 
-```python
-await client.request(..., retry_writes=False)
-```
+A fetch that still fails after its own retries (§7) is **not** dropped and not fatal on
+the spot: the section queues it as *lost* and carries on with the rest. Once the section's
+first pass is done it waits `RECHECK_WAIT_S` (20 s) and replays every lost fetch once.
+Whatever still fails goes on `SectionResult.lost`, the section saves everything that did
+come back, and the run exits 1 so the alert fires.
 
-**Every** Zepto scrape call passes this. A `401` is safe to replay — it was rejected
-*before* processing, so nothing landed. A **timeout is not**: the call may well have
-applied and we simply never heard the answer. Retrying that blindly is how a retry
-becomes a second unintended write.
+What counts as one fetch: a sales day's product list, one city on one day, one ad day's
+campaign list, one analytics view, one campaign's keyword detail, one PO's line items
+(P15 — a failed PO used to be skipped with a warning, indistinguishable from a PO with no
+lines), one catalogue campaign detail.
 
-Timeouts are therefore never retried in the client at all. The caller must re-read and
-compare.
+Two special cases in the ads section:
 
-The scrapes are read-only, so `retry_writes=False` is about **intent**, not necessity —
-it keeps the flag honest if any of these paths ever gains a write.
+- **Three auth failures in a row = the session is gone.** The section stops, saves what
+  it already fetched, and the run exits 3 — carrying on used to burn ~150 requests to
+  save nothing.
+- **A blank ad day** (every metric "-") is retried once after 6 s, then `blank_ads_day`
+  decides: yesterday → *not ready*; an older day we hold spend for → keep the stored rows;
+  otherwise → save genuine zeros (a day every campaign was paused).
+
+### What is never retried
+
+A **timeout**, on any call. The call may have landed and we simply never heard; replaying
+it blindly is how a retry becomes a second unintended write. The client resends only what
+was refused **unread** — a 401, a WAF challenge, Zepto's own rate limit — so a resent write
+cannot apply twice. (`retry_writes=` is still accepted and changes nothing since
+2026-09-21.)
 
 ---
 
@@ -169,7 +190,8 @@ Reset by hand with `cli auth reset`.
 | `429` (empty body) | **rate limiting** | **missing `waf-enabled: false` header** | `_remint` |
 | `429` JSON `{"error":"rate limit exceeded"}` | rate limiting | **real** rate limiting, Zepto's own | wait 5/15/30 s, same token |
 | `404` bare `text/plain` | wrong URL | missing `x-proxy-target: brand-analytics` | not automatic — fix the call |
-| `500` on `/vendor/*` | our bug | Zepto's upstream exceeded its own gateway timeout | `_post_5xx_retry` |
+| `500` on `/vendor/*` | our bug | Zepto's upstream exceeded its own gateway timeout | `_post_5xx_retry` (5/15/45 s) |
+| `500` on `/ads-bff/*` | our bug | same gateway behaviour | `_ads_request` (3/8/20 s) |
 | `200` + `{"data": null}` | empty error | genuinely **no rows** for that filter | `or {}` — returns empty |
 
 ### The 429 that cost an afternoon
@@ -192,8 +214,8 @@ out, and the waits are counted on the section's closing line.
 
 Verified 2026-08-31: `grn/filter` for 30–31 Aug returned HTTP 200 with
 `{"success":true,"data":null}` — a filter window matching nothing, not an error.
-`_get_with_auth_fallback` returns `{}` so callers read an empty list instead of raising
-`AttributeError` on `None`.
+`_get` returns `{}` so callers read an empty list instead of raising `AttributeError` on
+`None`.
 
 ---
 
@@ -211,8 +233,9 @@ failure arrives as a server error, not a client timeout.
 _PO_RETRY_WAITS_S = (5, 15, 45)
 ```
 
-**Only 5xx is retried.** A 4xx will not fix itself, and auth errors already have their
-own recovery one layer down.
+**Only 5xx is retried** (`scraper/utils/retry.retry_call`, one helper for every Zepto
+endpoint family, each with its own measured waits). A 4xx will not fix itself, and auth
+errors already have their own recovery one layer down.
 
 The waits are deliberately long because the endpoint does not fail in isolated blips:
 four consecutive attempts each timed out at ~23s and the whole 103s stretch failed,
@@ -222,9 +245,9 @@ it in testing.
 
 ### What a total PO failure actually costs
 
-One dataset for one run. `_scrape_zepto_po`'s `_try` guard catches the exception so a
-flaky endpoint cannot kill the whole run, and the upsert writes nothing when the list
-is empty — **previously stored rows survive**.
+One dataset for one run. `run_po`'s `_try` guard catches the exception so a flaky
+endpoint cannot cost the other two, the endpoint is recorded as lost (the run exits 1),
+and the upsert writes nothing for an empty list — **previously stored rows survive**.
 
 That guard was right but incomplete before the retry existed: a single 500 wrote
 **zero** ASNs while the API held 76, silently except for one warning line.
@@ -242,8 +265,11 @@ All three PO endpoints share the shape `{list_key: [...], total, hasNext}`.
 `PO_MAX_PAGES` exists so a misreported `hasNext` cannot spin forever. A 0.4s pause
 sits between pages.
 
-**A window wide enough to exceed 2,000 rows will silently truncate.** Nothing warns.
-Split the window instead.
+**A window wide enough to exceed 2,000 rows will silently truncate.** Nothing warns
+(P4 — left as is; the 30-day default is far below it). Split the window instead.
+
+Product performance pages too (50 a page, P47): a day with more than 50 selling SKUs used
+to be cut off silently.
 
 ---
 
@@ -272,11 +298,13 @@ The VM sets `Asia/Kolkata` at provision time for the same class of reason.
 | duplicate keys in one batch | collapsed before insert — `ON CONFLICT` cannot update the same row twice per statement |
 | re-running a window | overwrites in place; **never** duplicates |
 | null over a real snapshot | prevented by `_KEEP_IF_NULL` COALESCE — see [database.md](database.md) |
-| chunk fails mid-run | **that chunk rolls back; earlier chunks are already committed** |
+| a write fails mid-save | **that section's save rolls back whole** — each `save_*` is one transaction, one commit |
 
-That last row is the honest caveat: a Zepto scrape is **not** all-or-nothing. A failure
-partway through can leave a partial window written. Re-running is safe and is the fix —
-idempotency is what makes that true.
+The honest caveat is one level up: a Zepto **run** is not all-or-nothing. Sections save
+independently (sales can land while ads fails), and a section saves what it fetched even
+when some fetches were lost. Re-running the window is safe and is the fix — idempotency is
+what makes that true, and the daily re-scrape windows (8 / 30 / 3 days) do it
+automatically.
 
 > This differs from the **public** scrape path, which stages to SQLite and pushes in
 > one transaction (see [docs/staging.md](../../../docs/staging.md)). The private path
@@ -307,14 +335,16 @@ Nothing below recovers on its own.
 cli jobs list                      # status, duration, peak RAM, error
 cli jobs logs <prefix>             # that run's log
 cli jobs logs <prefix> -f          # live tail
-LOG_LEVEL=DEBUG cli scrape zepto-sales -t <tenant> --no-save
+LOG_LEVEL=DEBUG cli scrape zepto -t <tenant> --sales --no-save
 ```
 
 `--no-save` is the first thing to run on a new box or after a code change — it exercises
 auth, the WAF mint and every fetch while writing nothing.
 
-At `DEBUG`, `_get_with_auth_fallback` logs the status of any call ≥400 with its label,
-which is usually enough to tell which of the three endpoint families misfired.
+At `DEBUG`, `_get` / `_post` log the status of any call ≥400 with its label, which is
+usually enough to tell which of the three endpoint families misfired. At the default
+level a run is one line per step, tagged `zepto·<tenant>·<section>`, with each section's
+recoveries (WAF renewals, re-logins, rate-limit waits) counted on its closing line.
 
 ---
 
@@ -323,8 +353,11 @@ which is usually enough to tell which of the three endpoint families misfired.
 Named honestly rather than left to be discovered:
 
 - **Multi-brand.** `discover_ids` takes `brandCategoryList[0]`. An account with several
-  brands silently scrapes only the first. Untested.
+  brands silently scrapes only the first. Parked: clients are single-brand.
 - **Pagination overflow.** Past `PO_MAX_PAGES × PO_PAGE_SIZE` = 2,000 rows, data is
-  dropped without a warning.
-- **Partial-window writes.** See §10 — no staging layer on the private path.
-- **No automated tests.** Everything here was verified live, by hand.
+  dropped without a warning (P4).
+- **Partial runs.** See §10 — sections save independently; no staging layer on the
+  private path.
+
+Tests now exist (`seller/tests/`: parser, run, client — plus the campaign manager's Zepto
+tests); live behaviour is still confirmed with `--no-save` runs.

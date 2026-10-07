@@ -114,13 +114,15 @@ client's own dashboard out. The old `zepto-sales` / `zepto-ads` / `zepto-po` com
 were removed on 2026-10-05 — the section flags cover them.
 
 The work lives in `scraper/platforms/zepto/dashboard_data/seller/run.py`; the command
-prints each section's report and sets the exit code: **0** everything landed · **1** a
+only sets the flags and the exit code — the run logs one line per step, tagged
+`zepto·<tenant>·<section>` (no spinners, no tables; `LOG_LEVEL=DEBUG` for per-request
+detail). Exit code: **0** everything landed · **1** a
 section failed or lost fetches (what came back is still saved; re-run the same window)
 · **3** the login is gone. A section that fails does not stop the others.
 
 | Section | Writes | Window |
 |---|---|---|
-| sales | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily` | 8 days to yesterday |
+| sales | `zepto_seller_sales_summary`, `zepto_seller_sales`, `zepto_seller_product_city_daily`, `zepto_soh` (stock + growth as of the scrape, one row per product per scrape day) | 8 days to yesterday |
 | po | `zepto_po`, `zepto_grn`, `zepto_asn`, `zepto_po_items` | `--po-days-back` through **today** |
 | ads | `zepto_ad_campaign_daily`, `zepto_ad_keyword_daily`, `zepto_ad_product_daily`, `zepto_ad_breakdown_daily`, `zepto_ad_campaign_detail` (keyword performance per campaign per day — one call per keyword campaign that had impressions that day) + the campaign catalogue (`zepto_ad_campaigns`, `zepto_ad_campaign_keywords`) | 3 days to yesterday |
 
@@ -151,9 +153,10 @@ stopping at yesterday would miss exactly the ones that most need acting on.
 
 ### Failures
 
-Every fetch that fails is retried once ~20 s later. Whatever still fails is named in
-the report, the section's `scrape_jobs` row is marked **failed** (with the rows that
-did land) and the command exits 1, so the runner alerts.
+Every fetch that fails is retried once ~20 s later — a sales day, a city, an ad view, a
+campaign's keyword detail, a PO's line items. Whatever still fails is named in the log
+(one WARNING), the section's `scrape_jobs` row is marked **failed** (`partial: N fetch(es)
+lost — …`, with the rows that did land) and the command exits 1, so the runner alerts.
 
 ---
 
@@ -180,7 +183,8 @@ cli jobs logs <job-id-prefix> -f
 
 Scheduled daily per tenant (2026-10-05): Brik Oven `30 10 * * *`, Sereko `45 10 * * *`,
 `catchup=False` — fine, because a missed run is healed by the next one's 3-day ads /
-8-day sales windows (a day missed 3 runs running needs a `--from` re-run). Cron is five fields, **always Asia/Kolkata**.
+8-day sales windows (a day missed 3 runs running needs a `--from` re-run). Cron is five
+fields, **always Asia/Kolkata**.
 
 There is no scheduled Zepto login: the morning `auth.refresh` jobs cannot refresh Zepto
 (it reports `not_refreshable`), and the scrape logs itself in when it starts.
@@ -204,7 +208,8 @@ Not part of the CLI, kept in `backend/scripts/`:
 |---|---|---|
 | `No zepto session for tenant …` | never logged in | `cli auth login zepto -t <tenant>` |
 | exit code **3** | session dead and could not re-login | `cli auth probe zepto`, then `login` |
-| `429` on an ads call | missing `waf-enabled: false`, **not** rate limiting | check headers before theorising |
+| `429` on an ads call, empty body | missing `waf-enabled: false`, **not** rate limiting | check headers before theorising |
+| `429` `{"error":"rate limit exceeded"}` | Zepto's real rate limit | automatic: waited out (5/15/30 s), counted as "rate-limit wait(s)" |
 | bare `text/plain` 404 | missing `x-proxy-target` on a `/brand-analytics-web/*` call | — |
 | `Zepto session carries no brandIds` | account may lack ads access | re-login, check `auth status` |
 | `Zepto session has no jwt` | legacy row from the retired `zepto_seller` path | `cli auth login zepto` |

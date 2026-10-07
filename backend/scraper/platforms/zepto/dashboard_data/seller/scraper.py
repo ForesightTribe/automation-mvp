@@ -189,8 +189,8 @@ async def fetch_pos(
     client: dict, date_from: str, date_to: str
 ) -> list[dict]:
     """Purchase-order headers for the window. Line items are NOT included —
-    the response carries `itemsCount` only; the lines sit behind a per-PO
-    detail call that has not been captured."""
+    the response carries `itemsCount` only; the lines come from one call per PO
+    (`fetch_po_items`)."""
     start, end = _po_window(date_from, date_to)
     return await _fetch_po_paged(
         client, ep.PO_FILTER_API,
