@@ -717,7 +717,7 @@ _MAX_PAGES = 30
 
 
 async def get_campaigns(client, days: int = 90) -> list[dict]:
-    """Every campaign on the account (all tabs — `categoryType` is ignored), all pages.
+    """Every campaign on the account — all tabs, PLA and every Display kind — all pages.
 
     ⚠️ The list is DATE-SCOPED. A narrow window silently omits campaigns rather than
     erroring, so anything reading this to decide "what exists" must pass a generous
@@ -732,11 +732,14 @@ async def get_campaigns(client, days: int = 90) -> list[dict]:
     by_id: dict = {}
     total = None
     for page in range(1, _MAX_PAGES + 1):
+        # ⚠️ NO `campaign_category`: unlike `categoryType` (ignored), it FILTERS — with
+        # `sponsored_products` the list held only PLA + swap-and-save, and every other Display
+        # campaign (PCA / PDA / BIS) never reached the catalogue. Probed read-only on Sereko,
+        # 2026-10-07: with it 36 campaigns, without it 57 (= the daily scrape's list).
         params = {
             "selectedBrand": client.brand_id,
             "brand_id": client.brand_id,
             "categoryType": "sponsored_products",
-            "campaign_category": "sponsored_products",
             "from_date": str(today - timedelta(days=days)),
             "to_date": str(today),
             "page": str(page),

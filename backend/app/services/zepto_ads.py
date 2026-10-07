@@ -213,8 +213,9 @@ async def campaigns(
     the table but still not returned — nothing on the list shows them.
 
     `status` and `daily_budget` come from the campaign CATALOGUE (`zepto_ad_campaigns`)
-    where it holds the campaign, and from the latest daily row otherwise (Display
-    campaigns, which the catalogue never holds). The daily row's settings are stamped at
+    where it holds the campaign, and from the latest daily row otherwise (a campaign not
+    catalogued yet — until 2026-10-07 that was most Display campaigns, whose list call was
+    filtered to the sponsored-products tab). The daily row's settings are stamped at
     scrape time the next morning (ZC-P24), so after a Start/Stop or a Refresh they lag by up
     to a day; the catalogue is what Refresh and every write-back update. A catalogued
     campaign with no metrics in the window is listed too, at zero — as Blinkit's are — so a
@@ -224,8 +225,9 @@ async def campaigns(
     the latest catalogue write no longer returned — Blinkit's `recent_only` rule, via
     `repo.catalog_cutoff`. Zepto's list keeps ENDED campaigns, so this is rare: a campaign
     deleted on Zepto, or one left behind on an account the client no longer uses. A campaign
-    the catalogue never holds (Display) is kept: it is only listed when it has metrics in
-    the window, and the pickers grey it out as not automatable anyway.
+    the catalogue does not hold is kept: it is only listed when it has metrics in the
+    window. Display campaigns are listed either way, and the pickers grey them out as not
+    automatable.
     """
     rows = (
         await session.execute(

@@ -154,6 +154,24 @@ def test_the_campaign_list_follows_every_page():
     assert sorted(c["campaign_id"] for c in got) == list(range(21))
 
 
+def test_the_campaign_list_does_not_filter_by_campaign_category():
+    """`campaign_category` FILTERS the list (unlike `categoryType`, which is ignored): with
+    `sponsored_products` Sereko's catalogue got 36 of 57 campaigns and no Display PCA / PDA /
+    BIS at all (probed read-only 2026-10-07). It must not be sent."""
+    sent = []
+
+    class _C:
+        brand_id = "b"
+
+        async def get_json(self, path, params=None, **_):
+            sent.append(dict(params))
+            return {"data": {"campaigns": [{"campaign_id": 1}], "total_count": 1}}
+
+    asyncio.run(S.get_campaigns(_C()))
+    assert sent and all("campaign_category" not in p for p in sent)
+    assert sent[0]["categoryType"] == "sponsored_products", "the ignored param is harmless"
+
+
 def test_the_campaign_list_stops_when_paging_is_ignored():
     """`has_next` has been seen staying true forever; a page with no new ids ends it."""
     calls = {"n": 0}

@@ -315,7 +315,7 @@ UNION ALL SELECT 'blinkit seller (old)',  count(*), max(date)::text       FROM b
 UNION ALL SELECT 'blinkit stock (old)',   count(*), max(date)::text       FROM blinkit_soh                       WHERE tenant_id = '<uuid>'
 UNION ALL SELECT 'blinkit scorecard (old)', count(*), max(scraped_at)::text FROM blinkit_scorecard_weekly        WHERE tenant_id = '<uuid>'
 UNION ALL SELECT 'blinkit seller-hub (new)', count(*), max(order_date)::text FROM blinkit_seller_hub_sales_order_ro WHERE tenant_id = '<uuid>'
-UNION ALL SELECT 'zepto sales',           count(*), max(date)::text       FROM zepto_seller_sales_daily          WHERE tenant_id = '<uuid>'
+UNION ALL SELECT 'zepto sales',           count(*), max(date)::text       FROM zepto_seller_sales_summary        WHERE tenant_id = '<uuid>'
 UNION ALL SELECT 'zepto POs',             count(*), max(scraped_at)::text FROM zepto_po                          WHERE tenant_id = '<uuid>'
 UNION ALL SELECT 'zepto ads',             count(*), max(date)::text       FROM zepto_ad_campaign_daily           WHERE tenant_id = '<uuid>'
 UNION ALL SELECT 'public keyword: ' || mp_slug, count(*), max(scraped_at)::text FROM search_snapshots WHERE tenant_id = '<uuid>' GROUP BY mp_slug

@@ -643,13 +643,16 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
 
             async def _keyword_detail(day: str) -> int:
                 """Keyword performance PER CAMPAIGN for one day (P38): one call for each
-                keyword-bid PLA campaign that had impressions that day — a campaign with none
-                has no keyword rows, and Zepto answers one campaign-day per call. Each call is
-                its own _attempt, so one lost campaign does not cost the others."""
-                active = [r for r in _day_campaigns(day).values()
-                          if r["impressions"]
-                          and (r.get("campaign_type") or "").upper() == "PLA"
-                          and (r.get("bid_targeting_type") or "").upper() == "KEYWORD"]
+                campaign that had impressions that day — a campaign with none has no keyword
+                rows, and Zepto answers one campaign-day per call. Each call is its own
+                _attempt, so one lost campaign does not cost the others.
+
+                EVERY kind of campaign, not only keyword-bid PLA (2026-10-07): the report
+                answers for subcategory-targeted PLA and sponsored-brands Display too (probed
+                read-only on Sereko — 101 and 55 keyword rows, the Display one equal to its
+                stored spend to the rupee). Asking only keyword PLA left ~half of Sereko's
+                keyword spend outside this table."""
+                active = [r for r in _day_campaigns(day).values() if r["impressions"]]
                 for r in active:
                     cid = r["campaign_id"]
                     cat = r.get("campaign_category") or categories[0]
@@ -684,7 +687,7 @@ async def run_ads(client, tenant_id: str, date_from: str | None, date_to: str | 
                 day_rows = _day_campaigns(day).values()
                 logger.info(f"{_md(day)} · {len(day_rows)} campaigns · "
                             f"{rupees(sum(r['spend'] for r in day_rows))} spend · "
-                            f"keywords for {detail_n} active keyword campaign(s)")
+                            f"keywords for {detail_n} active campaign(s)")
 
             # The campaign CATALOGUE — every campaign's current configuration, for the
             # campaign manager. Once per run: it is "now", not a series.

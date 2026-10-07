@@ -1482,10 +1482,11 @@ class _Catalog:
     # in that column means it runs everywhere. The cities themselves are `cities`, a list of
     # {id, name} in the MARKETPLACE's spelling (ZC-C4 resolves them to `cities.id`).
     city_mode: tuple[str, str] = ("region_type", "CITY")
-    # A second place a campaign's TYPE is recorded, for campaigns the catalogue never holds:
-    # (model, campaign-type column). Zepto's catalogue is PLA-only (its campaign list returns
-    # nothing else), so its Display campaigns exist only in the daily metrics table — and
-    # without this they read as "uncatalogued, allowed" (found 2026-09-24).
+    # A second place a campaign's TYPE is recorded, for campaigns the catalogue does not hold:
+    # (model, campaign-type column). Zepto's catalogue missed most Display campaigns until
+    # 2026-10-07 (its list call filtered on `campaign_category`), so they existed only in the
+    # daily metrics table — and without this they read as "uncatalogued, allowed" (found
+    # 2026-09-24). Still the safety net for a campaign the catalogue has not seen yet.
     type_fallback: tuple[object, str] | None = None
 
 

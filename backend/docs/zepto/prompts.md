@@ -365,7 +365,7 @@ Before running:
   day per call, so rows land at day grain whatever the window.
 - Sales: `--all-cities` sweeps every city on every day (one call per city per day).
 - Ads: leave --category at `all`. The analytics tabs return DISJOINT data. Each day
-  also fetches keyword detail per active keyword campaign — ~2 min per ad day.
+  also fetches keyword detail for every campaign with impressions — ~2 min per ad day.
 - PO: keys have no date, so re-scraping updates a PO in place. There is no history
   of how a PO evolved. Windows over ~2,000 rows truncate silently at PO_MAX_PAGES.
 - Every login evicts whoever is on the client's dashboard. Do not loop logins.

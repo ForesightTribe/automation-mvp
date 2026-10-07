@@ -150,7 +150,7 @@ cli scrape zepto -t <tenant> [--sales] [--po] [--ads]      (none = all three)
      │              stock readings (zepto_soh)
      ├─ run_po      po / grn / asn filters (30 days back, through today) · lines per PO
      ├─ run_ads     per day (3 days): campaign list + 6 analytics views per category +
-     │              keyword detail per active keyword campaign · then the catalogue
+     │              keyword detail per campaign with impressions · then the catalogue
      │
      │   each section:  fetch_*  →  parse_*  →  re-check what was lost  →  save_*
      │                  and returns a SectionResult (written · lost · recovered · not_ready)

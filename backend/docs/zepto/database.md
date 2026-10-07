@@ -176,13 +176,15 @@ _KEEP_IF_NULL = {
 }
 ```
 
-### 4. The brand-level keyword table and the per-campaign one hold different scopes
+### 4. Two keyword tables — the brand-level one is on its way out
 
 `zepto_ad_keyword_daily` (brand grain) covers keywords from **every** kind of campaign.
-`zepto_ad_campaign_detail` (per campaign) is fetched only for PLA campaigns that bid on
-keywords. For Sereko that is about half its keyword spend (2026-10-07, last 30 days:
-keyword PLA ₹1.94 L, subcategory-targeted PLA ₹1.01 L, sponsored-brands Display ₹0.79 L).
-They are not interchangeable, and the brand table stays until the detail covers the rest.
+`zepto_ad_campaign_detail` (per campaign) was at first fetched only for keyword-bid PLA
+campaigns — about half of Sereko's keyword spend (last 30 days: keyword PLA ₹1.94 L,
+subcategory-targeted PLA ₹1.01 L, sponsored-brands Display ₹0.79 L). Since 2026-10-07 it is
+fetched for **every campaign with impressions** (the report answers for all three kinds —
+probed read-only on Sereko). Once the detail is backfilled and its daily sums match the
+brand table, the brand table can retire. Until then: never add the two together.
 
 ---
 
@@ -265,8 +267,9 @@ is only populated by the Analytics view.
 Keyword performance **per campaign**, from the campaign detail page's own report
 (`POST …/brands/campaigns/analytics/metrics/tabular` with `campaign_id` +
 `view=keyword_table`). One call per campaign per day — a multi-day window comes back as
-one total and a per-day breakdown is refused. Asked for each keyword-bidding PLA campaign
-with impressions that day. A missing row means "no activity", never "not scraped".
+one total and a per-day breakdown is refused. Asked for every campaign with impressions
+that day — keyword-bid PLA, subcategory-targeted PLA and Display alike (the report ignores
+the tab parameter). A missing row means "no activity", never "not scraped".
 Named after Blinkit's `blinkit_ad_campaign_detail`, whose rows are one window total where
 these are per day. A campaign-day's rows sum to its `zepto_ad_campaign_daily` row.
 
@@ -297,9 +300,12 @@ campaign manager's Refresh; detail fields (city targeting, products) only by the
 only for PLA campaigns, and a list-only refresh never blanks them. Landed campaign-manager
 writes patch it in place.
 
-In practice it holds few **Display** campaigns (2026-10-07: 0 of Brik Oven's 6, 4 of
-Sereko's 25), so the Ads campaigns list still falls back to the daily row's status and
-budget for those.
+Until 2026-10-07 it missed most **Display** campaigns: the list call sent
+`campaign_category=sponsored_products`, which — unlike `categoryType` — filters, so only PLA
+and swap-and-save campaigns came back (Sereko: 36 of 57; probed read-only). The parameter is
+gone; the next scrape after deploy fills them in as list-only rows (Display campaigns have no
+PLA detail). Until then the Ads campaigns list falls back to the daily row's status and
+budget for them.
 
 #### `zepto_ad_campaign_keywords` — campaign × keyword × match type
 What each campaign bids on, with the live bid and Zepto's published minimum

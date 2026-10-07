@@ -136,10 +136,15 @@ def test_blank_day_verdicts():
 
 
 def _campaign(cid: int, *, blank: bool) -> dict:
-    # Campaign 1 bids on keywords; campaign 2 is auto-targeted (no keyword detail to read).
+    # Campaign 1 is a keyword-bid PLA; campaign 2 a sponsored-brands Display (PCA) — both get
+    # keyword detail when they had impressions (the report answers for every kind, 2026-10-07).
     v = "-" if blank else "100"
-    return {"campaign_id": cid, "brand_id": "brand-1", "campaign_name": f"C{cid}",
-            "campaign_type": "PLA", "bid_targeting_type": "KEYWORD" if cid == 1 else "AUTO",
+    if cid == 1:
+        kind = {"campaign_type": "PLA", "bid_targeting_type": "KEYWORD"}
+    else:
+        kind = {"campaign_type": "Display", "campaign_sub_type": "PCA",
+                "bid_targeting_type": "NOT_SET"}
+    return {"campaign_id": cid, "brand_id": "brand-1", "campaign_name": f"C{cid}", **kind,
             "spend": v, "impressions": v, "clicks": v}
 
 
@@ -240,20 +245,37 @@ def test_ads_auth_error_saves_what_came_back_then_propagates():
 
 # ── P38 · keyword performance per campaign ───────────────────────────────────
 
-def test_keyword_detail_is_read_for_active_keyword_campaigns_only():
+def test_keyword_detail_is_read_for_every_campaign_with_impressions():
+    """Keyword PLA AND Display alike (2026-10-07: asking only keyword PLA left ~half of
+    Sereko's keyword spend out); never on a day with no activity."""
     zero_day, d1, d2 = _days(3, 2, 1)
     saved, tab_calls, detail_calls = {}, [], []
     fakes = _ads_fakes({zero_day}, {}, saved, tab_calls, detail_calls=detail_calls)
     with _patched(**fakes):
         res = _go(zr.run_ads(object(), TENANT, zero_day, d2, "all", True))
     assert res.ok
-    # campaign 1 (keyword-bid, active) on each day with activity; never campaign 2 (auto),
-    # never the zero day (no impressions anywhere).
-    assert detail_calls == [(1, d1, "sponsored_products"), (1, d2, "sponsored_products")]
+    assert [(cid, day) for cid, day, _cat in detail_calls] == [(1, d1), (2, d1), (1, d2), (2, d2)]
     detail = saved["detail"]
-    assert [(r["campaign_id"], r["date"].isoformat(), r["keyword"]) for r in detail] == [
-        (1, d1, "sour cream"), (1, d2, "sour cream")]
+    assert [(r["campaign_id"], r["date"].isoformat()) for r in detail] == [
+        (1, d1), (2, d1), (1, d2), (2, d2)]
     assert detail[0]["spend"] == 50 and detail[0]["same_skus"] == 1
+
+
+def test_keyword_detail_skips_a_campaign_without_impressions():
+    d1 = _days(2)[0]
+    saved, tab_calls, detail_calls = {}, [], []
+    fakes = _ads_fakes(set(), {}, saved, tab_calls, detail_calls=detail_calls)
+    real = fakes["zs__fetch_ad_campaigns"]
+
+    async def campaign_2_idle(*a):
+        rows = await real(*a)
+        rows[1] = {**rows[1], "spend": "0", "impressions": "0", "clicks": "0"}
+        return rows
+
+    fakes["zs__fetch_ad_campaigns"] = campaign_2_idle
+    with _patched(**fakes):
+        res = _go(zr.run_ads(object(), TENANT, d1, d1, "all", True))
+    assert res.ok and [cid for cid, _d, _c in detail_calls] == [1]
 
 
 def test_a_lost_keyword_detail_fetch_is_rechecked():
@@ -265,7 +287,8 @@ def test_a_lost_keyword_detail_fetch_is_rechecked():
         res = _go(zr.run_ads(object(), TENANT, d1, d1, "all", True))
     # the newest day blank-checks first; d1 is yesterday but has activity, so it is read
     assert res.ok and res.recovered == [f"{d1[5:]} campaign 1 keywords"]
-    assert len(saved["detail"]) == 1
+    assert sorted(r["campaign_id"] for r in saved["detail"]) == [1, 2], \
+        "the recovered campaign's rows land beside the one that never failed"
 
 
 # ── sales ────────────────────────────────────────────────────────────────────
