@@ -1,4 +1,4 @@
-"""Live calls against the Supply Portal's three confirmed endpoints (see
+"""Supply Portal fetches — HTTP only (see
 `endpoints.py`'s module docstring for the captured request/response shapes).
 
 Plain httpx, no browser needed per call (session.py handles minting the
@@ -8,19 +8,26 @@ documented guarantee, so a short backoff-and-retry still guards every call
 here rather than assuming it can never happen.
 """
 import asyncio
+import datetime as dt
 
 import httpx
 
 from app.utils.logger import logger
+from scraper.platforms.instamart.dashboard_data.common import epoch_s
 from scraper.platforms.instamart.dashboard_data.supply import endpoints as ep
+from scraper.platforms.instamart.dashboard_data.supply.parser import parse_purchase_orders
 
 RETRY_WAITS_S = (5, 15, 30)
+# The bulk export's "Last 30 Days" — what the portal's own button sends.
+EXPORT_DAYS = 30
+# Captured requests used size=10 (the portal UI's page); more per call cuts
+# round trips — 100 works, the true upper bound is unverified.
 PAGE_SIZE = 100
 # Verified live 2026-09-25: 5 CONCURRENT listPurchaseOrderLines calls got an
 # immediate raw-HTML 403 on every one of them (an edge/WAF burst block, not
 # an app-level rejection -- searchPurchaseOrder took zero retries across 22
-# pages moments earlier). Sequential with a floor between calls avoided it.
-LINE_ITEM_CONCURRENCY = 1
+# pages moments earlier). So line items are fetched one at a time, with a
+# floor between calls.
 LINE_ITEM_GAP_S = 0.3
 
 # ── searchPurchaseOrder pagination is NON-DETERMINISTIC (verified live
@@ -63,7 +70,7 @@ async def _post(client: httpx.AsyncClient, token: str, path: str, body: dict) ->
             last = f"transport error: {e}"
             if attempt <= len(RETRY_WAITS_S):
                 wait = RETRY_WAITS_S[attempt - 1]
-                logger.warning(f"{path} -> {last}; waiting {wait}s and retrying ({attempt}/{len(RETRY_WAITS_S)})")
+                logger.debug(f"{path} -> {last}; waiting {wait}s and retrying ({attempt}/{len(RETRY_WAITS_S)})")
                 await asyncio.sleep(wait)
                 continue
             break
@@ -72,22 +79,11 @@ async def _post(client: httpx.AsyncClient, token: str, path: str, body: dict) ->
         last = f"{r.status_code}: {r.text[:200]}"
         if r.status_code in (403, 429) and attempt <= len(RETRY_WAITS_S):
             wait = RETRY_WAITS_S[attempt - 1]
-            logger.warning(f"{path} -> {r.status_code}; waiting {wait}s and retrying ({attempt}/{len(RETRY_WAITS_S)})")
+            logger.debug(f"{path} -> {r.status_code}; waiting {wait}s and retrying ({attempt}/{len(RETRY_WAITS_S)})")
             await asyncio.sleep(wait)
             continue
         break
     raise SupplyFetchError(f"{path} returned {last}")
-
-
-async def fetch_purchase_metrics(client: httpx.AsyncClient, token: str, brand_company_id: str,
-                                  *, start_epoch_s: int, end_epoch_s: int) -> dict:
-    """Account-wide PO KPIs (open PO count, fill rate, GRN count, ...) — not
-    parsed into a table yet, kept for a future KPI-strip addition."""
-    return await _post(client, token, ep.PURCHASE_METRICS, {
-        "mask": "po_metrics",
-        "filters": {"supplier_id": "", "brand_company_id": brand_company_id},
-        "interval": {"start_time": start_epoch_s, "end_time": end_epoch_s},
-    })
 
 
 async def _sweep_purchase_orders(client: httpx.AsyncClient, token: str,
@@ -96,8 +92,6 @@ async def _sweep_purchase_orders(client: httpx.AsyncClient, token: str,
     """One full page-by-page sweep of searchPurchaseOrder with a given sort
     hint. Returns (rows, total). The rows may contain duplicates and be an
     incomplete subset — see SORT_ROTATION's note; the caller unions sweeps."""
-    from scraper.platforms.instamart.dashboard_data.supply.parser import parse_purchase_orders
-
     rows: list[dict] = []
     total = 0
     page_no = 1
@@ -147,7 +141,7 @@ async def fetch_all_purchase_orders(client: httpx.AsyncClient, token: str,
         for po in rows:
             collected[po["purchase_order_id"]] = po   # last write wins = freshest copy
         added = len(collected) - before
-        logger.info(
+        logger.debug(
             f"Instamart PO sweep {sweep_no} (sort={sort_key or 'none'}): "
             f"{len(rows)} row(s) -> {len(collected)}/{target} unique (+{added})"
         )
@@ -168,14 +162,24 @@ async def fetch_all_purchase_orders(client: httpx.AsyncClient, token: str,
     return list(collected.values())
 
 
+def export_release_date_ms(today: dt.date | None = None) -> int:
+    """IST midnight EXPORT_DAYS days ago, in epoch ms — the portal's own "Last 30
+    Days" value. Captured on 2026-09-25 the button sent 1787682600000, which is
+    exactly 2026-08-26 00:00 IST: 30 days earlier."""
+    return epoch_s((today or dt.date.today()) - dt.timedelta(days=EXPORT_DAYS)) * 1000
+
+
 async def submit_po_export(client: httpx.AsyncClient, token: str, brand_company_id: str) -> None:
     """Triggers a fresh bulk CSV export ("Bulk Download"), same job the
     portal UI's button submits -- see endpoints.py's docstring. Fire-and-
-    forget: the job runs server-side, poll `fetch_po_export_url` for it."""
+    forget: the job runs server-side, poll `fetch_po_export_url` for it.
+
+    The release-date filter moves with the run (`export_release_date_ms`); it
+    was a fixed 2026-08-26 until 2026-10-06, so the window kept widening."""
     body = {
         "job_definition_name": ep.PO_EXPORT_JOB,
         "filters": {"brand_company_id": brand_company_id,
-                    "order_dates.release_date": 1787682600000},
+                    "order_dates.release_date": export_release_date_ms()},
         "tags": [
             {"key": "order_dates.release_date", "value": "Last 30 Days"},
             {"key": "brand_company_id", "value": brand_company_id},
@@ -204,7 +208,7 @@ async def fetch_po_export_url(client: httpx.AsyncClient, token: str, *,
             return files[0]["file_url"] if files else None
         await asyncio.sleep(poll_gap_s)
         waited += poll_gap_s
-    logger.warning(f"Instamart PO export: job did not complete within {max_wait_s}s, skipping")
+    logger.debug(f"Instamart PO export: job did not complete within {max_wait_s}s")
     return None
 
 
@@ -224,14 +228,13 @@ async def fetch_po_lines(client: httpx.AsyncClient, token: str, purchase_order_i
 async def fetch_all_po_lines(client: httpx.AsyncClient, token: str,
                              purchase_order_ids: list[str]) -> tuple[dict[str, dict], list[str]]:
     """Line items for every given PO — one call per PO, sequential (see
-    LINE_ITEM_CONCURRENCY's note: concurrent calls here trip an edge WAF).
+    LINE_ITEM_GAP_S's note: concurrent calls here trip an edge WAF).
 
     One PO failing after its own retries is isolated rather than aborting
     the whole batch — verified live 2026-09-25 that a single mid-run network
     blip otherwise threw away everything already fetched in a ~2000-call
     sequential loop. Returns (results, failed_ids) so the caller can save
-    what it has and report exactly what's missing, same shape as
-    `_scrape_zepto_po`'s per-endpoint isolation.
+    what it has and report exactly what's missing.
     """
     results: dict[str, dict] = {}
     failed: list[str] = []
@@ -241,8 +244,8 @@ async def fetch_all_po_lines(client: httpx.AsyncClient, token: str,
             results[po_id] = await fetch_po_lines(client, token, po_id)
         except SupplyFetchError as e:
             failed.append(po_id)
-            logger.warning(f"Instamart PO lines: {po_id} failed, skipping: {e}")
+            logger.debug(f"Instamart PO lines: {po_id} failed: {e}")
         if i % 200 == 0 or i == total:
-            logger.info(f"Instamart PO lines: {i}/{total} PO(s) processed ({len(failed)} failed)")
+            logger.debug(f"Instamart PO lines: {i}/{total} PO(s) processed ({len(failed)} failed)")
         await asyncio.sleep(LINE_ITEM_GAP_S)
     return results, failed

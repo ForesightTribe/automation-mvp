@@ -4,7 +4,7 @@ from pydantic import BaseModel
 class InstamartCampaignShare(BaseModel):
     """One campaign's contribution to a product/keyword's total. Empty only
     when no campaign-level data has been scraped yet for that row's date
-    range (see asset_metrics.py)."""
+    range (see instamart/dashboard_data/seller/scraper.py)."""
 
     campaign_id: str
     campaign_name: str | None = None
@@ -40,7 +40,7 @@ class InstamartProductRow(BaseModel):
     offer, and units_sold is always 0 (Instamart's ad data never reports a
     unit count anywhere). `image_link` is resolved from
     `POST /api/v1/products/batch`, a full CDN url — see
-    instamart_product_catalog / asset_metrics.py."""
+    instamart_product_catalog / instamart/dashboard_data/seller/scraper.py."""
 
     product_variant_id: str
     product_name: str | None = None

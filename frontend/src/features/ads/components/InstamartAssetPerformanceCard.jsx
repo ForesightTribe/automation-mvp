@@ -48,7 +48,7 @@ const TYPE_LABEL = { product: "Product", keyword: "Keyword" };
  * verified live to NOT discriminate between types at all after a session
  * re-login — real spend was triple-counted when the (now-removed) by-type
  * data was summed. Unreliable at the API level, so removed rather than
- * shipped on data that can't be trusted — see asset_metrics.py's docstring.
+ * shipped on data that can't be trusted — see the asset-metrics comment in instamart/dashboard_data/seller/scraper.py.
  *
  * `units_sold` is always 0: Instamart's ad data never reports a unit count
  * anywhere (checked both this endpoint and the campaign-level ones).

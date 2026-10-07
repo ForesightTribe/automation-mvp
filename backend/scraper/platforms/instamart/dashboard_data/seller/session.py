@@ -173,7 +173,7 @@ class PortalSession:
                 await self._read_token()
                 healthy = self._token_is_live()
                 if not healthy:
-                    logger.info("Instamart portal: the saved session's token has expired")
+                    logger.debug("Instamart portal: the saved session's token has expired")
             except PortalError:
                 healthy = False
         if not healthy:
@@ -181,7 +181,7 @@ class PortalSession:
             await self._open_context(reuse=False)
             await self._login()
             await self._read_token()
-        logger.info(
+        logger.debug(
             f"Instamart portal ready (session {self._session_id}, "
             f"account {self.account_id})"
         )
@@ -262,7 +262,7 @@ class PortalSession:
             [_ACCESS_KEY, json.dumps(pair[0]), _REFRESH_KEY, json.dumps(pair[1])],
         )
         await self._read_token()
-        logger.info("Instamart portal: token renewed mid-run (no OTP)")
+        logger.debug("Instamart portal: token renewed mid-run (no OTP)")
 
     # -- login ---------------------------------------------------------------
     async def _goto_transport(self) -> None:
@@ -276,7 +276,7 @@ class PortalSession:
         try:
             await self._goto_transport()
         except Exception as e:  # noqa: BLE001
-            logger.warning(f"Instamart portal: navigation failed ({str(e)[:80]})")
+            logger.debug(f"Instamart portal: navigation failed ({str(e)[:80]})")
             return False
         return "/login" not in self._page.url
 
@@ -458,7 +458,7 @@ class PortalSession:
             last = f"{result['status']}: {result['text'][:200]}"
             if result["status"] == 403 and attempt <= len(ep.SIGNED_RETRY_WAITS_S):
                 wait = ep.SIGNED_RETRY_WAITS_S[attempt - 1]
-                logger.warning(
+                logger.debug(
                     f"{path} -> 403 (throttled); waiting {wait}s and retrying "
                     f"({attempt}/{len(ep.SIGNED_RETRY_WAITS_S)})"
                 )

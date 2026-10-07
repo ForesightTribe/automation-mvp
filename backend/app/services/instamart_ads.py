@@ -20,7 +20,7 @@ Three tables, three different shapes:
   period-over-period comparison — the KPI strip's growth and the daily trend
   chart.
 
-* `instamart_ad_product_daily` / `instamart_ad_keyword_daily` (asset_metrics.py)
+* `instamart_ad_product_daily` / `instamart_ad_keyword_daily` (instamart/dashboard_data/seller/scraper.py)
   — one row per day PER CAMPAIGN per product/keyword, genuinely windowed and
   campaign-attributed (verified live, row by row, against the account's own
   downloaded CSV report — matched to the paisa across 8 days). `campaigns()`
@@ -220,7 +220,7 @@ async def campaigns(
     genuinely lifetime, just for different fields. product_daily has none of
     that inconsistency: every field there is a real per-day sum, verified
     live against the account's own downloaded CSV report to the paisa (see
-    asset_metrics.py). A campaign with no product_daily rows in this window
+    instamart/dashboard_data/seller/scraper.py). A campaign with no product_daily rows in this window
     (nothing scraped yet, or genuinely no activity) shows zeros, same as any
     other marketplace's windowed campaign row would.
 
@@ -412,7 +412,7 @@ async def products(
     session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date,
 ) -> list[dict]:
     """Per-product rollup over the window, account-wide (from
-    `instamart_ad_product_daily` — see asset_metrics.py). `candidate_id` is
+    `instamart_ad_product_daily` — see instamart/dashboard_data/seller/scraper.py). `candidate_id` is
     the same id `sku_snapshots.platform_product_id` carries, so name/pack are
     resolved with a join rather than a separate catalogue fetch.
 
@@ -494,7 +494,7 @@ async def _campaign_breakdown(
     of. Sums exactly to the same total `products()`/`keywords()` compute
     (grouping by key_col alone, ignoring campaign_id, gives the total;
     grouping by both gives this breakdown) — verified live against the
-    proven-correct unfiltered total (see asset_metrics.py's module docstring).
+    proven-correct unfiltered total (see instamart/dashboard_data/seller/scraper.py's module docstring).
     """
     rows = (
         await session.execute(
@@ -543,7 +543,7 @@ async def campaign_keywords(
     insights drawer's "Top keywords by spend" section for an Instamart
     campaign, the same spot Blinkit/Zepto campaigns already fill from their
     own (campaign-keyed) tables. Instamart's `instamart_ad_keyword_daily` has
-    carried a real campaign_id since asset_metrics.py started requesting
+    carried a real campaign_id since instamart/dashboard_data/seller/scraper.py started requesting
     DIMENSION_TYPE_CAMPAIGN, so this is a plain filtered rollup, not a
     workaround — see that module's docstring for how campaign_id got there.
 

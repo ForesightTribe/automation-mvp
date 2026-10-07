@@ -19,7 +19,7 @@ async def create_scrape_job(session: AsyncSession, tenant_id: str, dashboard: st
     session.add(job)
     await session.commit()
     await session.refresh(job)
-    logger.info(f"Scrape job created: {job.id} tenant={tenant_id} dashboard={dashboard}")
+    logger.debug(f"Scrape job created: {job.id} tenant={tenant_id} dashboard={dashboard}")
     return str(job.id)
 
 
@@ -31,10 +31,14 @@ async def complete_scrape_job(session: AsyncSession, job_id: str, records_writte
         job.completed_at = now_ist()
         job.records_written = records_written
         await session.commit()
-    logger.info(f"Scrape job completed: {job_id} records={records_written}")
+    logger.debug(f"Scrape job completed: {job_id} records={records_written}")
 
 
-async def fail_scrape_job(session: AsyncSession, job_id: str, error: str) -> None:
+async def fail_scrape_job(
+    session: AsyncSession, job_id: str, error: str, records_written: int | None = None
+) -> None:
+    """Mark a scrape failed. `records_written` is for a run that saved what came back
+    but lost some fetches — failed, yet not empty, and the row count should say so."""
     # The failure may have aborted the current transaction (e.g. a bad INSERT);
     # roll back so we can still record the failure instead of masking the real
     # error with InFailedSQLTransactionError.
@@ -45,5 +49,7 @@ async def fail_scrape_job(session: AsyncSession, job_id: str, error: str) -> Non
         job.status = JobStatus.failed
         job.completed_at = now_ist()
         job.error = error
+        if records_written is not None:
+            job.records_written = records_written
         await session.commit()
     logger.error(f"Scrape job failed: {job_id} — {error}")

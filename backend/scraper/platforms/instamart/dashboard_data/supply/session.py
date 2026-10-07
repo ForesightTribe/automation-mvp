@@ -1,4 +1,4 @@
-"""Get a live `abacus-token` for the Supply Portal, cached to disk.
+"""Get a live `abacus-token` for the Supply Portal, cached in the database.
 
 Confirmed live 2026-09-25 (see `endpoints.py`'s module docstring for the full
 investigation): the Brand Portal login (`seller/session.py`'s `PortalSession`)
@@ -17,28 +17,37 @@ no OTP. The token itself:
 
 So the design: spend one Playwright trip to capture a token, then run every
 data call afterward as fast, unthrottled httpx — the opposite performance
-profile from the ads scrape, which is throttled almost every call. Cache the
-token to disk (its own `exp` claim decides freshness) so a same-day re-run
-costs nothing extra.
+profile from the ads scrape, which is throttled almost every call. The token
+is cached (its own `exp` claim decides freshness) so a same-day re-run costs
+nothing extra — encrypted in `platform_sessions` under `_TOKEN_SLUG`, the same
+store and shape as the Brand Portal's own browser state
+(seller/session.py's `_SESSION_SLUG`), not as a file in the source tree.
 """
 import base64
+import datetime as dt
 import json
 import time
-from pathlib import Path
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.utils.logger import logger
+from platform_auth import store
+from platform_auth.types import AuthSession
 from scraper.platforms.instamart.dashboard_data.seller.session import PortalSession
 from scraper.platforms.instamart.dashboard_data.supply import endpoints as ep
 
 
+# Its own platform_sessions row — NOT a registered login (platform_auth/registry.py):
+# nothing refreshes or probes it; it is a derived ~5-hour API token, re-minted
+# from the Brand Portal session whenever it runs out.
+_TOKEN_SLUG = "instamart_supply_token"
+
+# A minute of headroom, same convention as seller/session.py's token check.
+_HEADROOM_S = 60
+
+
 class SupplyAuthError(RuntimeError):
     """Could not obtain a usable abacus-token."""
-
-
-def _cache_path(tenant_id: str) -> Path:
-    return Path(__file__).parent / "_token_cache" / f"abacus_{tenant_id}.json"
 
 
 def _claims(token: str) -> dict:
@@ -47,29 +56,25 @@ def _claims(token: str) -> dict:
     return json.loads(base64.urlsafe_b64decode(payload))
 
 
-def _load_cached(tenant_id: str) -> dict | None:
-    path = _cache_path(tenant_id)
-    if not path.exists():
-        return None
-    try:
-        data = json.loads(path.read_text())
-    except (json.JSONDecodeError, OSError):
-        return None
-    # A minute of headroom, same convention as seller/session.py's token check.
-    if data.get("exp", 0) - time.time() > 60:
+async def _load_cached(db: AsyncSession, tenant_id: str) -> dict | None:
+    """The stored token, if it still has headroom."""
+    session = await store.load(db, tenant_id, _TOKEN_SLUG)
+    data = session.raw if session else {}
+    if data.get("token") and data.get("exp", 0) - time.time() > _HEADROOM_S:
         return data
     return None
 
 
-def _save_cache(tenant_id: str, token: str, brand_company_id: str) -> None:
-    path = _cache_path(tenant_id)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    claims = _claims(token)
-    path.write_text(json.dumps({
-        "token": token,
-        "brand_company_id": brand_company_id,
-        "exp": claims.get("exp", 0),
-    }))
+async def _save_cache(db: AsyncSession, tenant_id: str, email: str, token: str,
+                      brand_company_id: str) -> None:
+    exp = _claims(token).get("exp", 0)
+    # `update`, not `save`: re-minting this token is not a login, so it must not
+    # stamp last_login_at or feed the logins-per-day count (IM-03).
+    await store.update(db, tenant_id, AuthSession(
+        platform=_TOKEN_SLUG, email=email,
+        raw={"token": token, "brand_company_id": brand_company_id, "exp": exp},
+        expires_at=dt.datetime.fromtimestamp(exp) if exp else None,
+    ))
 
 
 async def get_token(db: AsyncSession, tenant_id: str, email: str, account_id: str,
@@ -77,18 +82,15 @@ async def get_token(db: AsyncSession, tenant_id: str, email: str, account_id: st
     """Returns (abacus_token, brand_company_id). Reuses a cached token that
     still has headroom unless `force` asks for a fresh one.
 
-    `db` is only for PortalSession's own session persistence (see its module
-    docstring) — this function's own short-lived abacus-token cache stays a
-    local file, deliberately: it's a derived, ~5-hour API token, not a
-    credential, and cheap to re-mint, unlike the Brand Portal login itself.
+    `db` holds both the cached token and PortalSession's own browser state.
     """
     if not force:
-        cached = _load_cached(tenant_id)
+        cached = await _load_cached(db, tenant_id)
         if cached:
-            logger.info("Instamart Supply Portal: reusing cached abacus-token")
+            logger.debug("Instamart Supply Portal: reusing the cached abacus-token")
             return cached["token"], cached["brand_company_id"]
 
-    logger.info("Instamart Supply Portal: minting a fresh abacus-token via the Brand Portal session")
+    logger.debug("Instamart Supply Portal: minting a fresh abacus-token via the Brand Portal session")
     captured: dict = {}
 
     async with PortalSession(db, tenant_id, email, account_id, headless=headless) as portal:
@@ -125,5 +127,5 @@ async def get_token(db: AsyncSession, tenant_id: str, email: str, account_id: st
             "calls — every data call needs it."
         )
 
-    _save_cache(tenant_id, captured["token"], captured["brand_company_id"])
+    await _save_cache(db, tenant_id, email, captured["token"], captured["brand_company_id"])
     return captured["token"], captured["brand_company_id"]

@@ -18,7 +18,7 @@ import {
 // backend). That's already enough to tell which "Top keywords" source a
 // campaign needs — Blinkit/Zepto's shared, campaign-keyed keyword table, or
 // Instamart's own (instamart_ad_keyword_daily, campaign-attributed since
-// asset_metrics.py started requesting DIMENSION_TYPE_CAMPAIGN).
+// the Instamart asset fetch started requesting DIMENSION_TYPE_CAMPAIGN).
 const isInstamartCampaign = (id) => typeof id === "string";
 
 /**

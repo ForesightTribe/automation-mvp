@@ -285,6 +285,37 @@ The `--week` date must be a Monday (`YYYY-MM-DD`). A non-Monday will return empt
 
 ---
 
+### Instamart private data — sales + ads + PO
+
+```bash
+# Daily run — all three sections
+python -m cli scrape instamart --tenant <tenant_id>
+
+# Pick sections (any combination)
+python -m cli scrape instamart --tenant <tenant_id> --sales --sales-days-back 4
+python -m cli scrape instamart --tenant <tenant_id> --sales --from 2026-09-30 --to 2026-10-02
+python -m cli scrape instamart --tenant <tenant_id> --ads --ads-days-back 60
+python -m cli scrape instamart --tenant <tenant_id> --po --force-token
+python -m cli scrape instamart --tenant <tenant_id> --po --po-all-lines
+
+# Sales dry run — download the report and report counts, write nothing
+python -m cli scrape instamart --tenant <tenant_id> --sales --no-load --keep-file
+
+# One section only (same as the flags above)
+python -m cli scrape instamart-sales --tenant <tenant_id> --from 2026-09-30 --to 2026-10-02
+python -m cli scrape instamart-ads   --tenant <tenant_id> --days-back 60
+python -m cli scrape instamart-po    --tenant <tenant_id> --all-lines
+
+# Backfill a past range — sales split into 31-day reports, ads over the range,
+# PO with every line item. --to defaults to yesterday; none of --sales/--ads/--po = all.
+python -m cli scrape instamart-backfill --tenant <tenant_id> --from 2026-07-01 --to 2026-09-30
+python -m cli scrape instamart-backfill --tenant <tenant_id> --from 2026-07-01 --sales
+```
+
+Two consoles behind one login: the **Brand Portal** (sales report + ads, every call WASM-signed through a browser page) and the **Supply Portal** (purchase orders, plain HTTP with an abacus-token). One-time setup: `cli auth credentials set instamart -t <tenant> --email <e> --extra account_id=<x-client-account-id>`. Default windows: **sales** yesterday (the portal has nothing newer; max 31 days per report) · **ads** the last 30 days of the daily series (campaigns are lifetime totals) · **PO** every PO ever raised, with line items fetched only for POs that are new or changed since the last run (`--po-all-lines` re-fetches all, ~15 min). Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved), **3** = login gone. Job: `scrape.instamart`. The code is `scraper/platforms/instamart/dashboard_data/run.py`. `instamart-sales` / `instamart-ads` / `instamart-po` run one section each; `instamart-backfill` re-fetches a past range.
+
+---
+
 ### Public product search (Blinkit) — no login required
 
 Per-tenant and config-driven. The store catalog and each tenant's

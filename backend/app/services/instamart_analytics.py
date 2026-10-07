@@ -27,7 +27,6 @@ from datetime import date
 from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.instamart_seller import InstamartBrandCityDaily as BrandCity
 from app.models.instamart_seller import InstamartSellerStoreDaily as Store
 
 # Which marketplace slug routes to these tables.
@@ -139,32 +138,6 @@ async def top_skus(
         }
         for code, name, variant, rev, units, stores in rows
     ]
-
-
-async def brand_metrics(
-    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
-) -> dict:
-    """Whole-brand marketing figures per window, from the city table.
-
-    These do not exist in the store table and are not derivable from it:
-    impressions and orders are brand-wide, and new-to-brand buyers is a count of
-    people, so it is summed across cities but NOT across overlapping windows.
-    """
-    impressions, orders, ntb = (
-        await session.execute(
-            select(
-                func.coalesce(func.sum(BrandCity.brand_impressions), 0),
-                func.coalesce(func.sum(BrandCity.brand_orders), 0),
-                func.coalesce(func.sum(BrandCity.ntb_buyers), 0),
-            ).where(
-                BrandCity.tenant_id == tenant_id,
-                BrandCity.date >= start,
-                BrandCity.date <= end,
-            )
-        )
-    ).one()
-    return {"impressions": int(impressions), "orders": int(orders),
-            "ntb_buyers": int(ntb)}
 
 
 async def sales_by_category(

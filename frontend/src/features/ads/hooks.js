@@ -227,7 +227,7 @@ export const useInstamartBudgetSplit = () => {
 /** Instamart ad performance per product, account-wide, each row's `campaigns`
  * breaking its total down by campaign. Skipped when Instamart is out of
  * scope. No ad-type filter — it existed earlier and was removed as
- * unreliable (see asset_metrics.py's docstring). */
+ * unreliable (see the asset-metrics comment in instamart/dashboard_data/seller/scraper.py). */
 export const useInstamartProducts = ({ enabled = true } = {}) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();

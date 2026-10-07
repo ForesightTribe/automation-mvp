@@ -93,7 +93,7 @@ class InstamartPOItem(SQLModel, table=True):
     live 2026-09-25) and can't be trusted for a closed PO's real shortfall.
     `received_qty`/`balanced_qty` below are a SEPARATE, more reliable source:
     the Supply Portal's bulk CSV export (`/api/v1/batch/submit` +
-    `/api/v1/batch/list`, see `dashboard_data/supply/fetch.py`'s
+    `/api/v1/batch/list`, see `dashboard_data/supply/scraper.py`'s
     `submit_po_export`/`fetch_po_export`), which carries Instamart's own
     `ReceivedQty`/`BalancedQty` per line and does NOT get reset on close.
     Populated by a separate scrape step; null until that step has run for a

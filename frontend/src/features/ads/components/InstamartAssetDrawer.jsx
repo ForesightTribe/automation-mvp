@@ -38,7 +38,7 @@ const Rows = ({ pairs }) => (
  * performance card. Same shell as Blinkit's KeywordDrawer, but only the
  * sections Instamart's data actually supports — no Direct/Indirect split, no
  * match type, no position: Instamart's advertiser/metrics API reports none
- * of those (checked live; see asset_metrics.py). "By campaign" only has rows
+ * of those (checked live; see instamart/dashboard_data/seller/scraper.py). "By campaign" only has rows
  * when a specific ad type is selected on the card — the unfiltered "All ad
  * types" total has no campaign id to attribute with, same reason the
  * Campaign column reads "—" there.

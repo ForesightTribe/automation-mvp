@@ -1,7 +1,7 @@
 """Instamart Brand Portal (partner.instamart.in) private-data endpoints.
 
-Every URL and static key for the seller/sales scrape lives here, nowhere else —
-the same rule the Zepto and Blinkit modules follow.
+Every URL and static key for the Brand Portal scrape (sales and ads) lives
+here, nowhere else — the same rule the Zepto and Blinkit modules follow.
 
 All of it was verified against the live Brik Oven account on 2026-09-22.
 
@@ -66,10 +66,10 @@ POLL_INITIAL_WAIT_S = 75
 # ── Data calls ───────────────────────────────────────────────────────────────
 SALES_REPORT = "/api/v1/sales/report"        # singular: CREATE a report
 SALES_REPORTS = "/api/v1/sales/reports"      # plural: LIST reports
-SALES_FILTERS = "/api/v1/sales/filters"      # brand/city/category/product pickers
-SALES_METRIC = "/api/v1/sales/metric"        # dashboard aggregates (not used yet)
 CAMPAIGNS = "/api/v1/campaigns"              # list + per-campaign lifetime metrics
 ADVERTISER_METRICS_BATCH = "/api/v1/advertiser/metrics/batch"  # account-wide, DIMENSION_TYPE_DAY
+ADVERTISER_METRICS = "/api/v1/advertiser/metrics"              # product / keyword x campaign x day
+PRODUCTS_BATCH = "/api/v1/products/batch"    # product name + images by candidate id
 
 # The data client identifies itself as 1.4.136. This exact string is part of the
 # signed message, so it must match the `app_version` header byte for byte.
@@ -108,13 +108,20 @@ POLL_INTERVAL_S = 60
 POLL_TIMEOUT_S = 900          # generous: the throttle costs more time than the build does
 REPORTS_PAGE_SIZE = 12
 
+# ── Ads ──────────────────────────────────────────────────────────────────────
+# /campaigns: `pagination_context.offset` is a 1-based PAGE NUMBER (see
+# scraper.fetch_campaigns), and a page shorter than this is the last one.
+CAMPAIGNS_PAGE_SIZE = 50
+# /advertiser/metrics: one page only — the offset does not advance past it
+# (see scraper.ASSET_CHUNK_DAYS for how wide ranges are split instead).
+ASSET_PAGE_SIZE = 500
+IMAGE_CDN_PREFIX = "https://media-assets.swiggy.com/swiggy/image/upload/fl_lossy,f_auto,q_auto,w_200/"
+
 # ── Browser session ──────────────────────────────────────────────────────────
 # A real click-through login is required at least once: injecting only
 # localStorage logs the shell in but leaves data calls unsigned (403). The
 # cookies a genuine login sets are what make the app sign. The saved state is
 # reused until it stops working, then we log in again.
-SESSION_STATE_DIR = Path(__file__).parent / "_signer_cache"
-OTP_DIGITS = 6
 # The OTP boxes are React inputs (otp1..otp6, maxlength=1). `fill()` leaves the
 # component's own state empty, so the code must be TYPED as keystrokes.
 OTP_TYPE_DELAY_MS = 140

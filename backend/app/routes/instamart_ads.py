@@ -39,7 +39,7 @@ async def instamart_products_ads(
     """Ad spend and return per advertised product, highest spend first,
     account-wide. Each row's `campaigns` breaks the total down by campaign
     — see instamart_ads.products. No ad-type filter: it existed earlier and
-    was removed as unreliable — see asset_metrics.py's docstring."""
+    was removed as unreliable — see instamart/dashboard_data/seller/scraper.py's docstring."""
     rows = await instamart_ads.products(
         session, tenant_id=client.id, start=period.start, end=period.end,
     )

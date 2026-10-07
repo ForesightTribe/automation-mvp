@@ -93,7 +93,7 @@ export const getInstamartBudgetSplit = (clientId, { start, end } = {}) =>
 
 // Instamart-only: per-product ad performance, account-wide, each row's
 // `campaigns` breaking its total down by campaign. No ad-type filter — it
-// existed earlier and was removed as unreliable (see asset_metrics.py).
+// existed earlier and was removed as unreliable (see instamart/dashboard_data/seller/scraper.py).
 export const getInstamartProducts = (clientId, { start, end, limit } = {}) =>
 	api.get(`/clients/${clientId}/ads/instamart-products`, {
 		params: { start, end, limit },
