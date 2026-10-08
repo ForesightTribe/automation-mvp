@@ -17,7 +17,7 @@ import logging
 import uuid
 from datetime import date, timedelta
 
-from sqlalchemy import Numeric, case, cast, distinct, func, select, update
+from sqlalchemy import Numeric, case, cast, distinct, func, select, union_all, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import AsyncSessionLocal
@@ -47,6 +47,10 @@ from app.services.analytics_service import _ads_agg, _metric, _roas as _blended_
 AdDaily = BlinkitAdCampaignDaily
 Detail = BlinkitAdCampaignDetail
 
+# The marketplaces with ad data, each read from its own tables (Blinkit's daily backbone,
+# `zepto_ads`, `instamart_ads`). Splits iterate these when no marketplace filter is given.
+AD_MARKETPLACES = ("blinkit", "zepto", "instamart")
+
 # Sort keys exposed by the campaign table -> the rollup field they order by.
 _CAMPAIGN_SORTS = {
     "spend": "budget_consumed",
@@ -69,6 +73,33 @@ async def _recent_campaign_cutoff(session: AsyncSession, tenant_id: uuid.UUID):
         )
     ).scalar()
     return latest - timedelta(hours=2) if latest else None
+
+
+# Raw status words of a marketplace with no engine vocabulary (Instamart's are mapped to
+# these in `instamart_ads._STATUS_MAP`) → the canonical state, so one status filter covers
+# every marketplace. Blinkit's and Zepto's go through `canonical_status`, which the engines
+# share; this only fills in what that leaves unmapped.
+_FALLBACK_STATE = {
+    "ACTIVE": "running",
+    "SCHEDULED": "running",
+    "PAUSED": "paused",
+    "STOPPED": "paused",
+    "ON_HOLD": "held",
+    "DAILY_BUDGET_EXHAUSTED": "held",
+    "COMPLETED": "ended",
+    "ENDED": "ended",
+    "DRAFT": "draft",
+}
+_CANONICAL_STATES = {"running", "paused", "held", "ended", "draft"}
+
+
+def _ui_state(platform: str, status: str | None) -> str | None:
+    """`CampaignRow.state`: the engines' canonical state where the marketplace has a
+    vocabulary, else the raw word mapped by `_FALLBACK_STATE`, else the raw word as-is."""
+    state = canonical_status(platform, status)
+    if state in _CANONICAL_STATES or not status:
+        return state
+    return _FALLBACK_STATE.get(status.strip().upper(), state)
 
 
 def _roas(ad_sales: float, spend: float) -> float:
@@ -133,6 +164,33 @@ async def _summary_agg(
     return totals
 
 
+async def latest_ad_day(
+    session: AsyncSession, *, tenant_id: uuid.UUID, end: date, marketplaces: list[str]
+) -> date | None:
+    """The newest day on or before `end` that any of `marketplaces` has ad data for — in ONE
+    query across each marketplace's daily table. None when there is none.
+
+    Ads are scraped the next morning, so a window ending today almost always ends on a day
+    with nothing in it yet (N1, 2026-10-08)."""
+    from app.models.instamart_ads import InstamartAdAccountDaily
+    from app.models.zepto_seller import ZeptoAdCampaignDaily
+
+    parts = []
+    if "blinkit" in marketplaces:
+        parts.append(select(func.max(AdDaily.date).label("d")).where(
+            AdDaily.tenant_id == tenant_id, AdDaily.date <= end, AdDaily.platform == "blinkit"))
+    if zepto_ads.SLUG in marketplaces:
+        parts.append(select(func.max(ZeptoAdCampaignDaily.date).label("d")).where(
+            ZeptoAdCampaignDaily.tenant_id == tenant_id, ZeptoAdCampaignDaily.date <= end))
+    if "instamart" in marketplaces:
+        parts.append(select(func.max(InstamartAdAccountDaily.date).label("d")).where(
+            InstamartAdAccountDaily.tenant_id == tenant_id, InstamartAdAccountDaily.date <= end))
+    if not parts:
+        return None
+    days = union_all(*parts).subquery()
+    return (await session.execute(select(func.max(days.c.d)))).scalar()
+
+
 async def get_summary(
     session: AsyncSession,
     *,
@@ -143,17 +201,47 @@ async def get_summary(
     prev_end: date,
     marketplaces: list[str] | None = None,
 ) -> dict:
-    """KPI strip — each tile vs the equal-length previous window."""
-    spend, impr, sales, atc, units, camps = await _summary_agg(
-        session, tenant_id=tenant_id, start=start, end=end, marketplaces=marketplaces
-    )
-    p_spend, p_impr, p_sales, p_atc, p_units, p_camps = await _summary_agg(
-        session,
-        tenant_id=tenant_id,
-        start=prev_start,
-        end=prev_end,
-        marketplaces=marketplaces,
-    )
+    """KPI strip — each tile vs a previous window of the same number of DATA days.
+
+    ⚠️ N1 (2026-10-08): the window ends on the newest day with ad data, not on the picker's
+    end. Ads are scraped the next morning, so the default "last 7 days" ends today with
+    nothing in it: the tiles compared 6 days of spend with 7 and read ~14% low. Now 2–7 Oct
+    is compared with 26 Sep–1 Oct. The window actually used comes back as `period`, so the
+    page can say "data up to 7 Oct" and draw its comparisons over the same days.
+
+    Each marketplace is aggregated once and the tiles are their sum (A2: 20 queries → ~9; the
+    current window used to be aggregated twice, once whole and once per marketplace)."""
+    scope = [m for m in (marketplaces if marketplaces is not None else AD_MARKETPLACES)
+             if m in AD_MARKETPLACES]
+    picked_end = end
+    data_end = await latest_ad_day(session, tenant_id=tenant_id, end=end, marketplaces=scope)
+    if data_end is not None and start <= data_end < end:
+        n = (data_end - start).days + 1
+        end, prev_end, prev_start = data_end, start - timedelta(days=1), start - timedelta(days=n)
+
+    parts = {
+        mp: await _summary_agg(session, tenant_id=tenant_id, start=start, end=end, marketplaces=[mp])
+        for mp in scope
+    }
+    spend, impr, sales, atc, units, camps = (
+        sum(p[i] for p in parts.values()) if parts else 0 for i in range(6))
+    if scope:
+        p_spend, p_impr, p_sales, p_atc, p_units, p_camps = await _summary_agg(
+            session, tenant_id=tenant_id, start=prev_start, end=prev_end, marketplaces=scope)
+    else:
+        p_spend = p_impr = p_sales = p_atc = p_units = p_camps = 0
+    # Each marketplace's share of the tiles, current window only (the split under each one).
+    by_mp = [
+        {
+            "platform": mp, "ad_spend": round(float(m_spend), 2), "ad_sales": round(float(m_sales), 2),
+            "impressions": int(m_impr), "atc": int(m_atc),
+            # Instamart's units figure is unreliable (confirmed 2026-09-30) — the Insights
+            # table already withholds it; the split must not show it either.
+            "units_sold": None if mp == "instamart" else int(m_units),
+            "active_campaigns": int(m_camps),
+        }
+        for mp, (m_spend, m_impr, m_sales, m_atc, m_units, m_camps) in parts.items()
+    ]
     return {
         "ad_spend": _metric(spend, p_spend),
         "ad_sales": _metric(sales, p_sales),
@@ -163,6 +251,11 @@ async def get_summary(
         "atc": _metric(atc, p_atc),
         "units_sold": _metric(units, p_units),
         "active_campaigns": _metric(camps, p_camps),
+        "by_marketplace": by_mp,
+        # The windows the tiles were actually computed over. `end` < `picked_end` when the
+        # last picked days have no ad data yet.
+        "period": {"start": start, "end": end, "prev_start": prev_start,
+                   "prev_end": prev_end, "picked_end": picked_end},
     }
 
 
@@ -178,6 +271,7 @@ async def _campaigns(
     sort: str = "spend",
     order: str = "desc",
     recent_only: bool = False,
+    automation: bool = True,
 ) -> Page[CampaignRow]:
     # Per-campaign rollup of the daily backbone over the window.
     rollups = (
@@ -307,7 +401,9 @@ async def _campaigns(
     # query per marketplace on the page, never per row.
     refused: dict[tuple[str, int | str], str] = {}
     driven = set(supported_marketplaces())
-    for mp in {r["platform"] for r in page}:
+    # `automation=False` (Ads Insights, which shows no automation controls) skips these
+    # lookups — a catalogue query per marketplace on every page load (A3, 2026-10-08).
+    for mp in ({r["platform"] for r in page} if automation else ()):
         if mp not in driven:
             # A marketplace the automations cannot drive at all (Instamart): say so on every
             # row rather than asking a catalogue — `automation_refusals` would read it as
@@ -327,7 +423,7 @@ async def _campaigns(
     # same pure vocabulary the engines use, so the button the UI offers is the transition
     # the engine will accept.
     items = [CampaignRow.model_validate({
-        **r, "state": canonical_status(r["platform"], r.get("status")),
+        **r, "state": _ui_state(r["platform"], r.get("status")),
         "automatable": (r["platform"], r["campaign_id"]) not in refused,
         "not_automatable_reason": refused.get((r["platform"], r["campaign_id"])),
     }) for r in page]
@@ -423,6 +519,7 @@ async def _campaigns_settled(
     sort: str = "spend",
     order: str = "desc",
     recent_only: bool = False,
+    automation: bool = True,
 ) -> Page[CampaignRow]:
     """A window that has already closed. Cached: nothing a user does now can
     change what a campaign spent yesterday."""
@@ -437,6 +534,7 @@ async def _campaigns_settled(
         sort=sort,
         order=order,
         recent_only=recent_only,
+        automation=automation,
     )
 
 
@@ -452,6 +550,7 @@ async def get_campaigns(
     sort: str = "spend",
     order: str = "desc",
     recent_only: bool = False,
+    automation: bool = True,
 ) -> Page[CampaignRow]:
     """⚠️ A window that includes TODAY is never cached. Budgets and bids are
     written from the Campaign Manager and the caller invalidates on write, so a
@@ -469,6 +568,7 @@ async def get_campaigns(
         sort=sort,
         order=order,
         recent_only=recent_only,
+        automation=automation,
     )
 
 async def get_performance(
@@ -479,7 +579,12 @@ async def get_performance(
     end: date,
     marketplaces: list[str] | None = None,
 ) -> list[dict]:
-    """Daily account totals (summed across campaigns) with the day's RoAS."""
+    """Daily account totals (summed across campaigns and marketplaces) with the day's RoAS,
+    and each day split by marketplace (`by_marketplace`) for the "By marketplace" view.
+
+    Each marketplace's series comes from its own daily table; the day's total is the sum of
+    its slices, and RoAS is rebuilt from the merged bases (never an average of ratios)."""
+    slices: dict[str, list[dict]] = {}
     rows = (
         await session.execute(
             select(
@@ -493,45 +598,40 @@ async def get_performance(
             .order_by(AdDaily.date)
         )
     ).all()
-    series = [
-        {
-            "date": d,
-            "budget_consumed": round(float(b), 2),
-            "impressions": int(i),
-            "ad_sales": round(float(s), 2),
-            "roas": _roas(float(s), float(b)),
-        }
-        for d, b, i, s in rows
-    ]
+    if rows:
+        slices["blinkit"] = [
+            {"date": d, "budget_consumed": round(float(b), 2), "impressions": int(i),
+             "ad_sales": round(float(s), 2)}
+            for d, b, i, s in rows
+        ]
     if zepto_ads.wants_zepto(marketplaces):
-        z = await zepto_ads.performance(session, tenant_id=tenant_id, start=start, end=end)
-        by_date: dict = {r["date"]: dict(r) for r in series}
-        for r in z:
-            cur = by_date.get(r["date"])
-            if cur:
-                cur["budget_consumed"] += r["budget_consumed"]
-                cur["impressions"] += r["impressions"]
-                cur["ad_sales"] += r["ad_sales"]
-                # RoAS is a ratio, so recompute from the merged bases rather
-                # than averaging the two marketplaces' ratios.
-                cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
-            else:
-                by_date[r["date"]] = dict(r)
-        series = [by_date[k] for k in sorted(by_date)]
-
+        slices[zepto_ads.SLUG] = await zepto_ads.performance(
+            session, tenant_id=tenant_id, start=start, end=end)
     if instamart_ads.wants_instamart(marketplaces):
-        i = await instamart_ads.performance(session, tenant_id=tenant_id, start=start, end=end)
-        by_date = {r["date"]: dict(r) for r in series}
-        for r in i:
-            cur = by_date.get(r["date"])
-            if cur:
-                cur["budget_consumed"] += r["budget_consumed"]
-                cur["impressions"] += r["impressions"]
-                cur["ad_sales"] += r["ad_sales"]
-                cur["roas"] = _roas(cur["ad_sales"], cur["budget_consumed"])
-            else:
-                by_date[r["date"]] = dict(r)
-        series = [by_date[k] for k in sorted(by_date)]
+        slices["instamart"] = await instamart_ads.performance(
+            session, tenant_id=tenant_id, start=start, end=end)
+
+    by_date: dict = {}
+    for mp, series in slices.items():
+        for r in series:
+            day = by_date.setdefault(r["date"], {
+                "date": r["date"], "budget_consumed": 0.0, "impressions": 0, "ad_sales": 0.0,
+                "by_marketplace": {}})
+            day["budget_consumed"] += r["budget_consumed"]
+            day["impressions"] += r["impressions"]
+            day["ad_sales"] += r["ad_sales"]
+            day["by_marketplace"][mp] = {
+                "budget_consumed": r["budget_consumed"], "impressions": r["impressions"],
+                "ad_sales": r["ad_sales"]}
+    series = [by_date[k] for k in sorted(by_date)]
+    # ⚠️ Every day's RoAS rebuilt here, after the merge. Zepto's and Instamart's own series
+    # return None on a zero-spend day (a paused brand's blank day is saved as zero), and a day
+    # only ONE marketplace has kept that None — which `AdPerformancePoint.roas: float`
+    # refused, so a Zepto-only window over a paused day 500'd (Brik Oven 19–28 Sep).
+    for r in series:
+        r["budget_consumed"] = round(r["budget_consumed"], 2)
+        r["ad_sales"] = round(r["ad_sales"], 2)
+        r["roas"] = _roas(r["ad_sales"], r["budget_consumed"])
     return series
 
 
@@ -543,28 +643,44 @@ async def get_budget_split(
     end: date,
     marketplaces: list[str] | None = None,
 ) -> list[dict]:
-    """Spend + recomputed RoAS per campaign type (the denormalized `campaign_type`
-    on the daily rows) — drives the budget-split donut and the by-type table."""
+    """Spend + recomputed RoAS per (marketplace, campaign type) — the Insights "Where the
+    spend goes" donut, which groups these by type or by marketplace.
+
+    Every marketplace in scope, each from its own daily table (Blinkit's denormalized
+    `campaign_type` on the daily rows; `zepto_ads.budget_split`; `instamart_ads.budget_split`).
+    Types are each marketplace's own words (PRODUCT_LISTING / PLA / ITEM) and are never
+    merged across marketplaces — `platform` keeps them apart. Until 2026-10-08 this read
+    Blinkit only, and Zepto and Instamart each had their own donut and endpoint."""
     rows = (
         await session.execute(
             select(
+                AdDaily.platform,
                 AdDaily.campaign_type,
                 func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
                 func.coalesce(func.sum(AdDaily.ad_sales), 0.0),
             )
             .where(*_ad_conds(tenant_id, start, end, marketplaces))
-            .group_by(AdDaily.campaign_type)
+            .group_by(AdDaily.platform, AdDaily.campaign_type)
         )
     ).all()
     out = [
         {
+            "platform": p,
             "campaign_type": t,
             "budget_consumed": round(float(b), 2),
             "ad_sales": round(float(s), 2),
             "roas": _roas(float(s), float(b)),
         }
-        for t, b, s in rows
+        for p, t, b, s in rows
     ]
+    if zepto_ads.wants_zepto(marketplaces):
+        out += [{**r, "platform": zepto_ads.SLUG} for r in await zepto_ads.budget_split(
+            session, tenant_id=tenant_id, start=start, end=end)]
+    if instamart_ads.wants_instamart(marketplaces):
+        out += [{**r, "platform": "instamart"} for r in await instamart_ads.budget_split(
+            session, tenant_id=tenant_id, start=start, end=end)]
+    # A type with no spend in the window is not a slice.
+    out = [r for r in out if r["budget_consumed"] > 0]
     out.sort(key=lambda r: r["budget_consumed"], reverse=True)
     return out
 
@@ -580,8 +696,15 @@ async def get_keywords(
     sort: str = "spend",
     order: str = "desc",
     recent_only: bool = False,
+    as_of: date | None = None,
 ) -> Page[KeywordRow]:
     """Keyword / asset performance from the latest detail snapshot per campaign.
+
+    ⚠️ A snapshot is NOT a window the caller chose: the marketing scrape asks Blinkit for one
+    total over `snapshot_date − 7 … snapshot_date` (BLINKIT-NOTES B6), so the rows cannot
+    follow a date picker. `as_of` picks each campaign's latest snapshot ON OR BEFORE that
+    date, so a picker ending 30 Sep shows 23–30 Sep rather than this week; the UI labels the
+    real dates from `snapshot_date`. None = the latest snapshot.
 
     `BlinkitAdCampaignDetail` is a range-aggregate snapshot (not daily), so we keep
     only each campaign's most recent `snapshot_date` rather than summing across
@@ -629,7 +752,7 @@ async def get_keywords(
     # that date is kept (a snapshot holds many keywords) — hence a join, not DISTINCT ON.
     latest = (
         select(Detail.campaign_id, func.max(Detail.snapshot_date).label("snapshot_date"))
-        .where(*conds)
+        .where(*conds, *([Detail.snapshot_date <= as_of] if as_of else []))
         .group_by(Detail.campaign_id)
         .subquery()
     )
@@ -653,6 +776,7 @@ async def get_keywords(
     merged = (
         select(
             Detail.campaign_id,
+            func.max(Detail.platform).label("platform"),
             func.max(Detail.campaign_type).label("campaign_type"),
             Detail.target_type,
             Detail.target,
@@ -718,6 +842,200 @@ async def get_keywords(
 
     items = [KeywordRow.model_validate(dict(r)) for r in rows]
     return Page.build(items, total, pagination)
+
+
+# What one Blinkit detail snapshot covers: the marketing scrape asks `today − 7 … today`
+# and stores it under today (cli/commands/scrape.py, BLINKIT-NOTES B6).
+BLINKIT_SNAPSHOT_SPAN = timedelta(days=7)
+
+
+async def get_campaign_keywords(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    platform: str,
+    campaign_id: str,
+    start: date,
+    end: date,
+    limit: int = 10,
+) -> dict:
+    """ONE campaign's top keywords by spend, from its own marketplace's per-campaign data —
+    the Insights campaign drawer. Raises ValueError for an unknown marketplace (no default
+    marketplace, ever) or a non-numeric id where the marketplace's ids are numbers.
+
+    - blinkit: its detail snapshot on or before `end` (all targets — a recommendation
+      campaign's rows are its placements), period = that snapshot's 8 days.
+    - zepto: `zepto_ad_campaign_detail` summed over the window (per day, so it follows it).
+    - instamart: `instamart_ads.campaign_keywords`, windowed.
+    """
+    if platform == "blinkit":
+        page = await get_keywords(
+            session, tenant_id=tenant_id, pagination=Pagination(page=1, limit=limit),
+            campaign_id=_numeric_id(platform, campaign_id), marketplaces=["blinkit"],
+            as_of=end)
+        snap = page.items[0].snapshot_date if page.items else None
+        return {
+            "platform": platform,
+            "period_start": snap - BLINKIT_SNAPSHOT_SPAN if snap else None,
+            "period_end": snap,
+            "total": page.total,
+            "items": [
+                {
+                    "keyword": k.target,
+                    "match_type": k.match_type,
+                    "spend": k.budget_consumed,
+                    "sales": round(k.direct_sales + k.indirect_sales, 2),
+                    "impressions": k.impressions,
+                    "roas": k.total_roas,
+                    "position": k.most_viewed_position,
+                }
+                for k in page.items
+            ],
+        }
+    if platform == zepto_ads.SLUG:
+        total, items = await zepto_ads.campaign_keywords(
+            session, tenant_id=tenant_id, campaign_id=_numeric_id(platform, campaign_id),
+            start=start, end=end, limit=limit)
+        return {"platform": platform, "period_start": start, "period_end": end,
+                "total": total, "items": items}
+    if platform == "instamart":
+        rows = await instamart_ads.campaign_keywords(
+            session, tenant_id=tenant_id, campaign_id=campaign_id, start=start, end=end,
+            limit=limit)
+        return {"platform": platform, "period_start": start, "period_end": end,
+                "total": len(rows), "items": rows}
+    raise ValueError(f"unknown marketplace {platform!r}")
+
+
+async def get_keyword_insights(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    marketplaces: list[str] | None = None,
+) -> dict:
+    """The Insights keyword table: every campaign × keyword × match type of every
+    marketplace in scope, in one shape, plus what period each marketplace's rows cover.
+
+    - blinkit: search-term rows of each current campaign's detail snapshot on or before
+      `end` — an 8-day total (`snapshot_date − 7 … snapshot_date`) that cannot follow the
+      window (BLINKIT-NOTES B6), so its period is the snapshot's, flagged `snapshot`.
+    - zepto: `zepto_ad_campaign_detail` summed over the window.
+
+    - instamart: `instamart_ads.keyword_rows` (campaign-attributed) over the window.
+
+    Fields a marketplace does not report are None, never 0 (Blinkit: clicks, orders; Zepto:
+    position, the direct/indirect SALES split; Instamart: match type, position, orders).
+    """
+    periods: list[dict] = []
+    items: list[dict] = []
+    if marketplaces is None or "blinkit" in marketplaces:
+        page = await get_keywords(
+            session, tenant_id=tenant_id, pagination=Pagination(page=1, limit=10_000),
+            marketplaces=["blinkit"], target_type="keyword", recent_only=True, as_of=end)
+        snaps = [k.snapshot_date for k in page.items]
+        latest = max(snaps) if snaps else None
+        periods.append({
+            "platform": "blinkit", "snapshot": True,
+            "start": latest - BLINKIT_SNAPSHOT_SPAN if latest else None, "end": latest,
+        })
+        items += [
+            {
+                "platform": "blinkit",
+                "campaign_id": k.campaign_id,
+                "keyword": k.target,
+                "match_type": k.match_type,
+                "spend": k.budget_consumed,
+                "sales": round(k.direct_sales + k.indirect_sales, 2),
+                "impressions": k.impressions,
+                "atc": k.direct_atc + k.indirect_atc,
+                "direct_sales": k.direct_sales,
+                "indirect_sales": k.indirect_sales,
+                "position": k.most_viewed_position,
+                "cpm": k.cpm,
+                "snapshot_date": k.snapshot_date,
+            }
+            for k in page.items
+        ]
+    if zepto_ads.wants_zepto(marketplaces):
+        periods.append({"platform": zepto_ads.SLUG, "snapshot": False,
+                        "start": start, "end": end})
+        items += await zepto_ads.keyword_rows(
+            session, tenant_id=tenant_id, start=start, end=end)
+    if instamart_ads.wants_instamart(marketplaces):
+        periods.append({"platform": "instamart", "snapshot": False,
+                        "start": start, "end": end})
+        items += await instamart_ads.keyword_rows(
+            session, tenant_id=tenant_id, start=start, end=end)
+    return {"periods": periods, "items": items}
+
+
+# Which marketplaces report ad performance by product / retail category / city. Blinkit
+# reports none of them (its ad data stops at campaign and keyword — BLINKIT-NOTES B7);
+# Instamart reports products only. Mirrored by the frontend's explorer coverage chips.
+BREAKDOWN_MARKETPLACES = {"product": ("zepto", "instamart"), "category": ("zepto",),
+                          "city": ("zepto",)}
+
+
+async def get_breakdowns(
+    session: AsyncSession,
+    *,
+    tenant_id: uuid.UUID,
+    start: date,
+    end: date,
+    dimension: str,
+    marketplaces: list[str] | None = None,
+    ad_type: str | None = None,
+) -> list[dict]:
+    """Ad spend and return per product, retail category or city, for every marketplace in
+    scope that reports it — the Insights "Breakdowns" card. Rows carry `platform`, `key`
+    (stable per marketplace) and `name`; product rows also `detail` (the retail category)
+    and `image_link`.
+
+    `ad_type` is Zepto's ad type (sponsored_products / _brands / _display); it narrows
+    Zepto's rows. Each dimension is a separate slicing of the SAME spend, so rows of
+    different dimensions must never be added together (they used to share one "All" view).
+    """
+    if dimension not in BREAKDOWN_MARKETPLACES:
+        raise ValueError(f"unknown dimension {dimension!r}")
+    out: list[dict] = []
+    if zepto_ads.wants_zepto(marketplaces):
+        if dimension == "product":
+            rows = await zepto_ads.products(
+                session, tenant_id=tenant_id, start=start, end=end,
+                campaign_category=ad_type)
+            out += [
+                {**r, "platform": zepto_ads.SLUG, "key": r["product_variant_id"],
+                 "name": r["product_name"] or r["product_variant_id"],
+                 "detail": r["product_category"]}
+                for r in rows
+            ]
+        else:
+            rows = await zepto_ads.breakdown(
+                session, tenant_id=tenant_id, start=start, end=end, dimension=dimension,
+                campaign_category=ad_type)
+            out += [{**r, "platform": zepto_ads.SLUG, "key": r["name"]} for r in rows]
+    # Instamart reports products (no ad types, so an ad-type filter leaves it out); its rows
+    # carry which campaigns each total is made of.
+    if dimension == "product" and not ad_type and instamart_ads.wants_instamart(marketplaces):
+        out += [
+            {**r, "platform": "instamart", "key": r["product_variant_id"],
+             "name": r["product_name"] or r["product_variant_id"], "detail": None,
+             # Instamart reports no unit count on the ad side (always 0) — not reported, not 0.
+             "units_sold": None}
+            for r in await instamart_ads.products(
+                session, tenant_id=tenant_id, start=start, end=end)
+        ]
+    out.sort(key=lambda r: r["spend"], reverse=True)
+    return out
+
+
+def _numeric_id(platform: str, campaign_id: str) -> int:
+    try:
+        return int(campaign_id)
+    except ValueError:
+        raise ValueError(f"{platform} campaign ids are numbers, got {campaign_id!r}") from None
 
 
 async def get_sponsored_sov(

@@ -3,6 +3,7 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.middleware.gzip import GZipMiddleware
 
 import app.utils.logger  # noqa: F401 — installs the unified logging pipeline before anything logs
 from app.core.config import settings
@@ -86,6 +87,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Compress responses over ~1 KB. The JSON the dashboard pulls compresses 13–19×: the Insights
+# keyword table is 251 KB raw, 13 KB gzipped (measured 2026-10-08). Browsers decompress
+# transparently; small responses are left alone, where gzip would cost more than it saves.
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 
 register_exception_handlers(app)
 app.include_router(api_router, prefix="/api")

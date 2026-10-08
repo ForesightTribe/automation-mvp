@@ -3,7 +3,7 @@ import { Drawer } from "../../../components/ui/Drawer";
 import { EChart } from "../../../components/charts/EChart";
 import { buCompareOption } from "../chartOptions";
 import { buBand } from "../buBands";
-import { useDailyBudgetUtilisation } from "../hooks";
+import { campaignKey, useDailyBudgetUtilisation } from "../hooks";
 import { Loading } from "../../../components/feedback/Loading";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { formatCurrency, formatDate } from "../../../lib/format";
@@ -46,7 +46,10 @@ export const BuDetailDrawer = ({ open, campaign, onClose }) => {
 		enabled: open,
 	});
 
-	const row = campaigns.find((c) => c.campaign_id === campaign?.campaign_id);
+	// By marketplace AND id: ids are per-marketplace namespaces.
+	const row = campaign
+		? campaigns.find((c) => c.key === campaignKey(campaign))
+		: undefined;
 	const days = row?.days ?? NO_DAYS;
 	const ran = days.filter((d) => d.bu != null);
 	const spend = ran.reduce((s, d) => s + d.spend, 0);

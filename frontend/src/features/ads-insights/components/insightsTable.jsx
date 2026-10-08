@@ -1,7 +1,35 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronRight, ChevronsUpDown } from "lucide-react";
 import { HoverHint } from "../../../components/ui/HoverHint";
+import { MarketplaceMark } from "../../../components/ui/MarketplaceMark";
+import { useMarketplaces } from "../../../context/MarketplaceContext";
+import { marketplaceName } from "../../../lib/marketplace";
 import { sortRows } from "../../../lib/sortRows";
+
+/**
+ * Which marketplace a row belongs to: its mark, plus the name unless `compact`. Rows from
+ * several marketplaces sit in one table on this page, so a row has to say whose it is.
+ */
+export const MarketplaceTag = ({ slug, compact = false }) => {
+	const { marketplaces } = useMarketplaces();
+	const mp = marketplaces.find((m) => m.slug === slug) ?? {
+		slug,
+		name: marketplaceName(slug),
+	};
+	return (
+		<span
+			className="inline-flex items-center gap-1.5"
+			title={compact ? marketplaceName(slug) : undefined}
+		>
+			<MarketplaceMark marketplace={mp} size={16} />
+			{!compact && (
+				<span className="text-content-muted">
+					{marketplaceName(slug)}
+				</span>
+			)}
+		</span>
+	);
+};
 
 /**
  * The shared parts of an insights table.
@@ -11,15 +39,19 @@ import { sortRows } from "../../../lib/sortRows";
  * download. Keeping the pieces here is what stops the three from drifting into three
  * different-looking tables.
  */
-/** "EXACT_MATCH" reads as "Exact Match". Platform enums are shouted; the table is not. */
-export const enumLabel = (raw) =>
-	raw
-		? String(raw)
-				.toLowerCase()
-				.split("_")
-				.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
-				.join(" ")
-		: "—";
+/** "EXACT_MATCH" reads as "Exact Match". Platform enums are shouted; the table is not.
+ * A short all-caps word is an acronym, not a shout, and stays as it is: Zepto's "PLA" read
+ * "Pla". Already-cased words ("Display") pass through the same split unharmed. */
+export const enumLabel = (raw) => {
+	if (!raw) return "—";
+	const s = String(raw);
+	if (/^[A-Z]{2,3}$/.test(s)) return s;
+	return s
+		.toLowerCase()
+		.split("_")
+		.map((w) => w.charAt(0).toUpperCase() + w.slice(1))
+		.join(" ");
+};
 
 export const TH =
 	"whitespace-nowrap px-3 py-2.5 text-[11px] font-semibold uppercase tracking-[0.08em] text-content-subtle";
@@ -205,6 +237,45 @@ export const NameCell = ({
 			</HoverHint>
 		</div>
 	</td>
+);
+
+/**
+ * A small table inside a drawer section, WITH headers — every drawer list uses this, so a
+ * column of numbers always says what it is. `head` is `[{ label, align }]`; `rows` is
+ * `[{ key, cells }]`, one cell per head entry. Right-aligned columns are numbers.
+ */
+export const MiniTable = ({ head, rows }) => (
+	<table className="w-full border-collapse text-sm">
+		<thead>
+			<tr className="border-b border-border text-[11px] tracking-[0.08em] text-content-subtle uppercase">
+				{head.map((h) => (
+					<th
+						key={h.label}
+						className={`px-2 py-2 font-semibold first:pl-0 last:pr-0 ${h.align === "right" ? "text-right" : "text-left"}`}
+					>
+						{h.label}
+					</th>
+				))}
+			</tr>
+		</thead>
+		<tbody>
+			{rows.map((r) => (
+				<tr
+					key={r.key}
+					className="border-b border-border/60 last:border-0"
+				>
+					{r.cells.map((c, i) => (
+						<td
+							key={head[i].label}
+							className={`px-2 py-1.5 first:pl-0 last:pr-0 ${head[i].align === "right" ? "text-right tabular-nums" : "max-w-56"}`}
+						>
+							{c}
+						</td>
+					))}
+				</tr>
+			))}
+		</tbody>
+	</table>
 );
 
 /**

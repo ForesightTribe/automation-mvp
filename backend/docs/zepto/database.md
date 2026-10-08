@@ -183,8 +183,12 @@ _KEEP_IF_NULL = {
 campaigns — about half of Sereko's keyword spend (last 30 days: keyword PLA ₹1.94 L,
 subcategory-targeted PLA ₹1.01 L, sponsored-brands Display ₹0.79 L). Since 2026-10-07 it is
 fetched for **every campaign with impressions** (the report answers for all three kinds —
-probed read-only on Sereko). Once the detail is backfilled and its daily sums match the
-brand table, the brand table can retire. Until then: never add the two together.
+probed read-only on Sereko). Backfilled and verified 2026-10-07: the detail's daily sums
+equal the brand table's. **Since 2026-10-08 nothing reads the brand table** — the Ads
+Insights keyword table (`/ads/keyword-insights`) and the export script's "Ads Keywords"
+sheet read the detail; only the orphaned old `/ads` page's Zepto card (`/ads/zepto-keywords`)
+still does, until that page is deleted. Then it is dropped after deploy (the scrape still
+writes it until then — PLAN-private-scrape ledger #8). Never add the two together.
 
 ---
 

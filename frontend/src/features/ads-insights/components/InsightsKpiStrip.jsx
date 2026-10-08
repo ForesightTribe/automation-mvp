@@ -8,6 +8,9 @@ import { EChart } from "../../../components/charts/EChart";
 import { miniCompareOption, twoBarOption, SERIES } from "../chartOptions";
 import { usePreviousPerformance, usePreviousRange } from "../hooks";
 import { useMarketplaces } from "../../../context/MarketplaceContext";
+import { chartColor } from "../../../lib/marketplaceColors";
+import { marketplaceName } from "../../../lib/marketplace";
+import { MarketplaceTag } from "./insightsTable";
 import {
 	formatCurrency,
 	formatDate,
@@ -34,7 +37,7 @@ const ABOUT = {
 	"Add-to-carts":
 		"Adds to cart the marketplace attributes to these ads. A cart is not an order, so this sits above units sold and the gap between them is abandonment.",
 	"Units sold":
-		"Units the marketplace attributes to these ads. Multiple units of one SKU in a single order each count.",
+		"Units the marketplace attributes to these ads. Multiple units of one SKU in a single order each count. Zepto reports orders, not units, so its part of this figure counts each order once.",
 	"Campaigns that ran":
 		"Campaigns that delivered at least once in this window. A campaign that exists but never served does not appear here.",
 };
@@ -75,6 +78,59 @@ const shape = (rows, pick) => {
 		high: sorted[sorted.length - 1],
 		mean: sum / points.length,
 	};
+};
+
+/**
+ * A tile's split by marketplace, under its sparkline: a thin strip of each marketplace's
+ * share plus its own figure, for totals; each marketplace's own ratio, for RoAS / ACoS,
+ * which do not add up. Shown only when more than one marketplace is in view. A marketplace
+ * that does not report the figure shows "—" (Instamart's units).
+ */
+const MarketplaceSplit = ({ split }) => {
+	if (!split) return null;
+	const { items, format, additive } = split;
+	const known = items.filter((x) => x.value != null);
+	const sum = known.reduce((s, x) => s + x.value, 0);
+	return (
+		<div className="mt-2 flex flex-col gap-1.5">
+			{additive && sum > 0 && (
+				<div className="flex h-1 gap-0.5 overflow-hidden rounded-full">
+					{known
+						.filter((x) => x.value > 0)
+						.map((x) => (
+							<span
+								key={x.slug}
+								title={`${marketplaceName(x.slug)}: ${format(x.value)} · ${((x.value / sum) * 100).toFixed(1)}%`}
+								className="block min-w-0.5 opacity-90"
+								style={{
+									flex: `${x.value} 1 0`,
+									background: chartColor(x.slug),
+								}}
+							/>
+						))}
+				</div>
+			)}
+			<div className="flex flex-wrap gap-x-3 gap-y-1 text-[11px] text-content-muted tabular-nums">
+				{items.map((x) => (
+					<span
+						key={x.slug}
+						className="inline-flex items-center gap-1"
+					>
+						<MarketplaceTag slug={x.slug} compact />
+						{x.value == null ? (
+							<span
+								title={`${marketplaceName(x.slug)} doesn't report this reliably`}
+							>
+								—
+							</span>
+						) : (
+							format(x.value)
+						)}
+					</span>
+				))}
+			</div>
+		</div>
+	);
 };
 
 const Tile = ({ tile, rows, prevRows, prevRange, open, onToggle }) => {
@@ -137,6 +193,8 @@ const Tile = ({ tile, rows, prevRows, prevRange, open, onToggle }) => {
 					/>
 				) : null}
 			</div>
+
+			<MarketplaceSplit split={tile.split} />
 
 			{/* The detail is a disclosure, not a permanent block: eight tiles each carrying five
 			    extra numbers would bury the headline they exist to state. */}
@@ -249,11 +307,39 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 	const instamartOnly = selected?.length === 1 && selected[0] === "instamart";
 
 	const m = (key) => summary?.[key] ?? {};
+
+	// Each selected marketplace's share of the tiles, biggest spender first.
+	const parts = (summary?.by_marketplace ?? [])
+		.filter((p) => selected.includes(p.platform))
+		.sort((a, b) => b.ad_spend - a.ad_spend);
+	const splitOf = (key, format) =>
+		parts.length > 1
+			? {
+					additive: true,
+					format,
+					items: parts.map((p) => ({
+						slug: p.platform,
+						value: p[key],
+					})),
+				}
+			: null;
+	const ratioOf = (fn, format) =>
+		parts.length > 1
+			? {
+					additive: false,
+					format,
+					items: parts.map((p) => ({
+						slug: p.platform,
+						value: fn(p),
+					})),
+				}
+			: null;
 	const series = (fn) => performance.map(fn);
 
 	const tiles = [
 		{
 			label: "Ad Spend",
+			split: splitOf("ad_spend", formatCurrency),
 			value: formatCurrency(m("ad_spend").value),
 			raw: m("ad_spend").value,
 			prev: m("ad_spend").prev,
@@ -265,6 +351,7 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "Ad Revenue",
+			split: splitOf("ad_sales", formatCurrency),
 			value: formatCurrency(m("ad_sales").value),
 			raw: m("ad_sales").value,
 			prev: m("ad_sales").prev,
@@ -276,6 +363,10 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "RoAS",
+			split: ratioOf(
+				(p) => (p.ad_spend ? p.ad_sales / p.ad_spend : null),
+				formatRoas,
+			),
 			value: formatRoas(m("roas").value),
 			raw: m("roas").value,
 			prev: m("roas").prev,
@@ -287,6 +378,10 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "ACoS",
+			split: ratioOf(
+				(p) => (p.ad_sales ? p.ad_spend / p.ad_sales : null),
+				formatPercent,
+			),
 			value: formatPercent(m("acos").value),
 			raw: m("acos").value,
 			prev: m("acos").prev,
@@ -302,6 +397,7 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "Impressions",
+			split: splitOf("impressions", formatNumber),
 			value: formatNumber(m("impressions").value),
 			raw: m("impressions").value,
 			prev: m("impressions").prev,
@@ -312,6 +408,7 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "Add-to-carts",
+			split: splitOf("atc", formatNumber),
 			value: formatNumber(m("atc").value),
 			raw: m("atc").value,
 			prev: m("atc").prev,
@@ -319,6 +416,7 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "Units sold",
+			split: splitOf("units_sold", formatNumber),
 			value: formatNumber(m("units_sold").value),
 			raw: m("units_sold").value,
 			prev: m("units_sold").prev,
@@ -326,6 +424,7 @@ export const InsightsKpiStrip = ({ summary, performance = [] }) => {
 		},
 		{
 			label: "Campaigns that ran",
+			split: splitOf("active_campaigns", formatNumber),
 			value: formatNumber(m("active_campaigns").value),
 			raw: m("active_campaigns").value,
 			prev: m("active_campaigns").prev,
