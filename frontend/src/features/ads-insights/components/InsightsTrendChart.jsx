@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
 	useAdsPerformance,
 	usePreviousPerformance,
@@ -7,11 +7,11 @@ import {
 import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { ViewToggle } from "../../../components/ui/ViewToggle";
+import { ChannelChips } from "../../../components/ui/ChannelChips";
+import { MarketplaceTag } from "./insightsTable";
 import {
-	insightsTrendByMarketplaceOption,
 	insightsTrendOption,
 } from "../chartOptions";
-import { useMarketplaces } from "../../../context/MarketplaceContext";
 import { chartColor } from "../../../lib/marketplaceColors";
 import { marketplaceName } from "../../../lib/marketplace";
 import { InfoTooltip } from "../../../components/ui/InfoTooltip";
@@ -25,10 +25,6 @@ const METRICS = [
 	{ value: "roas", label: "RoAS" },
 ];
 
-const SPLITS = [
-	{ value: "total", label: "All marketplaces" },
-	{ value: "marketplace", label: "By marketplace" },
-];
 
 /**
  * Spend vs revenue over the window, with RoAS as its own view rather than a second axis.
@@ -41,12 +37,9 @@ const SPLITS = [
 export const InsightsTrendChart = () => {
 	const { data, isLoading, error, refetch } = useAdsPerformance();
 	const [metric, setMetric] = useState("money");
-	// "By marketplace" splits the chart: daily spend stacked per marketplace, or a RoAS line
-	// each. Offered only when more than one marketplace is in view.
-	const [split, setSplit] = useState("total");
-	const { selected } = useMarketplaces();
-	const multi = selected.length > 1;
-	const bySplit = multi && split === "marketplace";
+	// Scope: everything together, or one channel on its own. Not a multi-select
+	// — the sum of an arbitrary subset is a number with no name.
+	const [scope, setScope] = useState("all");
 	// Compared only once asked for: the previous window is a second request, and most
 	// readings of this card never need it.
 	const [compare, setCompare] = useState(false);
@@ -70,18 +63,45 @@ export const InsightsTrendChart = () => {
 				color: chartColor(slug),
 			}));
 	}, [rows]);
+	// Declared before the memos that read it: a const referenced earlier in
+	// the body throws at render, and the bundler cannot see it.
+	const bySplitAvailable = marketplaces.length > 1;
+
+	// Rows for the chosen scope. "all" keeps account totals; a channel swaps in
+	// that channel's slice. ⚠️ Must be applied to BOTH windows, or the delta
+	// compares one channel against the whole account.
+	const scopeRows = useCallback(
+		(list) => {
+			if (scope === "all") return list;
+			return list.map((r) => {
+				const s = r.by_marketplace?.[scope];
+				return {
+					...r,
+					budget_consumed: s?.budget_consumed ?? 0,
+					ad_sales: s?.ad_sales ?? 0,
+					impressions: s?.impressions ?? 0,
+					roas: s?.budget_consumed ? s.ad_sales / s.budget_consumed : null,
+				};
+			});
+		},
+		[scope],
+	);
+
+	const filtered = useMemo(() => scopeRows(rows), [scopeRows, rows]);
+	const prevFiltered = useMemo(
+		() => scopeRows(prevRows),
+		[scopeRows, prevRows],
+	);
+
+
+
 	const option = useMemo(
 		() =>
-			bySplit
-				? insightsTrendByMarketplaceOption(rows, {
-						metric,
-						marketplaces,
-					})
-				: insightsTrendOption(rows, {
-						metric,
-						previous: compare && prevRows.length ? prevRows : null,
-					}),
-		[rows, metric, compare, prevRows, bySplit, marketplaces],
+			insightsTrendOption(filtered, {
+				metric,
+				previous: compare && prevFiltered.length ? prevFiltered : null,
+			}),
+		[filtered, metric, compare, prevFiltered],
 	);
 
 	const totals = (list) => {
@@ -90,8 +110,43 @@ export const InsightsTrendChart = () => {
 		return { spend, revenue, roas: spend ? revenue / spend : null };
 	};
 
+	// Flattened to (day x channel) when several report, so each figure can be
+	// attributed. The RoAS of a row is rebuilt from that row's own bases.
+	const tableRows = useMemo(() => {
+		// A chosen channel narrows the table to its own rows; "all" keeps every
+		// channel, one row per day each.
+		if (scope !== "all")
+			return filtered.map((r) => ({ ...r, channel: scope }));
+		if (!bySplitAvailable) return rows;
+		const out = [];
+		for (const r of rows) {
+			for (const { slug } of marketplaces) {
+				const s = r.by_marketplace?.[slug];
+				if (!s) continue;
+				out.push({
+					date: r.date,
+					channel: slug,
+					budget_consumed: s.budget_consumed ?? 0,
+					ad_sales: s.ad_sales ?? 0,
+					impressions: s.impressions ?? 0,
+					roas: s.budget_consumed ? s.ad_sales / s.budget_consumed : null,
+				});
+			}
+		}
+		return out;
+	}, [rows, marketplaces, bySplitAvailable, scope, filtered]);
+
 	const columns = [
 		{ key: "date", label: "Date", render: (r) => formatDate(r.date) },
+		...(bySplitAvailable
+			? [
+					{
+						key: "channel",
+						label: "Channel",
+						render: (r) => <MarketplaceTag slug={r.channel} compact />,
+					},
+				]
+			: []),
 		{
 			key: "budget_consumed",
 			label: "Spend",
@@ -138,13 +193,23 @@ export const InsightsTrendChart = () => {
 			error={error}
 			refetch={refetch}
 			isEmpty={!rows.length}
+			toolbar={
+				bySplitAvailable && (
+					<ChannelChips
+						slugs={marketplaces.map((m) => m.slug)}
+						value={scope === "all" ? null : scope}
+						onSelect={(v) => setScope(v ?? "all")}
+						allLabel="All channels"
+					/>
+				)
+			}
 			renderChart={() => (
 				<div className="flex flex-col gap-3">
 					<EChart option={option} height={300} />
 					{/* Below the chart, not in the header: it reveals what sits underneath, so it
 					    belongs at the end of the thing it extends rather than above it. The
 					    comparison overlays the totals, so the split view does not offer it. */}
-					{!bySplit && (
+					{(
 						<button
 							type="button"
 							aria-expanded={compare}
@@ -154,7 +219,7 @@ export const InsightsTrendChart = () => {
 							{compare ? "Hide comparison" : "Show comparison"}
 						</button>
 					)}
-					{compare && !bySplit && (
+					{compare && (
 						<>
 							<p className="text-xs text-content-subtle">
 								Compared with {prevRange.from} to {prevRange.to}
@@ -163,25 +228,18 @@ export const InsightsTrendChart = () => {
 								day.
 							</p>
 							<DeltaStrip
-								now={totals(rows)}
-								before={totals(prevRows)}
+								now={totals(filtered)}
+								before={totals(prevFiltered)}
 							/>
 						</>
 					)}
 				</div>
 			)}
 			columns={columns}
-			rows={rows}
-			rowKey={(r) => r.date}
+			rows={tableRows}
+			rowKey={(r) => (r.channel ? `${r.date}-${r.channel}` : r.date)}
 			extraActions={
 				<>
-					{multi && (
-						<ViewToggle
-							options={SPLITS}
-							value={split}
-							onChange={setSplit}
-						/>
-					)}
 					<ViewToggle
 						options={METRICS}
 						value={metric}

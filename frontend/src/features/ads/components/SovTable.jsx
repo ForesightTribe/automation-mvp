@@ -21,7 +21,7 @@ export const SovTable = ({ barClass = "bg-primary" }) => {
 	const rows = data ?? [];
 
 	return (
-		<Card title="Sponsored share of voice">
+		<Card title="Sponsored share of voice · Blinkit">
 			{isLoading && <Loading label="Loading SOV…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&
@@ -30,7 +30,7 @@ export const SovTable = ({ barClass = "bg-primary" }) => {
 					<EmptyState message="No sponsored SOV in this window." />
 				) : (
 					<div className="overflow-auto" style={{ maxHeight: 360 }}>
-						<table className="w-full border-collapse text-sm">
+						<table className="table-frozen w-full border-collapse text-sm">
 							<thead className="sticky top-0 z-10 bg-card">
 								<tr className="border-b border-border">
 									<th className="px-3 py-2 text-left font-medium text-content-subtle">

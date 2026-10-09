@@ -4,8 +4,13 @@ import { EChart } from "../../../components/charts/EChart";
 import { ChartTableCard } from "../../../components/ui/ChartTableCard";
 import { availabilityTrendOption } from "../../../components/charts/options";
 import { formatDate, formatNumber } from "../../../lib/format";
+import { SectionExport } from "./SectionExport";
+import { downloadCsv, exportName } from "../../../lib/exportTable";
+import { useDateRange } from "../../../context/DateRangeContext";
+import { historySection } from "../exportSections";
 
-const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`);
+const pct = (v) =>
+	v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`;
 
 /**
  * Weekly on-shelf availability % for own SKUs — the stock-out trend. One point per
@@ -14,6 +19,7 @@ const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed
  */
 export const AvailabilityHistoryCard = ({ kind = "main" }) => {
 	const { data, isLoading, error, refetch } = useAvailabilityHistory(kind);
+	const { range } = useDateRange();
 	const rows = data?.points ?? [];
 
 	const option = useMemo(() => availabilityTrendOption(rows), [rows]);
@@ -26,7 +32,12 @@ export const AvailabilityHistoryCard = ({ kind = "main" }) => {
 			align: "right",
 			render: (r) => pct(r.availability_pct),
 		},
-		{ key: "oos_pct", label: "Out of stock", align: "right", render: (r) => pct(r.oos_pct) },
+		{
+			key: "oos_pct",
+			label: "Out of stock",
+			align: "right",
+			render: (r) => pct(r.oos_pct),
+		},
 		{
 			key: "stores",
 			label: "Stores",
@@ -36,17 +47,28 @@ export const AvailabilityHistoryCard = ({ kind = "main" }) => {
 	];
 
 	return (
-		<ChartTableCard
-			title="Availability trend (weekly)"
-			isLoading={isLoading}
-			error={error}
-			refetch={refetch}
-			isEmpty={rows.length === 0}
-			emptyMessage="No availability history yet — it fills in as weekly scrapes accumulate."
-			renderChart={() => <EChart option={option} height={280} />}
-			columns={columns}
-			rows={rows}
-			rowKey={(r) => r.week}
-		/>
+		<div>
+			<SectionExport
+				disabled={!rows.length}
+				onExport={() =>
+					downloadCsv(
+						exportName(`availability-trend-${kind}`, range),
+						[historySection(data)].filter(Boolean),
+					)
+				}
+			/>
+			<ChartTableCard
+				title="Availability trend (weekly)"
+				isLoading={isLoading}
+				error={error}
+				refetch={refetch}
+				isEmpty={rows.length === 0}
+				emptyMessage="No availability history yet — it fills in as weekly scrapes accumulate."
+				renderChart={() => <EChart option={option} height={280} />}
+				columns={columns}
+				rows={rows}
+				rowKey={(r) => r.week}
+			/>
+		</div>
 	);
 };

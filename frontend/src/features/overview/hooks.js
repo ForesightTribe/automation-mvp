@@ -214,23 +214,6 @@ export const useAvailabilityHistory = () => {
 	});
 };
 
-/** Campaigns for ONE day — the same day the glance reads, not the picker's window. */
-export const useTopCampaignsForDay = (day) => {
-	const { activeClientId } = useClient();
-	const { selected, ready } = useMarketplaces();
-	return useQuery({
-		queryKey: ["overview-campaigns-day", activeClientId, day, selected],
-		queryFn: () =>
-			getCampaigns(activeClientId, {
-				start: day,
-				end: day,
-				limit: 50,
-				marketplaces: selected,
-			}),
-		enabled: Boolean(activeClientId) && ready && Boolean(day),
-	});
-};
-
 /** Top campaigns by attributed revenue over the selected window. */
 export const useTopCampaigns = () => {
 	const { activeClientId } = useClient();

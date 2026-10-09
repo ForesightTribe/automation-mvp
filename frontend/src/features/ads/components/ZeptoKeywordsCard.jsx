@@ -139,7 +139,7 @@ export const ZeptoKeywordsCard = () => {
 						}
 					>
 						<div className="overflow-auto">
-							<table className="w-full border-collapse text-sm">
+							<table className="table-frozen w-full border-collapse text-sm">
 								<thead className="sticky top-0 z-10 bg-card">
 									<tr className="border-b border-border">
 										<th className="px-3 py-2 text-left font-medium text-content-subtle">

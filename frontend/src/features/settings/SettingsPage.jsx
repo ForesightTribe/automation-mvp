@@ -1,4 +1,7 @@
 import { useState } from "react";
+import { UsersCard } from "./components/UsersCard";
+import { AccountCard } from "./components/AccountCard";
+import { useAuth } from "../../context/AuthContext";
 import { Plug, Unplug } from "lucide-react";
 import { PageHeader } from "../../components/ui/PageHeader";
 import { Card } from "../../components/ui/Card";
@@ -16,6 +19,7 @@ import { usePlatforms, useDisconnect } from "./hooks";
  * disconnect. Connecting runs in a modal opened from the account it is about.
  */
 export const SettingsPage = () => {
+	const { isAdmin } = useAuth();
 	const { data: platforms, isLoading, error, refetch } = usePlatforms();
 	const disconnect = useDisconnect();
 	// The account whose Connect button was pressed.
@@ -29,6 +33,9 @@ export const SettingsPage = () => {
 				subtitle="Connect and manage the brand's marketplace accounts."
 			/>
 
+			<AccountCard />
+
+			{isAdmin && (
 			<Card title="Marketplace connections">
 				{isLoading && <Loading label="Loading connections…" />}
 				{error && (
@@ -86,6 +93,9 @@ export const SettingsPage = () => {
 					</ul>
 				)}
 			</Card>
+			)}
+
+			{isAdmin && <UsersCard />}
 
 			<OnboardingModal
 				open={Boolean(connecting)}

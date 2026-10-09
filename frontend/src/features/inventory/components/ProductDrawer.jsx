@@ -3,7 +3,7 @@ import { useProductStores } from "../hooks";
 import { Drawer, DrawerStat, AvailabilityPill } from "../../../components/ui/Drawer";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
-import { formatCurrency, formatNumber } from "../../../lib/format";
+import { formatNumber } from "../../../lib/format";
 
 /** Worst first: out of stock, then not carried, then in stock. */
 const rankOf = (s) => (s.listed && !s.in_stock ? 0 : !s.listed ? 1 : 2);
@@ -48,16 +48,32 @@ export const ProductDrawer = ({ productId, kind = "main", onClose }) => {
 			title={data?.product_name || "Product"}
 			subtitle={
 				data
-					? `Listed in ${formatNumber(data.stores_listed)} of ${formatNumber(data.stores_scraped)} stores`
+					// Names the denominator: "of 286" is stores checked.
+					? `Stocked by ${formatNumber(data.stores_listed)} of the ${formatNumber(data.stores_scraped)} stores we checked`
 					: undefined
 			}
 			stats={
 				!isLoading &&
 				!error && (
 					<>
-						<DrawerStat label="In stock" value={formatNumber(data?.stores_in_stock ?? 0)} tone="success" />
-						<DrawerStat label="Out of stock" value={formatNumber(oos.length)} tone={oos.length ? "danger" : undefined} />
-						<DrawerStat label="Not carried" value={formatNumber(absent.length)} tone={absent.length ? "warning" : undefined} />
+						<DrawerStat
+							label="In stock"
+							hint="Stocked and available to buy"
+							value={formatNumber(data?.stores_in_stock ?? 0)}
+							tone="success"
+						/>
+						<DrawerStat
+							label="Out of stock"
+							hint="Stocked, but sold out right now"
+							value={formatNumber(oos.length)}
+							tone={oos.length ? "danger" : undefined}
+						/>
+						<DrawerStat
+							label="Never stocked"
+							hint="Checked, but this store does not list it"
+							value={formatNumber(absent.length)}
+							tone={absent.length ? "warning" : undefined}
+						/>
 					</>
 				)
 			}

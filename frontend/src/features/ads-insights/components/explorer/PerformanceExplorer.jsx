@@ -13,6 +13,8 @@ import { Card } from "../../../../components/ui/Card";
 import { Pagination } from "../../../../components/ui/Pagination";
 import { Select } from "../../../../components/ui/Select";
 import { ViewToggle } from "../../../../components/ui/ViewToggle";
+import { ChartTableSwitch } from "../../../../components/ui/ChartTableSwitch";
+import { ChannelChips } from "../../../../components/ui/ChannelChips";
 import { ExportButton } from "../../../../components/ui/ExportButton";
 import { Loading } from "../../../../components/feedback/Loading";
 import { ErrorState } from "../../../../components/feedback/ErrorState";
@@ -56,11 +58,7 @@ import {
 } from "./explorerModel";
 
 const LIMIT = 20;
-const BREAKDOWN_DIMS = new Set(["product", "category", "city"]);
-const VIEWS = [
-	{ value: "table", label: "Table" },
-	{ value: "chart", label: "Chart" },
-];
+const BREAKDOWN_DIMS = new Set(["product"]);
 const COMBINE = [
 	{ value: "combined", label: "Combined" },
 	{ value: "split", label: "Split by marketplace" },
@@ -155,6 +153,8 @@ export const PerformanceExplorer = () => {
 
 	const { range } = useDateRange();
 	const { selected } = useMarketplaces();
+	// null = every channel. Set by the channel chips above the table.
+	const [channel, setChannel] = useState(null);
 	const reporting = selected.filter((m) => COVER[dim].includes(m));
 	const silent = selected.filter((m) => !COVER[dim].includes(m));
 	const canCombine = dim !== "campaign" && reporting.length > 1;
@@ -172,10 +172,6 @@ export const PerformanceExplorer = () => {
 	const bd = useBreakdowns({
 		dimension: BREAKDOWN_DIMS.has(dim) ? dim : "product",
 		enabled: BREAKDOWN_DIMS.has(dim),
-	});
-	const productsForCategory = useBreakdowns({
-		dimension: "product",
-		enabled: dim === "category" && detail != null,
 	});
 	const { data: sovRows } = useSov();
 	const { data: zeptoSovRows } = useZeptoSov();
@@ -241,6 +237,9 @@ export const PerformanceExplorer = () => {
 	const rows = useMemo(() => {
 		const terms = query.trim().toLowerCase().split(/\s+/).filter(Boolean);
 		let out = allRows.filter((r) => {
+			// A row belongs to a channel if that channel contributed to it; in
+			// Combined mode one row can span several.
+			if (channel && !(r.platforms ?? []).includes(channel)) return false;
 			if (dim === "campaign") {
 				if (state && r.state !== state) return false;
 				if (type && r.type !== type) return false;
@@ -255,6 +254,14 @@ export const PerformanceExplorer = () => {
 			sort === "name" ? (r) => r.name : (col?.value ?? ((r) => r.spend));
 		const dir = order === "asc" ? 1 : -1;
 		out = [...out].sort((a, b) => {
+			// Multi-channel rows first while combined — Blinkit outspends the
+			// rest, so spend alone buries every other channel. The chosen sort
+			// still orders within each group.
+			if (combined) {
+				const am = (a.platforms?.length ?? 1) > 1 ? 0 : 1;
+				const bm = (b.platforms?.length ?? 1) > 1 ? 0 : 1;
+				if (am !== bm) return am - bm;
+			}
 			const x = pick(a);
 			const y = pick(b);
 			// Blanks sink in both directions: a missing figure is not a small one.
@@ -267,7 +274,7 @@ export const PerformanceExplorer = () => {
 		});
 		return out;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [allRows, query, state, type, sort, order, dim, shown]);
+	}, [allRows, query, state, type, sort, order, dim, shown, channel, combined]);
 
 	const totals = useMemo(
 		() =>
@@ -421,7 +428,7 @@ export const PerformanceExplorer = () => {
 				<ExportButton disabled={!rows.length} onExport={onExport} />
 			</SectionExport>
 			<Card
-				title="Performance explorer"
+				title="Performance Explorer"
 				actions={
 					<ViewToggle
 						options={DIMS}
@@ -430,16 +437,18 @@ export const PerformanceExplorer = () => {
 					/>
 				}
 			>
+				{/* The shared channel picker, so this control is the same one
+				    the trend and share-of-voice cards use. Channels that report
+				    nothing for this dimension are listed after it, greyed. */}
 				<div className="mb-3 flex flex-wrap items-center gap-1.5 text-xs text-content-muted">
-					{reporting.map((m) => (
-						<span
-							key={m}
-							className="inline-flex items-center gap-1.5 rounded-full border border-border py-0.5 pr-2.5 pl-1"
-						>
-							<MarketplaceTag slug={m} compact />
-							{marketplaceName(m)}
-						</span>
-					))}
+					{reporting.length > 1 && (
+						<ChannelChips
+							slugs={reporting}
+							value={channel}
+							onSelect={setChannel}
+							allLabel="All channels"
+						/>
+					)}
 					{silent.map((m) => (
 						<span
 							key={m}
@@ -462,11 +471,6 @@ export const PerformanceExplorer = () => {
 							onChange={setCombine}
 						/>
 					)}
-					<ViewToggle
-						options={VIEWS}
-						value={view}
-						onChange={setView}
-					/>
 					<span className="flex-1" />
 					{dim === "campaign" && (
 						<>
@@ -528,6 +532,10 @@ export const PerformanceExplorer = () => {
 						aria-label={`Search ${NOUN[dim]}`}
 						className="w-44 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs text-content transition-colors focus:border-brand focus:outline-none"
 					/>
+					{/* Right-aligned, so it sits directly under the
+					    Campaign / Keyword / Product toggle in the card header
+					    rather than among the controls that change the data. */}
+					<ChartTableSwitch value={view} onChange={setView} />
 				</div>
 
 				{dim === "keyword" && (
@@ -735,7 +743,6 @@ export const PerformanceExplorer = () => {
 					open={detail != null && BREAKDOWN_DIMS.has(dim)}
 					row={BREAKDOWN_DIMS.has(dim) ? detail : null}
 					dim={dim}
-					products={productsForCategory.data ?? []}
 					onClose={() => setDetail(null)}
 				/>
 			</Card>

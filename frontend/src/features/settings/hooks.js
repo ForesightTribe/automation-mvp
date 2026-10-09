@@ -6,6 +6,14 @@ import {
 	startLogin,
 	disconnect,
 	getJob,
+	getAccountUsers,
+	createAccountUser,
+	setUserRole,
+	setUserActive,
+	setUserClients,
+	deleteAccountUser,
+	resetUserPassword,
+	changeOwnPassword,
 } from "./api";
 
 const PLATFORMS = "connections-platforms";
@@ -85,3 +93,65 @@ export const useLoginJob = (jobId) => {
 		},
 	});
 };
+
+// ── Account users ───────────────────────────────────────────────────────────
+
+const USERS = "account-users";
+
+export const useAccountUsers = () =>
+	useQuery({ queryKey: [USERS], queryFn: getAccountUsers });
+
+/** One invalidator for every write — they all change the same table. */
+const useUsersInvalidate = () => {
+	const qc = useQueryClient();
+	return () => qc.invalidateQueries({ queryKey: [USERS] });
+};
+
+export const useCreateAccountUser = () => {
+	const invalidate = useUsersInvalidate();
+	return useMutation({ mutationFn: createAccountUser, onSuccess: invalidate });
+};
+
+export const useSetUserRole = () => {
+	const invalidate = useUsersInvalidate();
+	return useMutation({
+		mutationFn: ({ userId, role }) => setUserRole(userId, role),
+		onSuccess: invalidate,
+	});
+};
+
+export const useSetUserActive = () => {
+	const invalidate = useUsersInvalidate();
+	return useMutation({
+		mutationFn: ({ userId, isActive }) => setUserActive(userId, isActive),
+		onSuccess: invalidate,
+	});
+};
+
+export const useSetUserClients = () => {
+	const invalidate = useUsersInvalidate();
+	return useMutation({
+		mutationFn: ({ userId, clientIds }) => setUserClients(userId, clientIds),
+		onSuccess: invalidate,
+	});
+};
+
+export const useDeleteAccountUser = () => {
+	const invalidate = useUsersInvalidate();
+	return useMutation({
+		mutationFn: ({ userId }) => deleteAccountUser(userId),
+		onSuccess: invalidate,
+	});
+};
+
+export const useResetUserPassword = () =>
+	useMutation({
+		mutationFn: ({ userId, newPassword }) =>
+			resetUserPassword(userId, newPassword),
+	});
+
+export const useChangeOwnPassword = () =>
+	useMutation({
+		mutationFn: ({ currentPassword, newPassword }) =>
+			changeOwnPassword(currentPassword, newPassword),
+	});

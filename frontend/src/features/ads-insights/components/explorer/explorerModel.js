@@ -11,12 +11,12 @@
 import { marketplaceName } from "../../../../lib/marketplace";
 import { enumLabel } from "../insightsTable";
 
+// The API also serves category and city; both are breakdowns of the same spend
+// these three already account for.
 export const DIMS = [
 	{ value: "campaign", label: "Campaign" },
 	{ value: "keyword", label: "Keyword" },
 	{ value: "product", label: "Product" },
-	{ value: "category", label: "Category" },
-	{ value: "city", label: "City" },
 ];
 export const DIM_LABEL = Object.fromEntries(
 	DIMS.map((d) => [d.value, d.label]),
