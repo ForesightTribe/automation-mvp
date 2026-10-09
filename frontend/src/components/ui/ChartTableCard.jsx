@@ -1,10 +1,15 @@
 import { useState } from "react";
 import { Card } from "./Card";
-import { ChartTableSwitch } from "./ChartTableSwitch";
+import { ViewToggle } from "./ViewToggle";
 import { DataTable } from "./DataTable";
 import { Loading } from "../feedback/Loading";
 import { ErrorState } from "../feedback/ErrorState";
 import { EmptyState } from "../feedback/EmptyState";
+
+const VIEW_OPTIONS = [
+	{ value: "chart", label: "Chart" },
+	{ value: "table", label: "Table" },
+];
 
 /**
  * A Card that flips between a chart and a table of the same data. Owns the
@@ -28,17 +33,14 @@ export const ChartTableCard = ({
 	tableMaxHeight,
 	extraActions,
 	persistentActions,
-	// Controls that belong with the content rather than the title — they share
-	// the switch's row, left-aligned against it.
-	toolbar,
 }) => {
 	const [view, setView] = useState("chart");
 
-	// Header actions are about the card; the view switch sits with the content.
 	const actions = (
 		<div className="flex items-center gap-2">
 			{persistentActions}
 			{view === "chart" && extraActions}
+			<ViewToggle options={VIEW_OPTIONS} value={view} onChange={setView} />
 		</div>
 	);
 
@@ -50,23 +52,15 @@ export const ChartTableCard = ({
 				!error &&
 				(isEmpty ? (
 					<EmptyState message={emptyMessage} />
+				) : view === "chart" ? (
+					renderChart()
 				) : (
-					<div className="flex flex-col gap-2">
-						<div className="flex flex-wrap items-center justify-between gap-2">
-							<div className="min-w-0">{toolbar}</div>
-							<ChartTableSwitch value={view} onChange={setView} />
-						</div>
-						{view === "chart" ? (
-							renderChart()
-						) : (
-							<DataTable
-								columns={columns}
-								rows={rows}
-								rowKey={rowKey}
-								maxHeight={tableMaxHeight}
-							/>
-						)}
-					</div>
+					<DataTable
+						columns={columns}
+						rows={rows}
+						rowKey={rowKey}
+						maxHeight={tableMaxHeight}
+					/>
 				))}
 		</Card>
 	);

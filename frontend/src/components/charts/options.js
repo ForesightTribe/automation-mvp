@@ -356,21 +356,12 @@ export const donutOption = (items) => ({
 		trigger: "item",
 		valueFormatter: (v) => formatCurrency(v),
 	},
-	// Vertical, beside the ring: a horizontal legend scrolls past a few items.
-	legend: {
-		orient: "vertical",
-		right: 0,
-		top: "middle",
-		type: "scroll",
-		itemGap: 10,
-	},
+	legend: { bottom: 0, type: "scroll" },
 	series: [
 		{
 			type: "pie",
-			radius: ["40%", "58%"],
-			// Shifted left to clear the legend; vertically centred now that
-			// nothing sits beneath it.
-			center: ["34%", "50%"],
+			radius: ["45%", "70%"],
+			center: ["50%", "45%"],
 			avoidLabelOverlap: true,
 			itemStyle: { borderColor: "#ffffff", borderWidth: 2 },
 			label: { show: false },

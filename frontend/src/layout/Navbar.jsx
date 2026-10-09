@@ -1,5 +1,6 @@
 import { DateRangePicker } from "./DateRangePicker";
 import { MarketplacePills } from "./MarketplacePills";
+import { ProfileMenu } from "./ProfileMenu";
 import { ClientBadge } from "./ClientBadge";
 import { FreshnessBox } from "../features/overview/components/FreshnessBox";
 import { NotificationBell } from "../features/overview/components/NotificationBell";
@@ -39,6 +40,7 @@ export const Navbar = () => (
 		<div className="flex flex-1 basis-0 items-center justify-end gap-4">
 			<FreshnessBox />
 			<NotificationBell />
+			<ProfileMenu />
 		</div>
 	</header>
 );

@@ -179,11 +179,6 @@ export const ZeptoAssetPerformanceCard = () => {
 	// carry the field.
 	const showMatchFilter = isKeyword;
 	const firstColLabel = isAll ? "Asset" : TYPE_LABEL[dimension];
-	// The title follows the dimension. A fixed "Ad asset performance" over a
-	// table of SKUs reads as a different dataset than the one on screen.
-	const cardTitle = isAll
-		? "Ad performance by asset · Zepto"
-		: `Ad performance by ${TYPE_LABEL[dimension].toLowerCase()} · Zepto`;
 	// Name + Impressions, Clicks, CTR, Orders, ATC, Spend, Sales, RoAS.
 	const colCount = 9;
 
@@ -230,7 +225,7 @@ export const ZeptoAssetPerformanceCard = () => {
 
 	return (
 		<Card
-			title={cardTitle}
+			title="Ad asset performance · Zepto"
 			actions={
 				<div className="flex flex-wrap items-center gap-2">
 					<AdTypeSelect
@@ -318,7 +313,7 @@ export const ZeptoAssetPerformanceCard = () => {
 							</p>
 						)}
 						<div className="overflow-auto">
-							<table className="table-frozen w-full border-collapse text-sm">
+							<table className="w-full border-collapse text-sm">
 								<thead className="sticky top-0 z-10 bg-card">
 									<tr className="border-b border-border">
 										<th className="px-3 py-2 text-left font-medium text-content-subtle">

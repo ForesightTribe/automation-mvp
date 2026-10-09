@@ -1,12 +1,10 @@
 from fastapi import APIRouter
-from app.routes import auth, clients, reference, analytics, overview, products, inventory, scorecard, competition, ads, zepto_ads, platforms, users, watchlist, jobs, purchase_orders, reports, campaign_manager
+from app.routes import auth, clients, reference, analytics, overview, products, inventory, scorecard, competition, ads, zepto_ads, platforms, watchlist, jobs, purchase_orders, reports, campaign_manager
 
 api_router = APIRouter()
 
 api_router.include_router(auth.router,        prefix="/auth",        tags=["auth"])
 api_router.include_router(clients.router,     prefix="/clients",     tags=["clients"])
-# Account-scoped, not client-scoped: a user belongs to the account. Admin-only.
-api_router.include_router(users.router,       prefix="/account/users", tags=["account users"])
 api_router.include_router(reference.router,   prefix="/reference",   tags=["reference"])
 api_router.include_router(analytics.router,   prefix="/clients/{client_id}/analytics", tags=["analytics"])
 api_router.include_router(overview.router,     prefix="/clients/{client_id}/overview", tags=["overview"])

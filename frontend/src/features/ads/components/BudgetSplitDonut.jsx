@@ -66,13 +66,13 @@ export const BudgetSplitDonut = () => {
 
 	return (
 		<ChartTableCard
-			title="Budget split by type · Blinkit"
+			title="Budget split by type"
 			isLoading={isLoading}
 			error={error}
 			refetch={refetch}
 			isEmpty={rows.length === 0}
 			emptyMessage="No spend in this window."
-			renderChart={() => <EChart option={option} height={320} />}
+			renderChart={() => <EChart option={option} height={300} />}
 			columns={columns}
 			rows={rows}
 			rowKey={(r) => r.campaign_type ?? "unknown"}

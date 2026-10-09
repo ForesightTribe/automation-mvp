@@ -9,8 +9,6 @@ import { CalendarDays, ChevronLeft, ChevronRight } from "lucide-react";
  * the theme's type, colour or radius, and it looks like a different product every time it
  * opens. The field below is a button that renders the date, and the calendar is ours.
  *
- * `active` marks the field as the one in force — the calendar icon goes brand.
- *
  * ⚠️ `allowClear={false}` for a field that must always hold a date. Clearing writes "" and
  * every consumer then has to survive it: the global range does not, because an empty end
  * makes the window unmeasurable and each page computes its days from it.
@@ -61,7 +59,6 @@ export const DatePicker = ({
 	max,
 	disabled = false,
 	allowClear = true,
-	active = false,
 	placeholder = "Pick a date",
 	ariaLabel = "Date",
 	className = "",
@@ -150,7 +147,7 @@ export const DatePicker = ({
 				{label(value) ?? placeholder}
 				<CalendarDays
 					size={14}
-					className={`shrink-0 ${active || isOpen ? "text-brand" : "text-content-subtle"}`}
+					className="shrink-0 text-content-subtle"
 				/>
 			</button>
 

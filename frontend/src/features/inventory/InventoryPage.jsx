@@ -8,7 +8,6 @@ import { ProductDrawer } from "./components/ProductDrawer";
 import { CityDrawer } from "./components/CityDrawer";
 import { AvailabilityHistoryCard } from "./components/AvailabilityHistoryCard";
 import { PricingCard } from "./components/PricingCard";
-import { AvailabilityExport } from "./components/AvailabilityExport";
 import { FreshnessBadge } from "../../components/ui/FreshnessBadge";
 import { ViewToggle } from "../../components/ui/ViewToggle";
 
@@ -54,12 +53,6 @@ export const InventoryPage = () => {
 					<ViewToggle options={KIND_OPTIONS} value={kind} onChange={setKind} />
 					<FreshnessBadge at={stores?.as_of} />
 				</div>
-			</div>
-
-			{/* Export sits on its own row under the filters: it exports the whole page,
-			    not the filter row it would otherwise read as part of. */}
-			<div className="-mt-3 flex justify-end">
-				<AvailabilityExport kind={kind} />
 			</div>
 
 			<InvKpis kind={kind} />

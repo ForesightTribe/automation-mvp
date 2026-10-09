@@ -9,6 +9,7 @@ import { downloadCsv, exportName } from "../../lib/exportTable";
 import { useDateRange } from "../../context/DateRangeContext";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
+import { formatDate } from "../../lib/format";
 
 /**
  * Ads Insights: where the ad spend went, and what it returned.
@@ -28,13 +29,14 @@ const SUMMARY_ROWS = [
 	["Impressions", "impressions"],
 	["Add-to-carts", "atc"],
 	["Units sold", "units_sold"],
-	["Campaigns", "active_campaigns"],
+	["Campaigns that ran", "active_campaigns"],
 ];
 
 export const InsightsPage = () => {
 	const { data: summary, isLoading, error, refetch } = useAdsSummary();
 	const { data: performance } = useAdsPerformance();
 	const { range } = useDateRange();
+	const period = summary?.period;
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -43,6 +45,22 @@ export const InsightsPage = () => {
 					<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
 						Ads Insights
 					</h1>
+					<p className="text-sm text-content-muted">
+						Where the ad spend went, and what it returned.
+					</p>
+					{/* Ads are scraped the next morning, so a window ending today ends on a day with no
+					    data yet. The KPI tiles (and every comparison) stop at the newest day with
+					    data and compare with the same number of days before — say so (N1). */}
+					{period && period.end < period.picked_end && (
+						<p className="mt-1 text-xs text-content-subtle">
+							Ad data up to {formatDate(period.end)}; later days
+							aren&apos;t in yet. Changes compare{" "}
+							{formatDate(period.start)} –{" "}
+							{formatDate(period.end)} with{" "}
+							{formatDate(period.prev_start)} –{" "}
+							{formatDate(period.prev_end)}.
+						</p>
+					)}
 				</div>
 				{/* The headline numbers and the daily series, as one file. Each table below
 				    carries its own download, because a single file of everything is a file

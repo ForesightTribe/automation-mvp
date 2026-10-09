@@ -37,14 +37,14 @@ export const KpiStrip = ({ data, trends = [] }) => {
 	const tiles = [
 		// Ad plane (marketing dashboard) ─────────────────────────────
 		{
-			label: "Ad spend",
+			label: "Ad Spend",
 			value: money(m("ad_spend").value),
 			delta: m("ad_spend").delta_pct,
 			series: series((t) => t.ad_spend),
 			sparkColor: "#4f46e5",
 		},
 		{
-			label: "Ad revenue",
+			label: "Ad Revenue",
 			value: money(m("ad_sales").value),
 			delta: m("ad_sales").delta_pct,
 			series: series((t) => t.ad_sales),

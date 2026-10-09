@@ -43,7 +43,7 @@ export const ConfirmDialog = ({
 					</p>
 				)}
 				{error && (
-					<p className="mb-4 rounded-md border-2 border-danger/50 px-3 py-2 text-sm text-danger">
+					<p className="mb-4 rounded-md border border-danger/30 bg-danger-soft px-3 py-2 text-sm text-danger">
 						{error}
 					</p>
 				)}

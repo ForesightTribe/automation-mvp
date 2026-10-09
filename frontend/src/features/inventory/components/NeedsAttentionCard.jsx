@@ -5,10 +5,6 @@ import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { formatNumber } from "../../../lib/format";
-import { SectionExport } from "./SectionExport";
-import { downloadCsv, exportName } from "../../../lib/exportTable";
-import { useDateRange } from "../../../context/DateRangeContext";
-import { needsAttentionSections } from "../exportSections";
 
 const TABS = [
 	{ value: "oos", label: "Out of stock" },
@@ -29,11 +25,7 @@ const TABS = [
  * bigger (all-India on 2026-07-19: 3,707 missing vs 1,206 out of stock) — a single
  * "problems" number would bury that.
  */
-export const NeedsAttentionCard = ({
-	kind = "main",
-	onSelectProduct,
-	onSelectCity,
-}) => {
+export const NeedsAttentionCard = ({ kind = "main", onSelectProduct, onSelectCity }) => {
 	const [chosenTab, setChosenTab] = useState(null);
 	const dist = useDistribution(kind);
 	const cities = useCities(kind);
@@ -45,7 +37,6 @@ export const NeedsAttentionCard = ({
 		cities.refetch();
 	};
 
-	const { range: dateRange } = useDateRange();
 	const scraped = dist.data?.stores_scraped ?? 0;
 
 	const tab = chosenTab ?? "oos";
@@ -75,92 +66,68 @@ export const NeedsAttentionCard = ({
 	const noData = (dist.data?.skus ?? []).length === 0;
 
 	const verb = tab === "oos" ? "out of stock in" : "not listed in";
-	const totalP = (dist.data?.skus ?? []).reduce(
-		(a, s) =>
-			a +
-			(tab === "oos" ? s.stores_out_of_stock : scraped - s.stores_listed),
-		0,
-	);
+	const totalP = (dist.data?.skus ?? []).reduce((a, s) => a + (tab === "oos" ? s.stores_out_of_stock : scraped - s.stores_listed), 0);
 
 	return (
-		<div>
-			<SectionExport
-				disabled={noData}
-				onExport={() =>
-					downloadCsv(
-						exportName(`needs-attention-${tab}`, dateRange),
-						needsAttentionSections(
-							dist.data,
-							cities.data,
-							tab,
-							scraped,
-						),
-					)
-				}
-			/>
-			<Card>
-				<div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-					<div>
-						<h2 className="font-display text-base font-semibold text-content">
-							Needs attention
-						</h2>
-						<p className="text-xs text-content-subtle">
-							{noData
-								? "Nothing matches this filter"
-								: tab === "oos"
-									? `${formatNumber(totalP)} shelves with your product but nothing to sell — chase supply`
-									: `${formatNumber(totalP)} store shelves that could carry a product of yours — chase a listing`}
-						</p>
-					</div>
-					<ViewToggle options={TABS} value={tab} onChange={setTab} />
-				</div>
-
-				{isLoading ? (
-					<Loading label="Loading…" />
-				) : error ? (
-					<ErrorState message={error.message} onRetry={refetch} />
-				) : products.length === 0 && places.length === 0 ? (
-					<p className="py-8 text-center text-sm text-content-subtle">
+		<Card>
+			<div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+				<div>
+					<h2 className="font-display text-base font-semibold text-content">
+						Needs attention
+					</h2>
+					<p className="text-xs text-content-subtle">
 						{noData
-							? "No products match this filter, so there is nothing to measure."
+							? "Nothing matches this filter"
 							: tab === "oos"
-								? "Everything on shelf is in stock. Nothing to chase."
-								: "You're carried for every product in every store we can see."}
+								? `${formatNumber(totalP)} shelves with your product but nothing to sell — chase supply`
+								: `${formatNumber(totalP)} store shelves that could carry a product of yours — chase a listing`}
 					</p>
-				) : (
-					<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-						<Ranked
-							title="Worst products"
-							hint="click to see the stores"
-							rows={products.map((p) => ({
-								key: p.platform_product_id,
-								label: p.product_name || p.platform_product_id,
-								count: p[productKey],
-								frac: p[productKey] / maxP,
-								onClick: () =>
-									onSelectProduct?.(p.platform_product_id),
-							}))}
-							suffix={`stores ${verb}`}
-						/>
-						<Ranked
-							title="Worst locations"
-							hint="click to see the stores"
-							rows={places.map((c) => ({
-								key: c.city,
-								label: c.city || "—",
-								capitalize: true,
-								count: c[cityKey],
-								frac: c[cityKey] / maxC,
-								onClick: c.city
-									? () => onSelectCity?.(c.city)
-									: undefined,
-							}))}
-							suffix="shelves affected"
-						/>
-					</div>
-				)}
-			</Card>
-		</div>
+				</div>
+				<ViewToggle options={TABS} value={tab} onChange={setTab} />
+			</div>
+
+			{isLoading ? (
+				<Loading label="Loading…" />
+			) : error ? (
+				<ErrorState message={error.message} onRetry={refetch} />
+			) : products.length === 0 && places.length === 0 ? (
+				<p className="py-8 text-center text-sm text-content-subtle">
+					{noData
+						? "No products match this filter, so there is nothing to measure."
+						: tab === "oos"
+							? "Everything on shelf is in stock. Nothing to chase."
+							: "You're carried for every product in every store we can see."}
+				</p>
+			) : (
+				<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
+					<Ranked
+						title="Worst products"
+						hint="click to see the stores"
+						rows={products.map((p) => ({
+							key: p.platform_product_id,
+							label: p.product_name || p.platform_product_id,
+							count: p[productKey],
+							frac: p[productKey] / maxP,
+							onClick: () => onSelectProduct?.(p.platform_product_id),
+						}))}
+						suffix={`stores ${verb}`}
+					/>
+					<Ranked
+						title="Worst locations"
+						hint="click to see the stores"
+						rows={places.map((c) => ({
+							key: c.city,
+							label: c.city || "—",
+							capitalize: true,
+							count: c[cityKey],
+							frac: c[cityKey] / maxC,
+							onClick: c.city ? () => onSelectCity?.(c.city) : undefined,
+						}))}
+						suffix="shelves affected"
+					/>
+				</div>
+			)}
+		</Card>
 	);
 };
 
@@ -181,30 +148,22 @@ const Ranked = ({ title, hint, rows, suffix }) => (
 						disabled={!r.onClick}
 						onClick={r.onClick}
 						className={`group w-full rounded-md px-2 py-1.5 text-left ${
-							r.onClick
-								? "cursor-pointer hover:bg-surface-subtle"
-								: "cursor-default"
+							r.onClick ? "cursor-pointer hover:bg-surface-subtle" : "cursor-default"
 						}`}
 					>
 						<div className="flex items-baseline justify-between gap-3 text-sm">
-							<span
-								className={`truncate text-content ${r.capitalize ? "capitalize" : ""}`}
-							>
+							<span className={`truncate text-content ${r.capitalize ? "capitalize" : ""}`}>
 								{r.label}
 							</span>
 							<span className="shrink-0 tabular-nums text-content-muted">
 								{formatNumber(r.count)}
-								<span className="ml-1 text-xs text-content-subtle">
-									{suffix}
-								</span>
+								<span className="ml-1 text-xs text-content-subtle">{suffix}</span>
 							</span>
 						</div>
 						<div className="mt-1 h-1 w-full overflow-hidden rounded-full bg-surface-subtle">
 							<div
 								className="h-full rounded-full bg-danger/70"
-								style={{
-									width: `${Math.max(r.frac * 100, 2)}%`,
-								}}
+								style={{ width: `${Math.max(r.frac * 100, 2)}%` }}
 							/>
 						</div>
 					</button>

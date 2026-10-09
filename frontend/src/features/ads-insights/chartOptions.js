@@ -339,8 +339,6 @@ export const insightsDonutOption = (
 		// Labels anchored to the chart's left and right edges, so a narrow box gives each label
 		// the whole gap beside the ring instead of truncating it ("In…" for Instamart).
 		labelsToEdge = false,
-		// Only worth it with a handful of slices; past that they collide.
-		showLabels = false,
 	} = {},
 ) => ({
 	...ANIMATE,
@@ -368,7 +366,7 @@ export const insightsDonutOption = (
 				borderRadius: 4,
 			},
 			label: {
-				show: showLabels,
+				show: true,
 				formatter: labelsToEdge
 					? (p) =>
 							`${p.name}\n${p.percent < 10 ? p.percent.toFixed(1) : Math.round(p.percent)}%`
@@ -419,50 +417,6 @@ export const insightsDonutOption = (
 						},
 					},
 				],
-});
-
-/**
- * A tile's split by marketplace, as the top half of a donut. No labels and no centre
- * total — the tile's headline is the total and the row under the arc names each
- * marketplace with its figure.
- * Radii are pixels rather than percentages, which would be taken from the shorter side (the
- * height) and leave the arc a sliver in a wide tile.
- */
-export const halfDonutOption = (
-	items,
-	{ format = formatNumber, height = 56 } = {},
-) => ({
-	...ANIMATE,
-	animationDuration: 750,
-	tooltip: {
-		...TOOLTIP,
-		trigger: "item",
-		axisPointer: undefined,
-		// The tile clips its canvas, and a tooltip kept inside 56px covers the arc it describes.
-		appendToBody: true,
-		formatter: (p) => `${p.name}<br/>${format(p.value)} · ${p.percent}%`,
-	},
-	legend: { show: false },
-	series: [
-		{
-			type: "pie",
-			startAngle: 180,
-			endAngle: 360,
-			center: ["50%", height - 2],
-			// Thickness scales with the band too: a 16px arc inside a tall band
-			// reads as a line bent round a corner rather than a donut.
-			radius: [height - 38, height - 18],
-			itemStyle: {
-				borderColor: SURFACE,
-				borderWidth: 2,
-				borderRadius: 3,
-			},
-			label: { show: false },
-			labelLine: { show: false },
-			emphasis: { scale: true, scaleSize: 3 },
-			data: items,
-		},
-	],
 });
 
 const MINI_GRID = { left: 4, right: 4, top: 16, bottom: 4, containLabel: true };
@@ -582,3 +536,143 @@ export const twoBarOption = (
 	],
 });
 
+/**
+ * The trend split by marketplace — the "By marketplace" view of the trend card.
+ *
+ * Money: each day's spend as columns stacked by marketplace (each in its own chart colour,
+ * `lib/marketplaceColors`), total revenue as one line on the same ₹ axis — one axis, never
+ * two. RoAS: one line per marketplace, at most three colours; any further marketplaces fold
+ * into one "Other" line rather than a generated hue. Faint 1× and 3× reference lines.
+ *
+ * `marketplaces` is `[{ slug, name, color }]`, biggest spender first.
+ */
+export const insightsTrendByMarketplaceOption = (
+	rows,
+	{ metric = "money", marketplaces = [] } = {},
+) => {
+	const dates = rows.map((r) => r.date);
+	const slice = (r, slug) => r.by_marketplace?.[slug];
+	const base = {
+		...ANIMATE,
+		legend: {
+			bottom: 0,
+			icon: "roundRect",
+			itemWidth: 10,
+			itemHeight: 10,
+			textStyle: { color: INK_MUTED, fontSize: 12 },
+		},
+		grid: { ...BASE_GRID, bottom: 28 },
+		xAxis: {
+			type: "category",
+			data: dates,
+			boundaryGap: metric === "money",
+			axisLine: { lineStyle: { color: GRID } },
+			axisTick: { show: false },
+			axisLabel: { ...axisLabel, formatter: (d) => String(d).slice(5) },
+		},
+	};
+	if (metric === "money") {
+		return {
+			...base,
+			tooltip: {
+				...TOOLTIP,
+				axisPointer: {
+					type: "shadow",
+					shadowStyle: { color: "rgba(0,0,0,0.04)" },
+				},
+				valueFormatter: (v) => (v == null ? "—" : formatCurrency(v)),
+			},
+			yAxis: {
+				type: "value",
+				splitLine: { lineStyle: { color: GRID, type: [3, 3] } },
+				axisLabel: { ...axisLabel, formatter: (v) => formatNumber(v) },
+			},
+			series: [
+				...marketplaces.map((m, i) => ({
+					name: `${m.name} spend`,
+					type: "bar",
+					stack: "spend",
+					...drawBars(60),
+					barMaxWidth: 22,
+					data: rows.map((r) => slice(r, m.slug)?.budget_consumed ?? 0),
+					itemStyle: {
+						color: m.color,
+						opacity: 0.85,
+						borderColor: SURFACE,
+						borderWidth: 1,
+						borderRadius: i === marketplaces.length - 1 ? [3, 3, 0, 0] : 0,
+					},
+				})),
+				{
+					...lineSeries(
+						"Ad revenue (all)",
+						rows.map((r) => r.ad_sales),
+						INK_MUTED,
+						marketplaces.length,
+					),
+					areaStyle: undefined,
+				},
+			],
+		};
+	}
+	const roasOf = (spend, sales) => (spend ? +(sales / spend).toFixed(2) : null);
+	const shown = marketplaces.slice(0, 3);
+	const rest = marketplaces.slice(3);
+	const series = shown.map((m, i) => ({
+		...lineSeries(
+			m.name,
+			rows.map((r) => {
+				const s = slice(r, m.slug);
+				return s ? roasOf(s.budget_consumed, s.ad_sales) : null;
+			}),
+			m.color,
+			i,
+		),
+		areaStyle: undefined,
+	}));
+	if (rest.length)
+		series.push({
+			...lineSeries(
+				`Other (${rest.length})`,
+				rows.map((r) => {
+					const sp = rest.reduce((a, m) => a + (slice(r, m.slug)?.budget_consumed ?? 0), 0);
+					const sa = rest.reduce((a, m) => a + (slice(r, m.slug)?.ad_sales ?? 0), 0);
+					return roasOf(sp, sa);
+				}),
+				"#B4B0AB",
+				3,
+			),
+			areaStyle: undefined,
+		});
+	if (series.length)
+		series[0].markLine = {
+			symbol: "none",
+			silent: true,
+			data: [
+				{
+					yAxis: 1,
+					lineStyle: { color: "#dc2626", width: 1, type: "solid", opacity: 0.5 },
+					label: { formatter: "1× break-even", position: "insideEndTop", color: "#991b1b", fontSize: 11 },
+				},
+				{
+					yAxis: 3,
+					lineStyle: { color: "#16a34a", width: 1, type: "solid", opacity: 0.5 },
+					label: { formatter: "3× target", position: "insideEndTop", color: "#166534", fontSize: 11 },
+				},
+			],
+		};
+	return {
+		...base,
+		tooltip: {
+			...TOOLTIP,
+			valueFormatter: (v) => (v == null ? "—" : `${Number(v).toFixed(2)}x`),
+		},
+		yAxis: {
+			type: "value",
+			min: 0,
+			splitLine: { lineStyle: { color: GRID, type: [3, 3] } },
+			axisLabel: { ...axisLabel, formatter: (v) => `${v}x` },
+		},
+		series,
+	};
+};

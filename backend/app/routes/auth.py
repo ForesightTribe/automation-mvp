@@ -10,8 +10,6 @@ from app.utils import ratelimit
 from app.utils.logger import logger
 from app.dependencies import CurrentUserDep, SessionDep
 from app.schemas.auth import LoginRequest, TokenResponse, UserOut
-from app.schemas.user_admin import ChangePasswordIn
-from app.services import user_admin_service
 from app.services import auth_service
 
 router = APIRouter()
@@ -96,30 +94,3 @@ async def me(session: SessionDep, current: CurrentUserDep):
             status_code=status.HTTP_404_NOT_FOUND, detail="User not found"
         )
     return user
-
-
-@router.post("/password", status_code=status.HTTP_204_NO_CONTENT)
-async def change_password(
-    session: SessionDep, current: CurrentUserDep, body: ChangePasswordIn
-):
-    """Change your own password.
-
-    Open to any signed-in user, not just admins — everyone starts with a
-    password an admin chose and shared, so without this there is no way to end
-    up with one only they know.
-
-    ⚠️ Does NOT invalidate existing tokens. They are stateless and signed with
-    SECRET_KEY, so a token issued before the change keeps working until it
-    expires; changing a password is not a way to evict a session.
-    """
-    try:
-        await user_admin_service.change_own_password(
-            session,
-            user_id=uuid.UUID(current.user_id),
-            current_password=body.current_password,
-            new_password=body.new_password,
-        )
-    except user_admin_service.UserAdminError as e:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST, detail=str(e)
-        )

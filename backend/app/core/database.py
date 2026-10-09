@@ -9,16 +9,9 @@ from app.core.config import settings
 
 _db_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://", 1)
 
-# Port 6543 is Supabase's TRANSACTION pooler: consecutive queries can land on
-# different backends, so asyncpg's auto-named prepared statements collide
-# (DuplicatePreparedStatementError). Its cache must be off on that port only.
-_tx_pooler = ":6543" in _db_url
-_connect_args = {"statement_cache_size": 0} if _tx_pooler else {}
-
 engine = create_async_engine(
     _db_url,
     echo=settings.DEBUG,
-    connect_args=_connect_args,
     pool_pre_ping=True,
     # Per PROCESS, and every open pooled connection holds one of the Supabase pooler's 45
     # slots (session mode). Configurable because API + runner + each job subprocess +

@@ -18,28 +18,30 @@ import { MarketplaceTag, enumLabel } from "./insightsTable";
 
 const roasText = (v) => (v == null ? "—" : `${v.toFixed(2)}x`);
 const ROW =
-	"grid items-center gap-8 border-b border-muted py-1.5 text-sm grid-cols-[11rem_7rem_5rem_5rem]";
+	"grid items-center gap-3 border-b border-muted py-1.5 text-sm grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_5.5rem_3.5rem_4rem]";
 const ROW_CMP =
-	"grid items-center gap-8 border-b border-muted py-1.5 text-sm grid-cols-[11rem_7rem_5rem_5rem_5.5rem]";
+	"grid items-center gap-3 border-b border-muted py-1.5 text-sm grid-cols-[minmax(0,1.4fr)_minmax(0,2fr)_5.5rem_3.5rem_4rem_4.5rem]";
 
 /** A marketplace with more than this many types shows its top 3 and "+ N more". */
 const FOLD_AFTER = 4;
 
 /**
- * Share of ad spend: a donut of marketplaces, with each marketplace's campaign
- * types beside it. Types are the marketplace's own words and never merged across
- * marketplaces; all type bars share one scale. One marketplace in view splits the
- * donut by type instead.
+ * Where the spend went (2026-10-08, from the Insights lab): a donut of MARKETPLACES on the
+ * left — never more than a handful of slices — and every campaign type grouped under its
+ * marketplace on the right, which doubles as the donut's legend.
+ *
+ * Types are each marketplace's own words (Product Listing / PLA / Item) and are never merged
+ * across marketplaces. All type bars share ONE scale, so a Zepto type and a Blinkit type
+ * compare by length. With a single marketplace in view the donut splits by type instead, since
+ * a one-slice donut says nothing.
+ *
+ * Replaces the old per-type donut, which ran out of colours past five slices.
  */
 export const SpendSplitCard = () => {
 	const { data, isLoading, error, refetch } = useBudgetSplit();
 	const [compare, setCompare] = useState(false);
 	const [open, setOpen] = useState(() => new Set());
-	const {
-		data: prev,
-		isLoading: prevLoading,
-		error: prevError,
-	} = usePreviousBudgetSplit(compare);
+	const { data: prev } = usePreviousBudgetSplit(compare);
 	const prevRange = usePreviousRange();
 
 	const rows = useMemo(
@@ -71,6 +73,7 @@ export const SpendSplitCard = () => {
 			.sort((a, b) => b.spend - a.spend);
 	}, [rows]);
 	const multi = groups.length > 1;
+	const max = Math.max(1, ...rows.map((r) => r.budget_consumed));
 
 	// Share of spend in the previous window, by marketplace and by type, for the comparison.
 	const prevShare = useMemo(() => {
@@ -96,30 +99,22 @@ export const SpendSplitCard = () => {
 			: (groups[0]?.types ?? []).map((t, i) => ({
 					name: enumLabel(t.campaign_type),
 					value: t.budget_consumed,
-					// Past five types the colours repeat; the tail is one grey.
+					// Past five types the colours would repeat: the tail is one "Other" grey.
 					itemStyle: {
 						color: i < SERIES.length ? SERIES[i] : OTHER_COLOR,
 					},
 				}));
 		return insightsDonutOption(items, {
 			total,
-			radius: multi ? ["44%", "63%"] : ["50%", "72%"],
+			radius: ["44%", "62%"],
 			labelsToEdge: true,
-			showLabels: multi,
 		});
 	}, [groups, multi, total]);
 
 	const share = (v) => (total ? (v / total) * 100 : 0);
 	const change = (key, now) => {
 		if (!compare) return null;
-		// An empty cell would read as "no change"; say which it is.
-		if (!prevShare)
-			return (
-				<span className="text-right text-[11px] text-content-subtle">
-					{prevLoading ? "…" : prevError ? "error" : "—"}
-				</span>
-			);
-		const was = prevShare[key];
+		const was = prevShare?.[key];
 		if (was == null)
 			return (
 				<span className="text-right text-[11px] text-content-subtle">
@@ -139,23 +134,20 @@ export const SpendSplitCard = () => {
 
 	const typeRow = (t) => (
 		<div key={`${t.platform}:${t.campaign_type}`} className={rowCls}>
-			<span
-				className={`flex min-w-0 items-center gap-2 text-content ${multi ? "pl-4" : ""}`}
-			>
-				{/* Single-marketplace view splits the donut by type, so the dot
-				    is its legend. */}
-				{!multi && (
-					<span
-						aria-hidden="true"
-						className="size-2 shrink-0 rounded-full"
-						style={{
-							background:
-								SERIES[groups[0].types.indexOf(t)] ??
-								OTHER_COLOR,
-						}}
-					/>
-				)}
-				<span className="truncate">{enumLabel(t.campaign_type)}</span>
+			<span className={`truncate text-content ${multi ? "pl-6" : ""}`}>
+				{enumLabel(t.campaign_type)}
+			</span>
+			<span className="h-2 rounded-full bg-muted">
+				<span
+					className="block h-full rounded-full opacity-85"
+					style={{
+						width: `${((t.budget_consumed / max) * 100).toFixed(1)}%`,
+						background: multi
+							? chartColor(t.platform)
+							: (SERIES[groups[0].types.indexOf(t)] ??
+								OTHER_COLOR),
+					}}
+				/>
 			</span>
 			<span className="text-right tabular-nums">
 				{formatCurrency(t.budget_consumed)}
@@ -179,7 +171,7 @@ export const SpendSplitCard = () => {
 		<Card
 			title={
 				<span className="inline-flex items-center gap-1.5">
-					Spend Distribution
+					Where the spend goes
 					<InfoTooltip label="The share of ad spend in this window: by marketplace in the donut, and by each marketplace's campaign types beside it. Each marketplace names its types its own way, so types are never merged across marketplaces. Percentages are of spend, not revenue; RoAS says what each part earned." />
 				</span>
 			}
@@ -200,9 +192,9 @@ export const SpendSplitCard = () => {
 				<EmptyState message="No ad spend in this window." />
 			)}
 			{!isLoading && !error && rows.length > 0 && (
-				<div className="grid grid-cols-1 items-center gap-7 lg:grid-cols-[23rem_max-content] lg:justify-start lg:gap-x-40">
-					<div>
-						<EChart option={option} height={420} />
+				<div className="grid grid-cols-1 items-start gap-7 lg:grid-cols-[minmax(0,19rem)_minmax(0,1fr)]">
+					<div className="lg:sticky lg:top-20">
+						<EChart option={option} height={280} />
 					</div>
 					<div className="min-w-0">
 						{compare && (
@@ -218,6 +210,7 @@ export const SpendSplitCard = () => {
 							<span>
 								{multi ? "Marketplace / type" : "Campaign type"}
 							</span>
+							<span>Spend</span>
 							<span className="text-right">Spend</span>
 							<span className="text-right">Share</span>
 							<span className="text-right">RoAS</span>
@@ -249,13 +242,14 @@ export const SpendSplitCard = () => {
 													)}
 												</span>
 											</span>
+											<span />
 											<span className="text-right tabular-nums">
 												{formatCurrency(g.spend)}
 											</span>
-											<span className="text-right tabular-nums">
+											<span className="text-right font-normal text-content-subtle tabular-nums">
 												{share(g.spend).toFixed(1)}%
 											</span>
-											<span className="text-right tabular-nums">
+											<span className="text-right font-normal tabular-nums text-content-muted">
 												{roasText(
 													g.spend
 														? g.sales / g.spend
@@ -278,7 +272,7 @@ export const SpendSplitCard = () => {
 													return n;
 												})
 											}
-											className={`py-1 text-left text-xs text-content-muted hover:text-content hover:underline ${multi ? "pl-4" : ""}`}
+											className={`py-1 text-left text-xs text-content-muted hover:text-content hover:underline ${multi ? "pl-6" : ""}`}
 										>
 											{folded
 												? `+ ${g.types.length - 3} more ${marketplaceName(g.platform)} types`

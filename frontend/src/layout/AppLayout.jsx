@@ -1,6 +1,7 @@
 import { Outlet } from "react-router-dom";
 import { Sidebar } from "./Sidebar";
 import { Navbar } from "./Navbar";
+import { Footer } from "./Footer";
 import { ErrorBoundary } from "../components/feedback/ErrorBoundary";
 import { ErrorState } from "../components/feedback/ErrorState";
 import { Loading } from "../components/feedback/Loading";
@@ -9,7 +10,7 @@ import { useMarketplaces } from "../context/MarketplaceContext";
 
 /**
  * The app shell. The Sidebar owns the ENTIRE left column, full height, including
- * the top-left corner; everything else — Navbar and page — stacks in the
+ * the top-left corner; everything else — Navbar, page, Footer — stacks in the
  * column beside it. Each route renders into <Outlet/>. The ErrorBoundary wraps
  * only the page content, so a crash in one page keeps the nav usable.
  *
@@ -44,6 +45,7 @@ export const AppLayout = () => {
 				<main className="flex-1 overflow-y-auto px-4 py-4 lg:px-6 lg:py-6 xl:px-8 2xl:px-9 2xl:py-8">
 					<ErrorBoundary>{page}</ErrorBoundary>
 				</main>
+				<Footer />
 			</div>
 		</div>
 	);

@@ -3,39 +3,25 @@ import { MarketplaceTag } from "../insightsTable";
 import { DIM_LABEL, NOUN } from "./explorerModel";
 import { RoasPill } from "./explorerColumns";
 
-/** The three RoAS bands, in the app's own status colours.
- *
- * Theme tokens, not hard-coded brights — status and channel identity must not
- * share a palette.
- *
- * The band's name and the RoAS number always sit beside the colour, so it is
- * never the only signal.
- */
-const token = (name, fallback) => {
-	if (typeof window === "undefined") return fallback;
-	const v = getComputedStyle(document.documentElement)
-		.getPropertyValue(name)
-		.trim();
-	return v || fallback;
-};
-
+/** The three RoAS bands. Soft status hues: the band's name and the RoAS number always sit
+ * beside the colour, so it is never the only signal. */
 const BANDS = [
 	{
 		label: "Losing money",
 		note: "RoAS below 1×",
-		color: token("--color-danger", "#dc2626"),
+		color: "#f87171",
 		test: (v) => v < 1,
 	},
 	{
 		label: "Below target",
 		note: "RoAS 1× to 3×",
-		color: token("--color-warning", "#d97706"),
+		color: "#fbbf24",
 		test: (v) => v >= 1 && v < 3,
 	},
 	{
 		label: "On target",
 		note: "RoAS 3× or more",
-		color: token("--color-success", "#16a34a"),
+		color: "#4ade80",
 		test: (v) => v >= 3,
 	},
 ];

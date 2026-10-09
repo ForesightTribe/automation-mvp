@@ -57,7 +57,7 @@ export const DateRangePicker = () => {
 					onChange={(v) => setCustomRange(v, range.to)}
 					ariaLabel="From date"
 					allowClear={false}
-					active={custom}
+					className={custom ? "border-primary" : ""}
 				/>
 				<span className="text-xs text-content-subtle">to</span>
 				<DatePicker
@@ -66,7 +66,7 @@ export const DateRangePicker = () => {
 					onChange={(v) => setCustomRange(range.from, v)}
 					ariaLabel="To date"
 					allowClear={false}
-					active={custom}
+					className={custom ? "border-primary" : ""}
 				/>
 			</div>
 		</div>

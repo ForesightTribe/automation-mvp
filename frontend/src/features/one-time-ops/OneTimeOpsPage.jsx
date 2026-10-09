@@ -528,7 +528,7 @@ export const OneTimeOpsPage = () => {
 			/>
 
 			{!isAdmin && (
-				<ReadOnlyNotice what="Changing budgets and starting or stopping campaigns is admin-only." />
+				<ReadOnlyNotice what="Changing budgets and starting or stopping campaigns is admin-only — every action here applies immediately on the marketplace." />
 			)}
 
 			{actionError && (
