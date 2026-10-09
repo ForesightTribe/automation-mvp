@@ -111,6 +111,7 @@ async def create_user(
     full_name: str,
     password: str,
     role: str,
+    client_ids: list[uuid.UUID] | None = None,
 ) -> dict:
     email = (email or "").strip().lower()
     if not email or "@" not in email:
@@ -135,6 +136,15 @@ async def create_user(
         role=role,
     )
     await session.commit()
+    # Scope through set_clients so grants have ONE writer: it owns the
+    # account-ownership check and the 'listed' bookkeeping.
+    if client_ids is not None:
+        await set_clients(
+            session,
+            account_id=account_id,
+            user_id=user.id,
+            client_ids=client_ids,
+        )
     return {"id": user.id, "email": user.email}
 
 

@@ -6,7 +6,7 @@ import {
 	useSetUserClients,
 	useSetUserRole,
 } from "../hooks";
-import { useClient } from "../../../context/ClientContext";
+import { ClientScopePicker } from "./ClientScopePicker";
 
 /**
  * Everything about one user in a single place: what they may do, which clients
@@ -25,7 +25,6 @@ import { useClient } from "../../../context/ClientContext";
  * user's complete access rather than an addition to it.
  */
 export const UserEditModal = ({ user, open, onClose }) => {
-	const { clients } = useClient();
 	const setClients = useSetUserClients();
 	const setRole = useSetUserRole();
 	const resetPassword = useResetUserPassword();
@@ -53,7 +52,9 @@ export const UserEditModal = ({ user, open, onClose }) => {
 	}, [open, user]);
 
 	const toggle = (id) =>
-		setPicked((p) => (p.includes(id) ? p.filter((x) => x !== id) : [...p, id]));
+		setPicked((p) =>
+			p.includes(id) ? p.filter((x) => x !== id) : [...p, id],
+		);
 
 	const save = async () => {
 		setError(null);
@@ -77,39 +78,16 @@ export const UserEditModal = ({ user, open, onClose }) => {
 	const doReset = async () => {
 		setPwError(null);
 		try {
-			await resetPassword.mutateAsync({ userId: user.id, newPassword: pw });
+			await resetPassword.mutateAsync({
+				userId: user.id,
+				newPassword: pw,
+			});
 			setPw("");
 			setPwDone(true);
 		} catch (e) {
 			setPwError(e.message);
 		}
 	};
-
-	const radio = (value, label, hint) => (
-		<label
-			key={value}
-			className={`flex cursor-pointer items-start gap-3 rounded-xl border p-3.5 transition-colors ${
-				scope === value
-					// Border and the radio's own dot carry the brand colour; the
-					// panel stays neutral. A tinted fill on a red brand reads as
-					// a warning rather than a selection.
-					? "border-brand bg-card"
-					: "border-border hover:border-content-subtle"
-			}`}
-		>
-			<input
-				type="radio"
-				name="scope"
-				checked={scope === value}
-				onChange={() => setScope(value)}
-				className="mt-0.5 accent-brand"
-			/>
-			<span>
-				<span className="block text-sm font-medium text-content">{label}</span>
-				<span className="block text-xs text-content-muted">{hint}</span>
-			</span>
-		</label>
-	);
 
 	return (
 		<Modal
@@ -157,38 +135,12 @@ export const UserEditModal = ({ user, open, onClose }) => {
 					</select>
 				</label>
 
-				<span className="mt-1 text-xs font-semibold tracking-wide text-content-subtle uppercase">
-					Client access
-				</span>
-				{radio(
-					"all",
-					"Every client on the account",
-					"Including any client added later.",
-				)}
-				{radio(
-					"listed",
-					"Only the clients I choose",
-					"They will not see that the other clients exist.",
-				)}
-
-				{scope === "listed" && (
-					<div className="flex flex-col gap-1.5 rounded-xl border border-border p-3">
-						{(clients ?? []).map((c) => (
-							<label
-								key={c.id}
-								className="flex cursor-pointer items-center gap-2.5 rounded-lg px-2 py-1.5 text-sm text-content hover:bg-muted"
-							>
-								<input
-									type="checkbox"
-									checked={picked.includes(c.id)}
-									onChange={() => toggle(c.id)}
-									className="accent-brand"
-								/>
-								{c.name}
-							</label>
-						))}
-					</div>
-				)}
+				<ClientScopePicker
+					scope={scope}
+					onScope={setScope}
+					picked={picked}
+					onToggle={toggle}
+				/>
 
 				{error && (
 					<p className="rounded-lg border-2 border-danger/50 px-3 py-2 text-sm text-content">
@@ -222,10 +174,13 @@ export const UserEditModal = ({ user, open, onClose }) => {
 							{resetPassword.isPending ? "Setting…" : "Set"}
 						</Button>
 					</div>
-					{pwError && <p className="text-xs text-danger">{pwError}</p>}
+					{pwError && (
+						<p className="text-xs text-danger">{pwError}</p>
+					)}
 					{pwDone && (
 						<p className="text-xs text-success">
-							Password set. Share it with them directly — no email is sent.
+							Password set. Share it with them directly — no email
+							is sent.
 						</p>
 					)}
 				</div>

@@ -149,6 +149,7 @@ export const PurchaseOrdersPage = () => {
 		{
 			key: "priority",
 			label: "Priority",
+			info: "Priority ranks each PO by the value of outstanding stock and how recoverable the delivery is, helping you focus on the largest amounts still worth chasing. High is ₹50,000 or more still undelivered on an open PO, medium is ₹10,000 to ₹50,000, and below that is low. A PO that has already closed never reads high, and a cancelled PO is always low.",
 			sortValue: (r) => ({ high: 3, medium: 2, low: 1 })[r.priority] ?? 0,
 			render: (r) => <PriorityChip priority={r.priority} />,
 		},

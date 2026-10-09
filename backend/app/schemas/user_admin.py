@@ -28,6 +28,8 @@ class CreateUserIn(BaseModel):
     # in this system, so an invite link is not an option today.
     password: str = Field(min_length=8)
     role: str = "member"
+    # None = every client on the account, the same meaning as SetClientsIn.
+    client_ids: list[uuid.UUID] | None = None
 
 
 class CreateUserOut(BaseModel):

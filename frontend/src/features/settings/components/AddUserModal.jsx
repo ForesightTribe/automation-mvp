@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import { Modal } from "../../../components/ui/Modal";
 import { Button } from "../../../components/ui/Button";
 import { useCreateAccountUser } from "../hooks";
+import { ClientScopePicker } from "./ClientScopePicker";
 
 /**
  * Add a login to the account.
@@ -20,20 +21,37 @@ export const AddUserModal = ({ open, onClose }) => {
 		role: "member",
 	});
 	const [error, setError] = useState(null);
+	// "all" by default — the same access a new user got before this picker.
+	const [scope, setScope] = useState("all");
+	const [picked, setPicked] = useState([]);
 
 	useEffect(() => {
 		if (!open) return;
 		setForm({ email: "", full_name: "", password: "", role: "member" });
+		setScope("all");
+		setPicked([]);
 		setError(null);
 	}, [open]);
 
+	const toggle = (id) =>
+		setPicked((p) =>
+			p.includes(id) ? p.filter((x) => x !== id) : [...p, id],
+		);
+
 	const set = (k) => (e) => setForm((f) => ({ ...f, [k]: e.target.value }));
-	const ready = form.email.includes("@") && form.password.length >= 8;
+	const ready =
+		form.email.includes("@") &&
+		form.password.length >= 8 &&
+		(scope === "all" || picked.length > 0);
 
 	const submit = async () => {
 		setError(null);
 		try {
-			await create.mutateAsync(form);
+			// null = every client, which is what the API reads as scope "all".
+			await create.mutateAsync({
+				...form,
+				client_ids: scope === "all" ? null : picked,
+			});
 			onClose();
 		} catch (e) {
 			setError(e.message);
@@ -42,7 +60,9 @@ export const AddUserModal = ({ open, onClose }) => {
 
 	const field = (label, key, type = "text", placeholder = "") => (
 		<label className="flex flex-col gap-1.5">
-			<span className="text-xs font-medium text-content-muted">{label}</span>
+			<span className="text-xs font-medium text-content-muted">
+				{label}
+			</span>
 			<input
 				type={type}
 				value={form[key]}
@@ -77,10 +97,17 @@ export const AddUserModal = ({ open, onClose }) => {
 			<div className="flex flex-col gap-3">
 				{field("Email", "email", "email", "name@company.com")}
 				{field("Full name", "full_name", "text", "Optional")}
-				{field("Initial password", "password", "text", "At least 8 characters")}
+				{field(
+					"Initial password",
+					"password",
+					"text",
+					"At least 8 characters",
+				)}
 
 				<label className="flex flex-col gap-1.5">
-					<span className="text-xs font-medium text-content-muted">Role</span>
+					<span className="text-xs font-medium text-content-muted">
+						Role
+					</span>
 					<select
 						value={form.role}
 						onChange={set("role")}
@@ -94,6 +121,13 @@ export const AddUserModal = ({ open, onClose }) => {
 						</option>
 					</select>
 				</label>
+
+				<ClientScopePicker
+					scope={scope}
+					onScope={setScope}
+					picked={picked}
+					onToggle={toggle}
+				/>
 
 				{/* Shown rather than left implicit: no email is sent, so the admin
 				    has to pass the password on or the user cannot get in. */}

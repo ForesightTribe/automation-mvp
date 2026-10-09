@@ -1,10 +1,11 @@
 import { useMemo, useState } from "react";
 import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
+import { InfoTooltip } from "./InfoTooltip";
 
 /**
  * Generic data table — the tabular counterpart to the charts, reused across the
  * dashboard (analytics now, products/inventory later). `columns` is
- * [{ key, label, align?, render?, sortValue?, sortable?, hint? }]; `render(row)` overrides the raw
+ * [{ key, label, align?, render?, sortValue?, sortable?, hint?, info? }]; `render(row)` overrides the raw
  * value. `onRowClick(row)` makes each row a target — the row is the record, so the whole
  * row is the hit area rather than a link in one cell.
  * cell value (e.g. to format currency). Numbers should pass `align: "right"`. The body
@@ -133,41 +134,54 @@ export const DataTable = ({
 										: ""
 								}`}
 							>
-								{canSort(c) ? (
-									<button
-										type="button"
-										title={c.hint}
-										onClick={() => onSort(c.key)}
-										className={`inline-flex items-center gap-1 transition-colors hover:text-content ${
-											sort === c.key ? "text-content" : ""
-										} ${c.align === "right" ? "flex-row-reverse" : ""}`}
-									>
-										<Labelled column={c} />
-										{(() => {
-											const active = sort === c.key;
-											const Arrow = active
-												? order === "asc"
-													? ArrowUp
-													: ArrowDown
-												: ChevronsUpDown;
-											return (
-												<Arrow
-													size={11}
-													aria-hidden
-													className={
-														active
-															? "text-brand"
-															: "text-content-subtle/50"
-													}
-												/>
-											);
-										})()}
-									</button>
-								) : (
-									<span title={c.hint}>
-										<Labelled column={c} />
-									</span>
-								)}
+								<span
+									className={`inline-flex items-center gap-1.5 ${
+										c.align === "right"
+											? "flex-row-reverse"
+											: ""
+									}`}
+								>
+									{canSort(c) ? (
+										<button
+											type="button"
+											title={c.hint}
+											onClick={() => onSort(c.key)}
+											className={`inline-flex items-center gap-1 transition-colors hover:text-content ${
+												sort === c.key
+													? "text-content"
+													: ""
+											} ${c.align === "right" ? "flex-row-reverse" : ""}`}
+										>
+											<Labelled column={c} />
+											{(() => {
+												const active = sort === c.key;
+												const Arrow = active
+													? order === "asc"
+														? ArrowUp
+														: ArrowDown
+													: ChevronsUpDown;
+												return (
+													<Arrow
+														size={11}
+														aria-hidden
+														className={
+															active
+																? "text-brand"
+																: "text-content-subtle/50"
+														}
+													/>
+												);
+											})()}
+										</button>
+									) : (
+										<span title={c.hint}>
+											<Labelled column={c} />
+										</span>
+									)}
+									{/* A sibling, not a child: InfoTooltip is a button and
+								    the sort control is too. */}
+									{c.info && <InfoTooltip label={c.info} />}
+								</span>
 							</th>
 						))}
 					</tr>

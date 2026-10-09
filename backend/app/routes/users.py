@@ -45,6 +45,7 @@ async def create_user(session: SessionDep, admin: AdminDep, body: CreateUserIn):
             full_name=body.full_name,
             password=body.password,
             role=body.role,
+            client_ids=body.client_ids,
         )
     except UserAdminError as e:
         raise _bad(e)
