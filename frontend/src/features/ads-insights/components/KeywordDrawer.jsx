@@ -1,40 +1,24 @@
 import { useMemo } from "react";
 import { Drawer } from "../../../components/ui/Drawer";
-import { useCampaigns } from "../hooks";
-import { enumLabel } from "./insightsTable";
-import { formatCurrency, formatNumber } from "../../../lib/format";
+import { Stat, Section } from "../../../components/ui/Stat";
+import { enumLabel, MarketplaceTag, MiniTable } from "./insightsTable";
+import { campaignKey, useAllCampaigns } from "../hooks";
+import { marketplaceName } from "../../../lib/marketplace";
+import { formatCurrency, formatDate, formatNumber } from "../../../lib/format";
+import { figures } from "./explorer/explorerModel";
+import { RoasPill } from "./explorer/explorerColumns";
 
 const dash = "—";
-const roas = (v) => (v == null ? dash : `${v.toFixed(2)}x`);
-const pct = (v) => (v == null ? dash : `${v.toFixed(1)}%`);
+const pct = (v, d = 1) => (v == null ? dash : `${v.toFixed(d)}%`);
 
-const Section = ({ title, hint, children }) => (
-	<section className="mb-6 last:mb-0">
-		<div className="mb-2 flex items-baseline justify-between gap-3">
-			<h3 className="text-[11px] font-semibold tracking-[0.12em] text-content-subtle uppercase">
-				{title}
-			</h3>
-			{hint && (
-				<span className="text-[11px] text-content-subtle">{hint}</span>
-			)}
-		</div>
-		{children}
-	</section>
-);
-
-const Stat = ({ label, value }) => (
-	<div className="bg-card px-4 py-3">
-		<p className="text-[11px] font-semibold tracking-[0.12em] text-content-subtle uppercase">
-			{label}
-		</p>
-		<p className="mt-1 font-display text-lg font-semibold text-content tabular-nums">
-			{value}
-		</p>
-	</div>
-);
+const sum = (rows, pick) => {
+	let n = null;
+	for (const r of rows) if (pick(r) != null) n = (n ?? 0) + pick(r);
+	return n;
+};
 
 const Rows = ({ pairs }) => (
-	<dl className="grid grid-cols-2 gap-x-6 gap-y-2 text-sm">
+	<dl className="grid grid-cols-1 gap-x-6 gap-y-2 text-sm sm:grid-cols-2">
 		{pairs.map(([k, v]) => (
 			<div
 				key={k}
@@ -48,215 +32,284 @@ const Rows = ({ pairs }) => (
 );
 
 /**
- * One keyword in full, opened from the table.
- *
- * A keyword is not one row. The same term can be bid on in several campaigns, each with its
- * own spend and its own result, so the header totals every campaign it runs in and the last
- * section breaks them out. A keyword that runs in one campaign shows the same number twice,
- * which is the honest answer rather than a hidden special case.
- *
- * Read-only. Acting on a keyword belongs in Ad Automation, so opening a detail view can
- * never be what changes a live account.
+ * Two parts of one total as one thin bar, figures beside it. Blinkit splits SALES into direct
+ * (the advertised product) and indirect (the brand's others in the basket); Zepto splits
+ * ORDERS into direct (same SKU) and halo (another of the brand's) — a different measure, so
+ * each is named for what it is.
  */
-export const KeywordDrawer = ({ target, rows, range, open, onClose }) => {
-	const mine = useMemo(
-		() => (rows ?? []).filter((r) => r.target === target),
-		[rows, target],
-	);
-
-	// The keyword rows carry only a campaign id, and an id names nothing to a reader.
-	const { data: campaignPage } = useCampaigns({
-		page: 1,
-		limit: 250,
-		sort: "spend",
-		order: "desc",
-	});
-	const nameOf = useMemo(() => {
-		const by = new Map(
-			(campaignPage?.items ?? []).map((c) => [
-				String(c.campaign_id),
-				c.name,
-			]),
+const SplitBar = ({ a, b, labelA, labelB, format }) => {
+	const total = (a ?? 0) + (b ?? 0);
+	if (!total)
+		return (
+			<p className="text-sm text-content-muted">
+				Nothing attributed in this period.
+			</p>
 		);
-		return (id) => by.get(String(id)) ?? String(id);
-	}, [campaignPage]);
+	return (
+		<>
+			<div className="flex h-2 gap-0.5 overflow-hidden rounded-full bg-muted">
+				<span
+					className="block bg-brand opacity-80"
+					style={{ width: `${(a / total) * 100}%` }}
+				/>
+				<span
+					className="block bg-brand-soft"
+					style={{ width: `${(b / total) * 100}%` }}
+				/>
+			</div>
+			<div className="mt-2 flex justify-between text-sm">
+				<span className="text-content">
+					{labelA} {format(a)}{" "}
+					<span className="text-content-subtle tabular-nums">
+						{pct((a / total) * 100)}
+					</span>
+				</span>
+				<span className="text-content-muted">
+					{labelB} {format(b)}{" "}
+					<span className="text-content-subtle tabular-nums">
+						{pct((b / total) * 100)}
+					</span>
+				</span>
+			</div>
+		</>
+	);
+};
 
-	const totals = useMemo(() => {
-		const sum = (pick) => mine.reduce((s, r) => s + (pick(r) ?? 0), 0);
-		const spend = sum((r) => r.budget_consumed);
-		const direct = sum((r) => r.direct_sales);
-		const indirect = sum((r) => r.indirect_sales);
-		const total = direct + indirect;
-		const impressions = sum((r) => r.impressions);
-		// Positions are per campaign and cannot be summed. The best one is the useful
-		// reading: it is the nearest this keyword got to the top anywhere it ran.
-		const seen = mine
-			.map((r) => r.most_viewed_position)
-			.filter((p) => p != null);
-		return {
-			spend,
-			direct,
-			indirect,
-			total,
-			impressions,
-			atc: sum((r) => (r.direct_atc ?? 0) + (r.indirect_atc ?? 0)),
-			roas: spend ? total / spend : null,
-			directRoas: spend ? direct / spend : null,
-			acos: total ? (spend / total) * 100 : null,
-			cpm: impressions ? (spend / impressions) * 1000 : null,
-			bestPosition: seen.length ? Math.min(...seen) : null,
-			// Distinct campaigns, not rows: one campaign bidding EXACT and SMART is two rows.
-			campaigns: new Set(mine.map((r) => r.campaign_id)).size,
-			matches: [
-				...new Set(mine.map((r) => r.match_type).filter(Boolean)),
-			],
-		};
-	}, [mine]);
+/**
+ * One keyword in full, opened from the Performance explorer: on one marketplace, or across
+ * several when the explorer combines them. `row.members` are its campaign × keyword rows.
+ *
+ * The header totals every campaign that bids on it; the sections break it out by marketplace,
+ * by each marketplace's own attribution split, and by campaign. Blinkit's figures are its
+ * 8-day snapshot (labelled with its dates); Zepto's and Instamart's cover the selected dates.
+ *
+ * Read-only. Acting on a keyword belongs in Ad Automation.
+ */
+export const KeywordDrawer = ({ row, periods = [], open, onClose }) => {
+	const members = useMemo(() => row?.members ?? [], [row]);
+	const { items: campaigns } = useAllCampaigns();
+	const nameOf = useMemo(() => {
+		const by = new Map(campaigns.map((c) => [campaignKey(c), c.name]));
+		return (r) => by.get(campaignKey(r)) ?? String(r.campaign_id);
+	}, [campaigns]);
 
-	if (!open) return null;
+	if (!open || !row) return null;
 
+	const platforms = row.platforms;
+	const byMp = platforms.map((p) => {
+		const rows = members.filter((m) => m.platform === p);
+		return { platform: p, rows, ...figures(rows) };
+	});
+	const matches = [
+		...new Set(members.map((m) => m.match_type).filter(Boolean)),
+	];
+	const campaignsN = new Set(
+		members.map((m) => `${m.platform}:${m.campaign_id}`),
+	).size;
+	// Who reports a figure, among THIS keyword's marketplaces. A figure none of them report
+	// is left out (a Blinkit keyword has no clicks row of dashes); one only some report is
+	// labelled with who, and is computed over those alone (`figures` rebuilds ratios that way),
+	// so a combined keyword's CTR never reads as clicks over everyone's impressions.
+	const reporters = (field) =>
+		platforms.filter((p) =>
+			members.some((m) => m.platform === p && m[field] != null),
+		);
+	const label = (name, field) => {
+		const who = reporters(field);
+		return who.length && who.length < platforms.length
+			? `${name} · ${who.map(marketplaceName).join(", ")} only`
+			: name;
+	};
+	const has = (field) => reporters(field).length > 0;
+	const periodOf = (slug) => {
+		const p = periods.find((x) => x.platform === slug);
+		if (!p?.end) return dash;
+		return `${formatDate(p.start)} – ${formatDate(p.end)}${p.snapshot ? " (8-day total)" : ""}`;
+	};
 	return (
 		<Drawer
 			open={open}
 			onClose={onClose}
-			title={target}
-			subtitle={`${totals.campaigns} campaign${totals.campaigns === 1 ? "" : "s"}${
-				totals.matches.length ? ` · ${totals.matches.join(", ")}` : ""
+			title={row.name}
+			subtitle={`${platforms.map(marketplaceName).join(" · ")} · ${campaignsN} campaign${campaignsN === 1 ? "" : "s"}${
+				matches.length ? ` · ${matches.map(enumLabel).join(", ")}` : ""
 			}`}
 			stats={
 				<>
-					<Stat label="Spend" value={formatCurrency(totals.spend)} />
+					<Stat label="Spend" value={formatCurrency(row.spend)} />
+					<Stat label="Sales" value={formatCurrency(row.sales)} />
 					<Stat
-						label="Total sales"
-						value={formatCurrency(totals.total)}
+						label="RoAS"
+						value={
+							row.roas == null ? dash : `${row.roas.toFixed(2)}x`
+						}
 					/>
-					<Stat label="RoAS" value={roas(totals.roas)} />
 				</>
 			}
 		>
 			<Section
 				title="Performance"
-				hint={range ? `${range.from} to ${range.to}` : ""}
+				hint={platforms.length > 1 ? "" : periodOf(platforms[0])}
 			>
 				<Rows
 					pairs={[
-						["Direct sales", formatCurrency(totals.direct)],
-						["Indirect sales", formatCurrency(totals.indirect)],
-						["Direct RoAS", roas(totals.directRoas)],
-						["ACoS", pct(totals.acos)],
-						["Impressions", formatNumber(totals.impressions)],
-						["Add to cart", formatNumber(totals.atc)],
-						[
-							"Average CPM",
-							totals.cpm == null
-								? dash
-								: formatCurrency(totals.cpm),
-						],
-						[
-							"Best position seen",
-							totals.bestPosition == null
-								? dash
-								: `#${totals.bestPosition}`,
-						],
+						["ACoS", pct(row.acos)],
+						["Impressions", formatNumber(row.impressions)],
+						...(has("clicks")
+							? [
+									[
+										label("Clicks", "clicks"),
+										formatNumber(row.clicks),
+									],
+									[label("CTR", "clicks"), pct(row.ctr, 2)],
+									[
+										label("CPC", "clicks"),
+										row.cpc == null
+											? dash
+											: formatCurrency(row.cpc),
+									],
+								]
+							: []),
+						...(has("atc")
+							? [
+									[
+										label("Add to cart", "atc"),
+										formatNumber(row.atc),
+									],
+								]
+							: []),
+						...(has("orders")
+							? [
+									[
+										label("Orders", "orders"),
+										formatNumber(row.orders),
+									],
+								]
+							: []),
+						...(has("position")
+							? [
+									[
+										label("Best position seen", "position"),
+										`#${row.position}`,
+									],
+								]
+							: []),
 					]}
 				/>
 			</Section>
 
-			<Section
-				title="Direct against indirect"
-				hint="what the ad sold, and what it sold alongside"
-			>
-				{/* One split bar rather than a chart: two parts of one total is a proportion,
-				    and a proportion is read off a single bar faster than off two columns. The
-				    figures stay beside it, because a bar alone cannot be read precisely. */}
-				{totals.total === 0 ? (
-					<p className="text-sm text-content-muted">
-						No sales attributed to this keyword in this window.
-					</p>
-				) : (
-					<>
-						<div className="flex h-3 overflow-hidden rounded-full bg-muted">
+			{/* Always shown, one row per marketplace — with its own period, because Blinkit's
+			    figures are an 8-day total and the others follow the picker. */}
+			<Section title="By marketplace">
+				<MiniTable
+					head={[
+						{ label: "Marketplace" },
+						{ label: "Period" },
+						{ label: "Spend", align: "right" },
+						{ label: "Sales", align: "right" },
+						{ label: "RoAS", align: "right" },
+					]}
+					rows={byMp.map((m) => ({
+						key: m.platform,
+						cells: [
+							<MarketplaceTag key="mp" slug={m.platform} />,
 							<span
-								className="block bg-brand"
-								style={{
-									width: `${(totals.direct / totals.total) * 100}%`,
-								}}
-							/>
-							<span
-								className="block bg-brand-soft"
-								style={{
-									width: `${(totals.indirect / totals.total) * 100}%`,
-								}}
-							/>
-						</div>
-						<div className="mt-2 flex justify-between text-sm">
-							<span className="flex items-center gap-1.5 text-content">
-								<span className="h-2 w-2 rounded-full bg-brand" />
-								Direct {formatCurrency(totals.direct)}
-								<span className="text-content-subtle tabular-nums">
-									{pct((totals.direct / totals.total) * 100)}
-								</span>
-							</span>
-							<span className="flex items-center gap-1.5 text-content-muted">
-								<span className="h-2 w-2 rounded-full bg-brand-soft" />
-								Indirect {formatCurrency(totals.indirect)}
-								<span className="text-content-subtle tabular-nums">
-									{pct(
-										(totals.indirect / totals.total) * 100,
-									)}
-								</span>
-							</span>
-						</div>
-					</>
-				)}
+								key="p"
+								className="text-xs text-content-muted"
+							>
+								{periodOf(m.platform)}
+							</span>,
+							formatCurrency(m.spend),
+							formatCurrency(m.sales),
+							<RoasPill key="r" value={m.roas} />,
+						],
+					}))}
+				/>
 			</Section>
+
+			{byMp.map((m) =>
+				m.platform === "blinkit" ? (
+					<Section
+						key={`split-${m.platform}`}
+						title={`${marketplaceName(m.platform)} · direct against indirect sales`}
+						hint="what the ad sold, and what it sold alongside"
+					>
+						<SplitBar
+							a={sum(m.rows, (r) => r.direct_sales)}
+							b={sum(m.rows, (r) => r.indirect_sales)}
+							labelA="Direct"
+							labelB="Indirect"
+							format={formatCurrency}
+						/>
+					</Section>
+				) : m.platform === "zepto" &&
+				  sum(m.rows, (r) => r.direct_orders) != null ? (
+					<Section
+						key={`split-${m.platform}`}
+						title={`${marketplaceName(m.platform)} · direct against halo orders`}
+						hint="the advertised product, and the brand's others"
+					>
+						<SplitBar
+							a={sum(m.rows, (r) => r.direct_orders)}
+							b={sum(m.rows, (r) => r.halo_orders)}
+							labelA="Direct"
+							labelB="Halo"
+							format={formatNumber}
+						/>
+					</Section>
+				) : null,
+			)}
 
 			<Section
 				title="By campaign"
-				hint={`${mine.length} row${mine.length === 1 ? "" : "s"}`}
+				hint={`${members.length} row${members.length === 1 ? "" : "s"}`}
 			>
-				{mine.length === 0 ? (
-					<p className="text-sm text-content-muted">
-						No rows for this keyword in the loaded set.
-					</p>
-				) : (
-					<table className="w-full text-sm">
-						<tbody>
-							{[...mine]
-								.sort(
-									(a, b) =>
-										(b.budget_consumed ?? 0) -
-										(a.budget_consumed ?? 0),
-								)
-								.map((r, i) => (
-									<tr
-										key={`${r.campaign_id}-${r.match_type ?? ""}-${i}`}
-										className="border-b border-border/60 last:border-0"
+				<MiniTable
+					head={[
+						{ label: "Campaign" },
+						...(has("match_type") ? [{ label: "Match" }] : []),
+						{ label: "Spend", align: "right" },
+						{ label: "Sales", align: "right" },
+						{ label: "RoAS", align: "right" },
+					]}
+					rows={[...members]
+						.sort((a, b) => (b.spend ?? 0) - (a.spend ?? 0))
+						.map((r, i) => ({
+							key: `${r.platform}-${r.campaign_id}-${r.match_type ?? ""}-${i}`,
+							cells: [
+								<span
+									key="c"
+									className="flex min-w-0 items-center gap-1.5"
+								>
+									<MarketplaceTag slug={r.platform} compact />
+									<span
+										className="truncate text-content"
+										title={nameOf(r)}
 									>
-										<td className="max-w-[14rem] truncate py-1.5 pr-2 text-content">
-											{nameOf(r.campaign_id)}
-										</td>
-										<td className="py-1.5 pr-2 text-content-muted">
-											{enumLabel(r.match_type)}
-										</td>
-										<td className="py-1.5 text-right tabular-nums text-content">
-											{formatCurrency(
-												r.budget_consumed ?? 0,
-											)}
-										</td>
-										<td className="py-1.5 text-right tabular-nums text-content-muted">
-											{roas(r.total_roas)}
-										</td>
-										<td className="py-1.5 text-right tabular-nums text-content-muted">
-											{r.most_viewed_position == null
-												? dash
-												: `#${r.most_viewed_position}`}
-										</td>
-									</tr>
-								))}
-						</tbody>
-					</table>
-				)}
+										{nameOf(r)}
+									</span>
+								</span>,
+								...(has("match_type")
+									? [
+											<span
+												key="m"
+												className="text-content-muted"
+											>
+												{r.match_type
+													? enumLabel(r.match_type)
+													: dash}
+											</span>,
+										]
+									: []),
+								formatCurrency(r.spend ?? 0),
+								formatCurrency(r.sales ?? 0),
+								<RoasPill
+									key="r"
+									value={r.spend ? r.sales / r.spend : null}
+								/>,
+							],
+						}))}
+				/>
 			</Section>
 		</Drawer>
 	);

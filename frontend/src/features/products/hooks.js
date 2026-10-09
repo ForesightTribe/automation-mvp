@@ -48,19 +48,31 @@ export const useProducts = ({ page, limit = 20, sort, status, search }) => {
 	});
 };
 
-export const useProductDetail = (itemId) => {
+/**
+ * One product's page. NOT keyed on the navbar's marketplace selection: a product
+ * belongs to exactly one marketplace, so it is asked for under `marketplace` (the
+ * list row's, carried as `?mp=`) — or, for a link without it, under none, which makes
+ * the API look in every marketplace. Following the navbar 404'd a Zepto product
+ * whenever Blinkit was selected.
+ */
+export const useProductDetail = (itemId, marketplace) => {
 	const { activeClientId } = useClient();
 	const { range } = useDateRange();
-	const { selected, ready } = useMarketplaces();
 	return useQuery({
-		queryKey: ["product-detail", activeClientId, itemId, range, selected],
+		queryKey: [
+			"product-detail",
+			activeClientId,
+			itemId,
+			range,
+			marketplace,
+		],
 		queryFn: () =>
 			getProductDetail(activeClientId, itemId, {
 				start: range.from,
 				end: range.to,
-				marketplaces: selected,
+				marketplaces: marketplace ? [marketplace] : undefined,
 			}),
-		enabled: Boolean(activeClientId && itemId) && ready,
+		enabled: Boolean(activeClientId && itemId),
 	});
 };
 
@@ -72,7 +84,10 @@ export const useProductPublic = (itemId) => {
 	return useQuery({
 		queryKey: ["product-public", activeClientId, itemId, range],
 		queryFn: () =>
-			getProductPublic(activeClientId, itemId, { start: range.from, end: range.to }),
+			getProductPublic(activeClientId, itemId, {
+				start: range.from,
+				end: range.to,
+			}),
 		enabled: Boolean(activeClientId && itemId),
 	});
 };

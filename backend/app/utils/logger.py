@@ -27,7 +27,9 @@ _LOG_DIR.mkdir(parents=True, exist_ok=True)
 _NOISY = ("playwright", "httpx", "httpcore", "asyncio", "urllib3", "websockets",
           "uvicorn.access")
 
-_CONSOLE_FMT = "{time:HH:mm:ss} | {level:<7} | {extra[tag]:<11} | {message}"
+# Tag column padded to 22: scrape tags are `marketplace·tenant·section`
+# (scraper/utils/run_log.py), e.g. `zepto·brik-oven·sales`.
+_CONSOLE_FMT = "{time:HH:mm:ss} | {level:<7} | {extra[tag]:<22} | {message}"
 _FILE_FMT = "{time:YYYY-MM-DD HH:mm:ss} | {level:<8} | {extra[tag]} | {message}"
 
 

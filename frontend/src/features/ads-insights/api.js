@@ -13,25 +13,19 @@ export * from "../ads/api";
 import { api } from "../../lib/axios";
 
 /**
- * One page of keyword rows for CURRENT campaigns only (`recent_only`).
- *
- * The keyword table groups every row by search term in the browser, so it needs them all,
- * not a page of twenty. `recent_only` leaves out the pre-migration account's campaigns:
- * their "latest" snapshot is from July, so their numbers are not in any window the date
- * picker can select, and they mostly share names with their replacements.
+ * The keyword table's rows: every campaign × keyword × match type of every marketplace in
+ * scope, plus what period each marketplace's rows cover — Blinkit's are an 8-day snapshot
+ * ending on or before `end`, never the picker's window. One request, not paginated: the
+ * table groups by keyword in the browser.
  */
-export const getKeywordRowsPage = (clientId, { marketplaces, page, limit }) =>
-	api.get(`/clients/${clientId}/ads/keywords`, {
+export const getKeywordInsights = (clientId, { start, end, marketplaces }) =>
+	api.get(`/clients/${clientId}/ads/keyword-insights`, {
 		params: {
+			start,
+			end,
 			marketplaces: marketplaces?.length
 				? marketplaces.join(",")
 				: undefined,
-			target_type: "keyword",
-			recent_only: true,
-			sort: "spend",
-			order: "desc",
-			page,
-			limit,
 		},
 	});
 
@@ -45,6 +39,27 @@ export const getCampaignsDaily = (clientId, { start, end, marketplaces }) =>
 		params: {
 			start,
 			end,
+			marketplaces: marketplaces?.length
+				? marketplaces.join(",")
+				: undefined,
+		},
+	});
+
+/**
+ * Ad spend and return per product, retail category or city (`dimension`), across the
+ * marketplaces in scope that report it — Zepto today; Blinkit reports none. `adType` is
+ * Zepto's ad type and narrows Zepto's rows.
+ */
+export const getBreakdowns = (
+	clientId,
+	{ start, end, marketplaces, dimension, adType },
+) =>
+	api.get(`/clients/${clientId}/ads/breakdowns`, {
+		params: {
+			start,
+			end,
+			dimension,
+			ad_type: adType || undefined,
 			marketplaces: marketplaces?.length
 				? marketplaces.join(",")
 				: undefined,

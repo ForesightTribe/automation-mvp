@@ -95,71 +95,6 @@ def parse_sales_daily(
     return rows
 
 
-def parse_sales_by_city(
-    by_city: dict[str, dict],
-    city_names: dict[str, str],
-    ids: dict,
-    tenant_id: str,
-    scrape_job_id: str | None,
-    date_from: str,
-    date_to: str,
-) -> list[dict]:
-    """`fetch_sales_by_city` output -> one row per city per day.
-
-    Cities with no sales at all are skipped rather than stored as zeros: 137 of
-    138 cities were empty on 21-Aug-2026, and writing those would be ~1,000 zero
-    rows a week that mean nothing. A city that genuinely drops to zero on a day
-    it normally sells still gets its row, because the rest of its series is
-    non-zero.
-
-    Reuses `_label_matches` for the same reason `parse_sales_daily` does: the
-    series carries no year, so a mismatch means the returned days are not the
-    range that was asked for.
-    """
-    start, end = date.fromisoformat(date_from), date.fromisoformat(date_to)
-    days = _expected_dates(start, end)
-    rows: list[dict] = []
-
-    for city_id, data in by_city.items():
-        gmv_series = ((data.get("metrics") or {}).get("gmv") or {}).get("data") or []
-        units_series = ((data.get("metrics") or {}).get("units") or {}).get("data") or []
-        if len(gmv_series) != len(days):
-            raise ValueError(
-                f"Zepto returned {len(gmv_series)} days for city {city_id} "
-                f"({len(days)} expected) — cannot map values to dates safely"
-            )
-        if not any(_series_value(p) for p in gmv_series) and not any(
-            _series_value(p) for p in units_series
-        ):
-            continue
-
-        units_by_label = {p["key"]: _series_value(p) for p in units_series}
-        for day, point in zip(days, gmv_series):
-            label = point.get("key", "")
-            if not _label_matches(label, day):
-                raise ValueError(
-                    f"Zepto day label {label!r} does not match derived date {day} "
-                    f"for city {city_id} — the series is not the range requested"
-                )
-            rows.append(
-                {
-                    "upsert_key": make_upsert_key(
-                        tenant_id, "zepto", "seller_sales_city_daily", city_id, day.isoformat()
-                    ),
-                    "tenant_id": uuid.UUID(tenant_id),
-                    "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
-                    "date": day,
-                    "brand_id": ids["brand_id"],
-                    "city_id": city_id,
-                    "city_name": city_names.get(city_id),
-                    "gmv": float(_series_value(point)),
-                    "units": int(units_by_label.get(label, 0)),
-                    "scraped_at": now_ist(),
-                }
-            )
-    return rows
-
-
 def parse_product_perf(
     products: list[dict],
     tenant_id: str,
@@ -210,6 +145,47 @@ def parse_product_perf(
             "scraped_at": now_ist(),
         }
         for p in products
+    ]
+
+
+_SOH_FIELDS = ("stock_on_hand", "week_on_week_growth", "month_on_month_growth")
+
+
+def parse_soh(
+    product_rows: list[dict],
+    tenant_id: str,
+    scrape_job_id: str | None,
+    asked_on: date,
+) -> list[dict]:
+    """`parse_product_perf` rows → one `zepto_soh` row per product, for the day the
+    scrape ASKED (P41).
+
+    Every per-day product call in a run returns the same stock and growth for a product
+    (they describe the moment of the call, not the sales day — P8), so one reading per
+    product is taken: from its newest sales day that carried any of the three. A product
+    with none of them gets no row — absent means "no reading", never zero stock.
+    """
+    newest: dict[str, dict] = {}
+    for r in product_rows:
+        if all(r.get(f) is None for f in _SOH_FIELDS):
+            continue
+        cur = newest.get(r["product_variant_id"])
+        if cur is None or r["period_start"] > cur["period_start"]:
+            newest[r["product_variant_id"]] = r
+    return [
+        {
+            "upsert_key": make_upsert_key(tenant_id, "zepto", "soh", pv, asked_on.isoformat()),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "date": asked_on,
+            "product_variant_id": pv,
+            "sku_name": r.get("sku_name"),
+            "stock_on_hand": int(r["stock_on_hand"]) if r.get("stock_on_hand") is not None else None,
+            "week_on_week_growth": r.get("week_on_week_growth"),
+            "month_on_month_growth": r.get("month_on_month_growth"),
+            "scraped_at": now_ist(),
+        }
+        for pv, r in sorted(newest.items())
     ]
 
 
@@ -469,10 +445,34 @@ def parse_ad_keywords(
     `/campaigns` would have produced.
     """
     d = date.fromisoformat(day)
+    return [
+        {
+            "upsert_key": make_upsert_key(
+                tenant_id, "zepto", "ad_keyword_daily", category, kw, match or "-", day,
+            ),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "date": d,
+            "brand_id": brand_id,
+            "campaign_category": category,
+            **metrics,
+            "scraped_at": now_ist(),
+        }
+        for (kw, match), metrics in _keyword_groups(rows).items()
+    ]
 
-    # Sum the additive metrics per (keyword, match_type); ratios are rebuilt
-    # from those sums afterwards, since averaging a per-row CPC would weight a
-    # 2-click row the same as a 68-click one.
+
+def _keyword_groups(rows: list[dict]) -> dict[tuple[str, str | None], dict]:
+    """`keyword_table` rows -> {(keyword, match_type): metrics}, duplicates SUMMED.
+
+    Shared by the brand-grain `parse_ad_keywords` and the per-campaign
+    `parse_campaign_keyword_detail`, so both build their numbers the same way.
+
+    Additive metrics are summed per (keyword, match_type); the ratios are rebuilt from
+    those sums, since averaging a per-row CPC would weight a 2-click row the same as a
+    68-click one. When every key appears once (the per-campaign report) the rebuilt
+    ratios equal Zepto's own up to its rounding.
+    """
     _ADDITIVE = ("spend", "revenue", "impressions", "clicks", "orders", "atc",
                  "same_skus", "other_skus")
     groups: dict[tuple[str, str | None], dict] = {}
@@ -481,9 +481,7 @@ def parse_ad_keywords(
         if not kw:
             continue
         match = _tab(r, "keyword", "match_type")
-        g = groups.setdefault(
-            (kw, match), {"keyword": kw, "match_type": match, "robas_x_spend": 0.0}
-        )
+        g = groups.setdefault((kw, match), {"robas_x_spend": 0.0})
         for f in _ADDITIVE:
             g[f] = (g.get(f) or 0) + (_f(_tab(r, "keyword", f)) or 0)
         # robas cannot be rebuilt from the columns we keep — it excludes
@@ -495,45 +493,63 @@ def parse_ad_keywords(
             _f(_tab(r, "keyword", "spend")) or 0
         )
 
-    out = []
+    out: dict[tuple[str, str | None], dict] = {}
     for (kw, match), g in groups.items():
         spend, impr, clicks = g["spend"], int(g["impressions"]), int(g["clicks"])
         revenue = g["revenue"]
-        out.append(
-            {
-                "upsert_key": make_upsert_key(
-                    tenant_id,
-                    "zepto",
-                    "ad_keyword_daily",
-                    category,
-                    kw,
-                    match or "-",
-                    day,
-                ),
-                "tenant_id": uuid.UUID(tenant_id),
-                "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
-                "date": d,
-                "brand_id": brand_id,
-                "campaign_category": category,
-                "keyword": kw,
-                "match_type": match,
-                "spend": spend,
-                "revenue": revenue,
-                "impressions": impr,
-                "clicks": clicks,
-                "orders": int(g["orders"]),
-                "atc": int(g["atc"]),
-                "ctr": round(clicks / impr * 100, 4) if impr else None,
-                "cpc": round(spend / clicks, 4) if clicks else None,
-                "cpm": round(spend / impr * 1000, 4) if impr else None,
-                "roas": round(revenue / spend, 4) if spend else None,
-                "robas": round(g["robas_x_spend"] / spend, 4) if spend else None,
-                "same_skus": int(g["same_skus"]),
-                "other_skus": int(g["other_skus"]),
-                "scraped_at": now_ist(),
-            }
-        )
+        out[(kw, match)] = {
+            "keyword": kw,
+            "match_type": match,
+            "spend": spend,
+            "revenue": revenue,
+            "impressions": impr,
+            "clicks": clicks,
+            "orders": int(g["orders"]),
+            "atc": int(g["atc"]),
+            "ctr": round(clicks / impr * 100, 4) if impr else None,
+            "cpc": round(spend / clicks, 4) if clicks else None,
+            "cpm": round(spend / impr * 1000, 4) if impr else None,
+            "roas": round(revenue / spend, 4) if spend else None,
+            "robas": round(g["robas_x_spend"] / spend, 4) if spend else None,
+            "same_skus": int(g["same_skus"]),
+            "other_skus": int(g["other_skus"]),
+        }
     return out
+
+
+def parse_campaign_keyword_detail(
+    rows: list[dict],
+    tenant_id: str,
+    scrape_job_id: str | None,
+    day: str,
+    campaign_id: int,
+    category: str,
+    brand_id: str,
+) -> list[dict]:
+    """One campaign-day's `keyword_table` rows -> `zepto_ad_campaign_detail` rows (P38).
+
+    The rows carry neither the date nor the campaign — both come from the request, so the
+    caller passes them. Keyed on (campaign, keyword, match type, day): a re-scrape of the
+    day updates in place, which is how late attribution lands (probed 2026-10-06: 10-04's
+    revenue moved ₹360 -> ₹540 a day later).
+    """
+    d = date.fromisoformat(day)
+    return [
+        {
+            "upsert_key": make_upsert_key(
+                tenant_id, "zepto", "ad_campaign_detail", campaign_id, kw, match or "-", day,
+            ),
+            "tenant_id": uuid.UUID(tenant_id),
+            "scrape_job_id": uuid.UUID(scrape_job_id) if scrape_job_id else None,
+            "date": d,
+            "brand_id": brand_id,
+            "campaign_id": int(campaign_id),
+            "campaign_category": category,
+            **metrics,
+            "scraped_at": now_ist(),
+        }
+        for (kw, match), metrics in _keyword_groups(rows).items()
+    ]
 
 
 def _tab_metrics(row: dict, dim: str, *, ctr: bool) -> dict:

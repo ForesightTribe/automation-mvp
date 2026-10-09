@@ -54,7 +54,7 @@ def _fetch_wasm() -> bytes:
         )
     ep.SIGNER_CACHE.parent.mkdir(parents=True, exist_ok=True)
     ep.SIGNER_CACHE.write_bytes(r.content)
-    logger.info(f"Signer cached at {ep.SIGNER_CACHE} ({len(r.content)} B)")
+    logger.debug(f"Signer cached at {ep.SIGNER_CACHE} ({len(r.content)} B)")
     return r.content
 
 

@@ -1,5 +1,9 @@
 import { MetricTile } from "../../../components/ui/MetricTile";
-import { formatCurrency, formatNumber, formatPercent } from "../../../lib/format";
+import {
+	formatCurrency,
+	formatNumber,
+	formatPercent,
+} from "../../../lib/format";
 
 /** RoAS like "4.2x" (null -> em dash). */
 const formatRoas = (v) =>
@@ -17,14 +21,14 @@ export const KpiStrip = ({ summary, performance = [] }) => {
 
 	const tiles = [
 		{
-			label: "Ad Spend",
+			label: "Ad spend",
 			value: formatCurrency(m("ad_spend").value),
 			delta: m("ad_spend").delta_pct,
 			series: series((r) => r.budget_consumed),
 			sparkColor: "#4f46e5",
 		},
 		{
-			label: "Ad Revenue",
+			label: "Ad revenue",
 			value: formatCurrency(m("ad_sales").value),
 			delta: m("ad_sales").delta_pct,
 			series: series((r) => r.ad_sales),
@@ -42,6 +46,12 @@ export const KpiStrip = ({ summary, performance = [] }) => {
 			value: formatPercent(m("acos").value),
 			delta: m("acos").delta_pct,
 			goodWhenDown: true,
+			// Not a stored column: spend ÷ revenue for the day. Null where a day
+			// earned nothing, because dividing by zero is not "0% ACoS".
+			series: series((r) =>
+				r.ad_sales ? r.budget_consumed / r.ad_sales : null,
+			),
+			sparkColor: "#7c3aed",
 		},
 		{
 			label: "Impressions",
@@ -61,7 +71,9 @@ export const KpiStrip = ({ summary, performance = [] }) => {
 			delta: m("units_sold").delta_pct,
 		},
 		{
-			label: "Active campaigns",
+			// Campaigns that RAN in the window (spend or impressions) — not "status = active
+			// now", which has no previous window to compare with (BLINKIT-NOTES B3).
+			label: "Campaigns",
 			value: formatNumber(m("active_campaigns").value),
 			delta: m("active_campaigns").delta_pct,
 		},

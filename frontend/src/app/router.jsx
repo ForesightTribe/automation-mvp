@@ -18,6 +18,8 @@ import { CampaignManagerPage } from "../features/campaign-manager/CampaignManage
 import { AutomationsPage } from "../features/automations/AutomationsPage";
 import { OneTimeOpsPage } from "../features/one-time-ops/OneTimeOpsPage";
 import { CompetitionPage } from "../features/competition/CompetitionPage";
+// Market View is experimental and hidden for now — restore this, its route and its nav entry.
+// import { MarketViewPage } from "../features/market-view/MarketViewPage";
 import { ScorecardPage } from "../features/scorecard/ScorecardPage";
 import { ReportsPage } from "../features/reports/ReportsPage";
 import { PurchaseOrdersPage } from "../features/purchase-orders/PurchaseOrdersPage";
@@ -76,19 +78,19 @@ export const router = createBrowserRouter([
 						element: <Navigate to="/campaign-manager" replace />,
 					},
 					{ path: "/competition", element: <CompetitionPage /> },
+					// { path: "/market-view", element: <MarketViewPage /> },
 					{ path: "/scorecard", element: <ScorecardPage /> },
 					{ path: "/reports", element: <ReportsPage /> },
 					{
 						path: "/purchase-orders",
 						element: <PurchaseOrdersPage />,
 					},
+					// Open to everyone — Settings carries the account block
+					// (email, password, log out). Its admin cards gate inside.
+					{ path: "/settings", element: <SettingsPage /> },
 					{
 						element: <RequireAdmin />,
 						children: [
-							{
-								path: "/settings",
-								element: <SettingsPage />,
-							},
 							// Onboarding and connections both live on Settings now (onboarding
 							// is a modal there); the old paths redirect for any saved links.
 							{

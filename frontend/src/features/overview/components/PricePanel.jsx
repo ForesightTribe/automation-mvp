@@ -78,7 +78,7 @@ export const PricePanel = () => {
 
 					{!isLoading && !error && (
 						<div className="flex flex-col gap-1">
-							<p className="flex items-center gap-1 text-[11px] font-semibold tracking-[0.1em] text-content-subtle uppercase">
+							<p className="flex items-center gap-1 text-[11px] font-semibold tracking-widest text-content-subtle uppercase">
 								Price position
 								{/* What the multiple is measured against, out of
 								    the way until asked for. */}

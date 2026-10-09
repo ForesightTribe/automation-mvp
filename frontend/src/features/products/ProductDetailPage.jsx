@@ -1,4 +1,4 @@
-import { Link, useParams } from "react-router-dom";
+import { Link, useParams, useSearchParams } from "react-router-dom";
 import { useProductDetail } from "./hooks";
 import { StatusBadge } from "./components/StatusBadge";
 import { SalesStockChart } from "./components/SalesStockChart";
@@ -10,6 +10,7 @@ import { MetricTile } from "../../components/ui/MetricTile";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 import { formatCurrency, formatNumber } from "../../lib/format";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v} days`);
 
@@ -20,7 +21,12 @@ const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v} days`);
  */
 export const ProductDetailPage = () => {
 	const { itemId } = useParams();
-	const { data, isLoading, error, refetch } = useProductDetail(itemId);
+	// The product's own marketplace, from the list row's link (?mp=). See useProductDetail.
+	const [searchParams] = useSearchParams();
+	const { data, isLoading, error, refetch } = useProductDetail(
+		itemId,
+		searchParams.get("mp") || undefined,
+	);
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -38,20 +44,15 @@ export const ProductDetailPage = () => {
 
 			{!isLoading && !error && data && (
 				<>
-					<div className="flex flex-wrap items-start justify-between gap-3">
-						<div>
-							<div className="flex items-center gap-3">
-								<h1 className="font-display text-xl font-bold text-content">
-									{data.item_name || data.item_id}
-								</h1>
+					<PageHeader
+						title={
+							<span className="flex items-center gap-3">
+								{data.item_name || data.item_id}
 								<StatusBadge status={data.status} />
-							</div>
-							<p className="text-sm text-content-muted">
-								{data.item_id}
-								{data.category ? ` · ${data.category}` : ""}
-							</p>
-						</div>
-					</div>
+							</span>
+						}
+						subtitle={`${data.item_id}${data.category ? ` · ${data.category}` : ""}`}
+					/>
 
 					<div className="grid grid-cols-2 gap-4 md:grid-cols-3 lg:grid-cols-6">
 						<MetricTile
@@ -113,7 +114,10 @@ export const ProductDetailPage = () => {
 						/>
 					</div>
 
-					<PoHistory itemId={data.item_id} marketplace={data.marketplace} />
+					<PoHistory
+						itemId={data.item_id}
+						marketplace={data.marketplace}
+					/>
 				</>
 			)}
 		</div>

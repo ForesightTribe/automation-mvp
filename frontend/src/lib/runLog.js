@@ -89,12 +89,24 @@ export const resultOf = (r) => {
 /**
  * The position the engine saw, and the target it judged it against.
  *
+ * Since the switch to AD SLOTS (2026-10, `measured_in: "ad_slot"`): `slot` is our ad slot —
+ * the Nth sponsored listing — and `target` is an ad slot too; `at` is where our slot sat on
+ * the page. `slot` null on such a row means our ad held no slot at all. `adSlots` says which
+ * kind of row this is; `rankText` words either kind.
+ *
  * From the row's own `position` / `target` columns. Rows written before those columns
  * existed (2026-09-04) only have them inside the reason's prose, so that is read as a
  * fallback and nowhere else. Blank means "not stated", never "position zero".
  */
 export const rankOf = (row) => {
 	if (row.kind !== "bid") return null;
+	if (row.measured_in === "ad_slot")
+		return {
+			adSlots: true,
+			slot: row.ad_slot ?? null,
+			at: row.position != null ? Math.round(row.position) : null,
+			target: row.target,
+		};
 	if (row.position != null || row.target != null)
 		return {
 			at: row.position != null ? Math.round(row.position) : null,
@@ -105,4 +117,28 @@ export const rankOf = (row) => {
 	const target = row.reason.match(/target (\d+)/i);
 	if (!at && !target) return null;
 	return { at: at?.[1] ?? null, target: target?.[1] ?? null };
+};
+
+/**
+ * `rankOf` in words: `{ seen, target }`.
+ *   ad-slot rows   seen "Ad #2 · pos 5" | "",  target "Ad #1"
+ *   older rows     seen "#5" | "",             target "#1"
+ * `seen` is blank when the row has no slot: our ad wasn't showing, or the row never searched
+ * (a window opening, a bounds fix, a stock skip). The row's reason says which — the columns
+ * cannot, so this does not guess.
+ */
+export const rankText = (rank) => {
+	if (!rank) return null;
+	if (rank.adSlots)
+		return {
+			seen:
+				rank.slot != null
+					? `Ad #${rank.slot}${rank.at != null ? ` · pos ${rank.at}` : ""}`
+					: "",
+			target: rank.target != null ? `Ad #${rank.target}` : "",
+		};
+	return {
+		seen: rank.at != null ? `#${rank.at}` : "",
+		target: rank.target != null ? `#${rank.target}` : "",
+	};
 };

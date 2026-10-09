@@ -193,12 +193,15 @@ export const getKeywordMetrics = (clientId, campaignId) =>
 
 /**
  * Every keyword the marketplace's campaign catalogue holds — (campaign, keyword, match
- * type) with the live bid and the marketplace's floor, no performance numbers. The keyword
- * picker's list on Zepto, where no per-campaign keyword metrics exist. Negatives are left
- * out server-side; campaigns automations may not touch come back flagged, not hidden.
+ * type) with the live bid and the marketplace's floor. The keyword picker's list on Zepto.
+ * Negatives are left out server-side; campaigns automations may not touch come back
+ * flagged, not hidden. On Zepto each row also carries its performance (spend, sales,
+ * orders, clicks…) summed over `range` — the navbar's dates (P43).
  */
-export const getCatalogKeywords = (clientId, mp) =>
-	api.get(`${base(clientId, mp)}/keywords`);
+export const getCatalogKeywords = (clientId, mp, range) =>
+	api.get(`${base(clientId, mp)}/keywords`, {
+		params: range ? { start: range.from, end: range.to } : undefined,
+	});
 
 /**
  * Whether automations on this marketplace write for real (`live_armed`), straight from

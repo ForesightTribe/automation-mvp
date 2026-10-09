@@ -15,7 +15,7 @@ import inspect
 import uuid
 from types import SimpleNamespace
 
-from campaign_manager import bid, coverage, repo
+from campaign_manager import ad_slots, bid, coverage, repo
 from campaign_manager.marketplaces.blinkit.live_position import PageResults
 
 DOBRA, OTHER = uuid.uuid4(), uuid.uuid4()
@@ -206,7 +206,8 @@ class _FakeMarketplace:
 
     def locate_position(self, results, keyword, lat, lon, **_):
         pos = self.positions.get(lat)
-        return pos, ("live" if pos is not None else "product not in results")
+        return ad_slots.Placement(pos, pos, (), (),
+                                  "live" if pos is not None else "product not in results")
 
 
 CAMPAIGN = {"554783", "618146"}

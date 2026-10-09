@@ -27,6 +27,7 @@ import {
 	useRefreshCampaigns,
 } from "./hooks";
 import { useActiveActionFor } from "../../lib/actions";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * What each confirmation says, per action and per kind of automation.
@@ -351,46 +352,41 @@ export const AutomationsPage = () => {
 		// header, the create CTAs, and the list — get a wider one to read as separate
 		// sections rather than a single stack of cards.
 		<div className="space-y-6">
-			<header className="flex flex-wrap items-center justify-between gap-3">
-				<div>
-					<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
-						Automations
-					</h1>
-					<p className="text-sm text-content-muted">
-						Budget and bid automations on {mpName}. Switch
-						marketplace in the bar above.
-					</p>
-				</div>
-				<div className="flex items-center gap-2">
-					{/* Current status: one line, detail behind a click. It carries what the table cannot show:
+			<PageHeader
+				title="Automations"
+				subtitle={`Budget and bid automations on ${mpName}. Switch marketplace in the bar above.`}
+				actions={
+					<div className="flex items-center gap-2">
+						{/* Current status: one line, detail behind a click. It carries what the table cannot show:
 					    i.e. whether anything is inside a window now, when the next one opens, and
 					    what the engine last actually did. */}
-					<StatusSummary
-						schedules={schedules ?? []}
-						bidRules={bidRules ?? []}
-					/>
-					<Button
-						variant="secondary"
-						size="sm"
-						disabled={refreshCampaigns.isPending || !isAdmin}
-						onClick={handleRefreshCampaigns}
-						title={`Re-read the campaign list from ${mpName}`}
-					>
-						<RefreshCw size={14} /> Refresh Campaigns
-					</Button>
-					<Button
-						variant="secondary"
-						size="sm"
-						onClick={() => {
-							setLogRow(null);
-							setLogsOpen(true);
-						}}
-						title="What the automations have been doing"
-					>
-						<ScrollText size={14} /> Execution logs
-					</Button>
-				</div>
-			</header>
+						<StatusSummary
+							schedules={schedules ?? []}
+							bidRules={bidRules ?? []}
+						/>
+						<Button
+							variant="secondary"
+							size="sm"
+							disabled={refreshCampaigns.isPending || !isAdmin}
+							onClick={handleRefreshCampaigns}
+							title={`Re-read the campaign list from ${mpName}`}
+						>
+							<RefreshCw size={14} /> Refresh Campaigns
+						</Button>
+						<Button
+							variant="secondary"
+							size="sm"
+							onClick={() => {
+								setLogRow(null);
+								setLogsOpen(true);
+							}}
+							title="What the automations have been doing"
+						>
+							<ScrollText size={14} /> Execution logs
+						</Button>
+					</div>
+				}
+			/>
 
 			<WalletBanner />
 
@@ -419,7 +415,9 @@ export const AutomationsPage = () => {
 			{/* Two CTAs instead of one generic button plus a promo banner: the kind of
 			    automation is the first real decision, so it is made here rather than on the
 			    first screen of the wizard. The wizard then opens already knowing which it is. */}
-			<div className={`mt-10 grid gap-4 sm:grid-cols-2 ${isAdmin ? "" : "hidden"}`}>
+			<div
+				className={`mt-10 grid gap-4 sm:grid-cols-2 ${isAdmin ? "" : "hidden"}`}
+			>
 				{[
 					{
 						kind: "campaign",
@@ -431,7 +429,7 @@ export const AutomationsPage = () => {
 						kind: "keyword",
 						title: "Keyword Automation",
 						cta: "Create Keyword Automation",
-						blurb: "Hold a keyword's search position. The optimizer moves its bid within the limits you set to reach the rank you want and defend it.",
+						blurb: "Hold a keyword's ad slot, such as the first or second sponsored listing, wherever it appears on the page. The optimizer moves its bid within the limits you set to reach that slot and defend it.",
 					},
 				].map((c) => (
 					// The card describes; the button acts. A whole card that is itself a button

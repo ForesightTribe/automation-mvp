@@ -102,12 +102,13 @@ class InstamartAdAccountDaily(SQLModel, table=True):
 
 
 class InstamartAdProductDaily(SQLModel, table=True):
-    """One row per DAY per advertised product (`DIMENSION_TYPE_AD_CANDIDATE`),
-    account-wide — not scoped to one campaign, same as Zepto's product table.
+    """One row per DAY per advertised product (`DIMENSION_TYPE_AD_CANDIDATE`)
+    per contributing CAMPAIGN, account-wide: a product advertised by two
+    campaigns on one day has two rows, so totals sum across campaigns.
     `candidate_id` is the same public product id `sku_snapshots.platform_product_id`
     already carries (verified: AEYU74I37R here is the same AEYU74I37R the public
-    scraper stores for Artisanal Sourdough Bread), so name/pack are resolved by
-    joining that table rather than a separate catalogue fetch.
+    scraper stores for Artisanal Sourdough Bread); name and image come from
+    `instamart_product_catalog`.
     """
 
     __tablename__ = "instamart_ad_product_daily"
@@ -125,20 +126,14 @@ class InstamartAdProductDaily(SQLModel, table=True):
 
     date: date_
     candidate_id: str
-    # None = the unfiltered "All types" row (the proven-correct total).
-    # A real value ("ITEM", "BANNER", ...) is an ADDITIVE breakdown scraped
-    # separately via the ad-type filter, not a recomputation of the total —
-    # see asset_metrics.py's CAMPAIGN_TYPES comment for why they can't be
-    # fetched together in one call.
-    campaign_type: str | None = None
-    # Only populated on campaign_type rows (the by-type breakdown adds
-    # DIMENSION_TYPE_CAMPAIGN alongside the type filter — verified live that
-    # all three dimensions return together). None on the unfiltered "All
-    # types" rows, which never carry this dimension. When a product is
-    # advertised by more than one campaign of the same type on the same day,
-    # each campaign gets its OWN row (this is what makes that possible —
-    # without it, two campaigns' rows would collide on the same upsert key
-    # and only the last-saved one would survive).
+    # No campaign_type here: the by-ad-type breakdown was removed (Instamart's
+    # type filter is unreliable — see instamart/dashboard_data/seller/scraper.py's
+    # ad-type note) and migration d4b7e2a9c615 drops the dead column. A
+    # campaign's type comes from instamart_ad_campaigns.
+    #
+    # The campaign this row's spend belongs to — set on every row. It is part
+    # of the upsert key: without it, two campaigns advertising the same product
+    # on the same day would collide and only the last-saved one would survive.
     campaign_id: str | None = None
     spend: float = 0.0
     gmv: float = 0.0
@@ -150,11 +145,9 @@ class InstamartAdProductDaily(SQLModel, table=True):
 
 
 class InstamartAdKeywordDaily(SQLModel, table=True):
-    """One row per DAY per keyword (`DIMENSION_TYPE_KEYWORD`), account-wide —
-    like Zepto's keyword table, this carries no campaign id on the unfiltered
-    rows: the same keyword can be bid by more than one campaign, and the
-    query sums across them. The by-type breakdown (campaign_type set) DOES
-    carry one, same as InstamartAdProductDaily.campaign_id.
+    """One row per DAY per keyword (`DIMENSION_TYPE_KEYWORD`) per contributing
+    CAMPAIGN, account-wide: the same keyword bid by two campaigns has two rows,
+    and queries sum across them. Same shape as InstamartAdProductDaily.
     """
 
     __tablename__ = "instamart_ad_keyword_daily"
@@ -172,8 +165,7 @@ class InstamartAdKeywordDaily(SQLModel, table=True):
 
     date: date_
     keyword: str
-    # Same meaning as InstamartAdProductDaily.campaign_type / .campaign_id.
-    campaign_type: str | None = None
+    # Same as InstamartAdProductDaily: set on every row and part of the key.
     campaign_id: str | None = None
     spend: float = 0.0
     gmv: float = 0.0

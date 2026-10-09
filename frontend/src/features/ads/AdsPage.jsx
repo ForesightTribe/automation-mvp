@@ -13,6 +13,7 @@ import { VisibilityPlans, Collections } from "./components/SideLists";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 import { useMarketplaces } from "../../context/MarketplaceContext";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 export const AdsPage = () => {
 	const { data: summary, isLoading, error, refetch } = useAdsSummary();
@@ -27,10 +28,7 @@ export const AdsPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div>
-				<h1 className="font-display text-xl font-bold text-content">Ads</h1>
-				<p className="text-sm text-content-muted">Is my spend working.</p>
-			</div>
+			<PageHeader title="Ads" subtitle="Is my spend working." />
 
 			{isLoading && <Loading label="Loading ads…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}

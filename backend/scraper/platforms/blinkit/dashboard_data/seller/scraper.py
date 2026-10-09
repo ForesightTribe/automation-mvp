@@ -141,7 +141,7 @@ def _capture_headers(storage_state: dict, page_path: str, label: str) -> dict:
     """
     headers = _headers_from_state(storage_state)
     if headers:
-        logger.info(f"{label} session ready (no browser)")
+        logger.debug(f"{label} session ready (no browser)")
         return headers
 
     raise RuntimeError(
@@ -242,7 +242,7 @@ async def scrape(
             _fetch_sales_summary(client, headers, date, date),
         )
 
-    logger.info(f"Scraped {len(sales)} sales rows [{date}]")
+    logger.debug(f"Scraped {len(sales)} sales rows [{date}]")
 
     return {
         "sales": sales,
@@ -373,7 +373,7 @@ async def _fetch_po_skus_batch(
             po_number, items = await _fetch_po_items(client, headers, pn)
             skus[po_number] = items
             if i % 10 == 0:
-                logger.info(f"SKU fetch progress: {i}/{len(po_numbers)}")
+                logger.debug(f"SKU fetch progress: {i}/{len(po_numbers)}")
         except Exception as e:
             logger.warning(f"SKU fetch failed for {pn}: {e}")
     return skus
@@ -429,13 +429,13 @@ async def scrape_po(
         sku_map: dict[str, list] = {}
         if to_fetch:
             sku_map = await _fetch_po_skus_batch(client, headers, to_fetch)
-            logger.info(f"SKUs fetched for {len(sku_map)}/{len(to_fetch)} POs")
+            logger.debug(f"SKUs fetched for {len(sku_map)}/{len(to_fetch)} POs")
 
     for po in pos:
         if po["po_number"] in sku_map:
             po["items"] = sku_map[po["po_number"]]
 
-    logger.info(
+    logger.debug(
         f"Scraped {len(pos)} POs [{issue_date_gte}→today] | "
         f"{len(to_fetch)} item sets refetched ({len(sku_map)} ok)"
     )
@@ -483,7 +483,7 @@ async def scrape_soh(storage_state: dict) -> dict:
     async with httpx.AsyncClient() as client:
         rows = await _fetch_all_soh(client, headers)
 
-    logger.info(f"Scraped {len(rows)} SOH rows [{date}]")
+    logger.debug(f"Scraped {len(rows)} SOH rows [{date}]")
     return {"rows": rows, "date": date}
 
 
@@ -535,7 +535,7 @@ def _capture_scorecard_context(storage_state: dict) -> tuple[dict, str]:
     """
     ctx = _scorecard_context_from_state(storage_state)
     if ctx:
-        logger.info("Scorecard session ready (no browser)")
+        logger.debug("Scorecard session ready (no browser)")
         return ctx
 
     headers = _headers_from_state(storage_state)
@@ -600,7 +600,7 @@ async def scrape_scorecard(storage_state: dict, week: str | None = None) -> dict
     facilities = _ensure_list(facilities_raw)
     key_skus = _ensure_list(key_skus_raw)
 
-    logger.info(
+    logger.debug(
         f"Scraped scorecard [{from_date}] | "
         f"fill_rate={overall.get('fill_rate')}% "
         f"facilities={len(facilities)} key_skus={len(key_skus)}"

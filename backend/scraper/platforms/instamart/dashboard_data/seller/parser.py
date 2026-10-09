@@ -1,4 +1,6 @@
-"""Turn a downloaded Sales report xlsx into rows for the two seller tables.
+"""Brand Portal parsers — pure: raw input in, row dicts out, no network or DB.
+
+SALES: turn a downloaded Sales report xlsx into rows for the two seller tables.
 
 The workbook has two sheets at two different grains, and they must stay apart:
 
@@ -20,6 +22,8 @@ import datetime as dt
 from pathlib import Path
 
 import openpyxl
+
+from scraper.platforms.instamart.dashboard_data.seller import endpoints as ep
 
 SALES_SHEET = "Sales Report"
 BRAND_SHEET = "Brand Metrics"
@@ -131,3 +135,156 @@ def parse_brand_city(path: str | Path) -> list[dict]:
 def parse(path: str | Path) -> tuple[list[dict], list[dict]]:
     """Both sheets in one go: (store_daily rows, brand_city rows)."""
     return parse_store_daily(path), parse_brand_city(path)
+
+
+# ── ads ──────────────────────────────────────────────────────────────────────
+# Pure: raw portal JSON in, row dicts out. Bookkeeping columns (tenant, job,
+# upsert key) are added by storage.py.
+
+def _money(m: dict | None) -> float | None:
+    if not m:
+        return None
+    return float(m.get("units") or 0) + float(m.get("nanos") or 0) / 1e9
+
+
+def _metric_values(entry: dict) -> dict:
+    return {m["name"]: m.get("value") for m in entry.get("metrics") or []}
+
+
+def _lifetime_metrics(advertiser_metrics: dict) -> dict:
+    """The LIFETIME rollup is the entry whose dimensions are JUST the campaign —
+    every other entry adds a DAY (or other) dimension on top of it."""
+    for grp in advertiser_metrics.get("metricsOnDimensionsList") or []:
+        dims = grp.get("dimensions") or []
+        if len(dims) == 1 and dims[0].get("name") == "DIMENSION_TYPE_CAMPAIGN":
+            return _metric_values(grp)
+    return {}
+
+
+def _parse_time(raw: str | None) -> dt.datetime | None:
+    if not raw:
+        return None
+    try:
+        return dt.datetime.fromisoformat(raw.replace("Z", "+00:00")).replace(tzinfo=None)
+    except ValueError:
+        return None
+
+
+def parse_campaigns(raw: list[dict]) -> list[dict]:
+    """One dict per campaign, shaped for `InstamartAdCampaign` (lifetime totals)."""
+    out: list[dict] = []
+    for entry in raw:
+        c = entry.get("campaign") or {}
+        cid = c.get("id")
+        if not cid:
+            continue
+        metrics = _lifetime_metrics(entry.get("advertiserMetrics") or {})
+        budget_obj = c.get("budget") or {}
+        budget_type = budget_obj.get("budgetType")
+        ad_type = entry.get("adType") or {}
+        out.append({
+            "campaign_id": cid,
+            "name": c.get("name"),
+            "status": c.get("status"),
+            "campaign_type": ad_type.get("type") or c.get("type"),
+            "placements": ",".join(ad_type.get("placements") or []) or None,
+            "start_time": _parse_time(c.get("startTime")),
+            "end_time": _parse_time(c.get("endTime")),
+            "budget_type": budget_type,
+            # `totalBudget` is only a PER-DAY figure when budgetType says so.
+            # Every campaign observed with budgetType INVALID (119 of 130 on
+            # the real account -- all legacy/stopped) has a totalBudget that
+            # is clearly a LIFETIME spend cap instead (Sourdough Bread showed
+            # 220,000, KBA_MAY25 showed 121,000 -- not plausible as "per
+            # day"). Storing it as daily_budget there would wreck Budget
+            # utilisation % (spend / (daily_budget * days)) the moment such a
+            # campaign falls inside the selected window. None here matches
+            # the UI's existing "not reported" fallback for a missing value.
+            "daily_budget": _money(budget_obj.get("totalBudget"))
+                if budget_type == "BUDGET_TYPE_DAILY" else None,
+            "spend": metrics.get("METRIC_TYPE_BUDGET_BURNT")
+                or metrics.get("METRIC_TYPE_BUDGET_BURNT_REALTIME") or 0.0,
+            "gmv": metrics.get("METRIC_TYPE_GMV") or 0.0,
+            "impressions": int(metrics.get("METRIC_TYPE_IMPRESSIONS") or 0),
+            "clicks": int(metrics.get("METRIC_TYPE_CLICKS") or 0),
+            "ctr": metrics.get("METRIC_TYPE_CTR"),
+            "add_to_cart_count": int(metrics.get("METRIC_TYPE_ADD_TO_CART_COUNT") or 0),
+            "conversions": int(metrics.get("METRIC_TYPE_CONVERSIONS") or 0),
+            "conversion_rate": metrics.get("METRIC_TYPE_CONVERSION_RATE"),
+            "roi": metrics.get("METRIC_TYPE_ROI"),
+        })
+    return out
+
+
+def parse_account_daily(raw: list[dict]) -> list[dict]:
+    """One dict per day, shaped for `InstamartAdAccountDaily`."""
+    out: list[dict] = []
+    for grp in raw:
+        dims = grp.get("dimensions") or []
+        if len(dims) != 1 or dims[0].get("name") != "DIMENSION_TYPE_DAY":
+            continue
+        m = _metric_values(grp)
+        out.append({
+            "date": dt.date.fromisoformat(dims[0]["value"]),
+            "spend": m.get("METRIC_TYPE_BUDGET_BURNT") or 0.0,
+            "gmv": m.get("METRIC_TYPE_GMV") or 0.0,
+            "impressions": int(m.get("METRIC_TYPE_IMPRESSIONS") or 0),
+            "clicks": int(m.get("METRIC_TYPE_CLICKS") or 0),
+            "ctr": m.get("METRIC_TYPE_CTR"),
+            "add_to_cart_count": int(m.get("METRIC_TYPE_ADD_TO_CART_COUNT") or 0),
+            "conversions": int(m.get("METRIC_TYPE_CONVERSIONS") or 0),
+            "conversion_rate": m.get("METRIC_TYPE_CONVERSION_RATE"),
+            "roi": m.get("METRIC_TYPE_ROI"),
+        })
+    return out
+
+
+def _parse_asset_daily(raw: list[dict], dimension: str, field: str) -> list[dict]:
+    """Product or keyword rows: `campaign_id` splits a date+asset into one row
+    per contributing campaign."""
+    out: list[dict] = []
+    for entry in raw:
+        dims = {d["name"]: d["value"] for d in entry.get("dimensions") or []}
+        asset, day = dims.get(dimension), dims.get("DIMENSION_TYPE_DAY")
+        if not asset or not day:
+            continue
+        m = _metric_values(entry)
+        out.append({
+            "date": dt.date.fromisoformat(day),
+            field: asset,
+            "campaign_id": dims.get("DIMENSION_TYPE_CAMPAIGN"),
+            "spend": m.get("METRIC_TYPE_BUDGET_BURNT") or 0.0,
+            "gmv": m.get("METRIC_TYPE_GMV") or 0.0,
+            "impressions": int(m.get("METRIC_TYPE_IMPRESSIONS") or 0),
+            "clicks": int(m.get("METRIC_TYPE_CLICKS") or 0),
+            "add_to_cart_count": int(m.get("METRIC_TYPE_ADD_TO_CART_COUNT") or 0),
+        })
+    return out
+
+
+def parse_products_daily(raw: list[dict]) -> list[dict]:
+    """`InstamartAdProductDaily` rows, keyed by `candidate_id`."""
+    return _parse_asset_daily(raw, "DIMENSION_TYPE_AD_CANDIDATE", "candidate_id")
+
+
+def parse_keywords_daily(raw: list[dict]) -> list[dict]:
+    """`InstamartAdKeywordDaily` rows, keyed by `keyword`."""
+    return _parse_asset_daily(raw, "DIMENSION_TYPE_KEYWORD", "keyword")
+
+
+def parse_product_catalog(raw: list[dict]) -> list[dict]:
+    """`InstamartProductCatalog` rows: name + first image per candidate id."""
+    out: list[dict] = []
+    for p in raw:
+        cid = p.get("id")
+        if not cid:
+            continue
+        images = []
+        for v in p.get("variations") or []:
+            images.extend(v.get("images") or [])
+        out.append({
+            "candidate_id": cid,
+            "product_name": p.get("parentProductName"),
+            "image_url": (ep.IMAGE_CDN_PREFIX + images[0]) if images else None,
+        })
+    return out

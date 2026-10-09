@@ -26,38 +26,31 @@ different keyword. Crediting all of them to whichever rule is being evaluated wo
 have several rules chasing one shared number — hence the match is on
 **(campaign, keyword, match_type)**, never on campaign alone.
 
-## What counts as "our position": the BEST row that is ours, paid or not
+## What counts: our AD SLOT, never an organic listing
 
-Deepansh's call, 2026-09-02, and it is the better objective. The goal is *our product
-visible at the target position, as cheaply as possible* — not *our ad specifically
-winning a slot*.
+The target is an ad slot — the Nth sponsored listing on the page (campaign_manager/ad_slots.py).
+Our slot is the best (lowest) sponsored row that is ours: won by this campaign, by any of its
+keywords, or our product in a paid slot whose tracking id did not decode. The *kind* is reported
+in the reason and the logs; it does not change the decision.
 
-An earlier version returned a position only for a SPONSORED row of ours, and reported
-an organic-only appearance as "no decision". The reasoning was "a bid cannot move an
-organic rank" — true of the organic ROW, but the wrong conclusion: a bid adds a
-SPONSORED row higher up, which improves the best position our product occupies. So
-best-position does respond to bidding.
-
-Taking the best of both is also what makes the engine stop paying when it does not
-need to. Organic at 2 against a target of 3 reads as holding, so drift-down trims the
-bid, we lose the paid slot, and the product still sits at 2 — for free. The
-sponsored-only model cannot even see that situation, and would keep bidding for a
-placement already in hand.
+⚠️ CHANGED 2026-10-05. From 2026-09-02 an ORGANIC row of ours counted as our position too, so
+organic at 2 against a target of 3 read as holding and the bid trimmed itself away. The engine
+now pushes the ad to where the client asked, whatever organic does; organic listings are only
+RECORDED (`organic_positions`), for a UI warning that the spend may buy visibility we already
+have. The same rule holds on Blinkit — one meaning of "target" across marketplaces.
 
 Three outcomes:
 
-1. **found** — the lowest position of any row that is ours, by product id or by
-   `uclId` campaign. The *kind* (paid / organic / won by another of our keywords) is
-   reported in the reason and the logs, because it still matters for knowing whether
-   the ad spend is doing anything — it just does not change the decision.
-2. **absent** — no row of ours anywhere. `bid.py` treats this as worse than every slot
-   it could see and bids up (see `RAISE_WHEN_ABSENT`).
-3. **unreadable** — we could not look. That is `fetch_positions`' job to raise, not
-   this function's to guess.
+1. **found** — `slot` is our best ad slot.
+2. **absent** — no sponsored row of ours. `bid.py` treats this as worse than every slot it could
+   see and bids up (see `RAISE_WHEN_ABSENT`), even when we are listed organically.
+3. **unreadable** — we could not look. That is `fetch_positions`' job to raise, not this
+   function's to guess.
 """
 from scraper.platforms.zepto.public_data import ads
 
 from app.utils.logger import logger
+from campaign_manager import ad_slots
 
 
 def _norm(s) -> str:
@@ -66,11 +59,12 @@ def _norm(s) -> str:
 
 def locate(results: list[dict], keyword: str, lat: float, lon: float, *,
            campaign_id, match_type: str, variant_ids: set[str] | list[str],
-           brand_name: str | None = None) -> tuple[float | None, str]:
-    """Find this rule's sponsored slot in ALREADY-FETCHED results (pure, no I/O).
+           brand_name: str | None = None) -> ad_slots.Placement:
+    """Find this rule's AD SLOT in ALREADY-FETCHED results (pure, no I/O).
 
-    Returns (position | None, source). `None` means "no bid decision" — see the four
-    outcomes in the module docstring; the source string says which one.
+    Returns an `ad_slots.Placement`. `slot` None = we hold no ad slot — see the outcomes in
+    the module docstring; the reason says which one. Our organic listings ride along in
+    `organic_positions` and never decide anything.
 
     Split from the fetch so several rules on the same (keyword, store) share one
     scrape: the results are identical, only the attribution differs.
@@ -80,7 +74,8 @@ def locate(results: list[dict], keyword: str, lat: float, lon: float, *,
     want_kw, want_match = _norm(keyword), _norm(match_type)
     variants = {str(v) for v in (variant_ids or []) if v}
 
-    mine: list[tuple[float, str]] = []      # (position, what kind of row it was)
+    mine: list[tuple[float, str]] = []      # (page position, what kind of ad row it was)
+    organic: list[int] = []
 
     for r in results:
         pos = r.get("position")
@@ -89,10 +84,10 @@ def locate(results: list[dict], keyword: str, lat: float, lon: float, *,
         by_variant = bool(str(r.get("variant_id") or "") in variants and variants)
 
         if not r.get("is_ad"):
-            # Organic. Only a product-id match can prove an organic row is ours —
-            # there is no tracking id on one.
+            # Organic: recorded for the overlap warning, never a slot. Only a product-id match
+            # can prove an organic row is ours — there is no tracking id on one.
             if by_variant:
-                mine.append((float(pos), "organic"))
+                organic.append(int(pos))
             continue
 
         # Sponsored. `uclId` names the campaign AND the campaign keyword that won it,
@@ -111,14 +106,14 @@ def locate(results: list[dict], keyword: str, lat: float, lon: float, *,
             mine.append((float(pos), "sponsored, not attributable to this campaign"))
 
     if not mine:
-        reason = "our product is not in these results"
+        reason = ("organic only, no ad slot" if organic
+                  else "our product is not in these results")
         log.debug(f"@ ({lat},{lon}): {reason} ({len(results)} results)")
-        return None, reason
+        return ad_slots.place(results, None, organic, reason)
 
-    # Lowest wins — where a shopper actually sees us first. Our product can hold BOTH
-    # an organic and a paid slot on one page (verified: `ricotta` at 8 organic and 9
-    # sponsored), and the better of the two is the one that counts.
+    # Lowest wins — the first ad of ours a shopper sees.
     pos, kind = min(mine, key=lambda x: x[0])
-    log.debug(f"@ ({lat},{lon}): pos {pos:g} [{kind}] of {len(mine)} own row(s), "
-              f"{len(results)} results")
-    return pos, f"live({len(results)} results, {kind})"
+    placed = ad_slots.place(results, pos, organic, f"live({len(results)} results, {kind})")
+    log.debug(f"@ ({lat},{lon}): {ad_slots.label(placed.slot, placed.page_position)} [{kind}] "
+              f"of {len(mine)} own ad row(s), {len(results)} results")
+    return placed

@@ -3,8 +3,9 @@
 Kept out of `product_service.py` for the same reason `zepto_analytics` is kept
 out of `analytics_service`: the sources are shaped differently. Blinkit joins
 sales (`blinkit_seller_sales`) to a separate stock snapshot (`blinkit_soh`);
-Zepto carries both on one row of `zepto_seller_sales`, one row per SKU
-per day.
+Zepto's sales are `zepto_seller_sales` (one row per SKU per day) and its stock
+`zepto_soh` (one reading per SKU per scrape day) — until 2026-10 stock rode on the
+sales row, which is why the old column is still read as a fallback.
 
 These functions return **raw aggregates**, not `ProductListRow` objects, so
 cover/status stay defined once in `product_service` (importing them back here
@@ -18,22 +19,25 @@ Three deliberate mapping choices:
   Oven SKU shares one `category_name` ("Dairy, Bread & Eggs"), which would make
   the column identical on every row; the subcategory actually splits them
   ("Breads & Buns" / "Cheese").
-* `stock_on_hand` is read from the **latest day in the window**, never summed.
-  It is a snapshot of stock now, not something that accrued over the window —
-  summing 11 days of it reports Whole Wheat Sourdough at 5,667 units when the
-  real figure is 268.
+* Stock is the **newest reading for the window**, never summed. It is a snapshot,
+  not something that accrued over the window — summing 11 days of it reports Whole
+  Wheat Sourdough at 5,667 units when the real figure is 268. Readings come from
+  `zepto_soh` (keyed on the day the scrape asked, P41), falling back to the old
+  `zepto_seller_sales.stock_on_hand` where `zepto_soh` has none yet.
 
 Deliberately absent: purchase orders and the scorecard signal. Zepto publishes
 neither, so `get_product_pos` and `potential_loss` stay Blinkit-only rather
 than returning an empty list that reads as "no POs" instead of "no such data".
 """
 import uuid
-from datetime import date, datetime, time
+from datetime import date, datetime, time, timedelta
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.zepto_seller import ZeptoSellerSales as Prod
+from app.models.zepto_seller import ZeptoSellerSalesSummary as Summary
+from app.models.zepto_seller import ZeptoSOH as SOH
 from app.models.zepto_seller import ZeptoSellerProductCityDaily as ProdCity
 from app.models.zepto_seller import ZeptoPO, ZeptoPOItem
 
@@ -65,16 +69,36 @@ def _category(sub: str | None, cat: str | None) -> str | None:
     return sub or cat
 
 
+def _soh_conds(tenant_id: uuid.UUID, start: date, end: date) -> list:
+    """`zepto_soh` readings that describe the window: taken from its first day up to the
+    morning AFTER its last (P41). A reading is dated the day the scrape asked — the
+    morning of D — so the reading of end+1 is the closing stock of a window ending on
+    `end`. For a window ending today there is no such row, and today's reading is newest."""
+    return [
+        SOH.tenant_id == tenant_id,
+        SOH.date >= start,
+        SOH.date <= end + timedelta(days=1),
+        SOH.stock_on_hand.is_not(None),
+    ]
+
+
 async def _latest_stock(
     session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
 ) -> dict[str, int]:
-    """product_variant_id -> stock_on_hand on its most recent day in the window.
+    """product_variant_id -> its newest stock reading for the window.
 
-    DISTINCT ON rather than an aggregate because stock is a snapshot: the newest
-    reading is the answer, not the sum or the max. Rows where Zepto returned no
-    stock value are skipped, so the caller sees 0 rather than a bogus number.
+    From `zepto_soh` (P41 step 2) — readings keyed on the day the scrape asked, which is
+    what stock is. Falls back, per product, to the old `zepto_seller_sales.stock_on_hand`
+    (its newest sales day in the window) where `zepto_soh` has no reading yet: the table
+    starts empty on deploy and holds no history before it, so without the fallback every
+    product would lose its stock that day. The fallback goes with step 3, which drops the
+    old column.
+
+    DISTINCT ON rather than an aggregate because stock is a snapshot: the newest reading is
+    the answer, not the sum or the max. Rows without a value are skipped; a product with
+    no reading at all is absent, which the caller turns into "No stock data" (P11).
     """
-    rows = (
+    old = (
         await session.execute(
             select(Prod.product_variant_id, Prod.stock_on_hand)
             .where(*_conds(tenant_id, start, end), Prod.stock_on_hand.is_not(None))
@@ -82,7 +106,39 @@ async def _latest_stock(
             .order_by(Prod.product_variant_id, Prod.period_start.desc())
         )
     ).all()
-    return {pid: int(soh) for pid, soh in rows}
+    new = (
+        await session.execute(
+            select(SOH.product_variant_id, SOH.stock_on_hand)
+            .where(*_soh_conds(tenant_id, start, end))
+            .distinct(SOH.product_variant_id)
+            .order_by(SOH.product_variant_id, SOH.date.desc())
+        )
+    ).all()
+    return {**{pid: int(s) for pid, s in old}, **{pid: int(s) for pid, s in new}}
+
+
+async def data_days(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> int:
+    """How many days of the window Zepto data exists for — the divisor for average
+    daily sales, and so for days of cover (P11).
+
+    Dividing by the window's calendar length counted days with no data as days with no
+    sales: every navbar preset ends TODAY, while the newest Zepto day is yesterday (the
+    scrape runs the next morning), so the default 7-day view divided 6 days of sales by 7
+    and overstated cover by ~17%; "yesterday + today" doubled it; a 30-day window on a
+    tenant with 23 days of history overstated it by 30%. The brand summary has a row for
+    every scraped day, zero-sale days included, so its day count is the honest divisor.
+    """
+    return (
+        await session.execute(
+            select(func.count(func.distinct(Summary.date))).where(
+                Summary.tenant_id == tenant_id,
+                Summary.date >= start,
+                Summary.date <= end,
+            )
+        )
+    ).scalar_one()
 
 
 async def list_agg(
@@ -144,6 +200,9 @@ async def list_agg(
             # It maps to frontend (shelf) stock, which is what cover divides.
             "frontend_qty": stock.get(pid, 0),
             "backend_qty": 0,
+            # No reading for this SKU in the window ≠ zero stock (P11): without this
+            # flag the 0 above read as "Out of stock" on a SKU that is selling.
+            "stock_known": pid in stock,
         }
         for pid, sku_name, prod_name, sub, cat, rev, units, last in rows
     ]
@@ -191,9 +250,27 @@ async def detail_agg(
     ]
     # Only the frontend series is real; Zepto has no backend/warehouse figure,
     # so backend_qty is 0 throughout rather than a guess.
+    #
+    # One point per scrape day from `zepto_soh` (P41 step 2): the stock each morning.
+    # The old series was plotted against the SALES date, but every run wrote that
+    # morning's stock onto all 8 days it re-scraped — one flat line for the last 8 days,
+    # and each older point the stock ~8 days AFTER its date. Days BEFORE the first
+    # `zepto_soh` reading in the window keep the old series (all there is for them — the
+    # table starts empty on deploy); from that reading on, only real readings. Without the
+    # splice, a window with one reading drew a single dot and lost every older day.
+    soh_rows = (
+        await session.execute(
+            select(SOH.date, SOH.stock_on_hand)
+            .where(*_soh_conds(tenant_id, start, end), SOH.product_variant_id == item_id)
+            .order_by(SOH.date)
+        )
+    ).all()
+    first_reading = soh_rows[0][0] if soh_rows else None
+    old_points = [(d, s) for d, _, _, s in day_rows
+                  if first_reading is None or d < first_reading]
     stock_trend = [
         {"date": d, "backend_qty": 0, "frontend_qty": int(soh)}
-        for d, _, _, soh in day_rows
+        for d, soh in old_points + list(soh_rows)
         if soh is not None
     ]
     stock = None
@@ -213,6 +290,7 @@ async def detail_agg(
         "units_sold": int(units),
         "stock": stock,
         "frontend_qty": stock["frontend_qty"] if stock else 0,
+        "stock_known": stock is not None,                       # see list_agg (P11)
         "trend": trend,
         "stock_trend": stock_trend,
         # No Zepto source for either — see module docstring.

@@ -514,16 +514,28 @@ def add_budget_rule(
     asyncio.run(_run())
 
 
+def _last_seen(rt) -> str:
+    """The rule's last reading for `cm rules list`: an ad slot, or — on state written before
+    the switch to ad slots (2026-10), which the engine ignores — the old page position."""
+    if not rt or rt.last_position is None:
+        return "—"
+    if getattr(rt, "measured_in", None) == "ad_slot":
+        return f"Ad #{rt.last_position:g}"
+    return f"pos {rt.last_position:g} (pre-ad-slot)"
+
+
 @rules_app.command("add-bid")
 def add_bid(
     tenant: str = _TENANT,
     campaign: int = typer.Option(..., "--campaign", help="Campaign id on the --marketplace given"),
     keyword: str = typer.Option(..., "--keyword", help="Search keyword to chase"),
-    target: int = typer.Option(..., "--target", help="Target sponsored position (e.g. 3)"),
+    target: int = typer.Option(..., "--target", min=1, max=5,
+                                help="Target AD SLOT, 1-5: the Nth sponsored listing on the page, "
+                                     "wherever it lands (e.g. 2 = the second ad)"),
     min_bid: int = typer.Option(..., "--min-bid", help="Floor CPM (₹)"),
     max_bid: int = typer.Option(
         None, "--max-bid",
-        help="Ceiling CPM (₹). Omit to chase the target position with no per-rule ceiling "
+        help="Ceiling CPM (₹). Omit to chase the target ad slot with no per-rule ceiling "
              "— the absolute backstop (CM_BID_MAX_ABSOLUTE) still applies."),
     campaign_name: str = typer.Option("", "--campaign-name"),
     match_type: str = typer.Option("EXACT", "--match-type", help="EXACT | BROAD"),
@@ -590,7 +602,7 @@ def add_bid(
                           f"· follows that city's frozen store[/dim]")
         shape = f"once {date}" if once else "recurring"
         band = f"{min_bid}–{max_bid}" if max_bid else f"{min_bid}+ (no ceiling)"
-        console.print(f"[green]Bid rule {r.id} created[/green] — {keyword!r} → pos {target} "
+        console.print(f"[green]Bid rule {r.id} created[/green] — {keyword!r} → Ad #{target} "
                       f"[{band}] on campaign {campaign} ({shape})")
         console.print(_RECONCILE_HINT.format(t=tenant))
 
@@ -651,13 +663,13 @@ def list_rules(tenant: str = _TENANT, platform: str = _MARKETPLACE):
             console.print("[dim]No bid rules.[/dim]")
             return
         table = Table(show_header=True, header_style="bold", title="Bid rules")
-        for col in ("rule id", "campaign", "keyword", "target", "min", "max", "window", "last pos", "last cpm"):
+        for col in ("rule id", "campaign", "keyword", "target", "min", "max", "window", "last seen", "last cpm"):
             table.add_column(col)
         for r, rt in bids:
             win = f"{r.start_time or '—'}–{r.stop_time or '—'}"
-            table.add_row(r.id, str(r.campaign_id), r.keyword, str(r.target_position),
+            table.add_row(r.id, str(r.campaign_id), r.keyword, f"Ad #{r.target_position}",
                           str(r.min_bid), str(r.max_bid) if r.max_bid else "none", win,
-                          f"{rt.last_position:g}" if rt and rt.last_position is not None else "—",
+                          _last_seen(rt),
                           str(rt.last_cpm) if rt and rt.last_cpm is not None else "—")
         console.print(table)
 

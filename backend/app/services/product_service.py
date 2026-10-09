@@ -102,9 +102,10 @@ def _list_row(
     are computed identically for both — the two differ in where the numbers come
     from, never in what they mean.
 
-    `stock_known=False` means there is no stock source for this SKU at all (a
-    seller-hub Blinkit SKU with no SOH row): cover is None and the status says
-    so, instead of a 0 reading as "out of stock" on a SKU that is selling.
+    `stock_known=False` means there is no stock reading for this SKU (a Blinkit SKU
+    the latest SOH snapshot does not list, a Zepto SKU with no reading): cover is None
+    and the status says so, instead of a 0 reading as "out of stock" on a SKU that is
+    selling.
     """
     avg_daily, cover = cover_metrics(frontend_qty, units_sold, window_days)
     if not stock_known:
@@ -235,8 +236,7 @@ async def get_products(
     # Seller-hub Blinkit accounts (Sereko): same item_id space as the old
     # domain, so an item present in both is merged rather than listed twice.
     # The domain publishes no stock, so a hub-only SKU is "stock unknown"
-    # unless the SOH table happens to have it.
-    hub_only: set[str] = set()
+    # unless the SOH table happens to have it (the same rule as every SKU, below).
     if seller_hub.wants_blinkit_seller_hub(marketplaces):
         for h in await seller_hub.product_list_agg(
             session,
@@ -249,7 +249,6 @@ async def get_products(
             b = blinkit.get(h["item_id"])
             if b is None:
                 blinkit[h["item_id"]] = {k: v for k, v in h.items() if k != "item_id"}
-                hub_only.add(h["item_id"])
                 continue
             b["revenue"] = round(b["revenue"] + h["revenue"], 2)
             b["units_sold"] += h["units_sold"]
@@ -267,7 +266,11 @@ async def get_products(
                 backend_qty=backend,
                 frontend_qty=frontend,
                 window_days=window_days,
-                stock_known=item_id in stock_map or item_id not in hub_only,
+                # Absent from the latest SOH snapshot = no reading, not zero stock — for
+                # every Blinkit SKU, not only seller-hub ones (BLINKIT-NOTES B2, 2026-10-07:
+                # Brik Oven's Honey & Oats Sourdough sold 192 units in 7 days and showed
+                # "Out of stock" — SOH has never listed it, while it does list genuine zeros).
+                stock_known=item_id in stock_map,
             )
         )
 
@@ -276,7 +279,13 @@ async def get_products(
     # and average price mean the same thing on both marketplaces. The Blinkit
     # query above already returned nothing when `marketplaces=["zepto"]`, so
     # there is no double counting when both are selected.
+    #
+    # Their average daily sales divide by the days Zepto has data for, not the window's
+    # calendar length (P11) — see `zepto_products.data_days`.
     if zepto_products.wants_zepto(marketplaces):
+        z_days = await zepto_products.data_days(
+            session, tenant_id=tenant_id, start=period.start, end=period.end
+        )
         for z in await zepto_products.list_agg(
             session,
             tenant_id=tenant_id,
@@ -286,7 +295,7 @@ async def get_products(
             category=category,
         ):
             rows.append(
-                _list_row(**z, window_days=window_days, marketplace="zepto")
+                _list_row(**z, window_days=z_days, marketplace="zepto")
             )
 
     # Instamart's sales come from the Brand Portal report (day x store x item,
@@ -354,8 +363,15 @@ async def _zepto_detail(
         return None
 
     frontend_now = d.pop("frontend_qty", 0)
+    stock_known = d.pop("stock_known", True)
     units = d["units_sold"]
-    avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+    # Days with data, not calendar days (P11) — see `zepto_products.data_days`.
+    z_days = await zepto_products.data_days(
+        session, tenant_id=tenant_id, start=period.start, end=period.end
+    )
+    avg_daily, cover = cover_metrics(frontend_now, units, z_days)
+    if not stock_known:
+        cover = None
 
     # Genuinely per-SKU now that `zepto_seller_product_city_daily` exists, so no
     # "only show it if there are 2+ cities" guard: a single city is a real
@@ -375,7 +391,11 @@ async def _zepto_detail(
         "avg_price": _avg_price(d["revenue"], units),
         "avg_daily_units": avg_daily,
         "days_of_cover": cover,
-        "status": cover_status(frontend_now, units, cover),
+        "status": (
+            cover_status(frontend_now, units, cover)
+            if stock_known
+            else STATUS_NO_STOCK_DATA
+        ),
         "cities": cities,
     }
 
@@ -539,6 +559,8 @@ async def get_product_detail(
     potential_loss = await _potential_loss(session, tenant_id=tenant_id, item_id=item_id)
 
     avg_daily, cover = cover_metrics(frontend_now, units, period.length_days)
+    if stock is None:
+        cover = None        # SOH has never seen this SKU — no reading, not zero (B2)
 
     return {
         "item_id": item_id,
@@ -552,7 +574,11 @@ async def get_product_detail(
         "stock": stock,
         "avg_daily_units": avg_daily,
         "days_of_cover": cover,
-        "status": cover_status(frontend_now, units, cover),
+        "status": (
+            cover_status(frontend_now, units, cover)
+            if stock is not None
+            else STATUS_NO_STOCK_DATA
+        ),
         "potential_loss": potential_loss,
         "trend": trend,
         "stock_trend": stock_trend,
@@ -735,6 +761,18 @@ async def get_product_pos(
         if z_total:
             return Page.build(
                 [ProductPoRow(**r) for r in z_rows], z_total, pagination
+            )
+
+    # Same for Instamart: its PO lines live in `instamart_po_item`, keyed by
+    # the same ITEM_CODE the Instamart product page passes as item_id.
+    if total == 0 and instamart_products.wants_instamart(None):
+        i_rows, i_total = await instamart_products.po_lines(
+            session, tenant_id=tenant_id, item_id=item_id,
+            offset=pagination.offset, limit=pagination.limit,
+        )
+        if i_total:
+            return Page.build(
+                [ProductPoRow(**r) for r in i_rows], i_total, pagination
             )
 
     rows = (

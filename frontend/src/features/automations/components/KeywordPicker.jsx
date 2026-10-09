@@ -5,6 +5,7 @@ import { Loading } from "../../../components/feedback/Loading";
 import { Button } from "../../../components/ui/Button";
 import { formatCurrency, formatNumber } from "../../../lib/format";
 import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
+import { useDateRange } from "../../../context/DateRangeContext";
 import { bidUnit } from "../../../lib/marketplaces";
 
 const TH =
@@ -133,9 +134,10 @@ const MetricCells = ({ m }) => (
 );
 
 /**
- * Catalogue mode — the marketplace has no per-campaign keyword PERFORMANCE (Zepto: its
- * keyword metrics are brand grain), so the picker shows what the campaign catalogue does
- * know: which match types are bid, the live bid and the marketplace's floor. `m` here is
+ * Catalogue mode — the rows come from the marketplace's campaign catalogue (Zepto): which
+ * match types are bid, the live bid and the marketplace's floor. On Zepto each row also
+ * carries its keyword performance over the navbar's dates (P43, from the per-campaign
+ * keyword report), summed here — ratios rebuilt from the sums, never averaged. `m` here is
  * `catalogSummary(rows)`, not `aggregate(rows)`.
  */
 const catalogSummary = (rows) => {
@@ -147,25 +149,78 @@ const catalogSummary = (rows) => {
 			: Math.min(...v) === Math.max(...v)
 				? formatCurrency(Math.min(...v))
 				: `${formatCurrency(Math.min(...v))}–${formatCurrency(Math.max(...v))}`;
+	const sum = (k) => rows.reduce((a, r) => a + (r[k] ?? 0), 0);
+	const spend = sum("budget_consumed");
+	const sales = sum("total_sales");
+	const impressions = sum("impressions");
+	const clicks = sum("clicks");
 	return {
 		matchTypes: [...new Set(rows.map((r) => r.match_type))]
 			.sort()
 			.join(" · "),
 		bid: range(bids),
 		floor: range(floors),
+		spend,
+		sales,
+		orders: sum("orders"),
+		direct_orders: sum("direct_orders"),
+		indirect_orders: sum("indirect_orders"),
+		impressions,
+		clicks,
+		atc: sum("atc"),
+		roas: ratio(sales, spend),
+		ctr: impressions ? (clicks / impressions) * 100 : null,
+		cpc: ratio(spend, clicks),
 	};
 };
 
-const CatalogHeaders = ({ unit }) => (
+// Zepto bids per CLICK, so CPC is the cost column that matters (Blinkit's is CPM). There is
+// no direct/indirect SALES split on Zepto — only orders split into the advertised product
+// (direct) and the brand's other products (halo) — and no ad position or new-user count.
+const PerfHeaders = () => (
 	<>
+		<th className={NUM_H}>Total Sales</th>
+		<th className={NUM_H}>Ad Spend</th>
+		<th className={NUM_H}>ROAS</th>
+		<th className={NUM_H}>Orders</th>
+		<th className={NUM_H}>Direct Orders</th>
+		<th className={NUM_H}>Indirect Orders</th>
+		<th className={NUM_H}>Impressions</th>
+		<th className={NUM_H}>Clicks</th>
+		<th className={NUM_H}>CTR</th>
+		<th className={NUM_H}>Avg CPC</th>
+		<th className={NUM_H}>ATC</th>
+	</>
+);
+
+const PerfCells = ({ m }) => (
+	<>
+		<td className={NUM}>{formatCurrency(m.sales)}</td>
+		<td className={NUM}>{formatCurrency(m.spend)}</td>
+		<td className={NUM}>{fmtRoas(m.roas)}</td>
+		<td className={NUM}>{formatNumber(m.orders)}</td>
+		<td className={NUM}>{formatNumber(m.direct_orders)}</td>
+		<td className={NUM}>{formatNumber(m.indirect_orders)}</td>
+		<td className={NUM}>{formatNumber(m.impressions)}</td>
+		<td className={NUM}>{formatNumber(m.clicks)}</td>
+		<td className={NUM}>{m.ctr == null ? "—" : `${m.ctr.toFixed(2)}%`}</td>
+		<td className={NUM}>{m.cpc == null ? "—" : formatCurrency(m.cpc)}</td>
+		<td className={NUM}>{formatNumber(m.atc)}</td>
+	</>
+);
+
+const CatalogHeaders = ({ unit, perf }) => (
+	<>
+		{perf && <PerfHeaders />}
 		<th className={TH}>Match</th>
 		<th className={NUM_H}>Current bid ({unit.code})</th>
 		<th className={NUM_H}>Min bid ({unit.code})</th>
 	</>
 );
 
-const CatalogCells = ({ m }) => (
+const CatalogCells = ({ m, perf }) => (
 	<>
+		{perf && <PerfCells m={m} />}
 		<td className={TD}>{m.matchTypes || "—"}</td>
 		<td className={NUM}>{m.bid ?? "—"}</td>
 		<td className={NUM}>{m.floor ?? "—"}</td>
@@ -192,6 +247,7 @@ const DrillModal = ({
 	onApply,
 	onClose,
 	catalog = false,
+	perf = false,
 	unit,
 }) => {
 	const [search, setSearch] = useState("");
@@ -208,7 +264,7 @@ const DrillModal = ({
 		!shown.some((r) => r.label.toLowerCase() === q.toLowerCase());
 
 	return (
-		<div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/40 p-6">
+		<div className="fixed inset-0 z-60 flex items-center justify-center bg-black/40 p-6">
 			<div className="flex max-h-[85vh] w-full max-w-6xl flex-col rounded-lg border border-border bg-card">
 				<header className="flex flex-wrap items-center gap-3 border-b border-border px-5 py-4">
 					<h3 className="font-display text-base font-semibold text-content">
@@ -253,7 +309,7 @@ const DrillModal = ({
 				>
 					<table
 						className="w-full border-collapse"
-						style={{ minWidth: catalog ? 720 : 1180 }}
+						style={{ minWidth: catalog && !perf ? 720 : 1180 }}
 					>
 						<thead className="bg-card">
 							<tr className="border-b border-border">
@@ -269,7 +325,7 @@ const DrillModal = ({
 										: "Campaign"}
 								</th>
 								{catalog ? (
-									<CatalogHeaders unit={unit} />
+									<CatalogHeaders unit={unit} perf={perf} />
 								) : (
 									<MetricHeaders />
 								)}
@@ -337,7 +393,10 @@ const DrillModal = ({
 											)}
 										</td>
 										{catalog ? (
-											<CatalogCells m={r.metrics} />
+											<CatalogCells
+												m={r.metrics}
+												perf={perf}
+											/>
 										) : (
 											<MetricCells m={r.metrics} />
 										)}
@@ -379,6 +438,10 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 	// No keyword performance on this marketplace — rows come from the campaign catalogue
 	// (see useAllKeywordMetrics), so the columns and the drill-in change with them.
 	const catalog = marketplace !== "blinkit";
+	// Zepto's catalogue rows carry keyword performance for the navbar's dates (P43); a
+	// marketplace whose rows do not keeps the bid/floor-only columns.
+	const perf = catalog && (rows ?? []).some((r) => r.budget_consumed != null);
+	const { range } = useDateRange();
 	const { data: campaigns } = useCampaignNames();
 	const { data: selectableCampaigns } = useCampaigns();
 	const [view, setView] = useState(BY_KEYWORD);
@@ -445,13 +508,13 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 					(view === BY_CAMPAIGN && String(g.key).includes(q)),
 			)
 			.sort(
-				catalog
+				catalog && !perf
 					? byActiveThenName
 					: view === BY_CAMPAIGN
 						? byActiveThenSpend
 						: (a, b) => b.metrics.spend - a.metrics.spend,
 			);
-	}, [rows, view, search, nameOf, statusOf, catalog]);
+	}, [rows, view, search, nameOf, statusOf, catalog, perf]);
 
 	if (isLoading) return <Loading label="Loading keywords…" />;
 
@@ -485,6 +548,7 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 			.sort(
 				(a, b) =>
 					Boolean(a.notAutomatable) - Boolean(b.notAutomatable) ||
+					(perf ? b.metrics.spend - a.metrics.spend : 0) ||
 					a.label.localeCompare(b.label) ||
 					a.match_type.localeCompare(b.match_type),
 			);
@@ -534,6 +598,12 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 						{ value: BY_CAMPAIGN, label: "Campaign × Keywords" },
 					]}
 				/>
+				{perf && (
+					<span className="text-xs text-content-subtle">
+						Performance for {range.from} → {range.to} (the dates in
+						the navbar)
+					</span>
+				)}
 				{!isComplete && (
 					<span className="text-xs text-content-subtle">
 						Showing the top {rows.length} of {total} by spend.
@@ -559,7 +629,7 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 			>
 				<table
 					className="w-full border-collapse"
-					style={{ minWidth: catalog ? 720 : 1240 }}
+					style={{ minWidth: catalog && !perf ? 720 : 1240 }}
 				>
 					<thead className="bg-card">
 						<tr className="border-b border-border">
@@ -573,7 +643,7 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 								{view === BY_KEYWORD ? "Keyword" : "Campaign"}
 							</th>
 							{catalog ? (
-								<CatalogHeaders unit={unit} />
+								<CatalogHeaders unit={unit} perf={perf} />
 							) : (
 								<MetricHeaders />
 							)}
@@ -648,7 +718,10 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 										)}
 									</td>
 									{catalog ? (
-										<CatalogCells m={g.metrics} />
+										<CatalogCells
+											m={g.metrics}
+											perf={perf}
+										/>
 									) : (
 										<MetricCells m={g.metrics} />
 									)}
@@ -669,6 +742,7 @@ export const KeywordPicker = ({ campaignId, keyword, matchType, onChange }) => {
 					subtitle={drill.label}
 					rows={catalog ? catalogDrillRows(drill) : drillRows(drill)}
 					catalog={catalog}
+					perf={perf}
 					unit={unit}
 					// Only the keyword direction accepts a typed value; you cannot invent a
 					// campaign. Not in catalogue mode: a typed keyword has no match type or

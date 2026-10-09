@@ -33,10 +33,10 @@ const Dot = ({ cell, campaignName, onShow, onHide, onClick }) => {
 			onFocus={() => onShow(cell, campaignName, ref.current)}
 			onBlur={onHide}
 			onClick={onClick}
-			className="flex h-5 w-5 items-center justify-center rounded-full transition-shadow hover:shadow-[0_0_0_3px_var(--color-muted)] focus-visible:shadow-[0_0_0_3px_var(--color-muted)] focus-visible:outline-none"
+			className="flex h-4 w-4 items-center justify-center rounded-full transition-shadow hover:shadow-[0_0_0_3px_var(--color-muted)] focus-visible:shadow-[0_0_0_3px_var(--color-muted)] focus-visible:outline-none"
 		>
 			<span
-				className={`block h-3 w-3 rounded-full ${band ? band.dot : "bg-border"}`}
+				className={`block h-2.5 w-2.5 rounded-full ${band ? band.dot : "bg-border"}`}
 			/>
 		</button>
 	);
@@ -135,7 +135,7 @@ export const useBuTooltip = () => {
 };
 
 export const BuDots = ({ days, campaignName, onShow, onHide, onClick }) => (
-	<div className="flex items-center justify-end gap-1">
+	<div className="flex items-center justify-end gap-0.5">
 		{days.map((cell) => (
 			<Dot
 				key={cell.date}

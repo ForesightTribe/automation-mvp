@@ -5,9 +5,10 @@ import { ErrorState } from "../../../components/feedback/ErrorState";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { formatNumber } from "../../../lib/format";
 
-/** SOV is stored as either a 0–1 fraction or a 0–100 percentage depending on the
- * source; normalize to a percentage for display + the bar. */
-const toPct = (v) => (v == null ? 0 : v <= 1 ? v * 100 : v);
+/** Blinkit reports SOV as a 0–100 percentage (its API: 2.72, 8.61, 100.0), stored as-is.
+ * ⚠️ Never rescaled: this used to treat anything ≤ 1 as a fraction and multiply by 100, so
+ * a real 0.06% read as 6% (hundreds of rows a month per client). */
+const toPct = (v) => v ?? 0;
 
 /** Sponsored share-of-voice per keyword — your paid presence on each searched
  * term, with a bar for quick scanning (highest SOV first).
@@ -20,7 +21,7 @@ export const SovTable = ({ barClass = "bg-primary" }) => {
 	const rows = data ?? [];
 
 	return (
-		<Card title="Sponsored share of voice">
+		<Card title="Sponsored share of voice · Blinkit">
 			{isLoading && <Loading label="Loading SOV…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}
 			{!isLoading &&
@@ -29,7 +30,7 @@ export const SovTable = ({ barClass = "bg-primary" }) => {
 					<EmptyState message="No sponsored SOV in this window." />
 				) : (
 					<div className="overflow-auto" style={{ maxHeight: 360 }}>
-						<table className="w-full border-collapse text-sm">
+						<table className="table-frozen w-full border-collapse text-sm">
 							<thead className="sticky top-0 z-10 bg-card">
 								<tr className="border-b border-border">
 									<th className="px-3 py-2 text-left font-medium text-content-subtle">
@@ -70,7 +71,13 @@ export const SovTable = ({ barClass = "bg-primary" }) => {
 														/>
 													</div>
 													<span className="w-12 text-right tabular-nums text-content">
-														{pct.toFixed(1)}%
+														{/* Two places under 1%, where one would round 0.06 to 0.1. */}
+														{pct.toFixed(
+															pct > 0 && pct < 1
+																? 2
+																: 1,
+														)}
+														%
 													</span>
 												</div>
 											</td>

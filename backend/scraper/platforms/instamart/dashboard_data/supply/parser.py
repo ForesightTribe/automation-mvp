@@ -25,15 +25,15 @@ so this is the real fix for those two.
 """
 import csv
 import io
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timezone
 
-_IST_OFFSET = timedelta(hours=5, minutes=30)
+from scraper.platforms.instamart.dashboard_data.common import IST_OFFSET
 
 
 def _epoch_ms_to_date(ms) -> date | None:
     if not ms:
         return None
-    return (datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc) + _IST_OFFSET).date()
+    return (datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc) + IST_OFFSET).date()
 
 
 def _epoch_ms_to_dt(ms) -> datetime | None:
@@ -81,10 +81,6 @@ def parse_purchase_orders(raw: dict) -> list[dict]:
             "pdp_enabled": bool(po.get("pdp_enabled")),
         })
     return out
-
-
-def total_po_count(raw: dict) -> int:
-    return int((raw.get("data") or {}).get("total_number_of_purchase_order_records") or 0)
 
 
 def parse_po_lines(raw: dict, *, purchase_order_id: str) -> list[dict]:

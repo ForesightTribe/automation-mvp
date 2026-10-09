@@ -379,7 +379,61 @@ teardown that also records the ending in History.
 
 The control loop, every 15 minutes inside an active window. Per rule: read the campaign detail
 (status + all keyword bids in one call), scrape the live consumer search at the rule's fixed store,
-find our sponsored position, decide, write.
+find our **ad slot**, decide, write.
+
+### 7.0 What the target is — an ad slot (2026-10-05)
+
+A bid rule targets an **ad slot**: the Nth **sponsored** listing on the search page, counted in
+page order among the ads actually shown. Organic listings are not counted and never move a bid.
+
+```
+page:   1  2  3  4  5  6  7  8  9  10 11
+ads:       ●        ●  ●        ●     ●      ads at page positions 2, 5, 6, 9, 11
+slot:      #1       #2 #3       #4    #5     → "Ad #2" is page position 5 here
+```
+
+The same "Ad #2" is page position 3 on a keyword whose ads sit at 1, 3, 5, 7. The client names
+the slot; the engine finds it on every search, per keyword, store and marketplace. Only shown
+ads are numbered: an unfilled place in a marketplace's layout is not a slot.
+
+**Why** (it replaced page-position targets): ad layouts differ. Blinkit's are mostly
+1/5/9/13/17, but on some keywords its first ad sits at 3, 9 or 13; Zepto has no fixed layout at
+all (ads at 2, 4, 6, 7, 9, 11…). A page-position target the layout could not fill was either
+unreachable (the bid climbed to `max_bid` chasing it) or "met" by an organic listing the bid never
+bought. Both Zepto rules targeted position 1, which no Zepto ad was ever seen holding.
+
+| Term | Meaning | Where |
+| --- | --- | --- |
+| **Ad slot** / **Ad #N** | Our place among the sponsored listings — what the target and the decision use | `cm_bid_rules.target_position` (the column predates the switch), `cm_run_log.ad_slot` / `target`, `cm_bid_store_reads.ad_slot`, `cm_bid_runtime.last_position` |
+| **Page position** | Where that slot sat on the page | `position` columns of `cm_run_log` and `cm_bid_store_reads` |
+| **Organic position** | Where our unpaid listing sat — recorded, never decided on | `cm_bid_store_reads.organic_positions` |
+
+- **One rule on both marketplaces.** Zepto used to count our best listing paid *or organic*
+  (2026-09-02); that is gone. Organic-only reads as "not showing" and the bid climbs, exactly as
+  on Blinkit.
+- **"Not showing" stays `len(results) + 1`**, not "ads + 1": a page with no ads would make that 1,
+  read as holding Ad #1, and the bid would be trimmed.
+- **Code:** `campaign_manager/ad_slots.py` counts (pure); each marketplace's `positions.py` says
+  which rows are ours and returns an `ad_slots.Placement`. `compute_bid` is unchanged — it was
+  only ever comparing a number against a target.
+- **Target range 1–5** (API and CLI): search is read 48 products deep, so a deeper slot cannot be
+  told apart from "not showing". The API takes `target_ad_slot` (and still `target_position`).
+- **Learned state from before the switch** (`last_position`, a relaxed `effective_target`, the
+  holding price, drift pause, raise step) is in page positions. Each runtime row carries
+  `measured_in`; the engine ignores and rewrites state that isn't `"ad_slot"`
+  (`bid.slot_state_is_stale`) — the bid itself carries over. Not wiped by the migration, because
+  the old code keeps writing page positions until the new code is deployed. History rows carry
+  `measured_in` too, the only tell on a "not showing" row.
+
+**The organic-overlap warning.** The engine pushes the ad where the client asked, whatever organic
+does — but the dashboard says when that may be wasted: *"Targeting Ad #2 (position 5), but you
+already appear organically at positions 1 and 4 at 2 of 3 stores."* It fires for a store when
+most of its last 4 readings in the past day show our organic listing above the page position the
+target slot sat at, with at least 2 readings (`ad_slots.overlap_summary`, via
+`repo.recent_page_reads` — capped per store in SQL). Organic listings are matched by **product id
+only**: Blinkit's name-token match is good enough to find our ad, but it catches other products,
+and a warning that cries wolf gets ignored. Shown on the automation's row and atop its History;
+never acted on.
 
 ### 7.1 The shape of a window
 
@@ -505,9 +559,12 @@ Blinkit change is fixed once.
 
 ### 7.3 Holding — "at target **or better**"
 
-Being better than target is a **success, not an error to correct.** Sponsored slots sit on a sparse
-lattice — ~89% of observed positions were 1/5/9/13/17 — so a target of 3 is frequently unreachable,
-and demanding exact equality would mean never settling.
+Being better than target is a **success, not an error to correct** — Ad #1 against a target of
+Ad #2 holds, and drift-down then looks for the cheapest bid that keeps it.
+
+Before ad slots (§7.0) this rule also papered over Blinkit's sparse layout — ~89% of observed
+positions were 1/5/9/13/17, so a page-position target of 3 was frequently unreachable. Slots are
+dense by construction (every shown ad is one), so that problem is gone; "or better" stays.
 
 ### 7.4 Drift-down — the cheapest price that holds
 
@@ -1421,7 +1478,7 @@ Everything below is the actual behaviour of the current code.
 | Position worse than target                                       | Raise by `next_raise_step` — **percentage-based, not distance-scaled**. Base is `max(min_step, bid × pct)`; it escalates ×`ESCALATE` while the position refuses to move and resets to base once it does. The old ₹100/50/25/12.5 distance tiers are gone                                                                                                                                                  |
 | Raised, no improvement, <10 min since                            | HOLD — wait for the marketplace to reflect it                                                                                                                                                                                                                                                                                                                                                             |
 | Position unreadable (scrape failed)                              | Error row, counted; run continues to the next keyword                                                                                                                                                                                                                                                                                                                                                     |
-| **Ad not on the page** (organic-only, or product not in results) | **Raises**, on both marketplaces since 2026-09-04. Treated as position `len(results)+1` — a genuine lower bound that keeps escalation honest. Was a skip on Blinkit, which meant a keyword outbid off the page could never climb back, and the next window open wrote `min_bid`, lower still. ⚠️ A broken product match therefore climbs to `max_bid` and stays: the ceiling is the only bound (accepted) |
+| **Ad not on the page** (no ad slot of ours — organic-only, or product not in results) | **Raises**, on both marketplaces since 2026-09-04 (Zepto's organic-only too since 2026-10-05, §7.0). Treated as `len(results)+1` — worse than any ad slot, and a genuine lower bound that keeps escalation honest. Was a skip on Blinkit, which meant a keyword outbid off the page could never climb back, and the next window open wrote `min_bid`, lower still. ⚠️ A broken product match therefore climbs to `max_bid` and stays: the ceiling is the only bound (accepted) |
 | Position scrape throws                                           | Error row, counted; the run continues to the next keyword                                                                                                                                                                                                                                                                                                                                                 |
 | Reached `max_bid`, target still missed                           | See [9.4](#94-target-unreachable)                                                                                                                                                                                                                                                                                                                                                                         |
 
@@ -1456,6 +1513,7 @@ Everything below is the actual behaviour of the current code.
 | `max_bid` **raised** while relaxed   | Relaxed target voided → climbs for the real target. Without this it would drift _down_ after being given more room |
 | `max_bid` lowered while relaxed      | Voided, re-derived against the new ceiling                                                                         |
 | `target_position` edited             | Relaxed target cleared explicitly (no self-healing tell for this one)                                              |
+| Runtime state from before ad slots   | Ignored and rewritten on the rule's next decision (`measured_in` ≠ `"ad_slot"`, §7.0); the bid carries over         |
 | Any in-window edit                   | Reconcile + an immediate engine run, so the change lands now rather than at the next tick                          |
 | Editing an **ended** automation      | Rejected (400, "move its dates forward to run it again") unless the edit moves its dates forward               |
 | Dates moved forward on an ended one  | **Reopened** — live at once; the reconcile restores its crons, clears `ended_at` and writes a `reopened` History row |

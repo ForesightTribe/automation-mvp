@@ -161,13 +161,13 @@ def decision(run_id: str, *, dry_run: bool, campaign_id, verdict: str, reason: s
 def rule_header(run_id: str, *, dry_run: bool, index: int, total: int,
                 campaign_name: str | None, campaign_id, keyword: str | None = None,
                 match_type: str | None = None, target: int | None = None) -> None:
-    """`[1/2] Foresight | Sour Cream (TP) · #2443333 · "sour cream" EXACT · target #1`."""
+    """`[1/2] Foresight | Sour Cream (TP) · #2443333 · "sour cream" EXACT · target Ad #1`."""
     parts = [f"[{index}/{total}] {campaign_name or f'campaign {campaign_id}'}",
              f"#{campaign_id}"]
     if keyword:
         parts.append(f'"{keyword}"' + (f" {match_type.upper()}" if match_type else ""))
     if target is not None:
-        parts.append(f"target #{target}")
+        parts.append(f"target Ad #{target}")
     _emit("info", "rule.start", dry_run, " · ".join(parts),
           run_id=run_id, campaign_id=campaign_id, keyword=keyword)
 
@@ -210,18 +210,22 @@ _STORE_SOURCE = {
 def store_reading(run_id: str, *, dry_run: bool, campaign_id, keyword: str, reading,
                   many: bool = False, of: int | None = None) -> None:
     """What one measurement store showed this tick (campaign_manager/coverage.py `Reading`):
-    `J. P. Nagar (1/3): ad #2 of 30`. `of` = how many stores the rule has, so the line says
-    which one this is (`many` is the older yes/no form of the same thing)."""
+    `J. P. Nagar (1/3): Ad #2 · position 5 · ads at 2,5,6,9 · organic 1`. `of` = how many
+    stores the rule has, so the line says which one this is (`many` is the older yes/no form
+    of the same thing)."""
     s = reading.store
     name = getattr(s, "label", "") or getattr(s, "merchant_id", "") or "store"
     n = of if of is not None else (2 if many else 1)
     if n > 1:
         name = f"{name} ({getattr(s, 'rank', 1)}/{n})" if of else f"{name} ({getattr(s, 'rank', 1)})"
     verdict = reading.verdict
+    page = _page_said(reading)
     if verdict == "sponsored":
-        msg = f"{name}: ad #{reading.position:g} of {reading.results}"
+        pos = getattr(reading, "page_position", None)
+        msg = (f"{name}: Ad #{reading.position:g}"
+               + (f" · position {pos}" if pos is not None else "") + page)
     elif verdict == "absent":
-        msg = f"{name}: ad missing — {reading.detail}"
+        msg = f"{name}: no ad slot — {reading.detail}{page}"
         if reading.eligibility == "unknown":
             msg += " · stock unknown, still counts"
     elif verdict == "skipped":
@@ -235,7 +239,21 @@ def store_reading(run_id: str, *, dry_run: bool, campaign_id, keyword: str, read
     _emit("info" if verdict in ("sponsored", "absent") else "warning", "rule.store_reading",
           dry_run, msg, indent=True, run_id=run_id, campaign_id=campaign_id, keyword=keyword,
           merchant_id=getattr(s, "merchant_id", ""), rank=getattr(s, "rank", 1),
-          verdict=verdict, eligibility=reading.eligibility, position=reading.position)
+          verdict=verdict, eligibility=reading.eligibility,
+          ad_slot=reading.position if verdict == "sponsored" else None,
+          position=getattr(reading, "page_position", None))
+
+
+def _page_said(reading) -> str:
+    """` · ads at 2,5,6 · organic 1,4` — the page around our slot, when we saw it."""
+    ads = tuple(getattr(reading, "ad_positions", ()) or ())
+    organic = tuple(getattr(reading, "organic_positions", ()) or ())
+    out = f" · ads at {','.join(map(str, ads))}" if ads else ""
+    if reading.verdict in ("sponsored", "absent") and not ads:
+        out = " · no ads on the page"
+    if organic:
+        out += f" · organic {','.join(map(str, organic))}"
+    return out
 
 
 def context(run_id: str, *, dry_run: bool, campaign_id, msg: str,

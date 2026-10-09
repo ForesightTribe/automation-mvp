@@ -181,7 +181,7 @@ async def sales_by_city(
     """Revenue and units per city — same shape as analytics_service's Blinkit one.
 
     Zepto reports no city split in any single response, so these rows come from
-    one API call per city (see scraper.fetch_sales_by_city). Only cities with
+    one API call per city (see seller/run.py::_city_split). Only cities with
     actual sales are stored, so this returns a short list: on this account it is
     Bengaluru alone, which accounts for 100% of GMV.
 

@@ -208,8 +208,11 @@ class CampaignAdapter(Protocol):
     def locate_position(self, results: list[dict], keyword: str,
                         lat: float, lon: float, *, products: list[dict],
                         campaign_id: Any, match_type: str,
-                        brand_name: str | None) -> tuple[float | None, str]:
-        """Find OUR sponsored slot in those results. Returns (position | None, reason).
+                        brand_name: str | None) -> "ad_slots.Placement":
+        """Find OUR ad slot in those results. Returns a `campaign_manager.ad_slots.Placement`
+        (build it with `ad_slots.place`): our slot — the Nth SPONSORED row on the page — or
+        None, every ad's page position, and our organic page positions. Organic rows never
+        make a slot; they are recorded only, matched by product id.
 
         Every argument is passed unconditionally so the engine needs no
         per-marketplace branching; an adapter ignores what its marketplace does not

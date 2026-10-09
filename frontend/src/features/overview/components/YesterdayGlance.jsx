@@ -4,7 +4,6 @@ import { HoverHint } from "../../../components/ui/HoverHint";
 import { ChannelTiles, useChannelRows } from "./ChannelTiles";
 import { ChannelShareBar } from "./ChannelShareBar";
 import { HeadlineKpi } from "./HeadlineKpi";
-import { DayCampaigns } from "./DayCampaigns";
 import { EmptyState } from "../../../components/feedback/EmptyState";
 import { useReleaseSecondary } from "../priority";
 import { Loading } from "../../../components/feedback/Loading";
@@ -15,7 +14,9 @@ import {
 
 /**
  * How the latest complete day went: the total for the day beside what each
- * channel contributed to it, then every campaign that ran.
+ * channel contributed to it.
+ *
+ * No campaigns here — the Ads panel below ranks them over the selected range.
  *
  * Nothing here follows the date picker, deliberately — "how did yesterday go"
  * must not change because someone left the range on 90 days.
@@ -272,8 +273,6 @@ export const YesterdayGlance = ({ rows = [] }) => {
 					)}
 				</div>
 			)}
-
-			<DayCampaigns day={latest.date} />
 		</section>
 	);
 };

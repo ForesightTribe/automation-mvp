@@ -176,6 +176,8 @@ def parse_campaign_daily(
         "quantities_sold": raw.get("total_quantities_sold", 0),
         "ad_sales": raw.get("total_sales", 0.0),
         "roas": raw.get("total_roas", 0.0),
+        # The day's budget (B8): the scrape fills it on yesterday's row only; NULL elsewhere.
+        "daily_budget": None,
         "scraped_at": now_ist(),
     }
 
@@ -285,3 +287,46 @@ def parse_visibility_plan(raw: dict, tenant_id: str, scrape_job_id: str) -> dict
         "status": raw.get("status", ""),
         "scraped_at": now_ist(),
     }
+
+
+def parse_campaign_detail_day(
+    report_data: dict,
+    campaign_id: int,
+    campaign_type: str | None,
+    day: str,
+    tenant_id: str,
+    scrape_job_id: str,
+) -> list[dict]:
+    """A ONE-day campaign report → rows for `blinkit_ad_campaign_detail_daily` (B6).
+
+    Same flattening as `parse_campaign_detail` (one row per sub-campaign target), keyed and
+    dated by the DAY the report covers rather than the scrape day — so a re-scrape of that day
+    overwrites it instead of adding an overlapping total."""
+    rows = []
+    for r in parse_campaign_detail(report_data, campaign_id, campaign_type, day,
+                                   tenant_id, scrape_job_id):
+        disc = r["sub_campaign_id"] if r["sub_campaign_id"] is not None else r["target"]
+        r["date"] = r.pop("snapshot_date")
+        r["upsert_key"] = make_upsert_key(
+            tenant_id, "blinkit", "ad_detail_day", str(campaign_id), str(disc), day)
+        rows.append(r)
+    return rows
+
+
+
+def stamp_budgets(daily: list[dict], campaign_detail: dict, yesterday: str) -> int:
+    """Write each campaign's CURRENT budget onto its row for `yesterday` — the budget that day
+    ended on (B8). Every other row keeps NULL; storage keeps a day's first budget, so a later
+    re-scrape never rewrites it (Zepto's `daily_budget` works the same way). Blinkit keeps no
+    budget history, so this is the only way to have one. Returns how many rows got a budget."""
+    budget_now = {
+        int(cid): round(float(det["campaign_budget"]))
+        for cid, det in campaign_detail.items()
+        if det and det.get("campaign_budget") is not None
+    }
+    stamped = 0
+    for row in daily:
+        if row["date"] == yesterday and int(row["campaign_id"]) in budget_now:
+            row["daily_budget"] = budget_now[int(row["campaign_id"])]
+            stamped += 1
+    return stamped

@@ -1400,6 +1400,46 @@ async def recent_store_reads(tenant_id: uuid.UUID, platform: str, rule_ids, *,
     return out
 
 
+async def recent_page_reads(tenant_id: uuid.UUID, platform: str, rule_ids, *,
+                            since: datetime, per_store: int, db=None) -> dict:
+    """`{rule_id: [CmBidStoreRead-like rows]}` — each store's last `per_store` readings that SAW
+    the page (`ad_positions` recorded), newest first. Feeds the organic-overlap warning
+    (`ad_slots.overlap_summary`).
+
+    Capped per (rule, store) in SQL with a window function: a list page calls this for every
+    automation, and an uncapped day of readings (~4/hour × stores × rules) is the fetch-all
+    shape that exhausted the pool in 2026-09. Dry and live readings both count — a dry run's
+    search is a real search. Rows written before the ad-slot switch have no `ad_positions`
+    and are left out."""
+    from sqlalchemy import func
+    from app.models.campaign_manager_v2 import CmBidStoreRead as R
+
+    ids = [r for r in rule_ids if r]
+    if not ids:
+        return {}
+    ranked = select(
+        R.rule_id, R.merchant_id, R.store_label, R.ad_positions, R.organic_positions,
+        R.observed_at,
+        func.row_number().over(partition_by=(R.rule_id, R.merchant_id),
+                               order_by=R.observed_at.desc()).label("n"),
+    ).where(
+        R.tenant_id == tenant_id, R.platform == platform, R.rule_id.in_(ids),
+        R.observed_at >= since,
+        # The page is recorded only on readings that saw it. The verdict is the real filter:
+        # the JSON type stores Python None as JSON `null`, which IS NOT NULL in SQL. The NULL
+        # test drops rows from before the column existed.
+        R.verdict.in_(coverage.COUNTED), R.ad_positions.is_not(None),
+    ).subquery()
+    async with _session(db) as db:
+        rows = (await db.execute(
+            select(ranked).where(ranked.c.n <= per_store)
+            .order_by(ranked.c.observed_at.desc()))).all()
+    out: dict = {}
+    for r in rows:
+        out.setdefault(r.rule_id, []).append(r)
+    return out
+
+
 async def write_store_reads(rows: list[dict]) -> None:
     """Append a run's per-store readings and trim what has aged past
     `CM_STORE_READS_RETENTION_DAYS` for the clients written. Never raises: the bids these
@@ -1442,10 +1482,11 @@ class _Catalog:
     # in that column means it runs everywhere. The cities themselves are `cities`, a list of
     # {id, name} in the MARKETPLACE's spelling (ZC-C4 resolves them to `cities.id`).
     city_mode: tuple[str, str] = ("region_type", "CITY")
-    # A second place a campaign's TYPE is recorded, for campaigns the catalogue never holds:
-    # (model, campaign-type column). Zepto's catalogue is PLA-only (its campaign list returns
-    # nothing else), so its Display campaigns exist only in the daily metrics table — and
-    # without this they read as "uncatalogued, allowed" (found 2026-09-24).
+    # A second place a campaign's TYPE is recorded, for campaigns the catalogue does not hold:
+    # (model, campaign-type column). Zepto's catalogue missed most Display campaigns until
+    # 2026-10-07 (its list call filtered on `campaign_category`), so they existed only in the
+    # daily metrics table — and without this they read as "uncatalogued, allowed" (found
+    # 2026-09-24). Still the safety net for a campaign the catalogue has not seen yet.
     type_fallback: tuple[object, str] | None = None
 
 
@@ -1685,6 +1726,45 @@ async def list_catalog_keywords(tenant_id: uuid.UUID, platform: str, *, db=None)
             .order_by(km.campaign_id, km.keyword, km.match_type)
         )).all()
     return [(k, c) for k, c in rows]
+
+
+async def zepto_keyword_performance(tenant_id: uuid.UUID, start, end, *, db=None
+                                    ) -> dict[tuple[int, str, str | None], dict]:
+    """Zepto keyword performance per (campaign, keyword, match type), summed over
+    `start`..`end` (inclusive) — the keyword picker's numbers (P43). From
+    `zepto_ad_campaign_detail` (P38), one row per campaign-keyword-day. DB only.
+
+    Only the additive figures are summed; ratios (ROAS, CTR, CPC) are left to the reader to
+    rebuild from the sums, never averaged. A key with no row in the window is simply absent:
+    the keyword had no activity, which the picker shows as zeros.
+    """
+    from sqlalchemy import func
+    from app.models.zepto_seller import ZeptoAdCampaignDetail as D
+
+    async with _session(db) as db:
+        rows = (await db.execute(
+            select(
+                D.campaign_id, D.keyword, D.match_type,
+                func.coalesce(func.sum(D.spend), 0.0),
+                func.coalesce(func.sum(D.revenue), 0.0),
+                func.coalesce(func.sum(D.impressions), 0),
+                func.coalesce(func.sum(D.clicks), 0),
+                func.coalesce(func.sum(D.orders), 0),
+                func.coalesce(func.sum(D.same_skus), 0),
+                func.coalesce(func.sum(D.other_skus), 0),
+                func.coalesce(func.sum(D.atc), 0),
+            )
+            .where(D.tenant_id == tenant_id, D.date >= start, D.date <= end)
+            .group_by(D.campaign_id, D.keyword, D.match_type)
+        )).all()
+    return {
+        (cid, kw, mt): {
+            "spend": float(spend), "revenue": float(rev), "impressions": int(impr),
+            "clicks": int(clicks), "orders": int(orders), "direct_orders": int(direct),
+            "indirect_orders": int(indirect), "atc": int(atc),
+        }
+        for cid, kw, mt, spend, rev, impr, clicks, orders, direct, indirect, atc in rows
+    }
 
 
 async def get_keyword_floor(tenant_id: uuid.UUID, campaign_id: int, keyword: str,

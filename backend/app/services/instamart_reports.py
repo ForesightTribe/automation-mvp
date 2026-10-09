@@ -27,7 +27,7 @@ Same split as `zepto_reports.py`, and the same reasoning for each:
   never collide as dict keys upstream (`WeekendCampaign.campaign_id` is
   typed `int | str` for exactly this). `ad_type` is always None here:
   Instamart's ad-type breakdown was removed upstream as unreliable (see
-  `asset_metrics.py`), so every Instamart campaign lands in one flat
+  `instamart/dashboard_data/seller/scraper.py`), so every Instamart campaign lands in one flat
   "Other Ads" section rather than Blinkit's "Keyword Ads"/"Banner Ads" split.
 """
 import uuid
@@ -150,7 +150,7 @@ async def weekend_rows(
     docstring: "Products and keywords are two views of the same spend...
     not added up"), and using both here would double it. `campaign_type` is
     always None: Instamart's ad-type breakdown was removed upstream as
-    unreliable (see `asset_metrics.py`), so unlike Blinkit's `PRODUCT_
+    unreliable (see `instamart/dashboard_data/seller/scraper.py`), so unlike Blinkit's `PRODUCT_
     LISTING`/`BANNER_DIY` split, every Instamart campaign lands in one flat
     section in the caller's grouping.
     """

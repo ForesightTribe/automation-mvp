@@ -1,5 +1,5 @@
 import asyncio
-import uuid
+import time
 from datetime import date as _date, timedelta
 from typing import Optional
 import typer
@@ -8,54 +8,25 @@ from rich.markup import escape
 from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
+from app.utils.time import now_ist
 from platform_auth import service as auth_service
-from campaign_manager.marketplaces.zepto.transport import setup as zepto_setup
+from platform_auth import store as auth_store
 from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE, AuthError
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
-from scraper.platforms.zepto.dashboard_data.seller.scraper import (
-    discover_ids as zepto_discover_ids,
-    fetch_sales_overview as zepto_fetch_sales_overview,
-    fetch_product_performance as zepto_fetch_product_performance,
-    fetch_product_performance_by_city as zepto_fetch_product_perf_by_city,
-    NoDataYet as ZeptoNoDataYet,
-    fetch_pos as zepto_fetch_pos,
-    fetch_grns as zepto_fetch_grns,
-    fetch_asns as zepto_fetch_asns,
-    fetch_po_items as zepto_fetch_po_items,
-    fetch_ad_campaigns as zepto_fetch_ad_campaigns,
-    fetch_ads_tabular as zepto_fetch_ads_tabular,
-    fetch_campaign_catalog as zepto_fetch_campaign_catalog,
-)
-from scraper.platforms.zepto.dashboard_data.seller.parser import (
-    parse_sales_daily as parse_zepto_sales_daily,
-    parse_product_perf as parse_zepto_product_perf,
-    parse_product_city as parse_zepto_product_city,
-    parse_pos as parse_zepto_pos,
-    parse_grns as parse_zepto_grns,
-    parse_asns as parse_zepto_asns,
-    parse_po_items as parse_zepto_po_items,
-    parse_ad_campaigns as parse_zepto_ad_campaigns,
-    parse_ad_tabular_campaigns as parse_zepto_ad_tabular_campaigns,
-    parse_ad_keywords as parse_zepto_ad_keywords,
-    parse_ad_products as parse_zepto_ad_products,
-    parse_ad_breakdown as parse_zepto_ad_breakdown,
-    parse_campaign_catalog as parse_zepto_campaign_catalog,
-)
-from scraper.platforms.zepto.dashboard_data.seller.storage import (
-    save_sales_results as zepto_save_sales_results,
-    save_po_results as zepto_save_po_results,
-    save_ad_results as zepto_save_ad_results,
-    save_campaign_catalog as zepto_save_campaign_catalog,
-)
+from scraper.platforms.instamart.dashboard_data import run as instamart_run
+from scraper.utils.run_log import rupees, tag, tenant_slug, took
+from scraper.platforms.zepto.dashboard_data.seller import run as zepto_run
 from scraper.platforms.blinkit.dashboard_data.marketing.scraper import scrape
 from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
     parse_campaign,
     parse_campaign_daily,
     parse_campaign_detail,
+    parse_campaign_detail_day,
     parse_campaign_keywords,
     parse_sponsored_sov,
     parse_brand_collection,
     parse_visibility_plan,
+    stamp_budgets,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.storage import save_scrape_results
 from scraper.platforms.blinkit.dashboard_data.seller import scraper as seller_scraper
@@ -80,6 +51,8 @@ from scraper.platforms.blinkit.dashboard_data.seller_hub import scraper as selle
 from scraper.platforms.blinkit.dashboard_data.seller_hub.parser import (
     parse_sales_by_product as parse_seller_hub_sales_by_product,
     parse_sales_orders as parse_seller_hub_sales_orders,
+    parse_soh as parse_seller_hub_soh,
+    soh_mismatches,
 )
 from scraper.platforms.blinkit.dashboard_data.seller_hub.storage import (
     save_sales_results as save_seller_hub_sales_results,
@@ -88,25 +61,17 @@ from scraper.platforms.blinkit.dashboard_data.seller_hub.storage import (
 app = typer.Typer(help="Run scrapers and view results.")
 console = Console()
 
-# Gap between per-day Zepto product calls. A daily production run makes one
-# call and never waits; this only paces multi-day backfills, where a burst of
-# back-to-back requests is the kind of pattern this site's WAF reacts to.
-_ZEPTO_DAY_GAP_S = 1.5
-
-# How long the ads section waits before replaying the fetches it lost. Longer
-# than _ads_request's own 3/8/20s ladder on purpose: by the time a fetch has
-# exhausted that, the fault is not the two-second blip the ladder is for, so the
-# replay wants a gap of its own rather than a fourth quick try. Only what fails
-# the replay too makes the run exit non-zero (and mail the alert).
-_ZEPTO_RECHECK_WAIT_S = 20
-
-
 @app.command("blinkit")
 def scrape_blinkit(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
     date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
     date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: today)"),
     limit: int = typer.Option(None, "--limit", help="Test mode: only the N most-active campaigns"),
+    keyword_days: int = typer.Option(
+        3, "--keyword-days",
+        help="Days of keyword performance asked one day at a time, newest first (never today). "
+             "0 = every day of the window — use with --from to backfill.",
+    ),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
     """Scrape the Blinkit marketing dashboard for a date window.
@@ -117,317 +82,125 @@ def scrape_blinkit(
     so late metric revisions are picked up. Use --limit to smoke-test a few
     campaigns without the full-volume run.
     """
-    asyncio.run(_scrape_blinkit(tenant_id, date_from, date_to, limit, save))
+    asyncio.run(_scrape_blinkit(tenant_id, date_from, date_to, limit, save,
+                                keyword_days or None))
 
 
 async def _scrape_blinkit(
     tenant_id: str, date_from: str | None, date_to: str | None, limit: int | None, save: bool
-) -> None:
+, kw_days: int | None = 3) -> None:
+    """Logs follow scraper/utils/run_log.py: step lines tagged `blinkit·<tenant>·marketing`,
+    no spinner, no printed tables."""
     start = _date.fromisoformat(date_from) if date_from else _date.today() - timedelta(days=7)
     end = _date.fromisoformat(date_to) if date_to else _date.today()
     snapshot_date = end.isoformat()
+    started = time.monotonic()
 
     async with AsyncSessionLocal() as db:
-        job_id = None
-        try:
-            # ensure() = load → probe → refresh → re-login, doing the least work
-            # that yields a session known to work. Replaces a bare load, which
-            # happily returned a session that had died days earlier and let the
-            # scrape fail deep inside Playwright instead.
-            storage_state = (await auth_service.ensure(db, tenant_id, "blinkit")).storage_state
+        slug = await tenant_slug(db, tenant_id)
+        with tag("blinkit", slug, "marketing"):
+            job_id = None
+            try:
+                logger.info(f"start · {start}→{end}" + (f" · first {limit} campaigns" if limit else ""))
+                # ensure() = load → probe → refresh → re-login, doing the least work
+                # that yields a session known to work. Replaces a bare load, which
+                # happily returned a session that had died days earlier and let the
+                # scrape fail deep inside Playwright instead.
+                storage_state = (await auth_service.ensure(db, tenant_id, "blinkit")).storage_state
 
-            job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
+                job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
+                raw = await scrape(storage_state, start, end, limit=limit, kw_days=kw_days)
 
-            with console.status(f"[cyan]Scraping Blinkit marketing {start}→{end}...[/cyan]"):
-                raw = await scrape(storage_state, start, end, limit=limit)
+                campaign_detail = raw.get("campaign_detail") or {}
+                cities = raw.get("cities") or {}
+                campaigns = [
+                    parse_campaign(c, tenant_id, job_id,
+                                   detail=campaign_detail.get(c["id"]), cities=cities)
+                    for c in raw["campaigns"]
+                ]
+                type_by_id = {c["id"]: c.get("campaign_type") for c in raw["campaigns"]}
 
-            campaign_detail = raw.get("campaign_detail") or {}
-            cities = raw.get("cities") or {}
-            campaigns = [
-                parse_campaign(c, tenant_id, job_id,
-                               detail=campaign_detail.get(c["id"]), cities=cities)
-                for c in raw["campaigns"]
-            ]
-            type_by_id = {c["id"]: c.get("campaign_type") for c in raw["campaigns"]}
+                keyword_bids = [
+                    row
+                    for cid, attrs in (raw.get("keyword_attributes") or {}).items()
+                    for row in parse_campaign_keywords(
+                        attrs, campaign_detail.get(cid) or {}, cid, tenant_id, job_id
+                    )
+                ]
 
-            keyword_bids = [
-                row
-                for cid, attrs in (raw.get("keyword_attributes") or {}).items()
-                for row in parse_campaign_keywords(
-                    attrs, campaign_detail.get(cid) or {}, cid, tenant_id, job_id
+                daily = [
+                    parse_campaign_daily(row, cid, type_by_id.get(cid), tenant_id, job_id)
+                    for cid, rows in raw["daily"].items()
+                    for row in rows
+                ]
+                detail = [
+                    d
+                    for cid, report in raw["detail"].items()
+                    for d in parse_campaign_detail(
+                        report, cid, type_by_id.get(cid), snapshot_date, tenant_id, job_id
+                    )
+                ]
+                # Keyword performance per day (B6).
+                detail_days = [
+                    d
+                    for cid, by_day in (raw.get("detail_days") or {}).items()
+                    for day, report in by_day.items()
+                    for d in parse_campaign_detail_day(
+                        report, cid, type_by_id.get(cid), day, tenant_id, job_id)
+                ]
+                # B8: today's budgets go on yesterday's rows, the only budget history there is.
+                budgets = stamp_budgets(
+                    daily, campaign_detail, (now_ist().date() - timedelta(days=1)).isoformat())
+                sov = [
+                    parse_sponsored_sov(s, tenant_id, job_id, snapshot_date)
+                    for s in raw["sponsored_sov"]
+                ]
+                collections = [parse_brand_collection(c, tenant_id, job_id) for c in raw["brand_collections"]]
+                plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
+
+                city_targeted = sum(1 for c in campaigns if c.get("cities"))
+                logger.info(
+                    f"parsed · {len(campaigns)} campaigns ({city_targeted} city-targeted) · "
+                    f"{len(daily)} daily rows · {len(detail)} detail rows · "
+                    f"{len(detail_days)} keyword-day rows · {budgets} budgets recorded · "
+                    f"{len(keyword_bids)} keyword × match-type bid rows · sov {len(sov)} · "
+                    f"collections {len(collections)} · plans {len(plans)}"
                 )
-            ]
+                below = [r for r in keyword_bids
+                         if r["match_type"] == "EXACT" and r.get("current_cpm") is not None
+                         and r.get("min_bid") is not None and r["current_cpm"] < r["min_bid"]]
+                if below:
+                    logger.info(f"{len(below)} live EXACT bid(s) sit below Blinkit's published minimum")
 
-            daily = [
-                parse_campaign_daily(row, cid, type_by_id.get(cid), tenant_id, job_id)
-                for cid, rows in raw["daily"].items()
-                for row in rows
-            ]
-            detail = [
-                d
-                for cid, report in raw["detail"].items()
-                for d in parse_campaign_detail(
-                    report, cid, type_by_id.get(cid), snapshot_date, tenant_id, job_id
-                )
-            ]
-            sov = [
-                parse_sponsored_sov(s, tenant_id, job_id, snapshot_date)
-                for s in raw["sponsored_sov"]
-            ]
-            collections = [parse_brand_collection(c, tenant_id, job_id) for c in raw["brand_collections"]]
-            plans = [parse_visibility_plan(p, tenant_id, job_id) for p in raw["visibility_plans"]]
-
-            if save:
-                await save_scrape_results(db, campaigns, daily, detail, sov, collections,
-                                          plans, keywords=keyword_bids)
+                if save:
+                    await save_scrape_results(db, campaigns, daily, detail, sov, collections,
+                                              plans, keywords=keyword_bids,
+                                              detail_days=detail_days)
+                # Closed either way: a --no-save run used to leave this row `running`
+                # forever (the phantom scrape_jobs of checklist A9).
                 await complete_scrape_job(db, job_id)
+                logger.info(f"done · {'saved' if save else 'not saved (--no-save)'} · {took(started)}")
 
-            console.print(
-                f"\n[bold cyan]Blinkit marketing[/bold cyan] ({start}→{end})\n"
-                f"  campaigns: {len(campaigns)}\n"
-                f"  daily rows: {len(daily)}\n"
-                f"  detail rows: {len(detail)}\n"
-                f"  keyword bid ranges: {len(keyword_bids)}\n"
-                f"  sov: {len(sov)}  collections: {len(collections)}  plans: {len(plans)}"
-            )
-            _print_campaigns(campaigns)
-            _print_targeting(campaigns)
-            _print_keyword_bids(keyword_bids)
-            _print_daily(daily)
-            _print_detail(detail)
-            _print_sov(sov)
-            _print_collections(collections)
-            _print_plans(plans)
-
-        except typer.Exit:
-            raise
-        except AuthError:
-            # Must escape the generic handler below. cli/main.py turns AuthError
-            # into exit code 3, which the job runner records as `auth_expired` —
-            # collapsing it into typer.Exit(1) here would bury every auth failure
-            # among anonymous exit_1s, which is exactly how the seller breakage
-            # went unnoticed for weeks.
-            if job_id:
-                await fail_scrape_job(db, job_id, "auth_expired")
-            raise
-        except Exception as e:
-            # For DB errors, e.orig is the short asyncpg message; str(e) would dump
-            # the entire (huge) statement + params, flooding the terminal.
-            err = getattr(e, "orig", None) or e
-            if job_id:
-                await fail_scrape_job(db, job_id, str(err))
-            console.print(f"[red]Scrape failed: {escape(str(err))}[/red]")
-            raise typer.Exit(1)
-
-
-def _print_campaigns(campaigns: list) -> None:
-    if not campaigns:
-        console.print("\n[dim]No campaigns found.[/dim]")
-        return
-    preview = campaigns[:5]
-    console.print(f"\n[bold cyan]Campaigns[/bold cyan] (showing {len(preview)} of {len(campaigns)})")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Type", style="dim")
-    table.add_column("Status")
-    for c in preview:
-        status_style = {"ACTIVE": "green", "PAUSED": "yellow", "STOPPED": "red"}.get(c["status"], "")
-        status_text = f"[{status_style}]{c['status']}[/{status_style}]" if status_style else c["status"]
-        table.add_row(c["name"], c["type"], status_text)
-    console.print(table)
-
-
-def _print_targeting(campaigns: list) -> None:
-    """City targeting + the budget/pacing facts, from the per-campaign detail call (V7).
-    Shows the CITY-targeted campaigns first — they are the ones the bid-rule form
-    auto-fills from, and the rare case worth eyeballing after a scrape."""
-    scoped = [c for c in campaigns if c.get("region_type")]
-    if not scoped:
-        console.print("\n[dim]No campaign targeting captured (detail calls returned nothing).[/dim]")
-        return
-    targeted = [c for c in scoped if c.get("cities")]
-    preview = (targeted + [c for c in scoped if not c.get("cities")])[:10]
-    console.print(
-        f"\n[bold cyan]Targeting & budget floor[/bold cyan] "
-        f"({len(targeted)} city-targeted of {len(scoped)}; showing {len(preview)})"
-    )
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Campaign")
-    table.add_column("Region")
-    table.add_column("Cities")
-    table.add_column("Pacing", style="dim")
-    table.add_column("Budget", justify="right")
-    table.add_column("Spent", justify="right")
-    table.add_column("min_cpm", justify="right")
-    for c in preview:
-        cities = ", ".join(x["name"] for x in (c.get("cities") or [])) or "—"
-        budget = c.get("daily_budget")
-        table.add_row(
-            (c.get("name") or "")[:34],
-            c.get("region_type") or "—",
-            cities[:40],
-            c.get("pacing_type") or "—",
-            "—" if budget is None else f"{budget:,.0f}",
-            f"{c.get('billed_amount') or 0:,.0f}",
-            "—" if c.get("min_cpm") is None else f"{c['min_cpm']:,}",
-        )
-    console.print(table)
-
-
-def _print_keyword_bids(rows: list) -> None:
-    """Blinkit's published bid range per keyword (V7). The interesting column is
-    `Min` — the floor a bid rule may not go under — and whether the live bid is under it."""
-    if not rows:
-        console.print("\n[dim]No keyword bid ranges captured.[/dim]")
-        return
-    exact = [r for r in rows if r["match_type"] == "EXACT"]
-    below = [
-        r for r in exact
-        if r.get("current_cpm") is not None and r.get("min_bid") is not None
-        and r["current_cpm"] < r["min_bid"]
-    ]
-    preview = (below + [r for r in exact if r not in below])[:15]
-    console.print(
-        f"\n[bold cyan]Keyword bid ranges[/bold cyan] "
-        f"(showing {len(preview)} of {len(exact)} EXACT, {len(rows)} rows all match types)"
-    )
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Campaign", style="dim")
-    table.add_column("Keyword")
-    table.add_column("Bid", justify="right")
-    table.add_column("Min", justify="right")
-    table.add_column("Max", justify="right")
-    table.add_column("Suggested", justify="right")
-    table.add_column("Searches", justify="right")
-    for r in preview:
-        bid = r.get("current_cpm")
-        under = bid is not None and r.get("min_bid") is not None and bid < r["min_bid"]
-        sugg = (
-            f"{r['suggested_min']:,}–{r['suggested_max']:,}"
-            if r.get("suggested_min") and r.get("suggested_max") else "—"
-        )
-        table.add_row(
-            str(r["campaign_id"]),
-            r["keyword"][:28],
-            "—" if bid is None else (f"[red]{bid:,}[/red]" if under else f"{bid:,}"),
-            f"{r['min_bid']:,}" if r.get("min_bid") is not None else "—",
-            f"{r['max_bid']:,}" if r.get("max_bid") is not None else "—",
-            sugg,
-            f"{r['keyword_searches']:,}" if r.get("keyword_searches") else "—",
-        )
-    console.print(table)
-    if below:
-        console.print(f"[yellow]{len(below)} live bid(s) sit below Blinkit's published minimum.[/yellow]")
-
-
-def _print_daily(rows: list) -> None:
-    if not rows:
-        console.print("\n[dim]No daily rows captured.[/dim]")
-        return
-    preview = rows[:15]
-    console.print(f"\n[bold cyan]Campaign Daily[/bold cyan] (showing {len(preview)} of {len(rows)} rows)")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Campaign", style="dim")
-    table.add_column("Date")
-    table.add_column("Budget", justify="right")
-    table.add_column("Impr", justify="right")
-    table.add_column("ATC", justify="right")
-    table.add_column("Qty", justify="right")
-    table.add_column("Ad Sales", justify="right")
-    table.add_column("RoAS", justify="right")
-    for r in preview:
-        table.add_row(
-            str(r["campaign_id"]),
-            str(r["date"]),
-            f"₹{r['budget_consumed']:,.0f}",
-            f"{r['impressions']:,}",
-            f"{r['atc']:,}",
-            f"{r['quantities_sold']:,}",
-            f"₹{r['ad_sales']:,.0f}",
-            f"{r['roas']}",
-        )
-    console.print(table)
-
-
-def _print_detail(rows: list) -> None:
-    if not rows:
-        console.print("\n[dim]No detail rows captured.[/dim]")
-        return
-    preview = rows[:15]
-    console.print(f"\n[bold cyan]Campaign Detail[/bold cyan] (showing {len(preview)} of {len(rows)} rows)")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Campaign", style="dim")
-    table.add_column("Type", style="dim")
-    table.add_column("Target")
-    table.add_column("Impr", justify="right")
-    table.add_column("Budget", justify="right")
-    table.add_column("Direct RoAS", justify="right")
-    table.add_column("Total RoAS", justify="right")
-    for r in preview:
-        table.add_row(
-            str(r["campaign_id"]),
-            r["target_type"],
-            r["target"],
-            f"{r['impressions']:,}",
-            f"₹{r['budget_consumed']:,.0f}",
-            f"{r['direct_roas']}",
-            f"{r['total_roas']}",
-        )
-    console.print(table)
-
-
-def _print_sov(sov: list) -> None:
-    if not sov:
-        return
-    preview = sov[:5]
-    console.print(f"\n[bold cyan]Sponsored Share of Voice[/bold cyan] (showing {len(preview)} of {len(sov)} keywords)")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Keyword")
-    table.add_column("Monthly Searches", justify="right")
-    table.add_column("SOV %", justify="right")
-    for s in preview:
-        table.add_row(s["keyword"], f"{s['monthly_searches']:,}", f"{s['sov']}%")
-    console.print(table)
-
-
-def _print_collections(collections: list) -> None:
-    if not collections:
-        return
-    preview = collections[:5]
-    console.print(f"\n[bold cyan]Brand Collections[/bold cyan] (showing {len(preview)} of {len(collections)})")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Type", style="dim")
-    table.add_column("Products", justify="right")
-    table.add_column("Created On")
-    for c in preview:
-        collection_type = "DYNAMIC" if c["is_dynamic"] else "STATIC"
-        table.add_row(c["name"], collection_type, str(c["number_of_products"]), c.get("created_on", ""))
-    console.print(table)
-
-
-def _print_plans(plans: list) -> None:
-    if not plans:
-        return
-    preview = plans[:5]
-    console.print(f"\n[bold cyan]Visibility Plans[/bold cyan] (showing {len(preview)} of {len(plans)})")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Name")
-    table.add_column("Type", style="dim")
-    table.add_column("Budget", justify="right")
-    table.add_column("Start Date")
-    table.add_column("End Date")
-    table.add_column("Status")
-    for p in preview:
-        table.add_row(
-            p["name"],
-            p["type"],
-            f"₹{p['budget']:,.0f}",
-            (p.get("start_date") or "")[:10],
-            (p.get("end_date") or "")[:10],
-            p["status"],
-        )
-    console.print(table)
+            except typer.Exit:
+                raise
+            except AuthError:
+                # Must escape the generic handler below. cli/main.py turns AuthError
+                # into exit code 3, which the job runner records as `auth_expired` —
+                # collapsing it into typer.Exit(1) here would bury every auth failure
+                # among anonymous exit_1s, which is exactly how the seller breakage
+                # went unnoticed for weeks.
+                if job_id:
+                    await fail_scrape_job(db, job_id, "auth_expired")
+                logger.error("FAILED · login gone (auth_expired)")
+                raise
+            except Exception as e:
+                # For DB errors, e.orig is the short asyncpg message; str(e) would dump
+                # the entire (huge) statement + params, flooding the log.
+                err = getattr(e, "orig", None) or e
+                if job_id:
+                    await fail_scrape_job(db, job_id, str(err))
+                logger.error(f"FAILED · {err}")
+                raise typer.Exit(1)
 
 
 # ── Blinkit Seller ─────────────────────────────────────────────────────────────
@@ -435,8 +208,8 @@ def _print_plans(plans: list) -> None:
 @app.command("blinkit-seller")
 def scrape_blinkit_seller(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: yesterday)"),
-    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: --from)"),
+    date_from: str = typer.Option(None, "--from", help="Sales start date YYYY-MM-DD (default: the 4 days up to --to)"),
+    date_to: str = typer.Option(None, "--to", help="Sales end date YYYY-MM-DD (default: yesterday)"),
     sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
     po: bool = typer.Option(False, "--po", help="Scrape PO data"),
     soh: bool = typer.Option(False, "--soh", help="Scrape stock on hand"),
@@ -451,10 +224,18 @@ def scrape_blinkit_seller(
     asyncio.run(_scrape_blinkit_seller(tenant_id, date_from, date_to, sales, po, soh, po_days_back, refetch_po_items, save))
 
 
+# Blinkit seller sales: re-scrape the 4 days up to yesterday on every run (Deepansh,
+# 2026-10-07; was yesterday only), so a failed or missed run heals on the next one — same
+# reasoning as Zepto's re-scrape windows. A day missed 4 runs running needs a --from re-run.
+BLINKIT_SALES_DAYS = 4
+
+
 def _date_range(date_from: str | None, date_to: str | None) -> list[str]:
-    yesterday = (_date.today() - timedelta(days=1)).isoformat()
-    start = _date.fromisoformat(date_from or yesterday)
-    end = _date.fromisoformat(date_to or yesterday)
+    """--from..--to; --to defaults to yesterday, --from to the BLINKIT_SALES_DAYS days up to
+    --to (counted back from --to, so `--to` alone still gives a full window)."""
+    end = _date.fromisoformat(date_to) if date_to else _date.today() - timedelta(days=1)
+    start = (_date.fromisoformat(date_from) if date_from
+             else end - timedelta(days=BLINKIT_SALES_DAYS - 1))
     days = (end - start).days + 1
     return [(start + timedelta(days=i)).isoformat() for i in range(days)]
 
@@ -470,76 +251,81 @@ async def _scrape_blinkit_seller(
     refetch_po_items: bool,
     save: bool,
 ) -> None:
+    """Logs follow scraper/utils/run_log.py: step lines tagged `blinkit·<tenant>·sales|po|soh`."""
     run_all = not sales_flag and not po_flag and not soh_flag
     run_sales = sales_flag or run_all
     run_po = po_flag or run_all
     run_soh = soh_flag or run_all
+    saved = "saved" if save else "not saved (--no-save)"
+    failed_days: list[str] = []
 
     async with AsyncSessionLocal() as db:
+        slug = await tenant_slug(db, tenant_id)
         storage_state = (
             await auth_service.ensure(db, tenant_id, "blinkit_seller")
         ).storage_state
 
         # ── Sales (loops per day) ──────────────────────────────────────────────
         if run_sales:
-            days = _date_range(date_from, date_to)
-            for day in days:
-                job_id = None
-                try:
-                    job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_sales")
-
-                    with console.status(f"[cyan]Scraping sales {day}...[/cyan]"):
+            with tag("blinkit", slug, "sales"):
+                days = _date_range(date_from, date_to)
+                for day in days:
+                    job_id = None
+                    try:
+                        job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_sales")
                         raw = await seller_scraper.scrape(storage_state, day)
 
-                    parsed_sales = [parse_sale_row(r, tenant_id, job_id, raw["date"]) for r in raw["sales"]]
-                    summary = parse_sales_summary(raw, tenant_id, job_id, raw["date"])
+                        parsed_sales = [parse_sale_row(r, tenant_id, job_id, raw["date"]) for r in raw["sales"]]
+                        summary = parse_sales_summary(raw, tenant_id, job_id, raw["date"])
 
-                    if save:
-                        await seller_save_results(db, parsed_sales, summary)
+                        if save:
+                            await seller_save_results(db, parsed_sales, summary)
                         await complete_scrape_job(db, job_id)
+                        logger.info(
+                            f"{summary['date']} · {len(parsed_sales)} rows · "
+                            f"{summary['distinct_skus']} SKUs · {summary['distinct_categories']} "
+                            f"categories · {saved}"
+                        )
 
-                    _print_seller_summary(summary, len(parsed_sales))
-                    _print_seller_sales(parsed_sales)
-
-                except Exception as e:
-                    if job_id:
-                        await fail_scrape_job(db, job_id, str(e))
-                    console.print(f"[red]{day} failed: {escape(str(e))}[/red]")
-                    if len(days) == 1:
-                        raise typer.Exit(1)
+                    except Exception as e:
+                        if job_id:
+                            await fail_scrape_job(db, job_id, str(e))
+                        logger.error(f"{day} FAILED · {e}")
+                        if len(days) == 1:
+                            raise typer.Exit(1)
+                        # One bad day must not cost the others — but it must fail the
+                        # run (below, after PO and SOH): a multi-day window used to
+                        # exit 0 here, which the runner recorded as success.
+                        failed_days.append(day)
 
         # ── PO (runs once) ────────────────────────────────────────────────────
         if run_po:
-            po_job_id = None
-            try:
-                # po_number -> (po_state, total_grn_quantity) for the targeted
-                # item refetch: a changed GRN or non-terminal state means the
-                # line items may have moved and must be re-pulled.
-                known_pos: dict[str, tuple[str | None, int | None]] = {}
-                if save:
-                    import uuid as _uuid
-                    from sqlmodel import select as _select
-                    from app.models.blinkit_seller import BlinkitPO as _BlinkitPO
-                    rows = await db.execute(
-                        _select(
-                            _BlinkitPO.po_number,
-                            _BlinkitPO.po_state,
-                            _BlinkitPO.total_grn_quantity,
-                        ).where(_BlinkitPO.tenant_id == _uuid.UUID(tenant_id))
-                    )
-                    known_pos = {pn: (state, grn) for pn, state, grn in rows.all()}
-                    detail = (
-                        "re-fetching ALL their line items"
-                        if refetch_po_items
-                        else "re-fetching only changed/in-flight ones"
-                    )
-                    console.print(
-                        f"\n[dim]{len(known_pos)} existing POs in DB — {detail}[/dim]"
+            with tag("blinkit", slug, "po"):
+                po_job_id = None
+                try:
+                    # po_number -> (po_state, total_grn_quantity) for the targeted
+                    # item refetch: a changed GRN or non-terminal state means the
+                    # line items may have moved and must be re-pulled.
+                    known_pos: dict[str, tuple[str | None, int | None]] = {}
+                    if save:
+                        import uuid as _uuid
+                        from sqlmodel import select as _select
+                        from app.models.blinkit_seller import BlinkitPO as _BlinkitPO
+                        rows = await db.execute(
+                            _select(
+                                _BlinkitPO.po_number,
+                                _BlinkitPO.po_state,
+                                _BlinkitPO.total_grn_quantity,
+                            ).where(_BlinkitPO.tenant_id == _uuid.UUID(tenant_id))
+                        )
+                        known_pos = {pn: (state, grn) for pn, state, grn in rows.all()}
+                    logger.info(
+                        f"last {po_days_back} days · {len(known_pos)} POs already stored · "
+                        + ("re-fetching all line items" if refetch_po_items
+                           else "re-fetching changed / in-flight line items")
                     )
 
-                po_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_po")
-
-                with console.status("[cyan]Scraping PO data...[/cyan]"):
+                    po_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_po")
                     raw_po = await seller_scraper.scrape_po(
                         storage_state,
                         po_days_back=po_days_back,
@@ -547,141 +333,57 @@ async def _scrape_blinkit_seller(
                         refetch_all_items=refetch_po_items,
                     )
 
-                pos = [parse_po_row(r, tenant_id, po_job_id) for r in raw_po["pos"]]
-                po_items = [
-                    parse_po_item(it, r["po_number"], tenant_id, po_job_id)
-                    for r in raw_po["pos"]
-                    for it in r.get("items", [])
-                ]
-                snapshot = parse_po_summary(
-                    raw_po["po_summary"], tenant_id, po_job_id, raw_po["po_window_start"]
-                )
+                    pos = [parse_po_row(r, tenant_id, po_job_id) for r in raw_po["pos"]]
+                    po_items = [
+                        parse_po_item(it, r["po_number"], tenant_id, po_job_id)
+                        for r in raw_po["pos"]
+                        for it in r.get("items", [])
+                    ]
+                    snapshot = parse_po_summary(
+                        raw_po["po_summary"], tenant_id, po_job_id, raw_po["po_window_start"]
+                    )
 
-                if save:
-                    await save_po_results(db, pos, po_items, snapshot)
+                    if save:
+                        await save_po_results(db, pos, po_items, snapshot)
                     await complete_scrape_job(db, po_job_id)
+                    logger.info(
+                        f"{len(pos)} POs · {len(po_items)} line items · raised "
+                        f"{snapshot.get('total_raised', 0)} · scheduled {snapshot.get('scheduled', 0)} · "
+                        f"amount {rupees(snapshot.get('po_amount', 0))} · {saved}"
+                    )
 
-                _print_po_snapshot(snapshot, len(pos))
-                _print_po_list(pos)
-
-            except Exception as e:
-                if po_job_id:
-                    await fail_scrape_job(db, po_job_id, str(e))
-                console.print(f"[red]PO scrape failed: {escape(str(e))}[/red]")
-                raise typer.Exit(1)
+                except Exception as e:
+                    if po_job_id:
+                        await fail_scrape_job(db, po_job_id, str(e))
+                    logger.error(f"FAILED · {e}")
+                    raise typer.Exit(1)
 
         # ── SOH (runs once) ───────────────────────────────────────────────────
         if run_soh:
-            soh_job_id = None
-            try:
-                soh_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_soh")
-
-                with console.status("[cyan]Scraping stock on hand...[/cyan]"):
+            with tag("blinkit", slug, "soh"):
+                soh_job_id = None
+                try:
+                    soh_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_soh")
                     raw_soh = await seller_scraper.scrape_soh(storage_state)
 
-                rows = [parse_soh_row(r, tenant_id, soh_job_id, raw_soh["date"]) for r in raw_soh["rows"]]
+                    rows = [parse_soh_row(r, tenant_id, soh_job_id, raw_soh["date"]) for r in raw_soh["rows"]]
 
-                if save:
-                    await save_soh_results(db, rows)
+                    if save:
+                        await save_soh_results(db, rows)
                     await complete_scrape_job(db, soh_job_id)
+                    logger.info(f"{raw_soh['date']} · {len(rows)} SKU × facility rows · {saved}")
 
-                _print_soh(rows, raw_soh["date"])
+                except Exception as e:
+                    if soh_job_id:
+                        await fail_scrape_job(db, soh_job_id, str(e))
+                    logger.error(f"FAILED · {e}")
+                    raise typer.Exit(1)
 
-            except Exception as e:
-                if soh_job_id:
-                    await fail_scrape_job(db, soh_job_id, str(e))
-                console.print(f"[red]SOH scrape failed: {escape(str(e))}[/red]")
-                raise typer.Exit(1)
-
-
-# ── Print helpers ─────────────────────────────────────────────────────────────
-
-def _print_seller_summary(summary: dict, total_rows: int) -> None:
-    console.print(f"\n[bold cyan]Sales Summary[/bold cyan] ({summary['date']})")
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="dim")
-    table.add_column(style="bold")
-    table.add_row("Total Rows", str(total_rows))
-    table.add_row("Distinct SKUs", str(summary["distinct_skus"]))
-    table.add_row("Distinct Categories", str(summary["distinct_categories"]))
-    table.add_row("Max Selling Item", summary["max_sell_item"])
-    console.print(table)
-
-
-def _print_seller_sales(sales: list) -> None:
-    if not sales:
-        console.print("\n[dim]No sales data found.[/dim]")
-        return
-    preview = sales[:5]
-    console.print(f"\n[bold cyan]Sales[/bold cyan] (showing {len(preview)} of {len(sales)} rows)")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Item")
-    table.add_column("Category", style="dim")
-    table.add_column("City")
-    table.add_column("Qty Sold", justify="right")
-    table.add_column("MRP Value", justify="right")
-    for r in preview:
-        table.add_row(
-            r["item_name"],
-            r["category"],
-            r["city_name"],
-            str(r["qty_sold"]),
-            f"₹{r['mrp_value']:,.0f}",
-        )
-    console.print(table)
-
-
-def _print_po_snapshot(snapshot: dict, total_rows: int) -> None:
-    console.print(f"\n[bold cyan]PO Summary[/bold cyan] (window: {snapshot['window_start']} → today)")
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="dim")
-    table.add_column(style="bold")
-    table.add_row("Total POs fetched", str(total_rows))
-    table.add_row("Total Raised", str(snapshot.get("total_raised", 0)))
-    table.add_row("Scheduled", str(snapshot.get("scheduled", 0)))
-    table.add_row("Created (unscheduled)", str(snapshot.get("created", 0)))
-    table.add_row("Cancelled", str(snapshot.get("cancelled", 0)))
-    table.add_row("Expired (unfulfilled)", str(snapshot.get("expired_unfulfilled", 0)))
-    table.add_row("Expired (partial GRN)", str(snapshot.get("expired_partial", 0)))
-    table.add_row("PO Amount", f"₹{snapshot.get('po_amount', 0):,.0f}")
-    table.add_row("Items Delivered", f"{snapshot.get('items_delivered', 0):,}")
-    console.print(table)
-
-
-def _print_po_list(pos: list) -> None:
-    if not pos:
-        console.print("\n[dim]No PO data found.[/dim]")
-        return
-    preview = pos[:5]
-    console.print(f"\n[bold cyan]POs[/bold cyan] (showing {len(preview)} of {len(pos)})")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("PO Number")
-    table.add_column("State")
-    table.add_column("City")
-    table.add_column("Facility", style="dim")
-    table.add_column("Units", justify="right")
-    table.add_column("Amount", justify="right")
-    table.add_column("SKUs", justify="right")
-    for po in preview:
-        state = po.get("po_state", "")
-        state_colour = {
-            "Fulfilled": "green", "Delivered": "green",
-            "Scheduled": "cyan", "Rescheduled": "cyan",
-            "Unscheduled": "yellow", "Created": "yellow",
-            "Expired": "red", "Cancelled": "red",
-            "Cancelled post Creation": "red",
-        }.get(state, "")
-        state_str = f"[{state_colour}]{state}[/{state_colour}]" if state_colour else state
-        table.add_row(
-            po.get("po_number", ""),
-            state_str,
-            po.get("city_name", ""),
-            po.get("facility_name", ""),
-            str(po.get("total_units_ordered", 0)),
-            f"₹{po.get('total_po_amount', 0):,.0f}",
-            str(po.get("item_count") or 0),
-        )
-    console.print(table)
+    if failed_days:
+        with tag("blinkit", slug, "sales"):
+            logger.error(f"{len(failed_days)} sales day(s) failed: {', '.join(failed_days)} — "
+                         "re-run them with --from/--to")
+        raise typer.Exit(1)
 
 
 # ── Blinkit Seller Hub (seller.blinkit.com — NEW domain) ───────────────────────
@@ -698,10 +400,14 @@ def scrape_blinkit_seller_hub(
              '— the account\'s filters list only goes back a few months; anything older '
              "isn't available from Blinkit at all).",
     ),
+    soh: bool = typer.Option(True, "--soh/--no-soh", help="Also scrape stock on hand (Inventory page) into blinkit_soh"),
 ):
     """Scrape Blinkit's NEW seller dashboard (seller.blinkit.com/seller-hub) —
     for tenants Blinkit has migrated off partnersbiz.com (see `blinkit-seller`
-    for everyone else). Currently sales-only; pass --sales or none runs it.
+    for everyone else). Sales always run; stock on hand runs too unless
+    --no-soh, into blinkit_soh (the same table `blinkit-seller` fills), per
+    item x warehouse. One step failing does not skip the other; the exit code
+    is 1 if either failed.
 
     Writes to blinkit_seller_hub_sales_by_product_ro and
     ..._sales_order_ro, NOT blinkit_seller_sales — the old dashboard's sales
@@ -715,56 +421,116 @@ def scrape_blinkit_seller_hub(
     now self-heals any gap under a month instead of losing missed days for
     good. Pass --window with a named month to manually backfill further back.
     """
-    asyncio.run(_scrape_blinkit_seller_hub(tenant_id, sales, save, window))
+    asyncio.run(_scrape_blinkit_seller_hub(tenant_id, sales, save, window, soh))
 
 
-async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: bool, window: str) -> None:
+async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: bool, window: str, soh: bool) -> None:
     # Sales is the only pillar built so far, so it always runs — --sales exists
     # now so a future pillar (Product Expansion, etc.) can gate behind it
     # without a breaking CLI change later.
     del sales_flag
 
     async with AsyncSessionLocal() as db:
-        session = await auth_service.ensure(db, tenant_id, "blinkit_seller_new")
-        email = session.email
-        if not email:
-            console.print("[red]No email on the blinkit_seller_new session.[/red]")
-            raise typer.Exit(1)
-        if not session.storage_state or not session.storage_state.get("cookies"):
-            console.print(
-                "[red]No storage_state cookies on the blinkit_seller_new session — "
-                "it may never have completed a real login. Run "
-                "`cli auth login blinkit_seller_new` first.[/red]"
-            )
-            raise typer.Exit(1)
-
-        job_id = None
-        try:
-            job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_sales")
-
-            with console.status("[cyan]Scraping seller-hub sales...[/cyan]"):
-                raw = await seller_hub_scraper.scrape_sales(
-                    email, session.storage_state, time_range_filter=window
+        slug = await tenant_slug(db, tenant_id)
+        with tag("blinkit", slug, "seller-hub"):
+            session = await auth_service.ensure(db, tenant_id, "blinkit_seller_new")
+            email = session.email
+            if not email:
+                logger.error("FAILED · no email on the blinkit_seller_new session")
+                raise typer.Exit(1)
+            if not session.storage_state or not session.storage_state.get("cookies"):
+                logger.error(
+                    "FAILED · no storage_state cookies on the blinkit_seller_new session — it "
+                    "may never have completed a real login. Run `cli auth login blinkit_seller_new`."
                 )
+                raise typer.Exit(1)
 
-            by_product = parse_seller_hub_sales_by_product(
-                raw["products"], raw["window_label"], tenant_id, job_id
-            )
-            orders = parse_seller_hub_sales_orders(raw.get("orders") or [], tenant_id, job_id)
+            failed = False
+            job_id = None
+            try:
+                job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_sales")
+                try:
+                    raw = await seller_hub_scraper.scrape_sales(
+                        email, session.storage_state, time_range_filter=window
+                    )
+                except seller_hub_scraper.SessionDead as e:
+                    # The probe passed but the scrape was logged out (Sereko,
+                    # 2026-10-06). ensure() has already returned, so its auto-login
+                    # never runs — force one here and retry once. A failed login
+                    # raises and fails the job as before; the breaker still applies.
+                    logger.warning(f"Seller-hub session died after its probe ({e}) — logging in again")
+                    await auth_store.mark_failed(
+                        db, tenant_id, "blinkit_seller_new", "logged out mid-scrape",
+                        login_attempt=False,
+                    )
+                    session = await auth_service.login(db, tenant_id, "blinkit_seller_new", auto=True)
+                    raw = await seller_hub_scraper.scrape_sales(
+                        session.email or email, session.storage_state, time_range_filter=window
+                    )
 
-            if save:
-                written = await save_seller_hub_sales_results(db, by_product, orders)
+                by_product = parse_seller_hub_sales_by_product(
+                    raw["products"], raw["window_label"], tenant_id, job_id
+                )
+                orders = parse_seller_hub_sales_orders(raw.get("orders") or [], tenant_id, job_id)
+
+                written = 0
+                if save:
+                    written = await save_seller_hub_sales_results(db, by_product, orders)
                 await complete_scrape_job(db, job_id, written)
+                logger.info(
+                    f"sales · {raw['window_label']} · {len(by_product)} product rows · "
+                    f"{len(orders)} order rows · {'saved' if save else 'not saved (--no-save)'}"
+                )
+            except Exception as e:
+                if job_id:
+                    await fail_scrape_job(db, job_id, str(e))
+                logger.error(f"FAILED · sales · {e}")
+                failed = True
 
-            console.print(
-                f"[green]Seller-hub sales: {len(by_product)} product row(s), "
-                f"{len(orders)} order row(s) (window: {raw['window_label']!r})[/green]"
-            )
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Seller-hub sales scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
+            # ── Stock on hand → blinkit_soh, the table the old dashboard fills, so the
+            # product page's "Stock by facility" card works for seller-hub too. Runs even
+            # when sales failed; the exit code is 1 if either step failed.
+            if soh:
+                soh_job_id = None
+                try:
+                    soh_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_soh")
+                    try:
+                        raw_soh = await seller_hub_scraper.scrape_soh(email, session.storage_state)
+                    except seller_hub_scraper.SessionDead as e:
+                        # Same recovery as the sales step above: log in again, retry once.
+                        logger.warning(f"Seller-hub session died before the stock scrape ({e}) — logging in again")
+                        await auth_store.mark_failed(
+                            db, tenant_id, "blinkit_seller_new", "logged out mid-scrape",
+                            login_attempt=False,
+                        )
+                        session = await auth_service.login(db, tenant_id, "blinkit_seller_new", auto=True)
+                        raw_soh = await seller_hub_scraper.scrape_soh(
+                            session.email or email, session.storage_state
+                        )
+
+                    rows = parse_seller_hub_soh(raw_soh, tenant_id, soh_job_id)
+                    mismatches = soh_mismatches(raw_soh)
+                    for item_id, (summed, total) in mismatches.items():
+                        logger.debug(f"stock · item {item_id}: warehouses add up to {summed}, Blinkit total {total}")
+                    if mismatches:
+                        logger.warning(f"stock · {len(mismatches)} item(s) whose warehouses don't add up "
+                                       f"to Blinkit's total (detail at DEBUG)")
+                    if save:
+                        await save_soh_results(db, rows)
+                    # Closed either way, so a --no-save run doesn't leave a `running` row.
+                    await complete_scrape_job(db, soh_job_id, len(rows) if save else 0)
+                    logger.info(
+                        f"stock · {raw_soh['date']} · {len(raw_soh['totals'])} items · "
+                        f"{len(rows)} item × warehouse rows · {'saved' if save else 'not saved (--no-save)'}"
+                    )
+                except Exception as e:
+                    if soh_job_id:
+                        await fail_scrape_job(db, soh_job_id, str(e))
+                    logger.error(f"FAILED · stock · {e}")
+                    failed = True
+
+            if failed:
+                raise typer.Exit(1)
 
 
 # ── Blinkit Scorecard ──────────────────────────────────────────────────────────
@@ -781,378 +547,54 @@ def scrape_blinkit_scorecard(
 
 async def _scrape_blinkit_scorecard(tenant_id: str, week: str | None, save: bool) -> None:
     async with AsyncSessionLocal() as db:
-        job_id = None
-        try:
-            storage_state = (
-                await auth_service.ensure(db, tenant_id, "blinkit_seller")
-            ).storage_state
+        slug = await tenant_slug(db, tenant_id)
+        with tag("blinkit", slug, "scorecard"):
+            job_id = None
+            try:
+                storage_state = (
+                    await auth_service.ensure(db, tenant_id, "blinkit_seller")
+                ).storage_state
 
-            job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_scorecard")
-
-            with console.status("[cyan]Scraping scorecard...[/cyan]"):
+                job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_scorecard")
                 raw = await seller_scraper.scrape_scorecard(storage_state, week=week)
 
-            manufacturer_id = raw["manufacturer_id"]
-            from_date = raw["from_date_ist"]
+                manufacturer_id = raw["manufacturer_id"]
+                from_date = raw["from_date_ist"]
 
-            weekly = parse_scorecard_weekly(raw, tenant_id, job_id)
-            facilities = [
-                parse_scorecard_facility(f, tenant_id, job_id, manufacturer_id, from_date)
-                for f in raw["facilities"]
-            ]
-            key_skus = [
-                parse_scorecard_key_sku(s, tenant_id, job_id, manufacturer_id, from_date)
-                for s in raw["key_skus"]
-            ]
+                weekly = parse_scorecard_weekly(raw, tenant_id, job_id)
+                facilities = [
+                    parse_scorecard_facility(f, tenant_id, job_id, manufacturer_id, from_date)
+                    for f in raw["facilities"]
+                ]
+                key_skus = [
+                    parse_scorecard_key_sku(s, tenant_id, job_id, manufacturer_id, from_date)
+                    for s in raw["key_skus"]
+                ]
 
-            if save:
-                await save_scorecard_results(db, weekly, facilities, key_skus)
+                if save:
+                    await save_scorecard_results(db, weekly, facilities, key_skus)
                 await complete_scrape_job(db, job_id)
-
-            _print_scorecard_summary(weekly)
-            _print_scorecard_facilities(facilities)
-            _print_scorecard_key_skus(key_skus)
-
-        except typer.Exit:
-            raise
-        except AuthError:
-            # See the note in _scrape_blinkit — must not collapse into exit 1.
-            if job_id:
-                await fail_scrape_job(db, job_id, "auth_expired")
-            raise
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
-
-
-@app.command("zepto-sales")
-def scrape_zepto_sales(
-    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
-    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
-    save_xlsx: str = typer.Option(None, "--save-xlsx", help="Also write the results to this .xlsx path"),
-    all_cities: bool = typer.Option(
-        False, "--all-cities",
-        help=(
-            "Sweep every city for the per-city split instead of only those "
-            "already known to sell. 138 calls rather than a handful — run it "
-            "occasionally to pick up a new city, not daily."
-        ),
-    ),
-    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
-):
-    """Fetch Zepto Sales Analytics (GMV/Units + per-SKU breakdown).
-
-    Browser-free end to end: a pre-flight session health check, fresh
-    brand/city/category ID discovery, then direct API calls — with an auth-only
-    browser fallback if a call comes back 401/403. Tenant-general, no hardcoded
-    IDs. Requires a session saved by `cli auth zepto-seller`.
-    """
-    asyncio.run(_scrape_zepto_sales(tenant_id, date_from, date_to, save_xlsx, all_cities, save))
-
-
-def _write_zepto_sales_xlsx(
-    path: str, data: dict, products: list[dict], date_from: str, date_to: str, ids: dict
-) -> None:
-    from openpyxl import Workbook
-
-    gmv_daily = data["metrics"]["gmv"]["data"]
-    units_daily = {row["key"]: next(v for k, v in row.items() if k != "key") for row in data["metrics"]["units"]["data"]}
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = "Daily Sales"
-    ws.append(["Date", "GMV (Rs)", "Units"])
-    for row in gmv_daily:
-        day = row["key"]
-        gmv_val = next(v for k, v in row.items() if k != "key")
-        ws.append([day, gmv_val, units_daily.get(day)])
-
-    ws3 = wb.create_sheet("Top Products")
-    ws3.append([
-        "Product", "Pack Size", "Category", "Subcategory", "GMV (Rs)", "Units Sold",
-        "Sales Contribution %", "Available Stores %", "WoW Growth %", "MoM Growth %",
-        "Stock On Hand",
-    ])
-    for p in products:
-        ws3.append([
-            p.get("productName"), p.get("packSize"), p.get("categoryName"), p.get("subcategoryName"),
-            p.get("gmv"), p.get("qtySold"), p.get("salesContribution"), p.get("availableStores"),
-            p.get("weekOnWeekGrowth"), p.get("monthOnMonthGrowth"), p.get("stockOnHand"),
-        ])
-    products_gmv_sum = sum(p.get("gmv") or 0 for p in products)
-
-    ws2 = wb.create_sheet("Summary")
-    ws2.append(["Brand", ids["brand_name"]])
-    ws2.append(["Date range", f"{date_from} to {date_to}"])
-    ws2.append(["Total GMV (Sales Overview)", data["headers"]["gmv"]["value"]])
-    ws2.append(["Total Units", data["headers"]["units"]["value"]])
-    ws2.append(["Sum of Top-Products GMV", products_gmv_sum])
-    ws2.append(["Note", "Top-Products GMV may not fully reconcile with the overview total — see scraper.py"])
-    ws2.append(["Cities", len(ids["city_ids"])])
-    ws2.append(["Subcategories", ", ".join(ids["subcategory_names"])])
-
-    wb.save(path)
-
-
-async def _scrape_zepto_sales(
-    tenant_id: str,
-    date_from: str | None,
-    date_to: str | None,
-    save_xlsx: str | None,
-    all_cities: bool,
-    save: bool,
-    # Pass a client to reuse one session across several sections — that is how
-    # `zepto-seller` runs sales and PO on a single login and a single WAF mint.
-    # None means "build your own", so running this command alone is unchanged.
-    storage_state=None,
-) -> None:
-    yesterday = (_date.today() - timedelta(days=1)).isoformat()
-    date_from = date_from or (_date.today() - timedelta(days=8)).isoformat()
-    date_to = date_to or yesterday
-
-    async with AsyncSessionLocal() as db:
-        job_id = None
-        try:
-            # One client for the whole run, built the same way the Zepto budget
-            # automation builds it (campaign_manager/marketplaces/zepto/transport).
-            # `setup()` = ensure() the session, then mint a WAF token.
-            #
-            # It recovers PER CALL, not just at pre-flight: 401 -> re-login,
-            # 202/429 -> re-mint. That distinction matters here more than
-            # anywhere — the Zepto account is shared, and on 2026-09-01 the
-            # session was evicted three times in ten minutes. A run that only
-            # authenticates at the start dies halfway through.
-            if storage_state is None:
-                with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-                    _, _, storage_state = await zepto_setup(str(tenant_id))
-                console.print("[green]Session healthy.[/green]")
-
-            job_id = await create_scrape_job(db, tenant_id, "zepto_seller_sales", platform="zepto")
-
-            with console.status("[cyan]Discovering current brand/city/category IDs...[/cyan]"):
-                ids = await zepto_discover_ids(storage_state)
-            console.print(f"[green]IDs discovered:[/green] {ids['brand_name']} — {len(ids['city_ids'])} cities, {len(ids['subcategory_ids'])} subcategories")
-
-            with console.status(f"[cyan]Fetching Sales Analytics {date_from}..{date_to}...[/cyan]"):
-                data = await zepto_fetch_sales_overview(storage_state, date_from, date_to, ids)
-
-            # Per-SKU data is fetched one day at a time, like the Blinkit seller
-            # scrape, so the rows land at day grain instead of one aggregate per
-            # window — that is what makes a per-day SKU/category trend possible.
-            # Only this endpoint needs the loop: sales-overview already returns
-            # the whole window broken down by day in a single call.
-            days = _date_range(date_from, date_to)
-            product_rows: list[dict] = []
-            failed_days: list[str] = []
-            with console.status("[cyan]Fetching product-level breakdown...[/cyan]") as status:
-                for i, day in enumerate(days, 1):
-                    status.update(f"[cyan]Fetching product breakdown {day} ({i}/{len(days)})...[/cyan]")
-                    try:
-                        day_products = await zepto_fetch_product_performance(
-                            storage_state, day, day, ids
-                        )
-                    except Exception as e:
-                        # One bad day shouldn't discard the rest of the run; the
-                        # count is reported below so a partial result is visible
-                        # rather than silently short.
-                        logger.warning(f"Zepto product-performance failed for {day}: {e}")
-                        failed_days.append(day)
-                        continue
-                    product_rows.extend(
-                        parse_zepto_product_perf(day_products, tenant_id, job_id, day, day)
-                    )
-                    if i < len(days):
-                        await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-            daily_rows = parse_zepto_sales_daily(data, ids, tenant_id, job_id, date_from, date_to)
-
-            # Which cities to ask for. Zepto has no city breakdown in a single
-            # response, so a split means one call per city — but only for cities
-            # already known to sell, which on this account is two of 138.
-            # `--all-cities` re-sweeps everything to catch a new one; worth
-            # running occasionally, not daily (Hosur went unnoticed for weeks).
-            city_names = {c["cityID"]: c["cityName"] for c in ids.get("city_list", [])}
-            targets = None if all_cities else await _zepto_known_cities(db, tenant_id)
-
-            # SKU x city x day — the only source that carries city AND category
-            # on one row, which is what the Analytics category-x-city heatmap
-            # needs. One call per city per day, so it reuses the same short
-            # `targets` list as the city split above rather than sweeping all
-            # 138 every run.
-            product_city_rows: list[dict] = []
-            pc_targets = targets if targets is not None else ids["city_ids"]
-            if pc_targets:
-                with console.status("[cyan]Fetching product breakdown by city...[/cyan]") as status:
-                    for i, day in enumerate(days, 1):
-                        status.update(
-                            f"[cyan]Product-by-city {day} ({i}/{len(days)}), "
-                            f"{len(pc_targets)} cities...[/cyan]"
-                        )
-                        try:
-                            by_city_products = await zepto_fetch_product_perf_by_city(
-                                storage_state, day, day, ids, pc_targets
-                            )
-                        except Exception as e:
-                            logger.warning(
-                                f"Zepto product-performance by city failed for {day}: {e}"
-                            )
-                            continue
-                        product_city_rows.extend(
-                            parse_zepto_product_city(
-                                by_city_products, city_names, tenant_id, job_id, day
-                            )
-                        )
-                        if i < len(days):
-                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-            written = 0
-            if save:
-                written = await zepto_save_sales_results(
-                    db, daily_rows, product_rows, product_city_rows
-                )
-                await complete_scrape_job(db, job_id, written)
-            else:
-                await complete_scrape_job(db, job_id)
-
-            # City summary now comes from the per-SKU city rows, the only
-            # place the split is stored since sales_city_daily was dropped.
-            if product_city_rows:
-                by_name: dict[str, float] = {}
-                for r in product_city_rows:
-                    key = r["city_name"] or r["city_id"]
-                    by_name[key] = by_name.get(key, 0) + r["gmv"]
-                top = sorted(by_name.items(), key=lambda kv: -kv[1])[:3]
-                console.print(
-                    "  Cities: "
-                    + ", ".join(f"{n} ₹{v:,.0f}" for n, v in top)
-                    + (f" (+{len(by_name) - 3} more)" if len(by_name) > 3 else "")
+                overall = weekly.get("overall", {})
+                logger.info(
+                    f"week of {weekly['from_date_ist']} · fill {overall.get('fill_rate', 0):.1f}% · "
+                    f"weighted {overall.get('weighted_fill_rate_percent', 0):.1f}% · "
+                    f"rank {overall.get('manufacturer_rank', '—')} · {len(facilities)} facilities · "
+                    f"{len(key_skus)} key SKUs · {'saved' if save else 'not saved (--no-save)'}"
                 )
 
-            gmv = data["headers"]["gmv"]["value"]
-            units = data["headers"]["units"]["value"]
-            console.print(f"\n[bold cyan]Zepto Sales Overview[/bold cyan] ({date_from} to {date_to})")
-            console.print(f"  GMV: [bold]{gmv}[/bold]   Units: [bold]{units}[/bold]   ({len(daily_rows)} days)")
-            console.print(f"  Product rows: [bold]{len(product_rows)}[/bold] over {len(days) - len(failed_days)}/{len(days)} days")
-            if failed_days:
-                console.print(
-                    f"  [yellow]{len(failed_days)} day(s) failed and were skipped: "
-                    f"{', '.join(failed_days[:5])}{' …' if len(failed_days) > 5 else ''}[/yellow]"
-                )
-            if save:
-                console.print(f"  [green]Saved to DB:[/green] {written} rows")
-            else:
-                console.print("  [yellow]--no-save: nothing written to the database[/yellow]")
-
-            if save_xlsx:
-                _write_zepto_sales_xlsx(save_xlsx, data, products, date_from, date_to, ids)
-                console.print(f"[green]Saved:[/green] {save_xlsx}")
-
-        except AuthError as e:
-            # platform_auth already tried to re-login and could not. Usually the
-            # circuit breaker: repeated evictions on a shared account trip it, and
-            # `auth reset` clears it once the other person has stopped.
-            #
-            # ⚠️ RE-RAISED, not collapsed into typer.Exit(1). cli/main.py maps
-            # AuthError to exit code 3, which the runner records as
-            # `auth_expired`; exiting 1 here buried every Zepto auth failure
-            # among anonymous exit_1s. That is exactly the regression
-            # _scrape_blinkit's own comment warns about — and this handler had
-            # it, while the sales scrape next door got it right.
-            if job_id:
-                await fail_scrape_job(db, job_id, "auth_expired")
-            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
-            console.print(
-                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
-                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
-            )
-            raise
-        except typer.Exit:
-            raise
-        except ZeptoNoDataYet as e:
-            # Not a failure — Zepto simply has not computed that day yet. The
-            # job is completed with zero records rather than marked failed, so
-            # `cli status` does not report a broken scrape for something that is
-            # only a matter of timing.
-            if job_id:
-                await complete_scrape_job(db, job_id, {})
-            console.print(f"[yellow]Nothing to scrape yet: {escape(str(e))}[/yellow]")
-            raise typer.Exit(0)
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
-
-
-def _print_scorecard_summary(weekly: dict) -> None:
-    overall = weekly.get("overall", {})
-    best_cat = weekly.get("best_category") or {}
-    console.print(f"\n[bold cyan]Scorecard Summary[/bold cyan] (week of {weekly['from_date_ist']})")
-    table = Table(show_header=False, box=None, padding=(0, 2))
-    table.add_column(style="dim")
-    table.add_column(style="bold")
-    table.add_row("Fill Rate", f"{overall.get('fill_rate', 0):.2f}%")
-    table.add_row("Weighted Fill Rate", f"{overall.get('weighted_fill_rate_percent', 0):.2f}%")
-    table.add_row("PO Quantity", f"{overall.get('total_po_quantity', 0):,}")
-    table.add_row("GRN Quantity", f"{overall.get('total_grn_quantity', 0):,}")
-    table.add_row("Potential Loss", f"₹{overall.get('potential_loss', 0):,}")
-    table.add_row("Total GMV", f"₹{overall.get('total_gmv', 0):,.0f}")
-    table.add_row("Overall Rank", str(overall.get("manufacturer_rank", "—")))
-    if best_cat:
-        table.add_row(
-            f"Best Category ({best_cat.get('proxy_category', '')})",
-            f"Rank #{best_cat.get('manufacturer_rank', '—')} | {best_cat.get('fill_rate', 0):.2f}%",
-        )
-    console.print(table)
-
-
-def _print_scorecard_facilities(facilities: list) -> None:
-    if not facilities:
-        return
-    console.print(f"\n[bold cyan]Facilities[/bold cyan] ({len(facilities)})")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Facility")
-    table.add_column("City", style="dim")
-    table.add_column("Fill Rate", justify="right")
-    table.add_column("PO Qty", justify="right")
-    table.add_column("GRN Qty", justify="right")
-    table.add_column("Potential Loss", justify="right")
-    table.add_column("Rank", justify="right")
-    for f in sorted(facilities, key=lambda x: x.get("fill_rate", 0)):
-        fill = f.get("fill_rate", 0)
-        colour = "green" if fill >= 90 else ("yellow" if fill >= 70 else "red")
-        table.add_row(
-            f["facility_name"],
-            f.get("city_name", ""),
-            f"[{colour}]{fill:.0f}%[/{colour}]",
-            f"{f.get('total_po_quantity', 0):,}",
-            f"{f.get('total_grn_quantity', 0):,}",
-            f"₹{f.get('potential_loss', 0):,}",
-            str(f.get("manufacturer_rank", "—")),
-        )
-    console.print(table)
-
-
-def _print_scorecard_key_skus(key_skus: list) -> None:
-    if not key_skus:
-        return
-    console.print(f"\n[bold cyan]Key SKUs by Potential Loss[/bold cyan] ({len(key_skus)})")
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Item")
-    table.add_column("Variant", style="dim")
-    table.add_column("Category", style="dim")
-    table.add_column("Potential Loss", justify="right")
-    for s in sorted(key_skus, key=lambda x: x.get("potential_loss", 0), reverse=True):
-        table.add_row(
-            s.get("item_name", ""),
-            s.get("variant_description", ""),
-            s.get("proxy_category", ""),
-            f"₹{s.get('potential_loss', 0):,.0f}",
-        )
-    console.print(table)
+            except typer.Exit:
+                raise
+            except AuthError:
+                # See the note in _scrape_blinkit — must not collapse into exit 1.
+                if job_id:
+                    await fail_scrape_job(db, job_id, "auth_expired")
+                logger.error("FAILED · login gone (auth_expired)")
+                raise
+            except Exception as e:
+                if job_id:
+                    await fail_scrape_job(db, job_id, str(e))
+                logger.error(f"FAILED · {e}")
+                raise typer.Exit(1)
 
 
 # ── Public search scraping ────────────────────────────────────────────────────
@@ -1603,34 +1045,6 @@ def _print_public_result(platform: str, result: dict) -> None:
         console.print(f"  [dim]Top competitors: {comp_names}[/dim]")
 
 
-def _print_soh(rows: list, date: str) -> None:
-    console.print(f"\n[bold cyan]Stock on Hand[/bold cyan] ({date}) — {len(rows)} rows")
-    if not rows:
-        console.print("\n[dim]No SOH data found.[/dim]")
-        return
-
-    preview = rows[:10]
-    table = Table(show_header=True, header_style="bold")
-    table.add_column("Item")
-    table.add_column("Facility", style="dim")
-    table.add_column("Backend Qty", justify="right")
-    table.add_column("Frontend Qty", justify="right")
-    for r in preview:
-        backend = r.get("backend_inv_qty", 0)
-        frontend = r.get("frontend_inv_qty", 0)
-        backend_str = f"[red]{backend}[/red]" if backend == 0 else str(backend)
-        frontend_str = f"[red]{frontend}[/red]" if frontend == 0 else str(frontend)
-        table.add_row(
-            r.get("item_name", ""),
-            r.get("backend_facility_name", ""),
-            backend_str,
-            frontend_str,
-        )
-    console.print(table)
-    if len(rows) > 10:
-        console.print(f"[dim]... and {len(rows) - 10} more rows[/dim]")
-
-
 # ── Staging: local SQLite → Postgres ─────────────────────────────────────────
 
 @app.command("staged")
@@ -1902,480 +1316,12 @@ def discard_staged(
 
 
 
-async def _zepto_known_cities(db, tenant_id: str) -> list[str]:
-    """City ids that have ever recorded sales for this tenant.
-
-    Keeps the daily scrape to one call per selling city instead of 138. Returns
-    an empty list on the very first run, which the caller treats as "sweep
-    everything" via --all-cities, or simply skips.
-    """
-    from sqlalchemy import text
-
-    rows = (
-        await db.execute(
-            text(
-                "SELECT DISTINCT city_id FROM zepto_seller_product_city_daily "
-                "WHERE tenant_id = :t"
-            ),
-            {"t": tenant_id},
-        )
-    ).scalars().all()
-    return list(rows)
-
-
-@app.command("zepto-ads")
-def scrape_zepto_ads(
-    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
-    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
-    category: str = typer.Option(
-        "all", "--category",
-        help=(
-            "sponsored_products | sponsored_display | sponsored_brands | all. "
-            "Applies to the Analytics tables only, which DO partition by it "
-            "(the tabs return disjoint campaigns). The campaign list itself "
-            "ignores the filter, so it is fetched once regardless. Default "
-            "'all' — anything narrower silently drops the other tabs' spend."
-        ),
-    ),
-    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
-):
-    """Fetch Zepto ads per day: campaigns (spend, RoAS, clicks, SOV) and keywords.
-
-    Two endpoints, because neither is complete on its own. Campaign Management
-    (`/campaigns`) has the operational fields — budgets, base bid, targeting,
-    status, start/end dates — but no revenue, add-to-carts or keywords. The
-    Analytics tables (`/metrics/tabular`) have those, but none of the
-    operational ones. Campaign rows merge both; keyword rows come only from
-    the second.
-
-    Unlike `zepto-sales`, this needs a browser: the ads-bff service rejects the
-    saved session's WAF token with a 202 challenge, so headers are harvested
-    from one short page load and reused for the HTTP calls.
-    """
-    asyncio.run(_scrape_zepto_ads(tenant_id, date_from, date_to, category, save))
-
-
-async def _scrape_zepto_ads(
-    tenant_id: str, date_from: str | None, date_to: str | None, category: str, save: bool,
-    # See the note on _scrape_zepto_sales: pass a client to share one login and
-    # one WAF mint across sections. None means "build your own".
-    storage_state=None,
-) -> None:
-    from scraper.platforms.zepto.dashboard_data.seller import endpoints as zep
-
-    categories = list(zep.ADS_CATEGORIES) if category == "all" else [category]
-    days = _date_range(date_from, date_to)
-
-    async with AsyncSessionLocal() as db:
-        job_id = None
-        try:
-            if storage_state is None:
-                with console.status("[cyan]Pre-flight: checking Zepto seller session health...[/cyan]"):
-                    # Same shared client. `/ads-bff/*` is the one surface that
-                    # genuinely needs the WAF token, which the client already holds.
-                    _, _, storage_state = await zepto_setup(str(tenant_id))
-                console.print("[green]Session healthy.[/green]")
-
-            with console.status("[cyan]Discovering brand...[/cyan]"):
-                ids = await zepto_discover_ids(storage_state)
-            brand_id = ids["brand_id"]
-            console.print(f"[green]Brand:[/green] {ids['brand_name']}")
-
-            # No header-capture step any more: the client holds the JWT and the
-            # WAF token and refreshes each on its own failure signal. The name
-            # `headers` survives only because the fetchers still take it
-            # positionally.
-            headers = storage_state
-
-            job_id = await create_scrape_job(db, tenant_id, "zepto_ads", platform="zepto")
-
-            rows: list[dict] = []
-            kw_rows: list[dict] = []
-            prod_rows: list[dict] = []
-            bd_rows: list[dict] = []
-            failed: list[str] = []
-            not_ready: list[str] = []
-            # Per day: one campaign list (the filter is ignored there, so
-            # fetching it per category would just repeat the same call) plus
-            # four tabular views per category — campaign, keyword, product and
-            # category. Those ARE per-category: the tabs return disjoint data.
-            total_calls = len(days) * (1 + 6 * len(categories))
-
-            def _has_any(day_rows: list[dict]) -> bool:
-                return any(r["spend"] or r["impressions"] or r["clicks"] for r in day_rows)
-
-            # A dead session fails every remaining call, so keep going and the
-            # run burns ~150 requests to save nothing — which has happened three
-            # times. One 401 can be a blip; several in a row is the session
-            # being gone (expired, or displaced by someone else logging in).
-            # Bail out and keep whatever was fetched before it died.
-            class _SessionGone(Exception):
-                pass
-
-            auth_fails = 0
-
-            def _note(exc: Exception) -> None:
-                nonlocal auth_fails
-                if "401" in str(exc) or "403" in str(exc):
-                    auth_fails += 1
-                    if auth_fails >= 3:
-                        raise _SessionGone(
-                            "3 consecutive auth failures — the Zepto session is gone. "
-                            "Stopping so the rows already fetched can be saved; "
-                            "re-run `cli auth zepto-seller` and scrape the missing days."
-                        )
-                else:
-                    auth_fails = 0
-
-            session_died = False
-            # Re-check queue. A fetch that fails ONCE is not a failed run: an
-            # ads-bff 500 clears in seconds, but the old code lost that table for
-            # the day, exited 1, and then mailed the runner_errors alert every
-            # hour until someone re-ran by hand — 2026-09-14 and -15 both went
-            # that way off single lost fetches. Each entry is the label used in
-            # reporting plus a closure that repeats exactly that fetch and its
-            # parse; the re-check pass below replays each one once. Only what
-            # fails THERE too becomes `failed` and fails the run.
-            lost: list[tuple[str, object]] = []
-            recovered: list[str] = []
-            status = None        # set by the console.status blocks below
-
-            def _tick(msg: str) -> None:
-                """Advance the progress line. During the re-check pass n runs past
-                total_calls, so the counter is dropped there rather than lying."""
-                nonlocal n
-                n += 1
-                if status is not None:
-                    of = f" ({n}/{total_calls})" if n <= total_calls else " (re-check)"
-                    status.update(f"[cyan]{msg}{of}...[/cyan]")
-
-            async def _attempt(label: str, fn) -> None:
-                """Run one fetch+parse step; queue it for the re-check if it fails.
-                `_note` still sees the exception, so three 401s in a row stop the
-                run rather than queueing 150 doomed replays."""
-                try:
-                    await fn()
-                except Exception as e:
-                    logger.warning(f"Zepto {label} failed: {e}")
-                    lost.append((label, fn))
-                    _note(e)
-
-            def _day_campaigns(day: str) -> dict:
-                """campaign_id -> row for one day. Read out of `rows` rather than
-                captured in a closure, so an analytics fetch replayed by the
-                re-check patches the rows the first pass already collected."""
-                return {r["campaign_id"]: r for r in rows if r["date"].isoformat() == day}
-
-            async def _fetch_campaign_list(day: str) -> None:
-                _tick(f"Campaigns {day}")
-                camps = await zepto_fetch_ad_campaigns(
-                    headers, brand_id, day, day, categories[0]
-                )
-                day_rows = parse_zepto_ad_campaigns(
-                    camps, tenant_id, job_id, day, categories[0]
-                )
-
-                # ads-bff intermittently returns the campaign list with
-                # every metric as "-", then real figures for the same
-                # window seconds later. Retry once; if it is still bare,
-                # skip the day rather than upserting zeros over data that
-                # a previous run got right.
-                if day_rows and not _has_any(day_rows):
-                    await asyncio.sleep(6)
-                    camps = await zepto_fetch_ad_campaigns(
-                        headers, brand_id, day, day, categories[0]
-                    )
-                    day_rows = parse_zepto_ad_campaigns(
-                        camps, tenant_id, job_id, day, categories[0]
-                    )
-                    if not _has_any(day_rows):
-                        if day not in not_ready:
-                            not_ready.append(day)
-                        return
-                # Extended BEFORE the tabs, not after, so _day_campaigns can find
-                # the day's rows; the tabs patch these same row objects either way.
-                rows.extend(day_rows)
-
-            async def _fetch_day_tabs(day: str) -> None:
-                """The six tabular views per category for one day. Each view is its
-                own _attempt: one lost view must not cost the other five."""
-                for cat in categories:
-
-                    async def _analytics(cat=cat, day=day) -> None:
-                        _tick(f"Analytics {cat} {day}")
-                        tab = await zepto_fetch_ads_tabular(
-                            headers, brand_id, day, day, zep.ADS_VIEW_CAMPAIGN, cat
-                        )
-                        by_id = _day_campaigns(day)
-                        for cid, patch in parse_zepto_ad_tabular_campaigns(tab).items():
-                            row = by_id.get(cid)
-                            if row is None:
-                                # A campaign the Analytics view knows about
-                                # but the campaign list did not return. Not
-                                # observed, but it would silently lose that
-                                # campaign's revenue if it ever happened.
-                                logger.warning(
-                                    f"Zepto campaign {cid} is in the {cat} analytics table "
-                                    f"but not in the campaign list for {day} — metrics dropped"
-                                )
-                                continue
-                            row.update(patch)
-                            # The tabular tabs partition properly, unlike the
-                            # campaign list, so this is the campaign's real
-                            # category rather than the tab that was asked for.
-                            row["campaign_category"] = cat
-
-                    await _attempt(f"{cat}/{day} analytics", _analytics)
-                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-                    async def _keywords(cat=cat, day=day) -> None:
-                        _tick(f"Keywords {cat} {day}")
-                        kws = await zepto_fetch_ads_tabular(
-                            headers, brand_id, day, day, zep.ADS_VIEW_KEYWORD, cat
-                        )
-                        kw_rows.extend(
-                            parse_zepto_ad_keywords(
-                                kws, tenant_id, job_id, day, cat, brand_id
-                            )
-                        )
-
-                    await _attempt(f"{cat}/{day} keywords", _keywords)
-                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-                    # Product performance, then the three breakdown views
-                    # (category / city / page) which share one shape and one
-                    # parser. All partition by campaign_category the way the
-                    # keyword view does.
-                    async def _products(cat=cat, day=day) -> None:
-                        _tick(f"Products {cat} {day}")
-                        tab_rows = await zepto_fetch_ads_tabular(
-                            headers, brand_id, day, day, zep.ADS_VIEW_PRODUCT, cat
-                        )
-                        prod_rows.extend(
-                            parse_zepto_ad_products(
-                                tab_rows, tenant_id, job_id, day, cat, brand_id
-                            )
-                        )
-
-                    await _attempt(f"{cat}/{day} products", _products)
-                    await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-                    for view, dim in (
-                        (zep.ADS_VIEW_CATEGORY, "category"),
-                        (zep.ADS_VIEW_CITY, "city"),
-                        (zep.ADS_VIEW_PAGE, "page"),
-                    ):
-
-                        async def _breakdown(cat=cat, day=day, view=view, dim=dim) -> None:
-                            _tick(f"{dim.title()} {cat} {day}")
-                            tab_rows = await zepto_fetch_ads_tabular(
-                                headers, brand_id, day, day, view, cat
-                            )
-                            bd_rows.extend(
-                                parse_zepto_ad_breakdown(
-                                    tab_rows, tenant_id, job_id, day, cat, brand_id, dim
-                                )
-                            )
-
-                        await _attempt(f"{cat}/{day} {dim}", _breakdown)
-                        await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-
-            async def _fetch_day(day: str) -> None:
-                """One day: the campaign list, then the tabs. Raises if the LIST is
-                lost — the tabs are meaningless without it, so _attempt queues the
-                whole day as a single re-check item."""
-                await _fetch_campaign_list(day)
-                if day in not_ready:
-                    return
-                await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-                await _fetch_day_tabs(day)
-
-            # The campaign CATALOGUE — every campaign's current configuration, for the
-            # campaign manager (zepto_ad_campaigns / zepto_ad_campaign_keywords). Read once
-            # per run, not per day: it is "now", not a series. Blinkit's marketing scrape
-            # fills blinkit_ad_campaigns the same way.
-            catalog: dict = {}
-
-            async def _catalog() -> None:
-                _tick("Campaign catalogue")
-                catalog.clear()
-                catalog.update(await zepto_fetch_campaign_catalog(headers))
-
-            try:
-                with console.status("[cyan]Fetching campaigns...[/cyan]") as st:
-                    status = st
-                    n = 0
-                    for day in days:
-                        await _attempt(day, lambda day=day: _fetch_day(day))
-                    await _attempt("campaign catalogue", _catalog)
-            except _SessionGone as e:
-                session_died = True
-                console.print(f"[yellow]{escape(str(e))}[/yellow]")
-
-            # ── re-check pass ─────────────────────────────────────────────────
-            # The point of the rewrite above: every lost fetch gets one more
-            # attempt, further out than _ads_request's own 3/8/20s ladder, before
-            # the run is allowed to call itself a failure. Skipped when the session
-            # is gone, because every replay would fail the same way.
-            if lost and not session_died:
-                queued, lost = lost, []
-                console.print(
-                    f"[yellow]{len(queued)} fetch(es) lost — re-checking in "
-                    f"{_ZEPTO_RECHECK_WAIT_S}s before the run reports a failure.[/yellow]"
-                )
-                await asyncio.sleep(_ZEPTO_RECHECK_WAIT_S)
-                try:
-                    with console.status("[cyan]Re-checking lost fetches...[/cyan]") as st:
-                        status = st
-                        for label, fn in queued:
-                            try:
-                                await fn()
-                            except _SessionGone:
-                                raise
-                            except Exception as e:
-                                logger.warning(f"Zepto {label} failed on re-check: {e}")
-                                lost.append((label, fn))
-                                _note(e)
-                            else:
-                                recovered.append(label)
-                            await asyncio.sleep(_ZEPTO_DAY_GAP_S)
-                except _SessionGone as e:
-                    session_died = True
-                    console.print(f"[yellow]{escape(str(e))}[/yellow]")
-            failed = [label for label, _ in lost]
-            # A campaign whose detail could not be read even on retry keeps its last good
-            # detail and gets a list-only row — but it is still a lost fetch, and a run
-            # that lost fetches must not report success (see the note at the end).
-            failed += [f"catalogue detail {cid}" for cid in catalog.get("failed") or []]
-
-            written: dict[str, int] = {}
-            cat_written: dict[str, int] = {}
-            if save:
-                written = await zepto_save_ad_results(
-                    db, rows, kw_rows, prod_rows, bd_rows
-                )
-                if catalog.get("campaigns"):
-                    cat_written = await zepto_save_campaign_catalog(
-                        db, *parse_zepto_campaign_catalog(catalog, tenant_id, job_id))
-                await complete_scrape_job(
-                    db, job_id, sum(written.values()) + cat_written.get("campaigns", 0)
-                    + cat_written.get("keywords", 0))
-            else:
-                await complete_scrape_job(db, job_id)
-
-            # Report on de-duplicated rows, matching what storage actually
-            # writes. The campaign list is now fetched once per day rather than
-            # once per category, so this should be a no-op — but it was not
-            # always, and a run that double-counted spend read as plausible.
-            unique = {r["upsert_key"]: r for r in rows}.values()
-            spend = sum(r["spend"] for r in unique)
-            clicks = sum(r["clicks"] for r in unique)
-            revenue = sum(r.get("revenue") or 0 for r in unique)
-            rows_reported = len(unique)
-            kw_unique = {r["upsert_key"]: r for r in kw_rows}.values()
-            prod_unique = {r["upsert_key"]: r for r in prod_rows}.values()
-            bd_unique = {r["upsert_key"]: r for r in bd_rows}.values()
-            console.print(f"\n[bold cyan]Zepto Ads[/bold cyan] ({days[0]} to {days[-1]}) — {', '.join(categories)}")
-            console.print(f"  Rows: [bold]{rows_reported}[/bold]   Spend: [bold]₹{spend:,.0f}[/bold]   Clicks: [bold]{clicks:,}[/bold]   Revenue: [bold]₹{revenue:,.0f}[/bold]")
-            console.print(f"  Keywords: [bold]{len(kw_unique)}[/bold] row(s), spend ₹{sum(k['spend'] for k in kw_unique):,.0f}")
-            console.print(f"  Products: [bold]{len(prod_unique)}[/bold] row(s), spend ₹{sum(k['spend'] for k in prod_unique):,.0f}")
-            console.print(f"  Breakdown (category/city/page): [bold]{len(bd_unique)}[/bold] row(s)")
-            if catalog.get("campaigns"):
-                console.print(
-                    f"  Catalogue: [bold]{len(catalog['campaigns'])}[/bold] campaign(s), "
-                    f"{len(catalog.get('details') or {})} with full detail"
-                    + (f", [yellow]{len(catalog['failed'])} detail read(s) failed[/yellow]"
-                       if catalog.get("failed") else ""))
-            if recovered:
-                console.print(
-                    f"  [green]{len(recovered)} fetch(es) failed once and succeeded on "
-                    f"re-check:[/green] {', '.join(recovered[:5])}"
-                    f"{' …' if len(recovered) > 5 else ''}"
-                )
-            if failed:
-                console.print(f"  [yellow]{len(failed)} fetch(es) failed twice: {', '.join(failed[:5])}{' …' if len(failed) > 5 else ''}[/yellow]")
-            if not_ready:
-                console.print(
-                    f"  [yellow]{len(not_ready)} day(s) had no metrics yet and were skipped "
-                    f"(not written as zero): {', '.join(not_ready[:5])}{' …' if len(not_ready) > 5 else ''}[/yellow]"
-                )
-            if save:
-                console.print(
-                    "  [green]Saved to DB:[/green] "
-                    + ", ".join(f"{v} {k}" for k, v in {**written, **{
-                        f"catalogue {k}": v for k, v in cat_written.items()}}.items())
-                )
-            else:
-                console.print("  [yellow]--no-save: nothing written[/yellow]")
-
-            # ⚠️ Everything above already SAVED. Raising here on purpose — same
-            # reasoning as the PO section: a run that lost individual fetches
-            # must not report success, or on the VM nobody is told and the gaps
-            # stay. Only `failed` counts; `not_ready` is Zepto legitimately not
-            # having computed a day yet, which is not our failure and is
-            # correctly skipped rather than written as zero.
-            #
-            # `failed` now means "lost TWICE" — once on the first pass and again
-            # on the re-check _ZEPTO_RECHECK_WAIT_S later. A single blip is
-            # `recovered` and exits 0, because a run that got every row has
-            # nothing to alert about, however bumpy the getting was.
-            #
-            # A logger.error alone would not reach the alert: it fires on
-            # `log_id("foresight_runner") AND severity>=ERROR`, and that stream
-            # is only logs/runner.log — a scraper's own output ships with no
-            # severity field at all (deploy/ops-agent-logging.yaml). The runner
-            # logs ERROR when a job exits non-zero; that is the only route.
-            #
-            # Observed 2026-09-05 backfilling July: 10 fetches failed, 297
-            # campaigns saved, job exited 0. Re-running the same window is safe
-            # and picks up what was missed — every row upserts on its key.
-            if failed:
-                logger.error(
-                    f"Zepto ads: {len(failed)} fetch(es) lost — {', '.join(failed[:5])}"
-                    f"{' …' if len(failed) > 5 else ''}. Saved what returned; "
-                    f"re-run the same window to backfill."
-                )
-                console.print(
-                    f"[red]Incomplete: {len(failed)} fetch(es) failed. Data that did "
-                    "return was saved — re-run the same window to backfill.[/red]"
-                )
-                raise typer.Exit(1)
-
-        except AuthError as e:
-            # platform_auth already tried to re-login and could not. Usually the
-            # circuit breaker: repeated evictions on a shared account trip it, and
-            # `auth reset` clears it once the other person has stopped.
-            #
-            # ⚠️ RE-RAISED, not collapsed into typer.Exit(1). cli/main.py maps
-            # AuthError to exit code 3, which the runner records as
-            # `auth_expired`; exiting 1 here buried every Zepto auth failure
-            # among anonymous exit_1s. That is exactly the regression
-            # _scrape_blinkit's own comment warns about — and this handler had
-            # it, while the sales scrape next door got it right.
-            if job_id:
-                await fail_scrape_job(db, job_id, "auth_expired")
-            console.print(f"[red]Zepto auth failed: {escape(str(e))}[/red]")
-            console.print(
-                "[yellow]Try `cli auth login zepto --tenant <id>`, or "
-                "`cli auth reset zepto --tenant <id>` if the breaker is open.[/yellow]"
-            )
-            raise
-        except typer.Exit:
-            raise
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
-
-
-# ── Zepto PO Management ────────────────────────────────────────────────────────
+# ── Zepto (one seller console: sales, PO, ads) ───────────────────────────────
 
 @app.command("zepto")
 def scrape_zepto(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: 7 days ago)"),
+    date_from: str = typer.Option(None, "--from", help="Sales/ads start date YYYY-MM-DD (default: sales 4 days ago; ads the 3 days up to --to)"),
     date_to: str = typer.Option(None, "--to", help="Sales/ads end date YYYY-MM-DD (default: yesterday)"),
     sales: bool = typer.Option(False, "--sales", help="Scrape sales data"),
     po: bool = typer.Option(False, "--po", help="Scrape PO/ASN/GRN data"),
@@ -2397,39 +1343,28 @@ def scrape_zepto(
             "while the sales window stops at yesterday."
         ),
     ),
-    all_cities: bool = typer.Option(False, "--all-cities", help="Sweep every city for the per-city sales split"),
+    all_cities: bool = typer.Option(False, "--all-cities", help="Sales: sweep every city on every day (a one-off backfill; every run already sweeps the newest day)"),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
     """Scrape ALL Zepto private data. Pass --sales, --po, --ads, or none for all three.
 
-    THE master Zepto command. Blinkit needs two commands because it has two
-    dashboards behind two separate logins (brands.blinkit.com magic-link,
-    partnersbiz.com OTP) — see platform_auth/registry.py, where that forces two
-    slugs. Zepto has ONE console covering sales, PO and ads alike, so it gets
-    one slug there and one command here. Splitting Zepto's commands would be
-    copying a Blinkit workaround that does not apply.
+    THE Zepto command. Blinkit needs separate commands because it has two
+    dashboards behind two separate logins; Zepto has ONE console covering sales,
+    PO and ads, so it gets one command — and one login, which matters because
+    each Zepto login logs out whoever is on the client's Zepto dashboard.
 
-    The point is the setup cost: `zepto_setup()` is a session probe plus a ~10s
-    headless Chromium launch for the WAF token. Running three commands pays
-    that three times — and each login EVICTS whoever is on the client's Zepto
-    dashboard, since Zepto permits one session per account. One command, one
-    eviction.
+    The work happens in scraper/platforms/zepto/dashboard_data/seller/run.py;
+    this command only parses flags, prints each section's report and turns the
+    results into the exit code: 0 = everything landed, 1 = a section failed or
+    lost fetches (what came back is still saved), 3 = the login is gone.
 
-    ⚠️ The sections keep their own date windows, deliberately. Sales and ads are
-    bounded by --from/--to and stop at yesterday: Zepto recomputes a day once
-    each morning, so asking for today returns NoDataYet. PO uses
-    --po-days-back through TODAY, because POs are forward-looking — an order
-    raised today expires in three weeks, so stopping at yesterday would miss
-    exactly the ones worth acting on. Blinkit draws the same distinction with
-    its own --po-days-back.
-
-    A section that fails does not abort the others, so one flaky endpoint costs
-    its own data rather than the whole run. The command still exits non-zero if
-    anything failed, so the job runner records a failure instead of a green
-    tick over a silent gap.
+    The sections keep their own windows on purpose: sales (the 4 days) and ads (the
+    3 days up to --to) stop at yesterday, because Zepto computes a day once each
+    morning; PO runs --po-days-back through TODAY, because POs are
+    forward-looking. A section that fails does not stop the others.
     """
     try:
-        asyncio.run(_scrape_zepto(
+        results = asyncio.run(_scrape_zepto(
             tenant_id, date_from, date_to, sales, po, ads, po_days_back,
             category, all_cities, save,
         ))
@@ -2440,27 +1375,46 @@ def scrape_zepto(
         # cli/__main__.py — which does `from cli.main import app; app()` — so
         # cli/main.py is imported as a module and the guard is never true.
         # Measured: 0 jobs with exit_code 3 and 0 with error='auth_expired'
-        # across 6,094 runs. Every auth failure has been landing as an
-        # anonymous exit 1, which is exactly the burial the comment in
-        # _scrape_blinkit warns about.
+        # across 6,094 runs. Every auth failure had been landing as an
+        # anonymous exit 1.
         #
         # Scoped to Zepto deliberately. Fixing the global path is a one-line
         # change to cli/__main__.py, but it alters how EVERY command surfaces
         # exceptions — including Blinkit's, which is live production on the VM.
-        # That is a call for whoever owns platform_auth, not a side-effect of
-        # this work. Zepto needs it most: it cannot refresh, so it logs in
-        # daily and is the platform most likely to fail this way.
         logger.error(
-            "AUTH FAILURE — the Zepto scrape could not authenticate.\n"
-            f"    {type(e).__name__}: {e}\n"
-            "    Check: python -m cli auth status -t <tenant>\n"
-            "    Fix:   python -m cli auth login zepto -t <tenant>"
+            f"AUTH FAILURE — the Zepto scrape could not authenticate ({type(e).__name__}: {e}). "
+            "Check: cli auth status -t <tenant> · Fix: cli auth login zepto -t <tenant> "
+            "(or cli auth reset zepto -t <tenant> if the breaker is open)"
         )
         raise typer.Exit(AUTH_EXPIRED_EXIT_CODE)
 
+    # A run that lost anything must not exit 0. The alert only ever sees the exit
+    # code: it fires on the RUNNER's own log (`log_id("foresight_runner") AND
+    # severity>=ERROR`), and a scraper's output ships with no severity field at all
+    # (deploy/ops-agent-logging.yaml) — so the runner's "job exited non-zero" ERROR
+    # is the only route to it.
+    if any(not r.ok for r in results):
+        raise typer.Exit(1)
+
+
+async def _scrape_zepto(
+    tenant_id: str, date_from: str | None, date_to: str | None,
+    sales: bool, po: bool, ads: bool, po_days_back: int,
+    category: str, all_cities: bool, save: bool,
+) -> list:
+    """No spinner, no printed report: the run's log IS the output
+    (scraper/utils/run_log.py)."""
+    run_all = not (sales or po or ads)
+    return await zepto_run.run(
+        tenant_id,
+        sales=sales or run_all, po=po or run_all, ads=ads or run_all,
+        date_from=date_from, date_to=date_to, po_days_back=po_days_back,
+        category=category, all_cities=all_cities, save=save,
+    )
+
 
 def _why(e: Exception) -> str:
-    """A readable reason for a failed section.
+    """A readable reason for a failed section (used by the Instamart command).
 
     typer.Exit stringifies to its exit code — "1" — which told the reader
     nothing. A section that raised it has already printed and logged its own
@@ -2471,864 +1425,167 @@ def _why(e: Exception) -> str:
     return str(getattr(e, "orig", None) or e)
 
 
-async def _scrape_zepto(
-    tenant_id: str,
-    date_from: str | None,
-    date_to: str | None,
-    sales_flag: bool,
-    po_flag: bool,
-    ads_flag: bool,
-    po_days_back: int,
-    category: str,
-    all_cities: bool,
-    save: bool,
-) -> None:
-    run_all = not sales_flag and not po_flag and not ads_flag
-    run_sales = sales_flag or run_all
-    run_po = po_flag or run_all
-    run_ads = ads_flag or run_all
+# ── Instamart (Brand Portal: sales + ads · Supply Portal: POs) ────────────────
 
-    # Built ONCE and handed to every section. This is the whole point of the
-    # combined command: `setup()` is a session probe plus a ~10s headless
-    # Chromium launch for the WAF token, and running the three commands
-    # separately pays for it three times — and evicts the client three times.
-    with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-        _, _, client = await zepto_setup(str(tenant_id))
-    console.print("[green]Session healthy.[/green]")
-
-    failed: list[str] = []
-    ran: list[str] = []
-
-    # ⚠️ Section failures log at ERROR, not WARNING. The Cloud Monitoring policy
-    # matches `severity>=ERROR`, so a failure logged any lower is invisible to
-    # the alert — see docs/jobs.md, which records that exact regression. The
-    # command also exits non-zero below, but the ERROR line is what carries the
-    # section name into the alert.
-    if run_sales:
-        console.rule("[bold]Sales")
-        logger.info("Zepto: sales section starting")
-        try:
-            await _scrape_zepto_sales(
-                tenant_id, date_from, date_to, None, all_cities, save,
-                storage_state=client,
-            )
-            ran.append("sales")
-        except AuthError:
-            # Escapes section isolation deliberately. If auth is genuinely gone
-            # — breaker tripped, or re-login exhausted — no later section can
-            # work either, and cli/main.py must see it to exit 3 so the runner
-            # records `auth_expired` instead of an anonymous exit_1. Same
-            # reasoning as _scrape_blinkit.
-            raise
-        except Exception as e:
-            # Deliberately not re-raised: a sales failure must not cost the PO
-            # data, which is a different endpoint family with its own health.
-            failed.append("sales")
-            logger.error(f"Zepto sales section FAILED: {_why(e)}")
-            console.print(f"[yellow]Sales failed — continuing to PO: {_why(e)}[/yellow]")
-
-    if run_po:
-        console.rule("[bold]PO / ASN / GRN")
-        po_from = (_date.today() - timedelta(days=po_days_back)).isoformat()
-        po_to = _date.today().isoformat()
-        logger.info(f"Zepto: PO section starting [{po_from}..{po_to}]")
-        try:
-            await _scrape_zepto_po(tenant_id, po_from, po_to, save, storage_state=client)
-            ran.append("po")
-        except AuthError:
-            raise                      # see the note on the sales section
-        except Exception as e:
-            failed.append("po")
-            logger.error(f"Zepto PO section FAILED: {_why(e)}")
-            console.print(f"[yellow]PO failed — continuing to ads: {_why(e)}[/yellow]")
-
-    if run_ads:
-        console.rule("[bold]Ads")
-        logger.info("Zepto: ads section starting")
-        try:
-            await _scrape_zepto_ads(
-                tenant_id, date_from, date_to, category, save,
-                storage_state=client,
-            )
-            ran.append("ads")
-        except AuthError:
-            raise                      # see the note on the sales section
-        except Exception as e:
-            failed.append("ads")
-            logger.error(f"Zepto ads section FAILED: {_why(e)}")
-            console.print(f"[yellow]Ads failed: {_why(e)}[/yellow]")
-
-    if failed:
-        # Non-zero exit so the job runner records a failure rather than a
-        # success with a quiet gap in the data. The runner turns this into
-        # jobs.status='failed' and its own ERROR line; the per-section ERRORs
-        # above are what say WHICH part broke.
-        logger.error(
-            f"Zepto scrape finished with failures — ok: {', '.join(ran) or 'none'} "
-            f"· failed: {', '.join(failed)}"
-        )
-        console.print(f"[red]Sections failed: {', '.join(failed)}[/red]")
-        raise typer.Exit(1)
-    logger.info(f"Zepto scrape complete — sections: {', '.join(ran)}")
-    console.print("[green]Zepto scrape complete.[/green]")
-
-
-@app.command("zepto-po")
-def scrape_zepto_po(
+@app.command("instamart")
+def scrape_instamart(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 30 days ago)"),
-    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: today)"),
-    save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
+    sales: bool = typer.Option(False, "--sales", help="Scrape sales"),
+    ads: bool = typer.Option(False, "--ads", help="Scrape ads"),
+    po: bool = typer.Option(False, "--po", help="Scrape purchase orders"),
+    date_from: str = typer.Option(
+        None, "--from", help="Sales start date YYYY-MM-DD (default: yesterday — the portal has nothing newer)"
+    ),
+    date_to: str = typer.Option(None, "--to", help="Sales end date YYYY-MM-DD (default: --from)"),
+    sales_days_back: int = typer.Option(
+        None, "--sales-days-back",
+        help=(
+            "Sales: trailing window ending yesterday, instead of --from/--to. Use 4 on a "
+            "catch-up run: Instamart reconciles for up to 86 hours, and re-loading a date "
+            "is harmless — the upsert key is (date, store, item)."
+        ),
+    ),
+    ads_days_back: int = typer.Option(
+        instamart_run.ADS_DAYS, "--ads-days-back",
+        help="Ads: how many trailing days of the daily series to (re)fetch.",
+    ),
+    load: bool = typer.Option(
+        True, "--load/--no-load",
+        help="Sales: write to Postgres. --no-load only downloads the xlsx and reports counts.",
+    ),
+    keep_file: bool = typer.Option(
+        False, "--keep-file/--no-keep-file",
+        help=(
+            "Sales: keep the downloaded xlsx under backend/staging/instamart_reports/. Off "
+            "by default — every column is in Postgres and the portal rebuilds any past report."
+        ),
+    ),
+    force_token: bool = typer.Option(
+        False, "--force-token", help="PO: ignore the cached abacus-token and log in fresh.",
+    ),
+    po_all_lines: bool = typer.Option(
+        False, "--po-all-lines",
+        help="PO: re-fetch line items for EVERY PO (~15 min), not only new or changed ones.",
+    ),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser (debugging the login)."),
 ):
-    """Fetch Zepto purchase orders, goods receipts and shipping notices.
+    """Scrape ALL Instamart private data — sales, ads, POs. Pass --sales, --ads,
+    --po, or none for all three.
 
-    Three endpoints on the `/vendor` app (same host and session as the sales
-    scrape, no browser needed): what Zepto ordered, what shipped, what arrived.
-    `grn_qty / po_qty` is the fill rate — the figure Blinkit's seller scorecard
-    reports and the only route to one for Zepto.
+    The work happens in scraper/platforms/instamart/dashboard_data/run.py; this
+    command only parses flags and turns the results into the exit code:
+    0 = everything landed, 1 = a section failed or lost fetches (what came back
+    is still saved), 3 = the login is gone. A section that fails does not stop
+    the others.
 
-    Windows here are inclusive of TODAY by default, unlike the sales scrape:
-    POs are forward-looking (an order issued today expires in three weeks), so
-    stopping at yesterday would miss the ones that most need acting on.
+    Needs `cli auth credentials set instamart -t <tenant> --email <e> --extra
+    account_id=<x-client-account-id>` once; the portal login (OTP read from the
+    shared inbox) is reused after that.
     """
-    asyncio.run(_scrape_zepto_po(tenant_id, date_from, date_to, save))
-
-
-async def _scrape_zepto_po(
-    tenant_id: str, date_from: str | None, date_to: str | None, save: bool,
-    storage_state=None,
-) -> None:
-    date_to = date_to or _date.today().isoformat()
-    date_from = date_from or (_date.today() - timedelta(days=30)).isoformat()
-
-    async with AsyncSessionLocal() as db:
-        job_id = None
-        try:
-            # Same shared client as the sales scrape — see the note there.
-            if storage_state is None:
-                with console.status("[cyan]Pre-flight: Zepto session…[/cyan]"):
-                    _, _, storage_state = await zepto_setup(str(tenant_id))
-                console.print("[green]Session healthy.[/green]")
-
-            job_id = await create_scrape_job(db, tenant_id, "zepto_po", platform="zepto")
-
-            # Each endpoint is fetched independently: Zepto returned a 500 on
-            # asn/filter on 2026-08-27 and aborting the run discarded 74 POs and
-            # 72 GRNs that had already come back. One flaky endpoint should cost
-            # its own data, not the whole scrape.
-            # Endpoints that gave up entirely after exhausting their retries.
-            # Recorded rather than just logged, because a lost endpoint has to
-            # reach the ALERT, and the alert only ever sees a non-zero exit —
-            # see the note at the end of this function.
-            lost: list[str] = []
-
-            async def _try(label, coro):
-                try:
-                    return await coro
-                except Exception as e:
-                    lost.append(label)
-                    logger.warning(f"Zepto {label} failed, continuing without it: {e}")
-                    console.print(f"[yellow]{label} failed — continuing[/yellow]")
-                    return []
-
-            with console.status(f"[cyan]Fetching POs {date_from}..{date_to}...[/cyan]"):
-                raw_pos = await _try("po/filter", zepto_fetch_pos(storage_state, date_from, date_to))
-            with console.status(f"[cyan]Fetching GRNs {date_from}..{date_to}...[/cyan]"):
-                raw_grns = await _try("grn/filter", zepto_fetch_grns(storage_state, date_from, date_to))
-            with console.status(f"[cyan]Fetching ASNs {date_from}..{date_to}...[/cyan]"):
-                raw_asns = await _try("asn/filter", zepto_fetch_asns(storage_state, date_from, date_to))
-
-            pos = parse_zepto_pos(raw_pos, tenant_id, job_id)
-            grns = parse_zepto_grns(raw_grns, tenant_id, job_id)
-            asns = parse_zepto_asns(raw_asns, tenant_id, job_id)
-
-            # Line items: one GET per PO. Carries unit_price (cost) and mrp,
-            # which appear on no other Zepto endpoint, plus per-SKU fill rate.
-            po_ids = [p["po_id"] for p in pos]
-            with console.status(f"[cyan]Fetching line items for {len(po_ids)} POs...[/cyan]"):
-                raw_items = await zepto_fetch_po_items(storage_state, po_ids)
-            po_items = parse_zepto_po_items(raw_items, tenant_id, job_id)
-
-            written = 0
-            if save:
-                counts = await zepto_save_po_results(db, pos, grns, asns, po_items)
-                written = sum(counts.values())
-                await complete_scrape_job(db, job_id, written)
-            else:
-                await complete_scrape_job(db, job_id)
-
-            ordered = sum(p["total_qty"] or 0 for p in pos)
-            received = sum(g["grn_qty"] or 0 for g in grns)
-            po_value = sum(p["total_value"] or 0.0 for p in pos)
-
-            console.print("")
-            console.print(f"[bold]Zepto PO Management ({date_from} to {date_to})[/bold]")
-            console.print(f"  POs: {len(pos)}   units ordered: {ordered:,}   value: Rs {po_value:,.0f}")
-            console.print(f"  GRNs: {len(grns)}   units received: {received:,}")
-            console.print(f"  ASNs: {len(asns)}")
-            console.print(f"  PO line items: {len(po_items)}")
-
-            # Fill rate from GRN rows, where ordered and received sit together.
-            po_q = sum(g["po_qty"] or 0 for g in grns)
-            grn_q = sum(g["grn_qty"] or 0 for g in grns)
-            if po_q:
-                console.print(f"  [bold]Fill rate: {grn_q:,}/{po_q:,} = {100 * grn_q / po_q:.1f}%[/bold]")
-            if save:
-                console.print(f"  Saved to DB: {written} rows")
-
-            # ⚠️ Everything above already SAVED. This raises afterwards on
-            # purpose: the rows that came back are good and must be kept, but a
-            # run that silently lost a whole endpoint must not report success.
-            #
-            # Why an exit code and not just logger.error: the alert is
-            # `log_id("foresight_runner") AND severity>=ERROR`, and that stream
-            # is ONLY logs/runner.log. A scraper's own output ships to
-            # `foresight_<lane>` with no processors and therefore no severity
-            # field at all — see deploy/ops-agent-logging.yaml. So an ERROR
-            # logged in here reaches Cloud Logging as plain text and matches
-            # nothing. The runner logs ERROR when a job exits non-zero; that is
-            # the only path to the alert.
-            #
-            # Observed 2026-09-05: asn/filter 500'd through all of 5/15/45s and
-            # the run still exited 0 — 75 POs and 75 GRNs saved, ASNs 0, job
-            # green. On the VM nobody would have been told, and the ship-vs-
-            # accept split would have quietly gone stale. Re-running fixes it
-            # (ASN rows key on asn_no, no date), but only if someone knows.
-            if lost:
-                logger.error(
-                    f"Zepto PO: endpoint(s) lost after retries — {', '.join(lost)}. "
-                    f"Saved what returned ({written} rows); re-run "
-                    f"`cli scrape zepto --po` to backfill."
-                )
-                console.print(
-                    f"[red]Incomplete: {', '.join(lost)} returned nothing after "
-                    "retries. Data that did return was saved — re-run to backfill.[/red]"
-                )
-                raise typer.Exit(1)
-        except typer.Exit:
-            raise
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
-
-
-async def _scrape_instamart_sales(
-    tenant_id: str,
-    date_from: str | None,
-    date_to: str | None,
-    days_back: int | None,
-    load: bool,
-    headed: bool,
-    keep_file: bool,
-) -> None:
-    """Scrape Instamart private sales (Brand Portal) into the seller tables.
-
-    One report per run, at the portal's finest grain: day x store x item, plus
-    the per-city brand metrics sheet. The portal only has data up to yesterday.
-
-    Needs `cli auth credentials set instamart -t <tenant> --email <e>
-    --extra account_id=<x-client-account-id>` to have been run once. The first
-    scrape logs into the portal in a browser (reading the OTP from the shared
-    inbox by itself) and reuses that session afterwards.
-
-    Callable directly (used by both `instamart-sales` and the `instamart`
-    master command — see `_scrape_instamart`), so all its errors surface as
-    `typer.Exit(1)` rather than a bare return, letting a caller's own
-    try/except around this call double as per-section failure isolation.
-    """
-    from pathlib import Path
-
-    from platform_auth import store as auth_store
-    from scraper.platforms.instamart.dashboard_data.seller import (
-        endpoints as im_ep, parser as im_parser, scraper as im_scraper,
-    )
-    from scraper.platforms.instamart.dashboard_data.seller.session import PortalSession
-    from scraper.platforms.instamart.dashboard_data.seller.storage import save_sales
-
-    yesterday = _date.today() - timedelta(days=1)
-    if days_back:
-        start, end = yesterday - timedelta(days=days_back - 1), yesterday
-    else:
-        start = _date.fromisoformat(date_from) if date_from else yesterday
-        end = _date.fromisoformat(date_to) if date_to else start
-    if start > end:
-        console.print("[red]--from is after --to[/red]")
-        raise typer.Exit(1)
-    span = (end - start).days + 1
-    if span > im_ep.MAX_REPORT_DAYS:
-        console.print(
-            f"[red]{span} days requested; the portal allows at most "
-            f"{im_ep.MAX_REPORT_DAYS} per report.[/red]"
-        )
-        raise typer.Exit(1)
-
-    dest = Path(__file__).resolve().parents[2] / "staging" / "instamart_reports"
-
-    job_id = None
-    async with AsyncSessionLocal() as db:
-        creds = await auth_store.get_credentials(db, tenant_id, "instamart")
-        if not creds or not creds.email:
-            console.print(
-                "[red]No Instamart credentials for this tenant. Run:[/red]\n"
-                "  cli auth credentials set instamart -t <tenant> --email <email> "
-                "--extra account_id=<x-client-account-id>"
-            )
-            raise typer.Exit(1)
-        account_id = (creds.extra or {}).get("account_id")
-        if not account_id:
-            console.print(
-                "[red]No account_id configured. Every Brand Portal data call "
-                "needs it:[/red]\n  cli auth credentials set instamart -t "
-                f"{tenant_id} --email {creds.email} --extra account_id=<id>"
-            )
-            raise typer.Exit(1)
-
-        try:
-            console.print(
-                f"[cyan]Instamart sales {start} → {end} "
-                f"({span} day{'s' if span > 1 else ''})[/cyan]"
-            )
-            async with PortalSession(tenant_id, creds.email, account_id,
-                                     headless=not headed) as portal:
-                brand_account_id = (portal.brand_account_id()
-                                    or (creds.extra or {}).get("brand_account_id"))
-                if not brand_account_id:
-                    console.print(
-                        "[red]Could not resolve the brand-account id. Open the "
-                        "portal once and pick the brand, or set it:[/red]\n"
-                        "  cli auth credentials set instamart -t <tenant> "
-                        "--email <email> --extra brand_account_id=<id>"
-                    )
-                    raise typer.Exit(1)
-                console.print(f"  brand account: {brand_account_id}")
-                console.print("  requesting the report…")
-                path = await im_scraper.fetch_sales_report(
-                    portal, brand_account_id, start, end, dest)
-
-            console.print(f"  downloaded [green]{path.name}[/green]")
-            store_rows, brand_rows = im_parser.parse(path)
-            console.print(
-                f"  parsed [bold]{len(store_rows)}[/bold] store rows, "
-                f"[bold]{len(brand_rows)}[/bold] brand-city rows"
-            )
-            if store_rows:
-                table = Table(title="Instamart sales")
-                table.add_column("date"); table.add_column("GMV", justify="right")
-                table.add_column("units", justify="right")
-                table.add_column("stores", justify="right")
-                by_day: dict = {}
-                for r in store_rows:
-                    d = by_day.setdefault(r["date"], {"gmv": 0.0, "u": 0, "s": set()})
-                    d["gmv"] += r["gmv"]; d["u"] += r["units_sold"]
-                    d["s"].add(r["store_id"])
-                for day in sorted(by_day):
-                    d = by_day[day]
-                    table.add_row(str(day), f"{d['gmv']:,.0f}",
-                                  str(d["u"]), str(len(d["s"])))
-                console.print(table)
-
-            if not load:
-                console.print("[yellow]--no-load: nothing written to the DB[/yellow]")
-            else:
-                job_id = await create_scrape_job(
-                    db, tenant_id, "instamart_seller_sales", "instamart")
-                written = await save_sales(db, tenant_id, store_rows, brand_rows,
-                                           uuid.UUID(job_id))
-                await db.commit()
-                total = written["store_daily"] + written["brand_city"]
-                await complete_scrape_job(db, job_id, total)
-                console.print(
-                    f"[green]Saved {written['store_daily']} store rows + "
-                    f"{written['brand_city']} brand-city rows[/green]"
-                )
-            # Deleted only here — after the commit above — so a failed
-            # parse or load leaves the file on disk to retry from.
-            if not keep_file:
-                path.unlink(missing_ok=True)
-        except typer.Exit:
-            raise
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Instamart scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
+    run_all = not (sales or ads or po)
+    _instamart_exit(instamart_run.run(
+        tenant_id,
+        sales=sales or run_all, ads=ads or run_all, po=po or run_all,
+        date_from=date_from, date_to=date_to, sales_days_back=sales_days_back,
+        ads_days_back=ads_days_back, load=load, keep_file=keep_file,
+        force_token=force_token, po_all_lines=po_all_lines, headed=headed,
+    ))
 
 
 @app.command("instamart-sales")
 def scrape_instamart_sales(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    date_from: str = typer.Option(
-        None, "--from",
-        help="Start date YYYY-MM-DD (default: yesterday — the portal has nothing newer)",
-    ),
-    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: --from)"),
-    days_back: int = typer.Option(
-        None, "--days-back",
-        help=(
-            "Trailing window ending yesterday, instead of --from/--to. Use 4 on a "
-            "catch-up run: Instamart reconciles for up to 86 hours, and re-loading "
-            "a date is harmless because the upsert key is (date, store, item)."
-        ),
-    ),
-    load: bool = typer.Option(
-        True, "--load/--no-load",
-        help="Write to Postgres. --no-load just downloads the xlsx and reports counts.",
-    ),
-    headed: bool = typer.Option(
-        False, "--headed", help="Show the browser (debugging the login form)."
-    ),
-    keep_file: bool = typer.Option(
-        False, "--keep-file/--no-keep-file",
-        help=(
-            "Keep the downloaded xlsx under backend/staging/instamart_reports/. "
-            "Off by default: every column of it is already in Postgres, and the "
-            "portal rebuilds a report for any past range on request, so the file "
-            "is a transport envelope rather than the record."
-        ),
-    ),
+    date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: yesterday)"),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: --from; max 31 days)"),
+    sales_days_back: int = typer.Option(
+        None, "--days-back", help="Trailing window ending yesterday, instead of --from/--to."),
+    load: bool = typer.Option(True, "--load/--no-load", help="--no-load only downloads and counts."),
+    keep_file: bool = typer.Option(False, "--keep-file/--no-keep-file", help="Keep the downloaded xlsx."),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser (debugging the login)."),
 ):
-    """Scrape Instamart private sales only. See `instamart` for the combined
-    sales + ads + PO command; this is the same section, standalone."""
-    asyncio.run(_scrape_instamart_sales(
-        tenant_id, date_from, date_to, days_back, load, headed, keep_file
+    """Instamart sales only — same as `scrape instamart --sales`. For more than
+    31 days use `scrape instamart-backfill`."""
+    _instamart_exit(instamart_run.run(
+        tenant_id, sales=True, ads=False, po=False, date_from=date_from, date_to=date_to,
+        sales_days_back=sales_days_back, load=load, keep_file=keep_file, headed=headed,
     ))
-
-
-async def _scrape_instamart_ads(tenant_id: str, days_back: int, headed: bool) -> None:
-    """Scrape Instamart ads: campaigns (Brand Portal /api/v1/campaigns) into
-    `instamart_ad_campaigns`, and the account-wide daily series
-    (/api/v1/advertiser/metrics/batch) into `instamart_ad_account_daily`.
-
-    Campaigns are LIFETIME totals per campaign, not a window - re-run any
-    time, every campaign's row is replaced whole. The daily series is a real
-    day-by-day account total (verified against the portal's own dashboard:
-    GMV, impressions AND spend all reconciled exactly) - one call covers the
-    whole `--days-back` range, so re-running widens or refreshes history
-    rather than only ever adding "today".
-
-    Also fetches product/keyword ad-asset performance (instamart_ad_product_daily,
-    instamart_ad_keyword_daily) and the product catalogue (names + images,
-    instamart_product_catalog) that powers the "Ad asset performance" card.
-    Each product/keyword row also carries a campaign_id, one row per
-    contributing campaign, for the card's Campaign column and drawer. There
-    is no ad-type (campaign_type) filter or breakdown here — it existed
-    earlier and was removed as unreliable; see asset_metrics.py's docstring.
-
-    Needs the same `cli auth credentials set instamart ...` as `instamart-sales`,
-    and reuses that same saved browser session. Callable directly — see the
-    note on `_scrape_instamart_sales`.
-    """
-    from platform_auth import store as auth_store
-    from scraper.platforms.instamart.dashboard_data.seller import account_metrics as im_daily
-    from scraper.platforms.instamart.dashboard_data.seller import asset_metrics as im_assets
-    from scraper.platforms.instamart.dashboard_data.seller import campaigns as im_campaigns
-    from scraper.platforms.instamart.dashboard_data.seller.session import PortalSession
-
-    job_id = None
-    async with AsyncSessionLocal() as db:
-        creds = await auth_store.get_credentials(db, tenant_id, "instamart")
-        if not creds or not creds.email:
-            console.print(
-                "[red]No Instamart credentials for this tenant. Run:[/red]\n"
-                "  cli auth credentials set instamart -t <tenant> --email <email> "
-                "--extra account_id=<x-client-account-id>"
-            )
-            raise typer.Exit(1)
-        account_id = (creds.extra or {}).get("account_id")
-        if not account_id:
-            console.print("[red]No account_id configured for this tenant.[/red]")
-            raise typer.Exit(1)
-
-        try:
-            today = _date.today()
-            start, end = today - timedelta(days=days_back), today
-
-            async with PortalSession(tenant_id, creds.email, account_id,
-                                     headless=not headed) as portal:
-                console.print("[cyan]Fetching Instamart campaigns...[/cyan]")
-                raw = await im_campaigns.fetch_campaigns(portal, account_id)
-
-                console.print(f"[cyan]Fetching account-daily metrics {start} to {end}...[/cyan]")
-                raw_daily = await im_daily.fetch_daily(portal, account_id, start, end)
-
-                console.print(f"[cyan]Fetching product ad-performance {start} to {end}...[/cyan]")
-                raw_products = await im_assets.fetch_products_daily(portal, account_id, start, end)
-
-                console.print(f"[cyan]Fetching keyword ad-performance {start} to {end}...[/cyan]")
-                raw_keywords = await im_assets.fetch_keywords_daily(portal, account_id, start, end)
-
-                product_rows_pre = im_assets.parse_products_daily(raw_products)
-                candidate_ids = sorted({r["candidate_id"] for r in product_rows_pre})
-                console.print(f"[cyan]Fetching product catalogue for {len(candidate_ids)} product(s)...[/cyan]")
-                raw_catalog = (
-                    await im_assets.fetch_product_catalog(portal, account_id, candidate_ids)
-                    if candidate_ids else []
-                )
-
-            rows = im_campaigns.parse_campaigns(raw)
-            console.print(f"  parsed [bold]{len(rows)}[/bold] campaign(s)")
-
-            daily_rows = im_daily.parse_daily(raw_daily)
-            console.print(f"  parsed [bold]{len(daily_rows)}[/bold] daily row(s)")
-
-            product_rows = product_rows_pre
-            keyword_rows = im_assets.parse_keywords_daily(raw_keywords)
-            catalog_rows = im_assets.parse_product_catalog(raw_catalog)
-            console.print(
-                f"  parsed [bold]{len(product_rows)}[/bold] product-daily row(s), "
-                f"[bold]{len(keyword_rows)}[/bold] keyword-daily row(s), "
-                f"[bold]{len(catalog_rows)}[/bold] catalogue row(s)"
-            )
-
-            if rows:
-                table = Table(title="Instamart campaigns")
-                for col in ("name", "status", "spend", "gmv", "impressions", "clicks"):
-                    table.add_column(col, justify="right" if col not in ("name", "status") else "left")
-                for r in rows:
-                    table.add_row(
-                        (r["name"] or "")[:35], r["status"] or "",
-                        f"{r['spend']:,.0f}", f"{r['gmv']:,.0f}",
-                        str(r["impressions"]), str(r["clicks"]),
-                    )
-                console.print(table)
-
-            if daily_rows:
-                dtable = Table(title="Instamart account daily")
-                for col in ("date", "spend", "gmv", "impressions", "clicks"):
-                    dtable.add_column(col, justify="right" if col != "date" else "left")
-                for r in daily_rows:
-                    dtable.add_row(
-                        str(r["date"]), f"{r['spend']:,.0f}", f"{r['gmv']:,.0f}",
-                        str(r["impressions"]), str(r["clicks"]),
-                    )
-                console.print(dtable)
-
-            job_id = await create_scrape_job(db, tenant_id, "instamart_ad_campaigns", "instamart")
-            written = await im_campaigns.save_campaigns(db, tenant_id, rows, uuid.UUID(job_id))
-            written_daily = await im_daily.save_daily(db, tenant_id, daily_rows, uuid.UUID(job_id))
-            written_products = await im_assets.save_products_daily(db, tenant_id, product_rows, uuid.UUID(job_id))
-            written_keywords = await im_assets.save_keywords_daily(db, tenant_id, keyword_rows, uuid.UUID(job_id))
-            written_catalog = await im_assets.save_product_catalog(db, tenant_id, catalog_rows)
-            await db.commit()
-            total_written = (
-                written + written_daily + written_products + written_keywords + written_catalog
-            )
-            await complete_scrape_job(db, job_id, total_written)
-            console.print(
-                f"[green]Saved {written} campaign row(s) + {written_daily} daily row(s) + "
-                f"{written_products} product row(s) + {written_keywords} keyword row(s) + "
-                f"{written_catalog} catalogue row(s)[/green]"
-            )
-        except typer.Exit:
-            raise
-        except Exception as e:
-            if job_id:
-                await fail_scrape_job(db, job_id, str(e))
-            console.print(f"[red]Instamart ads scrape failed: {escape(str(e))}[/red]")
-            raise typer.Exit(1)
 
 
 @app.command("instamart-ads")
 def scrape_instamart_ads(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    days_back: int = typer.Option(
-        30, "--days-back",
-        help="How many trailing days of the account-wide daily series to (re)fetch.",
-    ),
-    headed: bool = typer.Option(
-        False, "--headed", help="Show the browser (debugging the login form)."
-    ),
+    ads_days_back: int = typer.Option(
+        instamart_run.ADS_DAYS, "--days-back", help="Trailing days of the daily series to (re)fetch."),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser (debugging the login)."),
 ):
-    """Scrape Instamart ads only. See `instamart` for the combined
-    sales + ads + PO command; this is the same section, standalone."""
-    asyncio.run(_scrape_instamart_ads(tenant_id, days_back, headed))
-
-
-async def _scrape_instamart_po(tenant_id: str, headed: bool, force_token: bool) -> None:
-    """Scrape Instamart purchase orders from the Supply Portal
-    (partner.instamart.in/im-vendor) — a SEPARATE portal from `instamart-ads`,
-    talking to picker.swiggy.com, not brand-portal-service-http.swiggy.com.
-
-    Reuses the same Brand Portal login `instamart-ads` uses: navigating that
-    session to /im-vendor/po-dashboard makes the vendor app mint its own
-    abacus-token, no separate credentials needed. Unlike the Brand Portal,
-    that token works from plain HTTP calls once captured — see
-    `dashboard_data/supply/session.py`'s docstring for how this was verified.
-
-    Pulls every PO the account has ever raised (no date filter — the table
-    is windowed at READ time, same pattern as Zepto's PO/GRN tables) plus
-    every PO's line items. `instamart_po.grn_quantity / total_quantity` is
-    the fill rate; there is no receipt-EVENT date anywhere in this data (see
-    `app/models/instamart_po.py`), so a weekly trend has to bucket by
-    `po_date` (when raised), not by when something actually arrived.
-
-    Callable directly — see the note on `_scrape_instamart_sales`.
-    """
-    from platform_auth import store as auth_store
-    from scraper.platforms.instamart.dashboard_data.supply import session as supply_session
-    from scraper.platforms.instamart.dashboard_data.supply import fetch as supply_fetch
-    from scraper.platforms.instamart.dashboard_data.supply import parser as supply_parser
-    from scraper.platforms.instamart.dashboard_data.supply import storage as supply_storage
-    import httpx
-
-    # ⚠️ Each DB touch below opens its OWN short-lived session rather than
-    # holding one open for the whole function. Verified live 2026-09-25:
-    # the full fetch (2122 POs + 2122 sequential line-item calls, ~15+
-    # minutes at the safe pace fetch.py uses) outlived a session held
-    # open across it — asyncpg.InterfaceError, "cannot call
-    # Transaction.rollback(): the underlying connection is closed" — the
-    # exact same class of bug already documented (and left unfixed) on
-    # the instamart-ads CLI's long throttled runs. Fixed HERE by never
-    # letting a session sit idle through the network-bound phase.
-    async with AsyncSessionLocal() as db:
-        creds = await auth_store.get_credentials(db, tenant_id, "instamart")
-    if not creds or not creds.email:
-        console.print(
-            "[red]No Instamart credentials for this tenant. Run:[/red]\n"
-            "  cli auth credentials set instamart -t <tenant> --email <email> "
-            "--extra account_id=<x-client-account-id>"
-        )
-        raise typer.Exit(1)
-    account_id = (creds.extra or {}).get("account_id")
-    if not account_id:
-        console.print("[red]No account_id configured for this tenant's Instamart credentials.[/red]")
-        raise typer.Exit(1)
-
-    job_id = None
-    try:
-        async with AsyncSessionLocal() as db:
-            job_id = await create_scrape_job(db, tenant_id, "instamart_po", platform="instamart")
-
-        with console.status("[cyan]Getting a Supply Portal token...[/cyan]"):
-            token, brand_company_id = await supply_session.get_token(
-                tenant_id, creds.email, account_id,
-                headless=not headed, force=force_token,
-            )
-        console.print(f"[green]Token ready (brand {brand_company_id}).[/green]")
-
-        async with httpx.AsyncClient(timeout=30) as client:
-            with console.status("[cyan]Fetching purchase orders...[/cyan]"):
-                po_rows = await supply_fetch.fetch_all_purchase_orders(
-                    client, token, brand_company_id
-                )
-            console.print(f"[green]{len(po_rows)} PO(s) fetched.[/green]")
-
-            po_ids = [p["purchase_order_id"] for p in po_rows]
-            with console.status(f"[cyan]Fetching line items for {len(po_ids)} PO(s)...[/cyan]"):
-                raw_lines, failed_ids = await supply_fetch.fetch_all_po_lines(client, token, po_ids)
-
-        item_rows = []
-        for po_id, raw in raw_lines.items():
-            item_rows.extend(supply_parser.parse_po_lines(raw, purchase_order_id=po_id))
-
-        async with AsyncSessionLocal() as db:
-            counts = await supply_storage.save_purchase_orders(
-                db, tenant_id, po_rows, item_rows, uuid.UUID(job_id)
-            )
-            await db.commit()
-            written = sum(counts.values())
-            # A PO whose line items failed after retries still gets its
-            # header row saved above (po_rows is unaffected by failed_ids)
-            # — only its item rows are missing, same "save what came
-            # back" principle as _scrape_zepto_po.
-            await complete_scrape_job(db, job_id, written)
-
-        # Bulk CSV export: the only source of a real per-line received
-        # qty that survives a PO closing (listPurchaseOrderLines's
-        # pending_qty resets to 0 on close — see InstamartPOItem's
-        # docstring). Best-effort: a failure here doesn't fail the whole
-        # scrape, since everything above already saved successfully.
-        try:
-            async with httpx.AsyncClient(timeout=30) as client:
-                with console.status("[cyan]Requesting the bulk PO export...[/cyan]"):
-                    await supply_fetch.submit_po_export(client, token, brand_company_id)
-                    file_url = await supply_fetch.fetch_po_export_url(client, token)
-                if file_url:
-                    csv_text = await supply_fetch.fetch_po_export_csv(client, file_url)
-                    export_rows = supply_parser.parse_po_export_csv(csv_text)
-                    async with AsyncSessionLocal() as db:
-                        synced = await supply_storage.save_po_export(db, tenant_id, export_rows)
-                        await db.commit()
-                    console.print(f"[green]Export sync: {synced} line(s) got a real received/balanced qty.[/green]")
-                else:
-                    console.print("[yellow]Export job did not complete in time — skipped this run.[/yellow]")
-        except Exception as e:
-            console.print(f"[yellow]Bulk export sync failed (PO data above is still saved): {e}[/yellow]")
-
-        total_qty = sum(p["total_quantity"] for p in po_rows)
-        grn_qty = sum(p["grn_quantity"] for p in po_rows)
-        total_value = sum(p["value"] or 0.0 for p in po_rows)
-
-        console.print("")
-        console.print("[bold]Instamart Purchase Orders[/bold]")
-        console.print(f"  POs: {len(po_rows)}   line items: {len(item_rows)}   value: Rs {total_value:,.0f}")
-        if total_qty:
-            console.print(f"  [bold]Fill rate: {grn_qty:,}/{total_qty:,} = {100 * grn_qty / total_qty:.1f}%[/bold]")
-        console.print(f"  Saved to DB: {written} rows")
-
-        if failed_ids:
-            console.print(
-                f"[yellow]{len(failed_ids)} PO(s) lost their line items after retries "
-                f"— PO headers are saved, re-run to backfill items for: "
-                f"{', '.join(failed_ids[:10])}{'...' if len(failed_ids) > 10 else ''}[/yellow]"
-            )
-    except typer.Exit:
-        raise
-    except Exception as e:
-        if job_id:
-            async with AsyncSessionLocal() as db:
-                await fail_scrape_job(db, job_id, str(e))
-        console.print(f"[red]Instamart PO scrape failed: {escape(str(e))}[/red]")
-        raise typer.Exit(1)
+    """Instamart ads only — same as `scrape instamart --ads`. For a fixed past
+    range use `scrape instamart-backfill --ads`."""
+    _instamart_exit(instamart_run.run(
+        tenant_id, sales=False, ads=True, po=False, ads_days_back=ads_days_back, headed=headed,
+    ))
 
 
 @app.command("instamart-po")
 def scrape_instamart_po(
     tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    headed: bool = typer.Option(
-        False, "--headed", help="Show the browser (debugging the login)."
-    ),
-    force_token: bool = typer.Option(
-        False, "--force-token", help="Ignore the cached abacus-token and log in fresh."
-    ),
+    force_token: bool = typer.Option(False, "--force-token", help="Ignore the cached abacus-token."),
+    po_all_lines: bool = typer.Option(
+        False, "--all-lines", help="Re-fetch line items for EVERY PO (~15 min), not only changed ones."),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser (debugging the login)."),
 ):
-    """Scrape Instamart purchase orders only. See `instamart` for the
-    combined sales + ads + PO command; this is the same section, standalone."""
-    asyncio.run(_scrape_instamart_po(tenant_id, headed, force_token))
-
-
-@app.command("instamart")
-def scrape_instamart_all(
-    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
-    sales: bool = typer.Option(False, "--sales", help="Scrape sales only"),
-    ads: bool = typer.Option(False, "--ads", help="Scrape ads only"),
-    po: bool = typer.Option(False, "--po", help="Scrape POs only"),
-    date_from: str = typer.Option(
-        None, "--from", help="Sales start date YYYY-MM-DD (default: yesterday)"
-    ),
-    date_to: str = typer.Option(None, "--to", help="Sales end date YYYY-MM-DD (default: --from)"),
-    sales_days_back: int = typer.Option(
-        None, "--sales-days-back",
-        help="Sales: trailing window ending yesterday, instead of --from/--to.",
-    ),
-    ads_days_back: int = typer.Option(
-        30, "--ads-days-back", help="Ads: how many trailing days of the daily series to (re)fetch.",
-    ),
-    load: bool = typer.Option(
-        True, "--load/--no-load", help="Sales: write to Postgres.",
-    ),
-    keep_file: bool = typer.Option(
-        False, "--keep-file/--no-keep-file", help="Sales: keep the downloaded xlsx.",
-    ),
-    force_token: bool = typer.Option(
-        False, "--force-token", help="PO: ignore the cached abacus-token and log in fresh.",
-    ),
-    headed: bool = typer.Option(
-        False, "--headed", help="Show the browser (debugging the login form)."
-    ),
-):
-    """Scrape ALL Instamart private data — sales, ads, POs. Pass --sales,
-    --ads, --po, or none for all three.
-
-    THE master Instamart command, mirroring `scrape zepto`: one command
-    instead of three, so a VM cron or a manual check doesn't have to
-    remember and chain `instamart-sales` / `instamart-ads` / `instamart-po`.
-
-    Unlike Zepto, this does NOT exist to avoid session eviction — Instamart's
-    Brand Portal session is a cached, refreshable 5-hour JWT (see
-    platform_auth/registry.py) and the Supply Portal's abacus-token is
-    independently cached too (supply/session.py), so running the three
-    sections separately never forces a fresh login or kicks anyone off the
-    portal the way Zepto's daily OTP does. Each section here still opens its
-    own session/token exactly as it would standalone — this command saves
-    typing, not browser launches.
-
-    A section that fails does not abort the others, same as `scrape zepto`.
-    The command exits non-zero if anything failed, so the job runner (once
-    Instamart is registered in jobs/types.py — it is not yet) would record a
-    failure rather than a silent gap.
-    """
-    asyncio.run(_scrape_instamart(
-        tenant_id, sales, ads, po, date_from, date_to, sales_days_back,
-        ads_days_back, load, keep_file, force_token, headed,
+    """Instamart purchase orders only — same as `scrape instamart --po`."""
+    _instamart_exit(instamart_run.run(
+        tenant_id, sales=False, ads=False, po=True, force_token=force_token,
+        po_all_lines=po_all_lines, headed=headed,
     ))
 
 
-async def _scrape_instamart(
-    tenant_id: str,
-    sales_flag: bool,
-    ads_flag: bool,
-    po_flag: bool,
-    date_from: str | None,
-    date_to: str | None,
-    sales_days_back: int | None,
-    ads_days_back: int,
-    load: bool,
-    keep_file: bool,
-    force_token: bool,
-    headed: bool,
-) -> None:
-    # ⚠️ ONE asyncio.run() for all three sections, not one each — see the
-    # caller. Each of AsyncSessionLocal's pooled asyncpg connections is bound
-    # to the event loop that created it; a section run under its OWN
-    # asyncio.run() call leaves connections behind in a now-closed loop, and
-    # the NEXT section's asyncio.run() (a different loop) then blows up
-    # tearing one down: "RuntimeError: Event loop is closed". Verified live
-    # 2026-09-28 — the ads section failed with exactly this the first time
-    # sales, ads and po each got their own asyncio.run(). Awaiting all three
-    # directly inside one outer asyncio.run(), exactly like _scrape_zepto
-    # does, keeps every connection in the same loop for the run's lifetime.
-    run_all = not sales_flag and not ads_flag and not po_flag
-    run_sales = sales_flag or run_all
-    run_ads = ads_flag or run_all
-    run_po = po_flag or run_all
+@app.command("instamart-backfill")
+def scrape_instamart_backfill(
+    tenant_id: str = typer.Option(..., "--tenant", "-t", help="Tenant ID"),
+    date_from: str = typer.Option(..., "--from", help="Start date YYYY-MM-DD"),
+    date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: yesterday)"),
+    sales: bool = typer.Option(False, "--sales", help="Backfill sales"),
+    ads: bool = typer.Option(False, "--ads", help="Backfill ads"),
+    po: bool = typer.Option(False, "--po", help="Backfill purchase orders (every PO, every line item)"),
+    load: bool = typer.Option(True, "--load/--no-load", help="Sales: --no-load only downloads and counts."),
+    keep_file: bool = typer.Option(False, "--keep-file/--no-keep-file", help="Sales: keep the xlsx files."),
+    headed: bool = typer.Option(False, "--headed", help="Show the browser (debugging the login)."),
+):
+    """Re-fetch Instamart data for a past date range. Pass --sales, --ads,
+    --po, or none for all three.
 
-    failed: list[str] = []
-    ran: list[str] = []
+    Sales is split into reports of at most 31 days, each saved as its own job,
+    so any range works. Ads fetches the daily series over the range. PO has no
+    date filter: it re-fetches every PO with every line item. Re-loading a date
+    is harmless — rows are overwritten, never duplicated. Exit codes as
+    `scrape instamart`.
+    """
+    try:
+        start = _date.fromisoformat(date_from)
+        end = _date.fromisoformat(date_to) if date_to else _date.today() - timedelta(days=1)
+    except ValueError as e:
+        raise typer.BadParameter(f"dates must be YYYY-MM-DD ({e})")
+    if start > end:
+        raise typer.BadParameter("--from is after --to")
+    run_all = not (sales or ads or po)
+    _instamart_exit(instamart_run.backfill(
+        tenant_id, start, end, sales=sales or run_all, ads=ads or run_all, po=po or run_all,
+        load=load, keep_file=keep_file, headed=headed,
+    ))
 
-    if run_sales:
-        console.rule("[bold]Sales")
-        logger.info("Instamart: sales section starting")
-        try:
-            await _scrape_instamart_sales(
-                tenant_id, date_from, date_to, sales_days_back, load, headed, keep_file
-            )
-            ran.append("sales")
-        except Exception as e:
-            failed.append("sales")
-            logger.error(f"Instamart sales section FAILED: {_why(e)}")
-            console.print(f"[yellow]Sales failed — continuing: {_why(e)}[/yellow]")
 
-    if run_ads:
-        console.rule("[bold]Ads")
-        logger.info("Instamart: ads section starting")
-        try:
-            await _scrape_instamart_ads(tenant_id, ads_days_back, headed)
-            ran.append("ads")
-        except Exception as e:
-            failed.append("ads")
-            logger.error(f"Instamart ads section FAILED: {_why(e)}")
-            console.print(f"[yellow]Ads failed — continuing: {_why(e)}[/yellow]")
-
-    if run_po:
-        console.rule("[bold]PO")
-        logger.info("Instamart: PO section starting")
-        try:
-            await _scrape_instamart_po(tenant_id, headed, force_token)
-            ran.append("po")
-        except Exception as e:
-            failed.append("po")
-            logger.error(f"Instamart PO section FAILED: {_why(e)}")
-            console.print(f"[yellow]PO failed: {_why(e)}[/yellow]")
-
-    if failed:
+def _instamart_exit(coro) -> None:
+    """Run an Instamart coroutine in ONE asyncio.run (see instamart_run._run_steps)
+    and turn its results into the exit code: 0 ok, 1 a section failed, 3 login gone."""
+    try:
+        results = asyncio.run(coro)
+    except AuthError as e:
+        # cli/main.py's global AuthError handler never runs (see scrape_zepto).
         logger.error(
-            f"Instamart scrape finished with failures — ok: {', '.join(ran) or 'none'} "
-            f"· failed: {', '.join(failed)}"
+            f"AUTH FAILURE — the Instamart scrape could not authenticate ({type(e).__name__}: {e}). "
+            "Check: cli auth status -t <tenant> · Fix: cli auth login instamart -t <tenant>"
         )
-        console.print(f"[red]Sections failed: {', '.join(failed)}[/red]")
+        raise typer.Exit(AUTH_EXPIRED_EXIT_CODE)
+    if any(not r.ok for r in results):
         raise typer.Exit(1)
-    logger.info(f"Instamart scrape complete — sections: {', '.join(ran)}")
-    console.print("[green]Instamart scrape complete.[/green]")

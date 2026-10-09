@@ -280,11 +280,18 @@ async def probe(session: AuthSession) -> bool:
                 await page.goto(
                     f"{ep.SELLER_BASE_NEW}/dashboard", wait_until="networkidle", timeout=_NAV_TIMEOUT_MS
                 )
-                alive = "/dashboard" in page.url
+                # The URL alone is not enough: on 2026-10-06 a dying session
+                # (Sereko) passed on "/dashboard" and the scrape was logged out
+                # 8 s later. The scrape cannot work without these two cookies,
+                # so a session missing either is dead too.
+                cookies = {c["name"]: c["value"] for c in await context.cookies()}
+                alive = ("/dashboard" in page.url
+                         and bool(cookies.get("access_token"))
+                         and bool(cookies.get("seller_id")))
                 if not alive:
                     logger.info(
                         f"Seller (seller.blinkit.com) probe for {session.email}: "
-                        "stored session is dead."
+                        f"stored session is dead (landed on {page.url})."
                     )
                 return alive
             finally:

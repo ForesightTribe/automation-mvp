@@ -9,6 +9,7 @@ import {
 	ClipboardList,
 	FileText,
 	Settings,
+	// Store, — Market View's icon, while that page is hidden
 } from "lucide-react";
 
 /**
@@ -42,11 +43,14 @@ export const NAV_ITEMS = [
 		],
 	},
 	{ label: "Competition", path: "/competition", icon: Gauge },
+	// Store-grain companion to Competition: the same public scrape, read as
+	// "which shops and which search terms" rather than as national roll-ups.
+	// Experimental — hidden for now (route commented out in app/router.jsx too).
+	// { label: "Market View", path: "/market-view", icon: Store },
 	// A clipboard, not a document: Scorecard rates performance while Reports produces
 	// files, and both wearing FileText made two different destinations look like one.
 	{ label: "Scorecard", path: "/scorecard", icon: ClipboardCheck },
 	{ label: "Reports", path: "/reports", icon: FileText },
-	// adminOnly: hidden from members in the Sidebar; the /settings route is also
-	// guarded by RequireAdmin and the backend's require_admin dependency.
-	{ label: "Settings", path: "/settings", icon: Settings, adminOnly: true },
+	// Open to everyone — the account block lives here; admin cards gate inside.
+	{ label: "Settings", path: "/settings", icon: Settings },
 ];

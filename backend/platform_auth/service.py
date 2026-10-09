@@ -334,7 +334,8 @@ async def refresh_if_possible(
     refreshed.email = refreshed.email or session.email or (
         await store.login_email(db, tenant_id, platform) or ""
     )
-    await store.save(db, tenant_id, refreshed)
+    # A renewal, not a login: keeps the login history honest (IM-03).
+    await store.update(db, tenant_id, refreshed)
     logger.info(f"{auth.name}: session refreshed (no login needed)")
     return refreshed
 

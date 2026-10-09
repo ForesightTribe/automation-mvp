@@ -1,7 +1,7 @@
 import uuid
 from datetime import date as date_cls, datetime as datetime_cls
 
-from sqlalchemy import Date, DateTime, Float, Integer, String, Uuid
+from sqlalchemy import Date, DateTime, Float, Integer, String, Uuid, func
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlmodel.sql.sqltypes import AutoString
@@ -10,6 +10,7 @@ from app.models.blinkit_marketing import (
     BlinkitAdCampaign,
     BlinkitAdCampaignDaily,
     BlinkitAdCampaignDetail,
+    BlinkitAdCampaignDetailDaily,
     BlinkitAdCampaignKeyword,
     BlinkitBrandCollection,
     BlinkitSponsoredSOV,
@@ -27,10 +28,13 @@ async def save_scrape_results(
     collections: list[dict],
     plans: list[dict],
     keywords: list[dict] | None = None,
+    detail_days: list[dict] | None = None,
 ) -> int:
     await _upsert(session, BlinkitAdCampaign, campaigns)
     await _upsert(session, BlinkitAdCampaignDaily, daily)
     await _upsert(session, BlinkitAdCampaignDetail, detail)
+    # Keyword performance per day (B6). Same transaction: a run saves all of its days or none.
+    await _upsert(session, BlinkitAdCampaignDetailDaily, detail_days or [])
     await _upsert(session, BlinkitAdCampaignKeyword, keywords or [])
     await _upsert(session, BlinkitSponsoredSOV, sov)
     await _upsert(session, BlinkitBrandCollection, collections)
@@ -39,14 +43,25 @@ async def save_scrape_results(
 
     total = (
         len(campaigns) + len(daily) + len(detail) + len(keywords or [])
+        + len(detail_days or [])
         + len(sov) + len(collections) + len(plans)
     )
     logger.info(
         f"Blinkit marketing saved — campaigns:{len(campaigns)} daily:{len(daily)} "
-        f"detail:{len(detail)} keyword_bids:{len(keywords or [])} sov:{len(sov)} "
+        f"detail:{len(detail)} keyword_days:{len(detail_days or [])} "
+        f"keyword_bids:{len(keywords or [])} sov:{len(sov)} "
         f"collections:{len(collections)} plans:{len(plans)}"
     )
     return total
+
+
+# Columns whose FIRST value is kept: a re-scrape fills them when empty but never replaces them
+# (COALESCE(existing, incoming)). A daily row's budget is written once, the morning after the
+# day, from the budget read then (B8); the re-scrapes of later mornings carry no budget for it
+# (NULL) or a later one, and must not overwrite the day's own. Zepto's storage has the same rule.
+_KEEP_FIRST: dict[str, tuple[str, ...]] = {
+    "blinkit_ad_campaign_daily": ("daily_budget",),
+}
 
 
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
@@ -63,13 +78,18 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
     cols = max(1, len(model.__table__.columns))
     chunk = max(1, 32000 // cols)
     update_cols = _update_cols(model)
+    keep_first = _KEEP_FIRST.get(model.__tablename__, ())
     for i in range(0, len(prepared), chunk):
         stmt = (
             insert(model)
             .values(prepared[i:i + chunk])
             .on_conflict_do_update(
                 index_elements=["upsert_key"],
-                set_={c: insert(model).excluded[c] for c in update_cols},
+                set_={
+                    c: (func.coalesce(getattr(model, c), insert(model).excluded[c])
+                        if c in keep_first else insert(model).excluded[c])
+                    for c in update_cols
+                },
             )
         )
         await session.execute(stmt)

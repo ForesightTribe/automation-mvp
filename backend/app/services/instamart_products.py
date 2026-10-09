@@ -39,11 +39,12 @@ sales window. Scoping it to the window instead would report 0 — and therefore
 scrape, which is a reporting artefact, not a fact about the shelf.
 """
 import uuid
-from datetime import date
+from datetime import date, datetime, time
 
 from sqlalchemy import func, or_ as sa_or, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.models.instamart_po import InstamartPO, InstamartPOItem
 from app.models.instamart_seller import InstamartSellerStoreDaily as Store
 from app.models.search import SkuSnapshot
 from app.utils.logger import logger
@@ -411,3 +412,82 @@ async def stores(
         }
         for mid, city, qty in rows
     ]
+
+
+async def po_lines(
+    session: AsyncSession, *, tenant_id: uuid.UUID, item_id: str,
+    offset: int = 0, limit: int = 10,
+) -> tuple[list[dict], int]:
+    """(rows, total) of PO lines for one SKU, newest order first — the
+    Instamart side of the product page's PO history, same shape as
+    `zepto_products.po_lines`.
+
+    Matched on `external_item_code`, which is the same ITEM_CODE the sales
+    table keys on (verified 2026-10-09: 42609 in both), so no name matching.
+    Joined to `instamart_po` for the date, status and facility.
+
+    Received is the bulk-CSV `received_qty` only — never `qty - pending_qty`:
+    `pending_qty` resets to 0 once a PO closes (see `InstamartPOItem`), which
+    would show every closed PO as fully received. Unsynced lines read "—".
+    """
+    conds = [
+        InstamartPOItem.tenant_id == tenant_id,
+        InstamartPOItem.external_item_code == item_id,
+    ]
+    total = (
+        await session.execute(
+            select(func.count()).select_from(InstamartPOItem).where(*conds)
+        )
+    ).scalar_one()
+
+    rows = (
+        await session.execute(
+            select(
+                InstamartPOItem.purchase_order_id,
+                InstamartPO.status,
+                InstamartPO.po_date,
+                InstamartPO.facility_name,
+                InstamartPOItem.qty,
+                InstamartPOItem.received_qty,
+                InstamartPOItem.balanced_qty,
+                InstamartPOItem.line_cost_excluding_tax,
+            )
+            .join(
+                InstamartPO,
+                (InstamartPO.tenant_id == InstamartPOItem.tenant_id)
+                & (InstamartPO.purchase_order_id == InstamartPOItem.purchase_order_id),
+                isouter=True,
+            )
+            .where(*conds)
+            .order_by(InstamartPO.po_date.desc().nullslast(),
+                      InstamartPOItem.purchase_order_id)
+            .offset(offset)
+            .limit(limit)
+        )
+    ).all()
+
+    return (
+        [
+            {
+                "po_number": po_id,
+                # "STATUS_CONFIRMED" -> "CONFIRMED"
+                "po_state": status.removeprefix("STATUS_") if status else None,
+                # The schema wants a datetime; the PO carries a calendar day.
+                "issue_date": (
+                    datetime.combine(po_date, time.min) if po_date else None
+                ),
+                "facility_name": facility,
+                "units_ordered": qty,
+                "received_qty": received,
+                "remaining_quantity": balanced,
+                # The stored cost is a LINE total (see InstamartPOItem).
+                "cost_price": (
+                    round(line_cost / qty, 2) if line_cost is not None and qty else None
+                ),
+                "total_amount": line_cost,
+            }
+            for (po_id, status, po_date, facility, qty, received,
+                 balanced, line_cost) in rows
+        ],
+        int(total),
+    )

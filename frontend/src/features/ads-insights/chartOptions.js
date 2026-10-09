@@ -332,7 +332,16 @@ export const buCompareOption = (days) => ({
  */
 export const insightsDonutOption = (
 	items,
-	{ total, centerLabel = "Total spend" } = {},
+	{
+		total,
+		centerLabel = "Total spend",
+		radius = ["58%", "80%"],
+		// Labels anchored to the chart's left and right edges, so a narrow box gives each label
+		// the whole gap beside the ring instead of truncating it ("In…" for Instamart).
+		labelsToEdge = false,
+		// Only worth it with a handful of slices; past that they collide.
+		showLabels = false,
+	} = {},
 ) => ({
 	...ANIMATE,
 	// The donut grows from the centre and sweeps round, which reads as a whole being divided.
@@ -349,7 +358,7 @@ export const insightsDonutOption = (
 	series: [
 		{
 			type: "pie",
-			radius: ["58%", "80%"],
+			radius,
 			center: ["50%", "50%"],
 			avoidLabelOverlap: true,
 			// A 2px ring of the surface between slices, so adjacent fills never touch.
@@ -359,13 +368,21 @@ export const insightsDonutOption = (
 				borderRadius: 4,
 			},
 			label: {
-				show: true,
-				formatter: "{b}\n{d}%",
+				show: showLabels,
+				formatter: labelsToEdge
+					? (p) =>
+							`${p.name}\n${p.percent < 10 ? p.percent.toFixed(1) : Math.round(p.percent)}%`
+					: "{b}\n{d}%",
 				color: INK_MUTED,
 				fontSize: 11,
 				lineHeight: 15,
+				...(labelsToEdge
+					? { alignTo: "edge", edgeDistance: 2, minMargin: 6, overflow: "none" }
+					: {}),
 			},
-			labelLine: { length: 8, length2: 8, lineStyle: { color: GRID } },
+			labelLine: labelsToEdge
+				? { length: 8, length2: 0, maxSurfaceAngle: 80, lineStyle: { color: GRID } }
+				: { length: 8, length2: 8, lineStyle: { color: GRID } },
 			emphasis: {
 				scale: true,
 				scaleSize: 6,
@@ -402,6 +419,50 @@ export const insightsDonutOption = (
 						},
 					},
 				],
+});
+
+/**
+ * A tile's split by marketplace, as the top half of a donut. No labels and no centre
+ * total — the tile's headline is the total and the row under the arc names each
+ * marketplace with its figure.
+ * Radii are pixels rather than percentages, which would be taken from the shorter side (the
+ * height) and leave the arc a sliver in a wide tile.
+ */
+export const halfDonutOption = (
+	items,
+	{ format = formatNumber, height = 56 } = {},
+) => ({
+	...ANIMATE,
+	animationDuration: 750,
+	tooltip: {
+		...TOOLTIP,
+		trigger: "item",
+		axisPointer: undefined,
+		// The tile clips its canvas, and a tooltip kept inside 56px covers the arc it describes.
+		appendToBody: true,
+		formatter: (p) => `${p.name}<br/>${format(p.value)} · ${p.percent}%`,
+	},
+	legend: { show: false },
+	series: [
+		{
+			type: "pie",
+			startAngle: 180,
+			endAngle: 360,
+			center: ["50%", height - 2],
+			// Thickness scales with the band too: a 16px arc inside a tall band
+			// reads as a line bent round a corner rather than a donut.
+			radius: [height - 38, height - 18],
+			itemStyle: {
+				borderColor: SURFACE,
+				borderWidth: 2,
+				borderRadius: 3,
+			},
+			label: { show: false },
+			labelLine: { show: false },
+			emphasis: { scale: true, scaleSize: 3 },
+			data: items,
+		},
+	],
 });
 
 const MINI_GRID = { left: 4, right: 4, top: 16, bottom: 4, containLabel: true };
@@ -520,3 +581,4 @@ export const twoBarOption = (
 		},
 	],
 });
+

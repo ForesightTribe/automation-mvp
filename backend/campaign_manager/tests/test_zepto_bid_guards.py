@@ -7,7 +7,7 @@ import asyncio
 from campaign_manager import writes
 from campaign_manager.marketplaces import get_adapter
 from campaign_manager.marketplaces.zepto import adapter as zad
-from campaign_manager.marketplaces.zepto import transport as ztr
+from scraper.platforms.zepto.dashboard_data.seller import client as ztr
 
 
 # ── platform bid bounds (Q1) ────────────────────────────────────────────────

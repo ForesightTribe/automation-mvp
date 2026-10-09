@@ -39,6 +39,8 @@ scraper/platforms/instamart/dashboard_data/seller/_signer_cache/
 # Blinkit seller (seller.blinkit.com): the persistent Chromium profile that
 # IS the login credential for this domain — see seller_new.py's docstring.
 platform_auth/marketplaces/blinkit/_seller_new_profiles/
-# Supply Portal: the cached abacus-token is a live bearer credential.
+# Supply Portal: the abacus-token used to be cached here; since 2026-10-06 it
+# lives in platform_sessions. Still ignored so a leftover file (a live bearer
+# credential) can never be committed.
 scraper/platforms/instamart/dashboard_data/supply/_token_cache/
 staging/instamart_reports/

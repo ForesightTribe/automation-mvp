@@ -1,20 +1,21 @@
-"""Zepto seller dashboard (brands.zepto.co.in) tables.
+"""Zepto seller dashboard (brands.zepto.co.in) tables — all fifteen.
 
-Shaped by what Zepto's Sales Analytics API actually returns, which is NOT the
-same grain as Blinkit's seller data:
+Shaped by what Zepto's APIs actually return, which is NOT the same grain as Blinkit's
+seller data:
 
-* Blinkit gives one row per item × city × day. Zepto gives a **daily total**
-  (GMV/units for the whole brand, no item or city split) plus a **separate
-  product breakdown aggregated over the requested window**. There is no
-  per-city dimension anywhere in the responses we get, so nothing here has a
-  city column — a Sales-by-City chart cannot be built from this source.
-* The product endpoint returns one aggregate per SKU for the whole
-  start→end window, not per day. `period_start`/`period_end` are therefore part
-  of that table's grain (and its upsert key): scraping a one-day window gives
-  daily rows, a 30-day window gives one 30-day snapshot.
+* Blinkit gives one row per item × city × day. Zepto gives a **daily total** for the
+  brand (`ZeptoSellerSalesSummary`) and a **product breakdown for whatever window is
+  asked** (`ZeptoSellerSales`; the scrape asks one day per call). No response carries a
+  city — the per-city split (`ZeptoSellerProductCityDaily`) costs one call per city.
+* Stock and growth are readings of the moment of the call, not of a sales day; they
+  belong in `ZeptoSOH` (keyed on the scrape day) and are mid-move there (P41).
+* Ads: four daily tables at different resolutions, per-campaign keyword detail, and the
+  campaign CATALOGUE (`ZeptoAdCampaign` / `ZeptoAdCampaignKeyword`, current state).
+* Supply: PO, ASN, GRN and PO lines.
 
-Bookkeeping columns (tenant_id, platform, upsert_key, scrape_job_id,
-scraped_at) match the Blinkit tables so both behave the same for re-runs.
+Full reference: backend/docs/zepto/database.md. Bookkeeping columns (tenant_id,
+platform, upsert_key, scrape_job_id, scraped_at) match the Blinkit tables so both behave
+the same for re-runs.
 """
 import uuid
 from datetime import date, datetime
@@ -323,8 +324,75 @@ class ZeptoAdKeywordDaily(SQLModel, table=True):
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
+class ZeptoAdCampaignDetail(SQLModel, table=True):
+    """One row per campaign × keyword × match type × DAY — keyword performance PER
+    CAMPAIGN (P38, 2026-10-06). Named after Blinkit's `blinkit_ad_campaign_detail`, which
+    holds the same thing — but Blinkit's rows are one total for the scraped window, while
+    these are per day.
+
+    From the campaign detail page's own report: `POST .../brands/campaigns/analytics/
+    metrics/tabular` with `campaign_id` + `view=keyword_table`, one call per campaign per
+    day (a multi-day window comes back as ONE total, and a per-day breakdown is refused —
+    probed 2026-10-06 on campaign 2443333). Rows carry no date and no campaign id; both come
+    from the request. Only keywords with activity that day come back, so a missing row means
+    "no activity", never "not scraped".
+
+    Verified additive: a campaign-day's rows sum to its `zepto_ad_campaign_daily` row on
+    spend, impressions, clicks, revenue and orders (10-05: ₹354 / 317 / 20 / ₹1,440 / 8).
+
+    `same_skus` + `other_skus` = `orders`: they are ORDER COUNTS — direct (the advertised
+    product) and halo (another product of the brand) — not sales. Revenue has no such split.
+    `ctr`/`cpc`/`cpm`/`roas` are rebuilt from the row's own figures and `robas` spend-weighted
+    (`parser._keyword_groups`, shared with `zepto_ad_keyword_daily`) — equal to Zepto's values
+    up to its rounding, since one campaign-day reports each keyword × match type once.
+
+    `zepto_ad_keyword_daily` holds the same metrics at BRAND grain (no campaign id) and is
+    kept until this table is shown to cover every ad type (P38).
+    """
+
+    __tablename__ = "zepto_ad_campaign_detail"
+
+    __table_args__ = (
+        # "zacdet", not "zacd": index names are database-wide in Postgres, and
+        # `idx_zacd_tenant_date` already belongs to zepto_ad_campaign_daily.
+        Index("idx_zacdet_tenant_date", "tenant_id", "date"),
+        Index("idx_zacdet_tenant_campaign_date", "tenant_id", "campaign_id", "date"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date
+    brand_id: str
+    campaign_id: int
+    campaign_category: str
+
+    keyword: str
+    match_type: str | None = None      # BROAD | PHRASE | EXACT
+
+    spend: float = 0.0
+    revenue: float | None = None
+    impressions: int = 0
+    clicks: int = 0
+    orders: int | None = None
+    atc: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    cpm: float | None = None
+    roas: float | None = None
+    robas: float | None = None
+    same_skus: int | None = None       # direct orders
+    other_skus: int | None = None      # halo orders
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
 class ZeptoSellerSales(SQLModel, table=True):
-    """One row per tenant per SKU per scraped window.
+    """One row per tenant per SKU per scraped window — a day, in practice: the
+    scrape asks one day per call.
 
     ⚠️ THREE columns here are NOT facts about `period_start`/`period_end` —
     `stock_on_hand`, `week_on_week_growth`, `month_on_month_growth`. They carry
@@ -341,11 +409,10 @@ class ZeptoSellerSales(SQLModel, table=True):
     job (18/34 SKU-jobs), exactly like `gmv`. An earlier version of this note
     listed them as snapshots; that was wrong. See docs/zepto.md.
 
-    The three snapshot columns will eventually move to a table keyed on the
-    scrape JOB rather than the sales date. Not built yet: whether the two growth
-    columns are scrape-time readings or window-level aggregates is unproven, and
-    stored data cannot settle it (the upsert overwrites in place, so no SKU-day
-    has ever had two rows to compare).
+    The three snapshot columns are moving to `zepto_soh`, keyed on the day the
+    scrape asked (P41; P8 settled 2026-10-07 that the growth columns are readings
+    of the moment too). Until every reader and every running copy of the scrape
+    has moved, they are still written here — then dropped.
     """
 
     __tablename__ = "zepto_seller_sales"
@@ -379,6 +446,46 @@ class ZeptoSellerSales(SQLModel, table=True):
     week_on_week_growth: float | None = None
     month_on_month_growth: float | None = None
     stock_on_hand: int | None = None
+
+    scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class ZeptoSOH(SQLModel, table=True):
+    """Stock and growth per product, AS OF THE SCRAPE — one row per product per scrape
+    day (P41, 2026-10-07). Named after Blinkit's `blinkit_soh`, which holds the same
+    idea at facility grain; Zepto reports one figure per product, no facilities.
+
+    `date` is the IST day the scrape ASKED, not a sales day. Zepto's product report
+    returns the same stock and growth for every day a run asks about, and the values
+    move from one run to the next (P8: Brik Oven Sour Cream, sales days 09-29..10-06 all
+    held stock 102 / WoW -53.16 from the 10-07 run). So they describe "now", and live
+    here, keyed on when we asked. Stored on `zepto_seller_sales` too until every reader
+    has moved here (step 2), then dropped there (step 3).
+
+    A product appears only when it sold on some day of the run's window — Zepto's
+    product report omits SKUs with no sales — so a product absent here has no reading,
+    not zero stock. A second run on the same day overwrites that day's row.
+    """
+
+    __tablename__ = "zepto_soh"
+
+    # `idx_zsoh_*`: index names are database-wide; checked free 2026-10-07.
+    __table_args__ = (Index("idx_zsoh_tenant_date", "tenant_id", "date"),)
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "zepto"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+
+    date: date                                  # the scrape's IST day
+    product_variant_id: str
+    sku_name: str | None = None
+
+    stock_on_hand: int | None = None
+    # Percentages, as returned (e.g. -53.16 means -53.16%).
+    week_on_week_growth: float | None = None
+    month_on_month_growth: float | None = None
 
     scraped_at: datetime = Field(default_factory=now_ist)
 
@@ -515,8 +622,8 @@ class ZeptoSellerProductCityDaily(SQLModel, table=True):
     Zepto exposes no city dimension inside a single product-performance
     response, but `cityIds` does filter it (verified 2026-08-26: Bengaluru
     returned 9 SKUs / Rs 52,215 for 25-Aug while three other cities returned
-    nothing). So a city split means one call per city, the same shape as
-    `fetch_sales_by_city`.
+    nothing). So a city split means one call per city — see
+    seller/run.py::_city_split for which cities each run asks.
 
     This is what the Analytics "Revenue by category & city" heatmap needs: it
     requires city and category on one row, which no other Zepto table has.

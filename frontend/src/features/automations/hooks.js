@@ -225,14 +225,24 @@ export const useAllKeywordMetrics = ({ enabled = true } = {}) => {
 /**
  * Every keyword the marketplace's campaign CATALOGUE holds, reshaped into the picker's row
  * shape (`campaign_id`, `target`, `match_type`, …) so the picker renders it with the same
- * code as Blinkit's performance rows. It carries the live `bid` and the floor `min_bid`
- * instead of spend and ROAS — Zepto has no per-campaign keyword metrics to show.
+ * code as Blinkit's performance rows. It carries the live `bid` and the floor `min_bid`,
+ * and on Zepto the keyword's performance over the navbar's dates (`budget_consumed`,
+ * `total_sales`, `orders`, …, P43).
  */
 export const useCatalogKeywords = ({ enabled = true } = {}) => {
 	const { activeClientId, mp, ready } = useScope();
+	// The navbar's window: on Zepto the rows carry keyword performance for these dates.
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: [CAMPAIGNS, activeClientId, mp, "catalog-keywords"],
-		queryFn: () => getCatalogKeywords(activeClientId, mp),
+		queryKey: [
+			CAMPAIGNS,
+			activeClientId,
+			mp,
+			"catalog-keywords",
+			range.from,
+			range.to,
+		],
+		queryFn: () => getCatalogKeywords(activeClientId, mp, range),
 		enabled: ready && enabled,
 		staleTime: 5 * 60 * 1000,
 		select: (rows) =>

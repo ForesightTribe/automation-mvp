@@ -454,8 +454,8 @@ async def _ads(
                 "campaigns are excluded: Blinkit attributes no sales to them, so "
                 "a return cannot be measured."
             ),
-            "href": "/ads?max_roas=1",
-            "cta": "Open Ads",
+            "href": "/ads/insights?sort=roas&order=asc",
+            "cta": "Open Ads Insights",
             "as_of": f"{start} to {end}",
         }
     ]
@@ -542,8 +542,8 @@ async def _underspend(
                 "Blinkit provides no campaign start or end date, so this is "
                 "under-use of a standing budget, not pace against a flight."
             ),
-            "href": "/ads",
-            "cta": "Open Ads",
+            "href": "/ads/insights?sort=bu&order=asc",
+            "cta": "Open Ads Insights",
             "as_of": f"{start} to {end}",
         }
     ]
@@ -633,8 +633,8 @@ async def _capped(
                 f"Spend at or above {CAPPED_RATIO * 100:.0f}% of the daily budget "
                 "across the selected window."
             ),
-            "href": "/ads",
-            "cta": "Open Ads",
+            "href": "/ads/insights?sort=bu&order=desc",
+            "cta": "Open Ads Insights",
             "as_of": f"{start} to {end}",
         }
     ]
@@ -726,8 +726,8 @@ async def _not_running(
                 "targeting, an out-of-stock product and a marketplace-side block "
                 "all look the same from here."
             ),
-            "href": "/ads",
-            "cta": "Open Ads",
+            "href": "/ads/insights?status=running&sort=spend&order=asc",
+            "cta": "Open Ads Insights",
             "as_of": f"{start} to {end}",
         }
     ]

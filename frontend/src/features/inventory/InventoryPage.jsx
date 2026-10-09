@@ -8,8 +8,10 @@ import { ProductDrawer } from "./components/ProductDrawer";
 import { CityDrawer } from "./components/CityDrawer";
 import { AvailabilityHistoryCard } from "./components/AvailabilityHistoryCard";
 import { PricingCard } from "./components/PricingCard";
+import { AvailabilityExport } from "./components/AvailabilityExport";
 import { FreshnessBadge } from "../../components/ui/FreshnessBadge";
 import { ViewToggle } from "../../components/ui/ViewToggle";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 const KIND_OPTIONS = [
 	{ value: "main", label: "Main SKUs" },
@@ -40,19 +42,25 @@ export const InventoryPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div className="flex flex-wrap items-start justify-between gap-3">
-				<div>
-					<h1 className="font-display text-xl font-bold text-content">
-						Availability
-					</h1>
-					<p className="text-sm text-content-muted">
-						Which stores carry your products, and which have run out.
-					</p>
-				</div>
-				<div className="flex items-center gap-3">
-					<ViewToggle options={KIND_OPTIONS} value={kind} onChange={setKind} />
-					<FreshnessBadge at={stores?.as_of} />
-				</div>
+			<PageHeader
+				title="Availability"
+				subtitle="Which stores carry your products, and which have run out."
+				actions={
+					<div className="flex items-center gap-3">
+						<ViewToggle
+							options={KIND_OPTIONS}
+							value={kind}
+							onChange={setKind}
+						/>
+						<FreshnessBadge at={stores?.as_of} />
+					</div>
+				}
+			/>
+
+			{/* Export sits on its own row under the filters: it exports the whole page,
+			    not the filter row it would otherwise read as part of. */}
+			<div className="-mt-3 flex justify-end">
+				<AvailabilityExport kind={kind} />
 			</div>
 
 			<InvKpis kind={kind} />

@@ -99,7 +99,7 @@ export const ZeptoBreakdownCard = ({ dimension, title, label }) => {
 			refetch={refetch}
 			isEmpty={rows.length === 0}
 			emptyMessage={`No Zepto ${dimension} data in this window.`}
-			renderChart={() => <EChart option={option} height={300} />}
+			renderChart={() => <EChart option={option} height={320} />}
 			columns={columns}
 			rows={rows}
 			rowKey={(r) => r.name}
