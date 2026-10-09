@@ -206,9 +206,11 @@ def test_nothing_to_look_up_means_nothing_flagged():
 
 # ── E3: the keyword picker's list, from the catalogue ───────────────────────
 
-def _catalog_rows(rows, refused=None):
+def _catalog_rows(rows, refused=None, perf=None, window=(None, None)):
     """Run `list_catalog_keywords` over stubbed repo reads."""
-    orig = (repo.list_catalog_keywords, repo.automation_refusals)
+    orig = (repo.list_catalog_keywords, repo.automation_refusals,
+            repo.zepto_keyword_performance)
+    seen = {}
 
     async def _rows(tenant_id, platform, **_kw):
         return rows
@@ -216,11 +218,19 @@ def _catalog_rows(rows, refused=None):
     async def _refused(tenant_id, platform, ids, **_kw):
         return {c: why for c, why in (refused or {}).items() if c in set(ids)}
 
+    async def _perf(tenant_id, start, end, **_kw):
+        seen["window"] = (start, end)
+        return perf or {}
+
     repo.list_catalog_keywords, repo.automation_refusals = _rows, _refused
+    repo.zepto_keyword_performance = _perf
     try:
-        return asyncio.run(svc.list_catalog_keywords(TENANT, "zepto"))
+        out = asyncio.run(svc.list_catalog_keywords(TENANT, "zepto", *window))
+        out_seen = seen.get("window")
+        return (out, out_seen) if perf is not None else out
     finally:
-        repo.list_catalog_keywords, repo.automation_refusals = orig
+        (repo.list_catalog_keywords, repo.automation_refusals,
+         repo.zepto_keyword_performance) = orig
 
 
 def test_the_picker_gets_every_bid_keyword_with_bid_floor_and_cpc():
@@ -301,3 +311,42 @@ if __name__ == "__main__":
     for t in tests:
         t()
     print(f"{len(tests)}/{len(tests)} campaign-manager Zepto service tests passed.")
+
+
+# ── P43: the picker's numbers, over the navbar's window ─────────────────────
+
+def test_the_picker_rows_carry_performance_for_the_window():
+    from datetime import date
+    camp = SimpleNamespace(campaign_name="Sour Cream (TP)", status="ACTIVE")
+    a, b = _kw("cheesy dip", "BROAD", 18, 15), _kw("sourcream", "EXACT", 15, 15)
+    for k in (a, b):
+        k.campaign_id, k.scraped_at = 2443333, None
+    perf = {(2443333, "cheesy dip", "BROAD"): {
+        "spend": 558.0, "revenue": 2160.0, "impressions": 74, "clicks": 31, "orders": 12,
+        "direct_orders": 12, "indirect_orders": 0, "atc": 18}}
+    window = (date(2026, 10, 3), date(2026, 10, 5))
+    out, seen = _catalog_rows([(a, camp), (b, camp)], perf=perf, window=window)
+    assert seen == window                                   # the navbar's dates reach the query
+    assert (out[0].budget_consumed, out[0].total_sales, out[0].orders, out[0].clicks) == (
+        558.0, 2160.0, 12, 31)
+    # a keyword with no activity in the window reads as zeros, not as "no data"
+    assert (out[1].budget_consumed, out[1].impressions) == (0.0, 0)
+
+
+def test_the_join_ignores_keyword_case_and_spacing():
+    from datetime import date
+    k = _kw("Sour  Cream", "exact", 15, 15)
+    k.campaign_id, k.scraped_at = 2443333, None
+    perf = {(2443333, "sour cream", "EXACT"): {
+        "spend": 15.0, "revenue": 180.0, "impressions": 3, "clicks": 1, "orders": 1,
+        "direct_orders": 1, "indirect_orders": 0, "atc": 1}}
+    out, _ = _catalog_rows([(k, SimpleNamespace(campaign_name="X", status="ACTIVE"))],
+                           perf=perf, window=(date(2026, 10, 4), date(2026, 10, 4)))
+    assert (out[0].budget_consumed, out[0].orders) == (15.0, 1)
+
+
+def test_no_window_means_no_numbers():
+    k = _kw("bread", "EXACT", 8, 5)
+    k.campaign_id, k.scraped_at = 1, None
+    out = _catalog_rows([(k, SimpleNamespace(campaign_name="X", status="ACTIVE"))])
+    assert out[0].budget_consumed is None

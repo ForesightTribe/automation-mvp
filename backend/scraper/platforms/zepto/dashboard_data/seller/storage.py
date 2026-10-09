@@ -5,7 +5,10 @@ Mirrors blinkit/dashboard_data/seller/storage.py — same ON CONFLICT
 layer here, unlike Blinkit's: this parser emits real `date`/`uuid.UUID` objects
 rather than strings, so there is nothing to convert.
 """
-from sqlalchemy import delete, func
+import uuid
+from datetime import date
+
+from sqlalchemy import delete, func, select
 from sqlalchemy.dialects.postgresql import insert
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,6 +19,7 @@ from app.models.zepto_seller import (
     ZeptoPOItem,
     ZeptoAdCampaign,
     ZeptoAdCampaignDaily,
+    ZeptoAdCampaignDetail,
     ZeptoAdCampaignKeyword,
     ZeptoAdBreakdownDaily,
     ZeptoAdKeywordDaily,
@@ -23,6 +27,7 @@ from app.models.zepto_seller import (
     ZeptoSellerProductCityDaily,
     ZeptoSellerSales,
     ZeptoSellerSalesSummary,
+    ZeptoSOH,
 )
 from app.utils.logger import logger
 
@@ -32,20 +37,25 @@ async def save_sales_results(
     daily: list[dict],
     products: list[dict],
     product_cities: list[dict] | None = None,
+    soh: list[dict] | None = None,
 ) -> int:
     # SKU x city x day. A finer grain than `products` (SKU x day, all cities)
     # and deliberately its own table — see ZeptoSellerProductCityDaily. The two
     # hold the same money at different resolutions; never sum across them.
     product_cities = product_cities or []
+    # Stock + growth as of the scrape (P41) — one row per product per scrape day.
+    # Same transaction as the sales rows: both land or neither does.
+    soh = soh or []
     await _upsert(session, ZeptoSellerSalesSummary, daily)
     await _upsert(session, ZeptoSellerSales, products)
     await _upsert(session, ZeptoSellerProductCityDaily, product_cities)
+    await _upsert(session, ZeptoSOH, soh)
     await session.commit()
-    logger.info(
+    logger.debug(
         f"Zepto seller sales saved — days:{len(daily)} products:{len(products)} "
-        f"product-city-days:{len(product_cities)}"
+        f"product-city-days:{len(product_cities)} soh:{len(soh)}"
     )
-    return len(daily) + len(products) + len(product_cities)
+    return len(daily) + len(products) + len(product_cities) + len(soh)
 
 
 async def save_ad_results(
@@ -54,6 +64,7 @@ async def save_ad_results(
     keywords: list[dict] | None = None,
     products: list[dict] | None = None,
     breakdown: list[dict] | None = None,
+    detail: list[dict] | None = None,
 ) -> dict[str, int]:
     """Returns rows actually written per table — i.e. after duplicates are
     collapsed, not the length of the input. Reporting the input length made a
@@ -62,18 +73,21 @@ async def save_ad_results(
     keywords = keywords or []
     products = products or []
     breakdown = breakdown or []
+    detail = detail or []
     written = {
         "campaigns": len({r["upsert_key"] for r in campaigns}),
         "keywords": len({r["upsert_key"] for r in keywords}),
         "products": len({r["upsert_key"] for r in products}),
         "breakdown": len({r["upsert_key"] for r in breakdown}),
+        "keyword detail": len({r["upsert_key"] for r in detail}),
     }
     await _upsert(session, ZeptoAdCampaignDaily, campaigns)
     await _upsert(session, ZeptoAdKeywordDaily, keywords)
     await _upsert(session, ZeptoAdProductDaily, products)
     await _upsert(session, ZeptoAdBreakdownDaily, breakdown)
+    await _upsert(session, ZeptoAdCampaignDetail, detail)
     await session.commit()
-    logger.info(
+    logger.debug(
         "Zepto ads saved — " + " ".join(f"{k}:{v}" for k, v in written.items())
     )
     return written
@@ -111,12 +125,10 @@ async def save_ad_results(
 # COALESCE keeps what we already have when the incoming value is null. It does
 # NOT block a genuine update — a non-null reading still overwrites.
 #
-# Longer term these belong in a snapshot table keyed on the scrape JOB rather
-# than the sales date. Deliberately NOT built yet: whether the two growth
-# columns are scrape-time readings or window-level aggregates is still unproven.
-# Stored data cannot settle it — the upsert overwrites in place, so no SKU-day
-# has ever had two rows to compare. That needs a live experiment; see
-# docs/zepto.md. This guard is the containment until then.
+# They now also go to `zepto_soh`, keyed on the day the scrape asked (P41,
+# 2026-10-07; P8 settled that the growth columns are scrape-time readings too).
+# This guard — and the three columns — stay until every reader has moved to
+# `zepto_soh` and every running copy of the scrape writes it (step 3 drops them).
 _KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
     "zepto_seller_sales": (
         "stock_on_hand",
@@ -124,6 +136,54 @@ _KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
         "month_on_month_growth",
     ),
 }
+
+
+# Columns whose FIRST reading is kept: a re-scrape fills them when empty but never replaces
+# them (COALESCE(existing, incoming) — the reverse of _KEEP_IF_NULL).
+#
+# `daily_budget` on the ads daily rows is the budget as read when the scrape ran, stamped on
+# every day of the 3-day ads window. A day's first stamp comes the morning after it — the
+# budget it ended on; the re-scrapes of the next two mornings used to overwrite it with
+# LATER budgets (ZC-P24), so a budget changed on Tuesday rewrote Monday's. Budget
+# utilisation for a past day now divides by that day's own budget (2026-10-08; Blinkit's
+# `blinkit_ad_campaign_daily.daily_budget` follows the same rule, BLINKIT-NOTES B8).
+_KEEP_FIRST: dict[str, tuple[str, ...]] = {
+    "zepto_ad_campaign_daily": ("daily_budget",),
+}
+
+
+# ── reads the run needs ──────────────────────────────────────────────────────
+
+async def known_cities(session: AsyncSession, tenant_id: str) -> list[str]:
+    """City ids that have ever recorded sales for this tenant — the cities the
+    per-city split re-asks for the older days of its window (run._city_split)."""
+    rows = await session.execute(
+        select(ZeptoSellerProductCityDaily.city_id)
+        .where(ZeptoSellerProductCityDaily.tenant_id == uuid.UUID(str(tenant_id)))
+        .distinct()
+    )
+    return list(rows.scalars().all())
+
+
+async def stored_ad_spend(session: AsyncSession, tenant_id: str, day: str) -> float:
+    """Total ad spend already stored for this tenant and day (0 when none) — what
+    run.blank_ads_day needs to tell the blank-list glitch from a spend-less day."""
+    total = await session.execute(
+        select(func.coalesce(func.sum(ZeptoAdCampaignDaily.spend), 0))
+        .where(ZeptoAdCampaignDaily.tenant_id == uuid.UUID(str(tenant_id)),
+               ZeptoAdCampaignDaily.date == date.fromisoformat(day))
+    )
+    return float(total.scalar() or 0)
+
+
+def _on_conflict(model, c: str):
+    """What a re-scrape writes into column `c` of an existing row."""
+    incoming, existing = insert(model).excluded[c], getattr(model, c)
+    if c in _KEEP_IF_NULL.get(model.__tablename__, ()):
+        return func.coalesce(incoming, existing)
+    if c in _KEEP_FIRST.get(model.__tablename__, ()):
+        return func.coalesce(existing, incoming)
+    return incoming
 
 
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
@@ -140,7 +200,7 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
     if rows and "upsert_key" in rows[0]:
         deduped = {r["upsert_key"]: r for r in rows}
         if len(deduped) != len(rows):
-            logger.info(
+            logger.debug(
                 f"{model.__tablename__}: collapsed {len(rows) - len(deduped)} duplicate "
                 f"upsert_key row(s) before insert"
             )
@@ -176,16 +236,7 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
             .values(rows[i:i + chunk])
             .on_conflict_do_update(
                 index_elements=["upsert_key"],
-                set_={
-                    c: (
-                        func.coalesce(
-                            insert(model).excluded[c], getattr(model, c)
-                        )
-                        if c in _KEEP_IF_NULL.get(model.__tablename__, ())
-                        else insert(model).excluded[c]
-                    )
-                    for c in update_cols
-                },
+                set_={c: _on_conflict(model, c) for c in update_cols},
             )
         )
         await session.execute(stmt)
@@ -217,7 +268,7 @@ async def save_po_results(
     await session.commit()
     written = {"pos": len(pos), "grns": len(grns), "asns": len(asns),
                "po_items": len(po_items or [])}
-    logger.info(
+    logger.debug(
         f"Zepto PO saved — pos:{written['pos']} grns:{written['grns']} "
         f"asns:{written['asns']} items:{written['po_items']}"
     )
@@ -268,7 +319,7 @@ async def save_campaign_catalog(
     await session.commit()
     written = {"campaigns": len(full_rows) + len(list_only_rows),
                "campaigns_with_detail": len(full_rows), "keywords": kw_written}
-    logger.info("Zepto campaign catalogue saved — "
+    logger.debug("Zepto campaign catalogue saved — "
                 + " ".join(f"{k}:{v}" for k, v in written.items()))
     return written
 

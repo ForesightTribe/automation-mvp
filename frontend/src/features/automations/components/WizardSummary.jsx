@@ -6,6 +6,7 @@ import {
 	crossesMidnight,
 	fireDates,
 	nextOpening,
+	ordinalWord,
 	scheduleIssues,
 	WHEN,
 } from "../automation";
@@ -479,11 +480,14 @@ export const WizardSummary = ({
 						<b className="text-brand">
 							{clockText(timing.start_time) || "the first check"}
 						</b>
-						, it checks where “{keyword}” ranks in{" "}
+						, it checks where the ad for “{keyword}” sits in{" "}
 						{city || locationName || "the chosen city"} and moves
-						the bid to hold position{" "}
-						<b className="text-brand">#{targetPosition || "?"}</b>,
-						never below{" "}
+						the bid to hold{" "}
+						<b className="text-brand">
+							Ad #{targetPosition || "?"}
+						</b>{" "}
+						(the {ordinalWord(targetPosition)} sponsored listing on
+						the page, wherever it appears), never below{" "}
 						{minBid
 							? formatCurrency(Number(minBid))
 							: "the minimum you set"}

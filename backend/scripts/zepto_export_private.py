@@ -46,7 +46,9 @@ _SHEETS: list[tuple[str, str, str, str]] = [
     ("Sales per SKU",      "zepto_seller_sales",              "period_start", "period_start, product_variant_id"),
     ("Sales per SKU-City", "zepto_seller_product_city_daily", "date",         "date, city_id, product_variant_id"),
     ("Ads Campaigns",      "zepto_ad_campaign_daily",         "date",         "date, campaign_id"),
-    ("Ads Keywords",       "zepto_ad_keyword_daily",          "date",         "date, keyword"),
+    # Per campaign × keyword × day (P38). The brand-grain `zepto_ad_keyword_daily` is
+    # retiring (PLAN-private-scrape ledger #8): same totals, no campaign id.
+    ("Ads Keywords",       "zepto_ad_campaign_detail",        "date",         "date, campaign_id, keyword, match_type"),
     ("Ads Products",       "zepto_ad_product_daily",          "date",         "date, product_variant_id"),
     ("Ads Breakdown",      "zepto_ad_breakdown_daily",        "date",         "date, dimension, name"),
     ("POs",                "zepto_po",                        "po_date",      "po_date, po_id"),

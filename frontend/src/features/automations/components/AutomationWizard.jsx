@@ -9,7 +9,7 @@ import { ActionCards } from "./ActionCards";
 import { KeywordActionCard } from "./KeywordActionCard";
 import { DatePicker } from "../../../components/ui/DatePicker";
 import { Field, FIELD_INPUT } from "./Field";
-import { scheduleIssues } from "../automation";
+import { MAX_AD_SLOT, scheduleIssues, targetAdSlot } from "../automation";
 import { WizardContext } from "./WizardContext";
 import { WizardSummary } from "./WizardSummary";
 import { formatMeasuredAt } from "../../../lib/format";
@@ -232,7 +232,7 @@ export const AutomationWizard = ({
 			} else {
 				setKeyword(editRow.keyword ?? "");
 				setMatchType(editRow.match_type ?? "EXACT");
-				setTargetPosition(String(editRow.target_position ?? ""));
+				setTargetPosition(String(targetAdSlot(editRow) ?? ""));
 				setMinBid(String(editRow.min_bid ?? ""));
 				setMaxBid(
 					editRow.max_bid != null ? String(editRow.max_bid) : "",
@@ -424,6 +424,12 @@ export const AutomationWizard = ({
 	// automation only needs the campaign.
 	const targetChosen =
 		kind === "keyword" ? Boolean(campaign && keyword) : Boolean(campaign);
+	// The target is an AD SLOT, Ad #1 to #MAX_AD_SLOT — the API refuses anything else.
+	const slotNumber = Number(targetPosition);
+	const slotValid =
+		Number.isInteger(slotNumber) &&
+		slotNumber >= 1 &&
+		slotNumber <= MAX_AD_SLOT;
 	const campaignLabel =
 		campaign?.name ??
 		campaign?.campaign_name ??
@@ -479,7 +485,8 @@ export const AutomationWizard = ({
 						(a.budget != null && a.budget > 0),
 				) &&
 				blocking.length === 0
-			: Boolean(targetPosition && minBid) &&
+			: slotValid &&
+				Boolean(minBid) &&
 				(hasLocation || locationOptional) &&
 				!belowFloor;
 
@@ -512,7 +519,9 @@ export const AutomationWizard = ({
 			if (blocking.length) return blocking[0].text;
 			return "Give every budget action an amount to continue.";
 		}
-		if (!targetPosition) return "Set a target position to continue.";
+		if (!targetPosition) return "Set a target ad slot to continue.";
+		if (!slotValid)
+			return `Pick a target ad slot from Ad #1 to Ad #${MAX_AD_SLOT} to continue.`;
 		if (!minBid) return "Set a minimum bid to continue.";
 		if (belowFloor)
 			return `Raise the min bid to ${mpName}'s published floor to continue.`;
@@ -655,6 +664,10 @@ export const AutomationWizard = ({
 				campaign_name: campaign.name,
 				keyword,
 				match_type: matchType,
+				// An AD SLOT (Nth sponsored listing), sent under BOTH names: a backend
+				// from before ad slots requires `target_position` and ignores the other,
+				// so the dashboard can ship before or after the API.
+				target_ad_slot: Number(targetPosition),
 				target_position: Number(targetPosition),
 				min_bid: Number(minBid),
 				max_bid: maxBid ? Number(maxBid) : null,

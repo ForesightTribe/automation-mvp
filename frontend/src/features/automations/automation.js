@@ -241,17 +241,82 @@ export const budgetScheduleTags = (schedule) => {
 	return tags;
 };
 
+/* ────────────────────────────────────────────────────────────────────────────
+ * Ad slots — what a keyword automation targets
+ *
+ * The Nth SPONSORED listing on the search page, counted among the ads actually shown and
+ * nothing else. "Ad #2" is position 5 on a page whose ads sit at 2, 5, 6, 9 and position 3 on
+ * one whose ads sit at 1, 3, 5 — the engine finds it, the client never needs the layout.
+ * Organic listings never move a bid; they only raise the overlap warning below.
+ * Capped at 5 by the API (search is read 48 products deep).
+ * ──────────────────────────────────────────────────────────────────────────── */
+
+export const MAX_AD_SLOT = 5;
+
+const ORDINALS = ["first", "second", "third", "fourth", "fifth"];
+
+/** "second" for 2 — the slot as a word, for sentences. */
+export const ordinalWord = (slot) => ORDINALS[Number(slot) - 1] ?? "chosen";
+
+/** The target as a rule carries it. `target_ad_slot` from the API; the older field as a fallback. */
+export const targetAdSlot = (rule) =>
+	rule?.target_ad_slot ?? rule?.target_position ?? null;
+
+/** One line under the wizard's target: what the number means. */
+export const adSlotHint = (slot) => {
+	const n = Number(slot);
+	const nth = Number.isInteger(n) && n >= 1 ? ORDINALS[n - 1] : null;
+	if (n > MAX_AD_SLOT) return `Pick Ad #1 to Ad #${MAX_AD_SLOT}.`;
+	return `${nth ? `The ${nth}` : "Which"} sponsored listing on the search page, wherever it appears. Organic listings don't count.`;
+};
+
+/** `Ad #2 · position 5`, or `Ad #2` when the page position is unknown. */
+export const adSlotLabel = (slot, pagePosition) =>
+	slot == null
+		? "no ad slot"
+		: `Ad #${slot}${pagePosition != null ? ` · position ${pagePosition}` : ""}`;
+
+const positionsList = (ps) =>
+	ps.length <= 1
+		? `position ${ps[0]}`
+		: `positions ${ps.slice(0, -1).join(", ")} and ${ps.at(-1)}`;
+
+/**
+ * The organic-overlap warning, worded, or null. The API sets `organic_overlap` when most recent
+ * checks at a store show us organically ABOVE the target slot — the spend may buy visibility
+ * we already have. Shown, never acted on: the engine pushes the ad where it was asked.
+ */
+export const organicOverlapText = (rule) => {
+	const o = rule?.organic_overlap;
+	if (!o || !o.organic_positions?.length) return null;
+	const where =
+		o.target_page_position != null
+			? ` (position ${o.target_page_position})`
+			: "";
+	const stores = o.of > 1 ? ` at ${o.stores} of ${o.of} stores` : "";
+	return `Targeting Ad #${targetAdSlot(rule)}${where}, but you already appear organically at ${positionsList(o.organic_positions)}${stores}. This spend may be buying visibility you already have.`;
+};
+
 export const bidRuleTags = (rule) => {
 	const when = timeWindow(rule);
 	const range = rule.max_bid
 		? `₹${rule.min_bid}–₹${rule.max_bid}`
 		: `min ₹${rule.min_bid}`;
-	return [
+	const slot = targetAdSlot(rule);
+	const tags = [
 		{
-			label: `Managed Rank ${rule.target_position}`,
-			detail: `Target position #${rule.target_position} (${range})${when ? ` · ${when}` : ""}`,
+			label: `Target Ad #${slot}`,
+			detail: `Hold the ${ORDINALS[slot - 1] ?? `#${slot}`} sponsored listing on the page (${range})${when ? ` · ${when}` : ""}`,
 		},
 	];
+	const overlap = organicOverlapText(rule);
+	if (overlap)
+		tags.push({
+			label: "Already ranks organically",
+			detail: overlap,
+			tone: "warning",
+		});
+	return tags;
 };
 
 /* ────────────────────────────────────────────────────────────────────────────

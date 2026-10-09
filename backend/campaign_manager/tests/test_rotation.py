@@ -11,7 +11,7 @@ from datetime import timedelta
 from types import SimpleNamespace
 
 from app.utils.time import now_ist
-from campaign_manager import bid, config, coverage, repo, rotation, stock
+from campaign_manager import ad_slots, bid, config, coverage, repo, rotation, stock
 from campaign_manager.marketplaces.zepto import catalog as zcat
 
 T0 = now_ist().replace(year=2026, month=9, day=28, hour=9, minute=45, second=0, microsecond=0)
@@ -295,7 +295,11 @@ class _FakeZepto:
 
     def locate_position(self, results, kw, lat, lon, **kw_):
         pos = self.w.ad[self.w.by_lat(lat)]
-        return (float(pos), "live") if pos else (None, "our product is not in these results")
+        if pos:
+            # Every slot above ours is filled, so Ad #N sits at page position N.
+            return ad_slots.Placement(int(pos), int(pos), tuple(range(1, int(pos) + 1)), (),
+                                      "live")
+        return ad_slots.Placement(None, None, (), (), "our product is not in these results")
 
     async def read_store_catalog(self, session, query, lat, lon, *, cap, names,
                                  merchant_id=None):
@@ -395,6 +399,29 @@ def _tick(world, stubs, at_minutes):
             setattr(repo, k, v)
         bid.get_adapter, bid.now_ist = saved
     return list(world.searches)
+
+
+def test_state_learned_in_page_positions_is_discarded_by_the_real_engine():
+    """2026-10-05: targets became AD SLOTS. A runtime row from before carries page positions
+    — here a target relaxed to "position 9" — which read as slots would say Ad #8 already
+    beats it, and the bid would sit still. It must be ignored once and rewritten; state the
+    new engine wrote itself is then trusted again."""
+    w = _World()
+    st, stubs = _engine(w)
+    rt = st["runtime"]
+    rt.effective_target, rt.effective_at_max_bid, rt.last_position = 9, 60, 9.0
+    w.ad["m1"] = 8                                            # Ad #8, target Ad #3
+    _tick(w, stubs, 0)
+    last = st["log"][-1]
+    assert last["action"] == "apply" and "raising" in last["reason"], last
+    assert rt.measured_in == "ad_slot" and rt.effective_target is None
+
+    # Relaxed by the NEW engine → trusted: Ad #4 against a working target of Ad #5 holds.
+    rt.effective_target, rt.effective_at_max_bid = 5, 60
+    w.ad["m1"] = 4
+    _tick(w, stubs, 15)
+    assert st["log"][-1]["action"] == "no-op", st["log"][-1]
+    assert st["log"][-1]["target"] == 5
 
 
 def test_a_day_of_stock_outs_through_the_real_engine():
@@ -527,20 +554,20 @@ def test_the_decision_reads_in_a_few_words():
     line = lambda **k: bid._decision_line(**{**dict(              # noqa: E731
         current=10, new=12, position=2, target=1, absent=False, escalated=False,
         recovering=False, drift_pct=7, drift_paused=False, last_pos=2, minutes=20), **k})
-    assert line() == "raise ₹10 → ₹12 (+₹2) · #2 vs target #1"
+    assert line() == "raise ₹10 → ₹12 (+₹2) · Ad #2 vs target Ad #1"
     assert line(new=15, current=12, escalated=True) == \
-        "raise ₹12 → ₹15 (+₹3, step grew) · #2 vs target #1"
-    assert line(absent=True, position=31) == "raise ₹10 → ₹12 (+₹2) · ad missing vs target #1"
-    assert line(new=None, minutes=4) == "hold ₹10 · #2 vs target #1 · last change 4 min ago, waiting"
-    assert line(new=None, position=1, last_pos=1) == "hold ₹10 · at #1 (target #1) · at floor"
+        "raise ₹12 → ₹15 (+₹3, step grew) · Ad #2 vs target Ad #1"
+    assert line(absent=True, position=31) == "raise ₹10 → ₹12 (+₹2) · no ad slot vs target Ad #1"
+    assert line(new=None, minutes=4) == "hold ₹10 · Ad #2 vs target Ad #1 · last change 4 min ago, waiting"
+    assert line(new=None, position=1, last_pos=1) == "hold ₹10 · at Ad #1 (target Ad #1) · at floor"
     assert line(new=None, position=1, last_pos=None) == \
-        "hold ₹10 · at #1 (target #1) · confirming before trimming"
+        "hold ₹10 · at Ad #1 (target Ad #1) · confirming before trimming"
     assert line(new=None, position=1, last_pos=1, drift_paused=True) == \
-        "hold ₹10 · at #1 (target #1) · trimming paused"
-    assert line(new=None, position=1, drift_pct=0) == "hold ₹10 · at #1 (target #1) · trimming off"
-    assert line(current=15, new=14, position=1) == "trim ₹15 → ₹14 · holding #1 (target #1)"
+        "hold ₹10 · at Ad #1 (target Ad #1) · trimming paused"
+    assert line(new=None, position=1, drift_pct=0) == "hold ₹10 · at Ad #1 (target Ad #1) · trimming off"
+    assert line(current=15, new=14, position=1) == "trim ₹15 → ₹14 · holding Ad #1 (target Ad #1)"
     assert line(current=12, new=15, recovering=True) == \
-        "recover ₹12 → ₹15 · dropped to #2 after trimming"
+        "recover ₹12 → ₹15 · dropped to Ad #2 after trimming"
 
 
 def test_a_write_ends_its_line_with_what_happened():
@@ -570,11 +597,11 @@ def test_a_run_reads_crisply_through_the_real_engine():
     assert body[0].startswith("── Bid optimizer · ") and " · zepto · DRY RUN · run " in body[0]
     assert body[1] == "ready · session ok · 1 automation in window"
     assert body[2].startswith("shopper search · direct · ") and body[2].endswith("s to open")
-    assert body[3] == ('[1/1] Brik · #11 · "sourdough" EXACT · target #3')
+    assert body[3] == ('[1/1] Brik · #11 · "sourdough" EXACT · target Ad #3')
     assert body[4] == ("  bid ₹20 (₹10–60) · stores: Store1 → Store2 → Store3 (client set)")
-    assert body[5] == "  Store1 (1/3): ad #8 of 20"
+    assert body[5] == "  Store1 (1/3): Ad #8 · position 8 · ads at 1,2,3,4,5,6,7,8"
     assert body[6].startswith("  raise ₹20 → ₹") and body[6].endswith(
-        " · #8 vs target #3 · DRY RUN, not sent"), body[6]
+        " · Ad #8 vs target Ad #3 · DRY RUN, not sent"), body[6]
     assert body[-1].startswith("── done ") and "searches: 1 rank" in body[-1]
     assert len(body) == 8, body
 

@@ -26,6 +26,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.zepto_seller import ZeptoAdCampaignDaily as Ad
 from app.models.zepto_seller import ZeptoAdBreakdownDaily as Bd
 from app.models.zepto_seller import ZeptoAdCampaign
+from app.models.zepto_seller import ZeptoAdCampaignDetail as Det
 from app.models.zepto_seller import ZeptoAdKeywordDaily as Kw
 from app.models.zepto_seller import ZeptoAdProductDaily as Prod
 
@@ -107,18 +108,6 @@ async def summary_agg(
 
     Tuple shape matches ads_service._summary_agg so the two marketplaces add.
     """
-    spend, impr, sales, atc, units = (
-        await session.execute(
-            select(
-                func.coalesce(func.sum(Ad.spend), 0.0),
-                func.coalesce(func.sum(Ad.impressions), 0),
-                _AD_SALES,
-                _AD_ATC,
-                _AD_UNITS,
-            ).where(*_conds(tenant_id, start, end))
-        )
-    ).one()
-
     # "Active" = had activity in the window, matching what the Blinkit half of
     # this tile counts. Its docstring says "distinct campaigns with any daily
     # row in the window", which sounds broader but isn't: that table is sparse
@@ -134,14 +123,22 @@ async def summary_agg(
     # gives the same 7 on this data, but would diverge for a campaign flagged
     # active that never spent, or one paused after spending earlier in the
     # window.
-    active = (
+    # One query (2026-10-08): the activity test is a FILTERed distinct count beside the sums
+    # rather than a second round trip — the KPI tiles call this up to four times per request.
+    spend, impr, sales, atc, units, active = (
         await session.execute(
-            select(func.count(distinct(Ad.campaign_id))).where(
-                *_conds(tenant_id, start, end),
-                (Ad.spend > 0) | (Ad.impressions > 0),
-            )
+            select(
+                func.coalesce(func.sum(Ad.spend), 0.0),
+                func.coalesce(func.sum(Ad.impressions), 0),
+                _AD_SALES,
+                _AD_ATC,
+                _AD_UNITS,
+                func.count(distinct(Ad.campaign_id)).filter(
+                    (Ad.spend > 0) | (Ad.impressions > 0)
+                ),
+            ).where(*_conds(tenant_id, start, end))
         )
-    ).scalar_one()
+    ).one()
 
     return float(spend), int(impr), float(sales), int(atc), int(units), int(active)
 
@@ -213,8 +210,9 @@ async def campaigns(
     the table but still not returned — nothing on the list shows them.
 
     `status` and `daily_budget` come from the campaign CATALOGUE (`zepto_ad_campaigns`)
-    where it holds the campaign, and from the latest daily row otherwise (Display
-    campaigns, which the catalogue never holds). The daily row's settings are stamped at
+    where it holds the campaign, and from the latest daily row otherwise (a campaign not
+    catalogued yet — until 2026-10-07 that was most Display campaigns, whose list call was
+    filtered to the sponsored-products tab). The daily row's settings are stamped at
     scrape time the next morning (ZC-P24), so after a Start/Stop or a Refresh they lag by up
     to a day; the catalogue is what Refresh and every write-back update. A catalogued
     campaign with no metrics in the window is listed too, at zero — as Blinkit's are — so a
@@ -224,8 +222,9 @@ async def campaigns(
     the latest catalogue write no longer returned — Blinkit's `recent_only` rule, via
     `repo.catalog_cutoff`. Zepto's list keeps ENDED campaigns, so this is rare: a campaign
     deleted on Zepto, or one left behind on an account the client no longer uses. A campaign
-    the catalogue never holds (Display) is kept: it is only listed when it has metrics in
-    the window, and the pickers grey it out as not automatable anyway.
+    the catalogue does not hold is kept: it is only listed when it has metrics in the
+    window. Display campaigns are listed either way, and the pickers grey them out as not
+    automatable.
     """
     rows = (
         await session.execute(
@@ -337,8 +336,11 @@ async def campaigns_daily(
     """`campaigns()` at campaign × DAY grain, for the days a campaign spent on — the same
     figures a one-day `campaigns(start=d, end=d)` call returns for each day, in one query.
 
-    Settings follow `campaigns()`: the catalogue's name / daily budget where it holds the
-    campaign, else what that day's own row carried.
+    Name follows `campaigns()` (the catalogue's where it holds the campaign). The daily
+    budget is the one THAT DAY's row carried, the catalogue's only when the row has none:
+    utilisation is spend ÷ that day's budget, and Zepto — unlike Blinkit — stores a budget per
+    day. It is stamped at scrape time, so a day re-read in the 3-day ads window carries the
+    budget of the re-read (ZC-P24) — still nearer that day than today's setting.
     """
     rows = (
         await session.execute(
@@ -376,7 +378,9 @@ async def campaigns_daily(
                 "type": ctype,
                 "budget_consumed": round(float(spend), 2),
                 "daily_budget": (
-                    cat.daily_budget if cat and cat.daily_budget is not None else budget
+                    # Whole rupees on Zepto; the daily table stores a float, the row an int.
+                    int(round(budget)) if budget is not None
+                    else (cat.daily_budget if cat else None)
                 ),
                 "ad_sales": round(float(sales), 2),
             }
@@ -542,6 +546,98 @@ async def keywords(
             "roas": round(float(rev) / float(spend), 4) if spend else None,
         }
         for kw, match, cat, spend, rev, impr, clicks, orders, atc in rows
+    ]
+
+
+async def campaign_keywords(
+    session: AsyncSession, *, tenant_id: uuid.UUID, campaign_id: int, start: date, end: date,
+    limit: int = 10,
+) -> tuple[int, list[dict]]:
+    """ONE campaign's keywords over the window, highest spend first — (how many there are,
+    the top `limit`). From `zepto_ad_campaign_detail` (per campaign × keyword × day), so it
+    follows the window, unlike Blinkit's snapshot. RoAS rebuilt from the sums."""
+    conds = [Det.tenant_id == tenant_id, Det.campaign_id == campaign_id,
+             Det.date >= start, Det.date <= end]
+    spend = func.coalesce(func.sum(Det.spend), 0.0)
+    grouped = (
+        select(
+            Det.keyword,
+            Det.match_type,
+            spend.label("spend"),
+            func.coalesce(func.sum(Det.revenue), 0.0).label("sales"),
+            func.coalesce(func.sum(Det.impressions), 0).label("impressions"),
+        )
+        .where(*conds)
+        .group_by(Det.keyword, Det.match_type)
+        .subquery()
+    )
+    total = await session.scalar(select(func.count()).select_from(grouped)) or 0
+    rows = (
+        await session.execute(
+            select(grouped)
+            .order_by(grouped.c.spend.desc(), grouped.c.keyword, grouped.c.match_type)
+            .limit(limit)
+        )
+    ).all()
+    return total, [
+        {
+            "keyword": kw,
+            "match_type": match,
+            "spend": round(float(sp), 2),
+            "sales": round(float(rev), 2),
+            "impressions": int(impr),
+            "roas": round(float(rev) / float(sp), 4) if sp else None,
+            "position": None,
+        }
+        for kw, match, sp, rev, impr in rows
+    ]
+
+
+async def keyword_rows(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date
+) -> list[dict]:
+    """Every campaign × keyword × match type summed over the window — the Insights keyword
+    table's Zepto rows. From `zepto_ad_campaign_detail` (per campaign per day), so they follow
+    the window and carry the campaign that bid, unlike the brand-grain `keywords()` above.
+
+    `direct_orders` / `halo_orders` are Zepto's same-SKU / other-SKU ORDER counts (they sum to
+    `orders`) — the nearest Zepto has to Blinkit's direct / indirect SALES, which it does not
+    report. Only additive figures; ratios are rebuilt by the reader."""
+    rows = (
+        await session.execute(
+            select(
+                Det.campaign_id,
+                Det.keyword,
+                Det.match_type,
+                func.coalesce(func.sum(Det.spend), 0.0),
+                func.coalesce(func.sum(Det.revenue), 0.0),
+                func.coalesce(func.sum(Det.impressions), 0),
+                func.coalesce(func.sum(Det.clicks), 0),
+                func.coalesce(func.sum(Det.atc), 0),
+                func.coalesce(func.sum(Det.orders), 0),
+                func.coalesce(func.sum(Det.same_skus), 0),
+                func.coalesce(func.sum(Det.other_skus), 0),
+            )
+            .where(Det.tenant_id == tenant_id, Det.date >= start, Det.date <= end)
+            .group_by(Det.campaign_id, Det.keyword, Det.match_type)
+        )
+    ).all()
+    return [
+        {
+            "platform": SLUG,
+            "campaign_id": cid,
+            "keyword": kw,
+            "match_type": match,
+            "spend": round(float(spend), 2),
+            "sales": round(float(rev), 2),
+            "impressions": int(impr),
+            "clicks": int(clicks),
+            "atc": int(atc),
+            "orders": int(orders),
+            "direct_orders": int(direct),
+            "halo_orders": int(halo),
+        }
+        for cid, kw, match, spend, rev, impr, clicks, atc, orders, direct, halo in rows
     ]
 
 

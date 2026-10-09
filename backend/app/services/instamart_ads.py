@@ -31,7 +31,7 @@ Three tables, three different shapes:
 import uuid
 from datetime import date, datetime, time
 
-from sqlalchemy import func, or_, select
+from sqlalchemy import func, or_, select, union
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.instamart_ads import InstamartAdAccountDaily as Daily
@@ -133,20 +133,21 @@ async def summary_agg(
             ).where(*_daily_conds(tenant_id, start, end))
         )
     ).one()
-    active_ids = set()
-    for model in (PD, KD):
-        rows = (
-            await session.execute(
-                select(model.campaign_id.distinct()).where(
-                    model.tenant_id == tenant_id,
-                    model.date >= start,
-                    model.date <= end,
-                    model.campaign_id.is_not(None),
-                )
-            )
-        ).scalars().all()
-        active_ids.update(rows)
-    return (float(spend), int(impr), float(gmv), int(atc), 0, len(active_ids))
+    # Campaigns with a product OR keyword row in the window, counted in ONE query (a UNION
+    # dedupes across the two tables) rather than one round trip per table (2026-10-08).
+    ids = union(*(
+        select(model.campaign_id).where(
+            model.tenant_id == tenant_id,
+            model.date >= start,
+            model.date <= end,
+            model.campaign_id.is_not(None),
+        )
+        for model in (PD, KD)
+    )).subquery()
+    active = (
+        await session.execute(select(func.count()).select_from(ids))
+    ).scalar_one()
+    return (float(spend), int(impr), float(gmv), int(atc), 0, int(active))
 
 
 async def ads_agg(
@@ -491,7 +492,7 @@ async def _campaign_breakdown(
 ) -> dict[str, list[dict]]:
     """{key: [{campaign_id, campaign_name, spend, gmv, impressions}, ...]},
     sorted by spend desc — which campaign(s) a product/keyword's total is made
-    of. Sums exactly to the same total `products()`/`keywords()` compute
+    of. Sums exactly to the same total `products()` computes
     (grouping by key_col alone, ignoring campaign_id, gives the total;
     grouping by both gives this breakdown) — verified live against the
     proven-correct unfiltered total (see instamart/dashboard_data/seller/scraper.py's module docstring).
@@ -583,19 +584,23 @@ async def campaign_keywords(
     ]
 
 
-async def keywords(
+async def keyword_rows(
     session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date,
 ) -> list[dict]:
-    """Per-keyword rollup over the window, account-wide (from
-    `instamart_ad_keyword_daily`) — the same keyword can be bid by more than
-    one campaign, and this sums across all of them (grouped by keyword
-    alone, not campaign_id — see `_campaign_breakdown` for the per-campaign
-    split attached as `campaigns`)."""
+    """Every campaign × keyword summed over the window — the Insights keyword table's
+    Instamart rows, at the same grain as Blinkit's and Zepto's (2026-10-08; replaced the
+    account-wide `keywords()` and its `/instamart-keywords` card). From
+    `instamart_ad_keyword_daily` (campaign-attributed), grouped by campaign AND keyword. Rows
+    without a campaign id are left out: they cannot be put under a campaign.
+
+    No match type and no position (Instamart reports neither); no orders (no unit count on
+    Instamart's ad side). Clicks and add-to-carts are reported."""
     from app.models.instamart_ads import InstamartAdKeywordDaily as KD
 
     rows = (
         await session.execute(
             select(
+                KD.campaign_id,
                 KD.keyword,
                 func.coalesce(func.sum(KD.spend), 0.0),
                 func.coalesce(func.sum(KD.gmv), 0.0),
@@ -603,28 +608,21 @@ async def keywords(
                 func.coalesce(func.sum(KD.clicks), 0),
                 func.coalesce(func.sum(KD.add_to_cart_count), 0),
             )
-            .where(KD.tenant_id == tenant_id, KD.date >= start, KD.date <= end)
-            .group_by(KD.keyword)
-            .order_by(func.coalesce(func.sum(KD.spend), 0.0).desc())
+            .where(KD.tenant_id == tenant_id, KD.date >= start, KD.date <= end,
+                   KD.campaign_id.is_not(None))
+            .group_by(KD.campaign_id, KD.keyword)
         )
     ).all()
-    campaigns_by_keyword = await _campaign_breakdown(
-        session, tenant_id=tenant_id, start=start, end=end, model=KD, key_col=KD.keyword,
-    )
     return [
         {
+            "platform": "instamart",
+            "campaign_id": cid,
             "keyword": kw,
             "spend": round(float(spend), 2),
             "sales": round(float(gmv), 2),
             "impressions": int(impr),
             "clicks": int(clicks),
             "atc": int(atc),
-            "units_sold": 0,
-            "ctr": round(clicks / impr * 100, 4) if impr else None,
-            "cpc": round(float(spend) / clicks, 2) if clicks else None,
-            "cpm": round(float(spend) / impr * 1000, 2) if impr else None,
-            "roas": round(float(gmv) / float(spend), 4) if spend else None,
-            "campaigns": campaigns_by_keyword.get(kw, []),
         }
-        for kw, spend, gmv, impr, clicks, atc in rows
+        for cid, kw, spend, gmv, impr, clicks, atc in rows
     ]

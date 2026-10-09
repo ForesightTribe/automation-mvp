@@ -1,9 +1,46 @@
-BASE_URL = "https://fcc.zepto.co.in"
+"""Zepto seller-console endpoints, headers and the client's constants.
 
-# Page path used for the browser-fallback header re-capture (only reached if
-# a browser-free call gets a 401/403 that a fresh session apparently doesn't
-# explain — see scraper.py's _recapture_auth_via_browser).
-SALES_ANALYTICS_PAGE = "/vendor/dashboard/sales-analytics"
+Everything volatile about the console's APIs lives here — the sales, PO and ads-bff
+endpoints the scrape reads, and the hosts / headers the shared client (`client.py`)
+sends. The campaign manager imports the shared ones from here
+(`campaign_manager/marketplaces/zepto/endpoints.py`), so each is defined once. Auth
+endpoints are not here; they belong to `platform_auth/marketplaces/zepto/endpoints.py`.
+"""
+
+# The SPA is served from one host and talks to another. Both matter: the API checks
+# Origin/Referer, so the console URL is not decoration.
+CONSOLE = "https://brands.zepto.co.in"
+API = "https://fcc.zepto.co.in"
+BASE_URL = API
+
+USER_AGENT = (
+    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+    "(KHTML, like Gecko) Chrome/151.0.0.0 Safari/537.36"
+)
+
+# ── the three load-bearing headers (client.py sends them) ───────────────────
+#
+# 1. `authorization` carries the RAW jwt with NO "Bearer " prefix, despite the login
+#    response advertising tokenType "Bearer". Prefixing it fails at base64 decode.
+#
+# 2. `/brand-analytics-web/*` needs `x-proxy-target: brand-analytics`. WITHOUT it the
+#    gateway answers a bare text/plain 404 — which reads like a wrong URL and sends
+#    you hunting for an endpoint that was correct all along.
+#
+# 3. `/ads-bff/*` sits behind AWS WAF and needs BOTH a valid `x-aws-waf-token` AND
+#    `waf-enabled: false`. Missing EITHER, CloudFront answers 429 — which reads like
+#    rate limiting and is not. That misreading cost a full afternoon; see the
+#    `waf-enabled` note in client.py.
+PROXY_TARGET_HEADER = "x-proxy-target"
+PROXY_TARGET_BRAND_ANALYTICS = "brand-analytics"
+WAF_TOKEN_HEADER = "x-aws-waf-token"
+WAF_ENABLED_HEADER = "waf-enabled"
+WAF_ENABLED_VALUE = "false"
+
+# The AWS WAF challenge token lives ~5 minutes (measured: alive at 4 min, dead at 6).
+# Never cached across runs — every job interval we have is longer than that, so a
+# stored token would be expired essentially every time it was read.
+WAF_TOKEN_TTL_SECONDS = 300
 
 # Cheapest real authenticated call found (no filters/params, small response) —
 # used purely as a "is this session still accepted" probe, not for real data.
@@ -30,7 +67,6 @@ PRODUCT_PERFORMANCE_API = "/brand-analytics-web/api/v1/sales-analytics/product-p
 # value because the UI is on a status tab; an empty list has NOT been verified
 # to widen it. If a scrape returns fewer POs than the dashboard shows, this is
 # the first thing to check.
-PO_PAGE = "/vendor/po/lifecycle"
 PO_FILTER_API = "/api/v1/po/filter"
 PO_LISTING_STAT_API = "/api/v1/po/listing-stat"
 PO_SCHEDULED_API = "/api/v1/po/scheduled"
@@ -51,8 +87,11 @@ GRN_ITEMS_API = "/api/v1/grn/{grn_no}/items"
 # The UI asks for 14 at a time; 100 is well within what the API accepts and
 # cuts the number of pages for a 30-day window to one on this account.
 PO_PAGE_SIZE = 100
-# Guard against an unbounded loop if `hasNext` ever misbehaves.
-PO_MAX_PAGES = 20
+# Guard against an unbounded loop if `hasNext` ever misbehaves — a safety net, not a
+# limit to live with: reaching it with `hasNext` still true raises `PageCapHit` and the run
+# fails loudly (P4, 2026-10-07; it used to stop silently). 100 pages = 10,000 POs / GRNs or
+# 2,500 ASNs (page 25) in one window; the busiest 30 days so far had 71 / 52 / 68.
+PO_MAX_PAGES = 100
 
 # ⚠️ asn/filter is NOT the same as its two siblings — it 500s at limit=100.
 #
@@ -100,14 +139,18 @@ ASN_PAGE_SIZE = 25
 
 
 # ── Ads (`ads-bff`) ─────────────────────────────────────────────────────────────
-# A different service from the analytics endpoints above, and stricter: it
-# rejects the saved session's WAF token with 202 (an AWS WAF challenge), so ads
-# calls need headers harvested from a live browser first. See
-# scraper.py::capture_ads_headers.
-ADS_PAGE = "/ads/campaign-management"
-ADS_ANALYTICS_PAGE = "/ads/analytics"
-ADS_CAMPAIGNS_API = "/ads-bff/api/v1/campaigns"
-ADS_METRICS_API = "/ads-bff/api/v1/brands/analytics/metrics"
+# A different service from the analytics endpoints above, and stricter: it needs
+# an AWS WAF token on top of the session (202 without one). The shared Zepto
+# client mints it once per run and re-mints it on a 202/429.
+ADS_CAMPAIGNS_API = "/ads-bff/api/v1/campaigns"                   # GET list (all pages)
+ADS_CAMPAIGN_PLA_API = "/ads-bff/api/v1/campaigns/pla/{id}"       # GET detail · PUT update
+ADS_TARGETING_OPTIONS_API = "/ads-bff/api/v1/brands/targeting-options"   # the city list
+# Zepto's published minimum bid per keyword — POST {"keywords": [{keyword, match_type}]}.
+ADS_KEYWORD_CONFIG_API = "/ads-bff/api/v1/keyword/config"
+# ⚠️ Capped at 500 keywords per request — more is a 400 "max 500 keywords allowed per
+# request" (seen 2026-10-03 on Sereko's 2428159, which failed the catalogue every day
+# from 2026-09-29). `scraper.get_keyword_floors` batches on this.
+KEYWORD_CONFIG_MAX = 500
 ADS_WALLET_API = "/ads-bff/api/v1/wallet/details"
 ADS_CATEGORIES_API = "/ads-bff/api/v1/campaign-categories"
 
@@ -119,6 +162,13 @@ ADS_CATEGORIES_API = "/ads-bff/api/v1/campaign-categories"
 # scroll — an API capture that only waits for page load never sees them. Three
 # earlier "Zepto does not expose X" conclusions were wrong for that reason.
 ADS_TABULAR_API = "/ads-bff/api/v1/brands/analytics/metrics/tabular"
+
+# The same tables scoped to ONE campaign — what the campaign detail page asks for. Takes
+# `campaign_id` in the body. With view=keyword_table it is keyword performance PER
+# CAMPAIGN (P38): one row per keyword × match type, for the window asked. Probed
+# 2026-10-06: a multi-day window is one total per keyword, and `interval`/`breakdown`
+# are refused (400) — so one call per campaign per DAY.
+ADS_CAMPAIGN_TABULAR_API = "/ads-bff/api/v1/brands/campaigns/analytics/metrics/tabular"
 
 # `view` values. campaign/product/city/page load with the Analytics page;
 # category and keyword load when their tab is selected.
@@ -139,7 +189,3 @@ ADS_TABULAR_PAGE_SIZE = 50
 
 # The three tabs on Campaign Management. Campaigns are scoped to one at a time.
 ADS_CATEGORIES = ("sponsored_products", "sponsored_display", "sponsored_brands")
-
-# Metrics the analytics endpoint accepts. `impressions_per_thousand` is Zepto's
-# name for the impressions series, not a derived per-mille figure.
-ADS_METRIC_NAMES = ("spends", "ctr", "impressions_per_thousand", "clicks", "ecpm")

@@ -142,10 +142,13 @@ silently kills whoever is on the dashboard, and vice versa.
 
 Consequences, in order of how much they matter:
 
-1. **A nightly `auth.login` job logs the client's own team out.** This is why the
-   schedule is documented as `--disabled` and stays that way **until Brik Oven
-   provisions a service user**. Enabling it is a business decision, not a technical
-   one.
+1. **Every day's first Zepto call logs the client's own team out.** The JWT dies at
+   midnight IST and Zepto has no refresh, so the morning `scrape.zepto` run (10:30 Brik
+   Oven, 10:45 Sereko) logs in through `ensure()` — the scheduled 06:xx `auth.refresh`
+   cannot extend a Zepto session and does nothing for it. There is no separate
+   `auth.login` schedule. Since 2026-09-21 the policy is to log in whenever a job needs
+   to (a missed action costs more than a logout, and the client accepts it); a
+   dedicated service user would remove the cost entirely.
 2. **We share `varun@brikoven.com`.** During testing the session was evicted every
    3–4 minutes, and three times in ten minutes on 2026-09-01. Recovery is automatic,
    but each cycle burns a single-use OTP.
@@ -160,7 +163,7 @@ Consequences, in order of how much they matter:
 
 ## 7. Tenant isolation
 
-Every one of the eleven tables carries `tenant_id` as a FK to `tenants.id`, and it is
+Every one of the fifteen tables carries `tenant_id` as a FK to `tenants.id`, and it is
 part of every `upsert_key`. Credentials and sessions are keyed on
 `(tenant_id, platform)`.
 
@@ -180,23 +183,23 @@ guarantee.
   including branches whose code has not pulled it.
 - A scrape run from a laptop writes **production** rows. `--no-save` exists for this
   reason and should be the default reflex on any new code path.
-- Connection budget is real: the pooler allows 25. API 5 + runner 3 + subprocesses.
-  The runner unit pins `DB_POOL_SIZE=4`.
+- Connection budget is real: the Supavisor pool is 45 (Supabase setting, 2026-09-11),
+  each process holds its own pool, and the runner unit pins `DB_POOL_SIZE=4`.
 
 ---
 
 ## 9. What this system is allowed to do
 
-The three scrapes are **read-only**. They issue GETs and filter-POSTs and never mutate
-anything on Zepto.
+The scrape is **read-only**. It issues GETs and query POSTs (filters, analytics tables,
+`keyword/config`) and never mutates anything on Zepto.
 
 The write path — budgets, bids, campaign start/stop — is the **Campaign Manager**, a
 separate system behind a gated choke-point with a `--live` flag that defaults off. It
-shares this transport but nothing in `docs/zepto/` grants write access.
+shares this client but nothing in `docs/zepto/` grants write access.
 
-Worth knowing because they share `transport.py`: `retry_writes=False` is passed by
-every scrape call precisely so that flag stays honest if one of these paths ever gains
-a write.
+Worth knowing because they share one client (`seller/client.py`): it resends a request
+only when the first attempt was refused unread — a 401, a WAF challenge, or Zepto's own
+rate limit — so a resent write cannot apply twice. A timeout is never resent.
 
 ---
 
@@ -215,7 +218,10 @@ per-SKU revenue.
 
 ---
 
-## 11. Checklist before putting this on the VM
+## 11. Checklist before putting this on a new box
+
+Done for `foresight-vm` (it has run `scrape.zepto` daily since 2026-09-10); kept for the
+next box.
 
 - [ ] `ENCRYPTION_KEY` on the VM matches local **exactly**
 - [ ] `AUTH_INBOX_USER` + `AUTH_INBOX_APP_PASSWORD` present (strip the spaces Google
@@ -224,7 +230,7 @@ per-SKU revenue.
 - [ ] `sudo systemctl restart foresight-runner` after editing `.env` — systemd reads it
       via `EnvironmentFile` and will not pick up changes otherwise
 - [ ] `cli auth probe zepto -t <tenant>` returns healthy **from the VM**
-- [ ] `cli scrape zepto-sales -t <tenant> --no-save` completes before anything is
-      scheduled
-- [ ] Any `auth.login` schedule created `--disabled`
-- [ ] Service-user question raised with Brik Oven
+- [ ] `cli scrape zepto -t <tenant> --no-save` completes before anything is scheduled
+- [ ] `playwright install chromium` (no sudo) + `sudo playwright install-deps chromium`
+      — the WAF mint needs it
+- [ ] Service-user question raised with the client

@@ -1,8 +1,10 @@
 """Bid-optimizer orchestration (MP-agnostic).
 
-A ~15-min control loop: for each active bid rule, read the keyword's live sponsored
-position, step the CPM toward the target position, and route the change through the
-write choke-point. Dry-run by default (positions are read, no bid is written). Runtime
+A ~15-min control loop: for each active bid rule, read the keyword's live AD SLOT (the Nth
+sponsored listing on the page — campaign_manager/ad_slots.py; organic listings never count),
+step the CPM toward the target ad slot, and route the change through the write choke-point.
+`target_position` on a rule IS that target slot (the column predates the switch, 2026-10);
+"position" in the decision code below means the slot unless it says "page position". Dry-run by default (positions are read, no bid is written). Runtime
 state (`last_*`) is persisted to `cm_bid_runtime` — no JSON.
 
 Each window is bracketed by the floor: the first fire of a window writes `min_bid` (and
@@ -61,17 +63,17 @@ def _decision_line(*, current: int, new: int | None, position: float, target: in
     """Pure. The decision in a few words for the run log — `raise ₹10 → ₹12 (+₹2) · #2 vs
     target #1`. Mirrors `compute_bid`'s branches from the same facts it decided on; the full
     sentence it returned stays the History reason."""
-    where = "ad missing" if absent else f"#{position:g}"
+    where = "no ad slot" if absent else f"Ad #{position:g}"
     if new is not None:
         if recovering:
-            return f"recover ₹{current} → ₹{new} · dropped to #{position:g} after trimming"
+            return f"recover ₹{current} → ₹{new} · dropped to Ad #{position:g} after trimming"
         if position > target:
             step = f"+₹{new - current}" + (", step grew" if escalated else "")
-            return f"raise ₹{current} → ₹{new} ({step}) · {where} vs target #{target}"
-        return f"trim ₹{current} → ₹{new} · holding #{position:g} (target #{target})"
+            return f"raise ₹{current} → ₹{new} ({step}) · {where} vs target Ad #{target}"
+        return f"trim ₹{current} → ₹{new} · holding Ad #{position:g} (target Ad #{target})"
     if position > target:
         waited = f" · last change {minutes:.0f} min ago" if minutes is not None else ""
-        return f"hold ₹{current} · {where} vs target #{target}{waited}, waiting"
+        return f"hold ₹{current} · {where} vs target Ad #{target}{waited}, waiting"
     if drift_pct <= 0:
         why = "trimming off"
     elif last_pos is None or last_pos > target:
@@ -80,7 +82,7 @@ def _decision_line(*, current: int, new: int | None, position: float, target: in
         why = "trimming paused"
     else:
         why = "at floor"
-    return f"hold ₹{current} · at #{position:g} (target #{target}) · {why}"
+    return f"hold ₹{current} · at Ad #{position:g} (target Ad #{target}) · {why}"
 
 
 # ── Pure decision logic (unit-tested) ────────────────────────────────────────
@@ -237,11 +239,11 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
                 raise_step: int, position_text: str | None = None) -> tuple[int | None, str]:
     """The bid decision. Returns (new_cpm | None, reason); None = no change.
 
-    "Holding" means position is at target **or better** — better is a success, not an error
-    to correct. Blinkit's sponsored slots sit on a sparse lattice (observed positions are
-    ~89% 1/5/9/13/17), so a target of 3 is frequently unreachable and demanding exact
-    equality would mean never settling. Zepto's slots move around instead, which the same
-    `>` / `<=` comparisons handle without change.
+    `position` and `target` are AD SLOTS (campaign_manager/ad_slots.py). "Holding" means the
+    slot is at target **or better** — a better slot is a success, not an error to correct.
+    (Before 2026-10 these were page positions, and "or better" also papered over Blinkit's
+    sparse 1/5/9/13/17 layout, where a target of 3 was often unreachable. Slots are dense by
+    construction — every shown ad is one — so that problem is gone; "or better" stays.)
 
     Three outcomes when off target: `recover` (snap back precisely — our drift overshot),
     `hold` (inside the reflection window, position hasn't improved), or `raise`.
@@ -270,7 +272,7 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
         # next hour drifting back down.
         if drift_on and is_recovery(position, target, current_cpm, last_holding_cpm):
             return int(last_holding_cpm), (
-                f"dropped to position {position:g} after trimming — going back to "
+                f"dropped to ad slot {position:g} after trimming — going back to "
                 f"₹{last_holding_cpm}, which was holding")
         # HOLD: position hasn't improved since the last change and we're still inside the
         # reflection window → wait for Blinkit to catch up rather than over-bidding.
@@ -287,7 +289,7 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
         # `position_text` replaces the number when it is a placeholder — "position 49" only
         # means "not on the page", and a client reading History should see that instead.
         why = (position_text if position_text is not None
-               else f"position {position:g} is worse than target {target}")
+               else f"ad slot {position:g} is worse than the target, ad slot {target}")
         return new_cpm, f"raising to ₹{new_cpm} (+₹{step:g}) because {why}"
 
     # ── holding (at target or better) ──
@@ -296,26 +298,38 @@ def compute_bid(position: float, target: int, current_cpm: int, min_bid: int, ma
     # bids differ by ~40x, and the switch exists to make the optimizer STOP, not to make
     # it do something else.
     if not drift_on:
-        return None, (f"target held at position {position:g} — cost trimming is switched "
+        return None, (f"target held at ad slot {position:g} — cost trimming is switched "
                       f"off, so the bid stays at ₹{current_cpm}")
 
     # A single reading was unreliable ~28% of the time in the v1 log, so never spend a
     # write on one. Requiring the PREVIOUS tick to have held too also stops us undoing a
     # raise the moment it lands — the climb gets one tick to prove itself first.
     if last_position is None or last_position > target:
-        return None, (f"target held at position {position:g} — no change yet, waiting for "
+        return None, (f"target held at ad slot {position:g} — no change yet, waiting for "
                       f"a second confirmation before trimming")
     if drift_paused:
-        return None, (f"target held at position {position:g} — cost trimming paused after "
+        return None, (f"target held at ad slot {position:g} — cost trimming paused after "
                       f"overshooting")
 
     step = max(current_cpm * drift_pct / 100.0, float(drift_min_step))
     new_cpm = max(int(current_cpm - step), int(min_bid))
     if new_cpm >= current_cpm:                   # already sitting on min_bid
-        return None, (f"target held at position {position:g} — already at the ₹{min_bid} "
+        return None, (f"target held at ad slot {position:g} — already at the ₹{min_bid} "
                       f"floor")
     return new_cpm, (f"target held, trimming cost to ₹{new_cpm} (−{drift_pct:g}%) to find "
-                     f"the cheapest bid that keeps position {position:g}")
+                     f"the cheapest bid that keeps ad slot {position:g}")
+
+
+MEASURED_IN = "ad_slot"
+
+
+def slot_state_is_stale(runtime) -> bool:
+    """Was this rule's learned state (`last_position`, relaxed target, holding price, drift
+    pause, raise step) measured in something other than ad slots? Pure.
+
+    True for every runtime row written before the switch (`measured_in` NULL — page
+    positions). A rule with no runtime yet has nothing stale to distrust."""
+    return runtime is not None and getattr(runtime, "measured_in", None) != MEASURED_IN
 
 
 def _minutes_since(iso_ts: str | None, now: datetime) -> float | None:
@@ -940,7 +954,11 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                 continue
 
             binding = outcome.binding
+            # `position` from here on is our AD SLOT at the binding store — the number every
+            # comparison against `target` below is made in (campaign_manager/ad_slots.py).
+            # `page_position` is only where that slot sat, for History.
             position, source = binding.position, binding.detail
+            page_position = binding.page_position
             # Which store set the decision — said only when there was more than one to choose.
             at_store = (f" at {binding.store.label or binding.store.merchant_id}"
                         if outcome.counted > 1 else "")
@@ -974,7 +992,7 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if outcome.counted > 1:
                 logs.observed(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                               msg=(f"worst of {outcome.counted}: "
-                                   + ("ad missing" if absent else f"#{position:g}")
+                                   + ("no ad slot" if absent else f"Ad #{position:g}")
                                    + at_store),
                               position=position)
 
@@ -983,8 +1001,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # pause, relaxed target) says nothing here (C6, point 6). The BID carries over —
             # it is campaign-wide; only the learning starts again.
             switched = bool(rot and rot.switched)
-            fresh = open_stamp or switched
-            last_pos = None if switched else (runtime.last_position if runtime else None)
+            # Learned state from before the switch to ad slots (2026-10) is in PAGE positions:
+            # a relaxed target of 5 would now read as "Ad #5". Ignored and rewritten, exactly
+            # like a store switch — the bid carries over, the learning starts again. Stamped
+            # per row (`measured_in`) rather than wiped by the migration, because the old code
+            # keeps writing page positions until the new code is deployed.
+            remeasured = slot_state_is_stale(runtime)
+            fresh = open_stamp or switched or remeasured
+            last_pos = (None if (switched or remeasured)
+                        else (runtime.last_position if runtime else None))
             mins = _minutes_since(runtime.last_bid_updated_at if runtime else None, now)
             # Drift state. `open_stamp` means the window just opened, which clears all of
             # it — yesterday's holding price says nothing about today, a pause must not
@@ -1025,14 +1050,15 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             if relaxed_now:
                 logs.decided(run_id, dry_run=dry_run, campaign_id=cid, keyword=kw,
                              level="warning",
-                             msg=f"target #{rule.target_position} out of reach at ₹{ceiling} "
-                                 f"max → aiming for #{target}")
+                             msg=f"target Ad #{rule.target_position} out of reach at ₹{ceiling} "
+                                 f"max → aiming for Ad #{target}")
                 log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                      "relax", current_cpm, current_cpm,
-                                     f"target position {rule.target_position} unreachable at "
-                                     f"max ₹{ceiling} — now holding position {target}",
+                                     f"target ad slot {rule.target_position} unreachable at "
+                                     f"max ₹{ceiling} — now holding ad slot {target}",
                                      dry_run, True,
-                                     rule_id=rule.id, position=position, target=target))
+                                     rule_id=rule.id, position=page_position, ad_slot=int(position),
+                                     target=target))
 
             new_cpm, reason = compute_bid(
                 position, target, current_cpm, min_bid, ceiling,
@@ -1071,7 +1097,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             # The snap-back price is refreshed on EVERY holding tick, not just the first.
             # Stale, it would send us back to a price that worked an hour ago — the point
             # is to track the market, not to fight it.
-            rt: dict = {"rule_id": rule.id, "last_position": position}
+            rt: dict = {"rule_id": rule.id, "last_position": position,
+                        "measured_in": MEASURED_IN}
             if open_stamp:                         # observed truth: Blinkit reads back the floor
                 rt["last_cpm"] = int(min_bid)
             if fresh:                              # a new window, or a new store's auction
@@ -1117,7 +1144,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
                     tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                     "hold" if position > target else "no-op",
                     current_cpm, current_cpm, reason, dry_run, True,
-                    rule_id=rule.id, position=None if absent else position, target=target))
+                    rule_id=rule.id, position=None if absent else page_position,
+                    ad_slot=None if absent else int(position), target=target))
                 continue
 
             # Per-KEYWORD rate limit: the guard exists to catch a runaway loop, and a
@@ -1163,7 +1191,8 @@ async def run(tenant_id: uuid.UUID, *, dry_run: bool | None = None,
             log_rows.append(_row(tenant_id, platform, run_id, cid, rule.campaign_name, kw,
                                  action, current_cpm, new_cpm, reason, dry_run, success,
                                  # The placeholder for "not on the page" is not a position.
-                                 rule_id=rule.id, position=None if absent else position,
+                                 rule_id=rule.id, position=None if absent else page_position,
+                                 ad_slot=None if absent else int(position),
                                  target=target))
     except writes.SessionExpired as e:
         # The client already tried to re-authenticate once and could not. Continuing would
@@ -1271,13 +1300,18 @@ async def _read_stores(adapter, session, positions_cache: dict, stores, keyword:
         try:
             # `campaign_id` and `match_type` matter where results say which campaign won a
             # slot (Zepto); Blinkit ignores them. Passed always, so no per-marketplace branch.
-            position, source = adapter.locate_position(
+            placed = adapter.locate_position(
                 results, keyword, store.lat, store.lon, products=products,
                 campaign_id=campaign_id, match_type=match_type, brand_name=brand_name)
         except Exception as e:
             readings.append(coverage.Reading(store, elig, coverage.ERROR,
                                              detail=str(e) or type(e).__name__))
             continue
+        # The decision acts on our AD SLOT (campaign_manager/ad_slots.py); the page around it
+        # rides along for the log, History and the organic-overlap warning.
+        position, source = placed.slot, placed.reason
+        page = dict(page_position=placed.page_position, ad_positions=placed.ad_positions,
+                    organic_positions=placed.organic_positions)
         if position is None and getattr(results, "truncated", False):
             readings.append(coverage.Reading(
                 store, elig, coverage.UNTRUSTED, results=len(results),
@@ -1289,12 +1323,13 @@ async def _read_stores(adapter, session, positions_cache: dict, stores, keyword:
                 detail="this campaign's products couldn't be read, so we can't tell whether "
                        "our ad is on the page"))
         elif position is None:
+            # Not in any ad slot — even when listed organically, which never counts.
             readings.append(coverage.Reading(store, elig, coverage.ABSENT,
                                              coverage.absent_position(len(results)),
-                                             len(results), source))
+                                             len(results), source, **page))
         else:
             readings.append(coverage.Reading(store, elig, coverage.SPONSORED, float(position),
-                                             len(results), source))
+                                             len(results), source, **page))
     return readings
 
 
@@ -1454,7 +1489,14 @@ def _store_rows(tenant_id, platform, run_id, rule, readings, outcome, bid, dry_r
         "bid": int(bid) if bid is not None else None,
         "eligibility": r.eligibility, "verdict": r.verdict,
         # Only a real sponsored slot is a position; ABSENT's is a placeholder for the decision.
-        "position": r.position if r.verdict == coverage.SPONSORED else None,
+        # `position` stays the PAGE position (what it always meant); the slot the decision
+        # acted on is `ad_slot` (campaign_manager/ad_slots.py).
+        "position": r.page_position if r.verdict == coverage.SPONSORED else None,
+        "ad_slot": int(r.position) if r.verdict == coverage.SPONSORED else None,
+        # The page as we saw it — only when we did see it (sponsored or absent).
+        "ad_positions": list(r.ad_positions) if r.verdict in coverage.COUNTED else None,
+        "organic_positions": (list(r.organic_positions) if r.verdict in coverage.COUNTED
+                              else None),
         "binding": outcome.binding is r,
         "detail": " ".join((r.detail or "").split())[:500] or None,
         "dry_run": dry_run, "observed_at": now,
@@ -1975,7 +2017,7 @@ def _write_verdict(ok: bool, write_error, outcome: dict, *, mp: str, landed: str
 
 
 def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, dry_run,
-         success, *, rule_id=None, position=None, target=None) -> dict:
+         success, *, rule_id=None, position=None, target=None, ad_slot=None) -> dict:
     # `timestamp` is stamped HERE, when the decision is made — not left to the model
     # default. The rows are all persisted in one batch at the end of the run, so the
     # default fired at insert time and gave every row the SAME timestamp: a run spanning
@@ -1986,7 +2028,13 @@ def _row(tenant_id, platform, run_id, cid, cname, kw, action, old, new, reason, 
         "campaign_id": cid, "campaign_name": cname, "keyword": kw, "action": action,
         "old_value": old, "new_value": new, "reason": reason,
         # The decision's inputs, so a per-automation view can explain itself without
-        # parsing prose out of `reason`.
-        "rule_id": rule_id, "position": position, "target": target,
+        # parsing prose out of `reason`. `ad_slot` is what the decision acted on and `target`
+        # is an ad slot too (campaign_manager/ad_slots.py); `position` is where that slot sat
+        # on the PAGE. Rows before the 2026-10 switch have no `ad_slot`, and their `position`
+        # and `target` are page positions.
+        "rule_id": rule_id, "position": position, "target": target, "ad_slot": ad_slot,
+        # What `target` / `ad_slot` are counted in — the only tell on a "not showing" row,
+        # where both slot and position are empty (History reads it; see lib/runLog.js).
+        "measured_in": MEASURED_IN,
         "dry_run": dry_run, "success": success, "timestamp": now_ist(),
     }

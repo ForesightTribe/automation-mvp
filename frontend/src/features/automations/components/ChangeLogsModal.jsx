@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { X, ScrollText } from "lucide-react";
+import { AlertTriangle, X, ScrollText } from "lucide-react";
 import { Pagination } from "../../../components/ui/Pagination";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
@@ -11,7 +11,14 @@ import { ExportButton } from "../../../components/ui/ExportButton";
 import { downloadCsv } from "../../../lib/exportTable";
 import { HoverHint } from "../../../components/ui/HoverHint";
 import { formatDateTime } from "../../../lib/format";
-import { KIND_LABEL, outcomeOf, rankOf, resultOf } from "../../../lib/runLog";
+import { organicOverlapText } from "../automation";
+import {
+	KIND_LABEL,
+	outcomeOf,
+	rankOf,
+	rankText,
+	resultOf,
+} from "../../../lib/runLog";
 
 const TYPE_OPTIONS = [
 	["", "All types"],
@@ -106,11 +113,11 @@ const exportColumns = (platformOf, locationOf) => [
 	{ header: "Result", value: (r) => resultOf(r).label },
 	{ header: "Why", value: (r) => r.reason ?? "" },
 	{
-		header: "Position seen",
+		header: "Ad slot seen",
 		value: (r) => {
-			const rank = rankOf(r);
-			return rank
-				? `${rank.at ?? ""}${rank.target ? ` (target ${rank.target})` : ""}`
+			const t = rankText(rankOf(r));
+			return t
+				? `${t.seen}${t.target ? ` (target ${t.target})` : ""}`
 				: "";
 		},
 	},
@@ -141,6 +148,8 @@ export const ChangeLogsModal = ({
 	 * "Failed" only ever searched the newest twenty rows.
 	 */
 	const focus = focusQuery(focusRow);
+	const overlap =
+		focusRow?.kind === "keyword" ? organicOverlapText(focusRow) : null;
 	// The full list hides the ticks that changed nothing, or they would bury every real change;
 	// "All results + no-change checks" opts in. One automation's list always shows them. A
 	// choice made in the full list that means nothing in a focused one reads as "All results".
@@ -235,6 +244,15 @@ export const ChangeLogsModal = ({
 					</div>
 				</header>
 
+				{/* One automation's log is where "why is this costing so much" gets asked, so the
+				    organic-overlap warning is said here too — above the rows, not inside one. */}
+				{overlap && (
+					<div className="flex items-start gap-2 border-b border-warning/30 bg-warning-soft px-5 py-2.5 text-xs text-warning">
+						<AlertTriangle size={14} className="mt-px shrink-0" />
+						<span>{overlap}</span>
+					</div>
+				)}
+
 				<div className="flex-1 overflow-auto px-5 py-4">
 					{isLoading && <Loading label="Loading history…" />}
 					{error && (
@@ -264,12 +282,12 @@ export const ChangeLogsModal = ({
 									</th>
 									<th className="px-3 py-2 text-right font-medium text-content-subtle">
 										<HoverHint
-											label="Bid rows only: the position the engine SAW when it checked, over the target it was holding to. Not the rank after the write, since where a bid lands is only known at the next check. Budget and start/stop rows have no position."
+											label="Bid rows only: the ad slot the engine SAW when it checked (Ad #2 = the second sponsored listing) and where it sat on the page, over the target it was holding to. Not the rank after the write, since where a bid lands is only known at the next check. Rows from before ad-slot targeting show page positions (#5). Budget and start/stop rows have none."
 											className="w-full justify-end"
 											tabIndex={0}
 										>
 											<span className="cursor-help decoration-content-subtle/40 decoration-dotted underline-offset-4 hover:decoration-content-subtle hover:underline">
-												Position
+												Ad slot
 											</span>
 										</HoverHint>
 									</th>
@@ -366,14 +384,18 @@ export const ChangeLogsModal = ({
 													</span>
 												) : (
 													<span className="text-content">
-														{rank.at != null
-															? `#${rank.at}`
-															: "—"}
-														{rank.target !=
-															null && (
+														{rankText(rank).seen ||
+															"—"}
+														{rankText(rank)
+															.target && (
 															<span className="text-content-subtle">
 																{" "}
-																/ #{rank.target}
+																/{" "}
+																{
+																	rankText(
+																		rank,
+																	).target
+																}
 															</span>
 														)}
 													</span>

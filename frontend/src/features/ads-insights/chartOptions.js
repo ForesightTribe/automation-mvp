@@ -332,7 +332,14 @@ export const buCompareOption = (days) => ({
  */
 export const insightsDonutOption = (
 	items,
-	{ total, centerLabel = "Total spend" } = {},
+	{
+		total,
+		centerLabel = "Total spend",
+		radius = ["58%", "80%"],
+		// Labels anchored to the chart's left and right edges, so a narrow box gives each label
+		// the whole gap beside the ring instead of truncating it ("In…" for Instamart).
+		labelsToEdge = false,
+	} = {},
 ) => ({
 	...ANIMATE,
 	// The donut grows from the centre and sweeps round, which reads as a whole being divided.
@@ -349,7 +356,7 @@ export const insightsDonutOption = (
 	series: [
 		{
 			type: "pie",
-			radius: ["58%", "80%"],
+			radius,
 			center: ["50%", "50%"],
 			avoidLabelOverlap: true,
 			// A 2px ring of the surface between slices, so adjacent fills never touch.
@@ -360,12 +367,20 @@ export const insightsDonutOption = (
 			},
 			label: {
 				show: true,
-				formatter: "{b}\n{d}%",
+				formatter: labelsToEdge
+					? (p) =>
+							`${p.name}\n${p.percent < 10 ? p.percent.toFixed(1) : Math.round(p.percent)}%`
+					: "{b}\n{d}%",
 				color: INK_MUTED,
 				fontSize: 11,
 				lineHeight: 15,
+				...(labelsToEdge
+					? { alignTo: "edge", edgeDistance: 2, minMargin: 6, overflow: "none" }
+					: {}),
 			},
-			labelLine: { length: 8, length2: 8, lineStyle: { color: GRID } },
+			labelLine: labelsToEdge
+				? { length: 8, length2: 0, maxSurfaceAngle: 80, lineStyle: { color: GRID } }
+				: { length: 8, length2: 8, lineStyle: { color: GRID } },
 			emphasis: {
 				scale: true,
 				scaleSize: 6,
@@ -520,3 +535,144 @@ export const twoBarOption = (
 		},
 	],
 });
+
+/**
+ * The trend split by marketplace — the "By marketplace" view of the trend card.
+ *
+ * Money: each day's spend as columns stacked by marketplace (each in its own chart colour,
+ * `lib/marketplaceColors`), total revenue as one line on the same ₹ axis — one axis, never
+ * two. RoAS: one line per marketplace, at most three colours; any further marketplaces fold
+ * into one "Other" line rather than a generated hue. Faint 1× and 3× reference lines.
+ *
+ * `marketplaces` is `[{ slug, name, color }]`, biggest spender first.
+ */
+export const insightsTrendByMarketplaceOption = (
+	rows,
+	{ metric = "money", marketplaces = [] } = {},
+) => {
+	const dates = rows.map((r) => r.date);
+	const slice = (r, slug) => r.by_marketplace?.[slug];
+	const base = {
+		...ANIMATE,
+		legend: {
+			bottom: 0,
+			icon: "roundRect",
+			itemWidth: 10,
+			itemHeight: 10,
+			textStyle: { color: INK_MUTED, fontSize: 12 },
+		},
+		grid: { ...BASE_GRID, bottom: 28 },
+		xAxis: {
+			type: "category",
+			data: dates,
+			boundaryGap: metric === "money",
+			axisLine: { lineStyle: { color: GRID } },
+			axisTick: { show: false },
+			axisLabel: { ...axisLabel, formatter: (d) => String(d).slice(5) },
+		},
+	};
+	if (metric === "money") {
+		return {
+			...base,
+			tooltip: {
+				...TOOLTIP,
+				axisPointer: {
+					type: "shadow",
+					shadowStyle: { color: "rgba(0,0,0,0.04)" },
+				},
+				valueFormatter: (v) => (v == null ? "—" : formatCurrency(v)),
+			},
+			yAxis: {
+				type: "value",
+				splitLine: { lineStyle: { color: GRID, type: [3, 3] } },
+				axisLabel: { ...axisLabel, formatter: (v) => formatNumber(v) },
+			},
+			series: [
+				...marketplaces.map((m, i) => ({
+					name: `${m.name} spend`,
+					type: "bar",
+					stack: "spend",
+					...drawBars(60),
+					barMaxWidth: 22,
+					data: rows.map((r) => slice(r, m.slug)?.budget_consumed ?? 0),
+					itemStyle: {
+						color: m.color,
+						opacity: 0.85,
+						borderColor: SURFACE,
+						borderWidth: 1,
+						borderRadius: i === marketplaces.length - 1 ? [3, 3, 0, 0] : 0,
+					},
+				})),
+				{
+					...lineSeries(
+						"Ad revenue (all)",
+						rows.map((r) => r.ad_sales),
+						INK_MUTED,
+						marketplaces.length,
+					),
+					areaStyle: undefined,
+				},
+			],
+		};
+	}
+	const roasOf = (spend, sales) => (spend ? +(sales / spend).toFixed(2) : null);
+	const shown = marketplaces.slice(0, 3);
+	const rest = marketplaces.slice(3);
+	const series = shown.map((m, i) => ({
+		...lineSeries(
+			m.name,
+			rows.map((r) => {
+				const s = slice(r, m.slug);
+				return s ? roasOf(s.budget_consumed, s.ad_sales) : null;
+			}),
+			m.color,
+			i,
+		),
+		areaStyle: undefined,
+	}));
+	if (rest.length)
+		series.push({
+			...lineSeries(
+				`Other (${rest.length})`,
+				rows.map((r) => {
+					const sp = rest.reduce((a, m) => a + (slice(r, m.slug)?.budget_consumed ?? 0), 0);
+					const sa = rest.reduce((a, m) => a + (slice(r, m.slug)?.ad_sales ?? 0), 0);
+					return roasOf(sp, sa);
+				}),
+				"#B4B0AB",
+				3,
+			),
+			areaStyle: undefined,
+		});
+	if (series.length)
+		series[0].markLine = {
+			symbol: "none",
+			silent: true,
+			data: [
+				{
+					yAxis: 1,
+					lineStyle: { color: "#dc2626", width: 1, type: "solid", opacity: 0.5 },
+					label: { formatter: "1× break-even", position: "insideEndTop", color: "#991b1b", fontSize: 11 },
+				},
+				{
+					yAxis: 3,
+					lineStyle: { color: "#16a34a", width: 1, type: "solid", opacity: 0.5 },
+					label: { formatter: "3× target", position: "insideEndTop", color: "#166534", fontSize: 11 },
+				},
+			],
+		};
+	return {
+		...base,
+		tooltip: {
+			...TOOLTIP,
+			valueFormatter: (v) => (v == null ? "—" : `${Number(v).toFixed(2)}x`),
+		},
+		yAxis: {
+			type: "value",
+			min: 0,
+			splitLine: { lineStyle: { color: GRID, type: [3, 3] } },
+			axisLabel: { ...axisLabel, formatter: (v) => `${v}x` },
+		},
+		series,
+	};
+};

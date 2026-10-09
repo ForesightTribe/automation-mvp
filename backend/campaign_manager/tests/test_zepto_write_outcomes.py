@@ -100,7 +100,14 @@ def test_a_connect_failure_sent_nothing():
 def test_a_waf_challenge_sent_nothing():
     """202/429 come from CloudFront before the origin sees the request."""
     _raises(_resp(202), writes.WriteRefused)
-    _raises(_resp(429), writes.WriteRefused)
+    assert "firewall" in _raises(_resp(429), writes.WriteRefused)
+
+
+def test_a_rate_limit_still_there_after_the_waits_sent_nothing():
+    """P53: Zepto's own 429 refuses the request unread. The client has already waited it
+    out; what reaches the write path says so, not "firewall"."""
+    msg = _raises(_resp(429, json={"error": "rate limit exceeded"}), writes.WriteRefused)
+    assert "rate-limited" in msg and "firewall" not in msg
 
 
 def test_a_401_is_a_dead_session_not_a_verdict():

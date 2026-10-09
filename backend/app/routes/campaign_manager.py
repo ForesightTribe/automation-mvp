@@ -19,7 +19,7 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
 
-from app.dependencies import ClientDep, PaginationDep, SessionDep, require_admin
+from app.dependencies import ClientDep, PaginationDep, PeriodDep, SessionDep, require_admin
 from app.schemas.campaign_manager import (
     AdvertiserIn, AdvertiserOut, BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn,
     BudgetRuleOut, BudgetRuleUpdate, BudgetScheduleIn, BudgetScheduleOut,
@@ -176,12 +176,13 @@ async def get_bid_context(client: ClientDep, marketplace: Marketplace, campaign_
 
 
 @router.get("/{marketplace}/keywords", response_model=list[CatalogKeywordOut])
-async def list_catalog_keywords(client: ClientDep, marketplace: Marketplace):
+async def list_catalog_keywords(client: ClientDep, marketplace: Marketplace, period: PeriodDep):
     """Every keyword the marketplace's campaign catalogue holds, with its live bid and floor
-    — the keyword picker's list on a marketplace with no per-campaign keyword metrics (Zepto,
-    ZC-E3). Negatives excluded; campaigns automations may not touch are flagged, not hidden.
+    — the keyword picker's list on Zepto (ZC-E3). Negatives excluded; campaigns automations
+    may not touch are flagged, not hidden. On Zepto each row also carries its performance
+    over `start`..`end` (the navbar's dates; default the last 30 days) — P43.
     Served from the scrape, never the marketplace."""
-    return await svc.list_catalog_keywords(client.id, marketplace)
+    return await svc.list_catalog_keywords(client.id, marketplace, period.start, period.end)
 
 
 @router.post("/{marketplace}/bid-rules", response_model=BidRuleOut, status_code=201, dependencies=ADMIN_ONLY)

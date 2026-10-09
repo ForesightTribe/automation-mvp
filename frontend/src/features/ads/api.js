@@ -20,7 +20,7 @@ export const getBudgetSplit = (clientId, { start, end, marketplaces } = {}) =>
 
 export const getCampaigns = (
 	clientId,
-	{ start, end, marketplaces, page, limit, status, sort, order } = {},
+	{ start, end, marketplaces, page, limit, status, sort, order, automation } = {},
 ) =>
 	api.get(`/clients/${clientId}/ads/campaigns`, {
 		params: {
@@ -32,6 +32,8 @@ export const getCampaigns = (
 			status: status || undefined,
 			sort,
 			order,
+			// false = skip the automation lookups a view without automation controls never reads.
+			automation,
 		},
 	});
 
@@ -84,39 +86,15 @@ export const getZeptoBudgetSplit = (clientId, { start, end } = {}) =>
 		params: { start, end },
 	});
 
-// Instamart-only: spend + RoAS per campaign type, for the donut. Windowed by
-// start/end, same as Zepto's (see instamart_ads.py's budget_split docstring).
-export const getInstamartBudgetSplit = (clientId, { start, end } = {}) =>
-	api.get(`/clients/${clientId}/ads/instamart-budget-split`, {
-		params: { start, end },
-	});
-
-// Instamart-only: per-product ad performance, account-wide, each row's
-// `campaigns` breaking its total down by campaign. No ad-type filter — it
-// existed earlier and was removed as unreliable (see instamart/dashboard_data/seller/scraper.py).
-export const getInstamartProducts = (clientId, { start, end, limit } = {}) =>
-	api.get(`/clients/${clientId}/ads/instamart-products`, {
-		params: { start, end, limit },
-	});
-
-// Instamart-only: keyword performance, account-wide, same `campaigns` breakdown.
-export const getInstamartKeywords = (
+// Top keywords by spend for ONE campaign, from its own marketplace's data — the
+// Insights campaign drawer. `platform` is required (no default marketplace). The
+// response says what period the numbers cover: Blinkit's is its 8-day snapshot.
+export const getCampaignKeywords = (
 	clientId,
-	{ start, end, sort, order, limit } = {},
+	{ platform, campaignId, start, end, limit } = {},
 ) =>
-	api.get(`/clients/${clientId}/ads/instamart-keywords`, {
-		params: { start, end, sort, order, limit },
-	});
-
-// Instamart-only: top keywords by spend for ONE campaign, windowed — fills
-// the Campaign insights drawer's "Top keywords by spend" for an Instamart
-// campaign, the same spot Blinkit/Zepto campaigns fill from their own tables.
-export const getInstamartCampaignKeywords = (
-	clientId,
-	{ campaignId, start, end, limit } = {},
-) =>
-	api.get(`/clients/${clientId}/ads/instamart-campaign-keywords`, {
-		params: { campaign_id: campaignId, start, end, limit },
+	api.get(`/clients/${clientId}/ads/campaign-keywords`, {
+		params: { platform, campaign_id: campaignId, start, end, limit },
 	});
 
 // Zepto-only: share of voice + ad position per campaign. A trailing snapshot,

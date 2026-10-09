@@ -5,6 +5,7 @@ import { Combobox } from "./Combobox";
 import { formatCurrency } from "../../../lib/format";
 import { useAutomationMarketplace } from "../../../context/MarketplaceContext";
 import { bidUnit } from "../../../lib/marketplaces";
+import { MAX_AD_SLOT, adSlotHint } from "../automation";
 
 /**
  * The keyword automation's one action, given the same card treatment as a budget action.
@@ -132,15 +133,16 @@ export const KeywordActionCard = ({
 					<Target size={17} />
 				</span>
 				<div className="flex flex-wrap items-baseline gap-2 font-display text-lg font-semibold tracking-tight text-content">
-					Target position
+					Target ad slot
 					<span className="inline-flex items-baseline rounded-md border-2 border-border bg-card transition-colors focus-within:border-brand">
 						<span className="pl-2 text-base font-normal text-content-subtle">
-							#
+							Ad #
 						</span>
 						<input
 							type="number"
 							min="1"
-							aria-label="Target position"
+							max={MAX_AD_SLOT}
+							aria-label="Target ad slot"
 							value={targetPosition}
 							onChange={(e) => onTargetPosition(e.target.value)}
 							className="w-16 bg-transparent px-1 py-0.5 text-xl font-bold text-content tabular-nums focus:outline-none"
@@ -155,7 +157,7 @@ export const KeywordActionCard = ({
 							<span className="text-base font-normal text-content-muted">
 								for
 							</span>
-							<span className="max-w-[22rem] truncate text-lg font-semibold text-content">
+							<span className="max-w-88 truncate text-lg font-semibold text-content">
 								&ldquo;{keyword}&rdquo;
 							</span>
 							{/* The match type is part of WHICH bid this is: on Zepto one keyword
@@ -168,6 +170,12 @@ export const KeywordActionCard = ({
 						</>
 					)}
 				</div>
+				{/* What an ad slot IS, said where the number is typed. The engine counts only
+				    sponsored listings, in page order, so "Ad #2" lands wherever the second ad
+				    does on this keyword — the client never needs to know the page layout. */}
+				<p className="basis-full pl-11.5 text-xs text-content-subtle">
+					{adSlotHint(targetPosition)}
+				</p>
 			</div>
 
 			{/* One row of three short fields, each carrying its own label. No section

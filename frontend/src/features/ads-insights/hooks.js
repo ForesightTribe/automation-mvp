@@ -8,34 +8,65 @@
 export * from "../ads/hooks";
 
 import { useMemo } from "react";
-import { useQuery } from "@tanstack/react-query";
+import { keepPreviousData, useQuery } from "@tanstack/react-query";
 import { useClient } from "../../context/ClientContext";
 import { useDateRange } from "../../context/DateRangeContext";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { getCampaigns, getPerformance, getBudgetSplit } from "../ads/api";
-import { getCampaignsDaily, getKeywordRowsPage } from "./api";
-import { fetchAllPages } from "../../lib/exportTable";
+import { useAdsSummary } from "../ads/hooks";
+import { getBreakdowns, getCampaignsDaily, getKeywordInsights } from "./api";
+
+/** The key a campaign is known by everywhere on this page. Campaign ids are per-marketplace
+ * namespaces, so an id alone could name two campaigns. */
+export const campaignKey = (c) => `${c.platform}:${c.campaign_id}`;
 
 /**
- * Every current keyword row (one per campaign × keyword × match type), in a couple of
- * 500-row requests. The keyword table groups these by search term, which only works on the
- * whole set: grouping a page of twenty would split a keyword's campaigns across pages.
+ * The keyword table's data: `{ periods, items }` — one row per campaign × keyword × match
+ * type across marketplaces (see getKeywordInsights). Grouping by keyword needs the whole
+ * set: grouping a page of twenty would split a keyword's campaigns across pages.
  */
-export const useAllKeywordRows = () => {
+export const useKeywordInsights = ({ enabled = true } = {}) => {
 	const { activeClientId } = useClient();
 	const { selected, ready } = useMarketplaces();
+	const { range } = useDateRange();
 	return useQuery({
-		queryKey: ["insights-keyword-rows", activeClientId, selected],
+		queryKey: ["insights-keywords", activeClientId, selected, range],
 		queryFn: () =>
-			fetchAllPages(({ page, limit }) =>
-				getKeywordRowsPage(activeClientId, {
-					marketplaces: selected,
-					page,
-					limit,
-				}),
-			),
-		enabled: Boolean(activeClientId) && ready,
+			getKeywordInsights(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+			}),
+		enabled: Boolean(activeClientId) && ready && enabled,
 		staleTime: 5 * 60 * 1000,
+	});
+};
+
+/** One breakdown dimension's rows (see getBreakdowns). Only fetched when `enabled` — the
+ * card asks only when a marketplace in scope reports breakdowns. */
+export const useBreakdowns = ({ dimension, adType = "", enabled = true }) => {
+	const { activeClientId } = useClient();
+	const { selected, ready } = useMarketplaces();
+	const { range } = useDateRange();
+	return useQuery({
+		queryKey: [
+			"insights-breakdowns",
+			activeClientId,
+			selected,
+			range,
+			dimension,
+			adType,
+		],
+		queryFn: () =>
+			getBreakdowns(activeClientId, {
+				start: range.from,
+				end: range.to,
+				marketplaces: selected,
+				dimension,
+				adType,
+			}),
+		enabled: Boolean(activeClientId) && ready && enabled,
+		placeholderData: keepPreviousData,
 	});
 };
 
@@ -48,6 +79,19 @@ export const useAllKeywordRows = () => {
  */
 export const usePreviousRange = () => {
 	const { range } = useDateRange();
+	// ⚠️ N1 (2026-10-08): the KPI summary says which days actually have ad data — a window
+	// ending today ends on a day not scraped yet — and the previous window it compared with.
+	// Every comparison on the page uses that same pair, so a chart never sets 6 days of data
+	// against 7. Until the summary lands, the picker's own previous window.
+	const { data: summary } = useAdsSummary();
+	const p = summary?.period;
+	if (p?.prev_start && p?.prev_end) {
+		const days =
+			Math.round(
+				(new Date(p.prev_end) - new Date(p.prev_start)) / 86400000,
+			) + 1;
+		return { from: p.prev_start, to: p.prev_end, days };
+	}
 	const from = new Date(range.from);
 	const to = new Date(range.to);
 	const days = Math.max(1, Math.round((to - from) / 86400000) + 1);
@@ -57,6 +101,22 @@ export const usePreviousRange = () => {
 	prevFrom.setDate(prevFrom.getDate() - (days - 1));
 	const iso = (d) => d.toISOString().slice(0, 10);
 	return { from: iso(prevFrom), to: iso(prevTo), days };
+};
+
+/**
+ * The window's days that have ad data: from the picker's start to the newest day with data
+ * (the KPI summary's `period.end`), and how many days that is. Budget utilisation divides by
+ * these days, not by days not scraped yet (N1). Until the summary lands, the picker's window.
+ */
+export const useDataWindow = () => {
+	const { range } = useDateRange();
+	const { data: summary } = useAdsSummary();
+	const end = summary?.period?.end ?? range.to;
+	const days = Math.max(
+		1,
+		Math.round((new Date(end) - new Date(range.from)) / 86400000) + 1,
+	);
+	return { from: range.from, to: end, days, partial: end < range.to };
 };
 
 /** Daily rows for the previous window. Only fetched once a comparison is opened. */
@@ -206,7 +266,8 @@ export const useDailyBudgetUtilisation = ({
 				end: dates[dates.length - 1],
 				marketplaces: selected,
 			}),
-		enabled: enabled && Boolean(activeClientId) && dates.length > 0 && ready,
+		enabled:
+			enabled && Boolean(activeClientId) && dates.length > 0 && ready,
 		// A past day never changes once its scrape has landed, so this is cheap to hold.
 		staleTime: 15 * 60 * 1000,
 	});
@@ -258,9 +319,12 @@ export const useDailyBudgetUtilisation = ({
 			for (const c of itemsOn(date)) {
 				if (!((c.budget_consumed ?? 0) > 0) || !c.daily_budget)
 					continue;
-				if (!byCampaign.has(c.campaign_id)) {
-					byCampaign.set(c.campaign_id, {
+				const key = campaignKey(c);
+				if (!byCampaign.has(key)) {
+					byCampaign.set(key, {
+						key,
 						campaign_id: c.campaign_id,
+						platform: c.platform,
 						name: c.name,
 						type: c.type,
 						days: kept.map((d) => ({
@@ -275,7 +339,7 @@ export const useDailyBudgetUtilisation = ({
 						totalSales: 0,
 					});
 				}
-				const row = byCampaign.get(c.campaign_id);
+				const row = byCampaign.get(key);
 				row.days[di] = {
 					date,
 					spend: c.budget_consumed,
@@ -346,6 +410,8 @@ export const useAllCampaigns = () => {
 				marketplaces: selected,
 				page: 1,
 				limit: 500,
+				// Insights shows no automation controls (A3, 2026-10-08).
+				automation: false,
 			}),
 		enabled: Boolean(activeClientId) && ready,
 		staleTime: 5 * 60 * 1000,
@@ -354,11 +420,14 @@ export const useAllCampaigns = () => {
 	const items = query.data?.items ?? [];
 	const total = query.data?.total ?? 0;
 
-	// Counts per status come from the same rows, so the filter's labels cost no extra call.
+	// Counts per STATE (running / paused / held / ended / draft) come from the same rows, so
+	// the filter's labels cost no extra call. The state, not the raw status: each marketplace
+	// has its own words (Zepto PAUSED, Blinkit STOPPED), and a filter of one marketplace's
+	// words could not find the other's campaigns.
 	const counts = {};
 	for (const c of items) {
-		if (!c.status) continue;
-		counts[c.status] = (counts[c.status] ?? 0) + 1;
+		if (!c.state) continue;
+		counts[c.state] = (counts[c.state] ?? 0) + 1;
 	}
 
 	return {

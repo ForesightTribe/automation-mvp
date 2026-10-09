@@ -140,7 +140,7 @@ async def scrape_sales(email: str, storage_state: dict, time_range_filter: str =
             await browser.close()
 
     products = (by_product.get("data") or {}).get("product_sales_performance") or []
-    logger.info(
+    logger.debug(
         f"Seller-hub sales scraped — window:{time_range_filter!r} "
         f"products:{len(products)} order_rows:{len(orders)}"
     )

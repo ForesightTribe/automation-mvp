@@ -1,33 +1,24 @@
 import { useAdsSummary, useAdsPerformance } from "./hooks";
 import { InsightsKpiStrip } from "./components/InsightsKpiStrip";
 import { InsightsTrendChart } from "./components/InsightsTrendChart";
-import { InsightsBudgetDonut } from "./components/InsightsBudgetDonut";
-import { ZeptoBudgetSplitDonut } from "../ads/components/ZeptoBudgetSplitDonut";
-import { InstamartBudgetSplitDonut } from "../ads/components/InstamartBudgetSplitDonut";
-import { useState } from "react";
-import { CampaignInsightsCard } from "./components/CampaignInsightsCard";
-import { CampaignDrawer } from "./components/CampaignDrawer";
-import { ZeptoAssetPerformanceCard } from "../ads/components/ZeptoAssetPerformanceCard";
-import { InstamartAssetPerformanceCard } from "../ads/components/InstamartAssetPerformanceCard";
-import { SovTable } from "../ads/components/SovTable";
-import { ZeptoSovTable } from "../ads/components/ZeptoSovTable";
-import { KeywordInsightsCard } from "./components/KeywordInsightsCard";
-import { CategoryInsightsCard } from "./components/CategoryInsightsCard";
+import { SpendSplitCard } from "./components/SpendSplitCard";
+import { PerformanceExplorer } from "./components/explorer/PerformanceExplorer";
+import { SovCard } from "./components/SovCard";
 import { ExportButton } from "../../components/ui/ExportButton";
 import { downloadCsv, exportName } from "../../lib/exportTable";
 import { useDateRange } from "../../context/DateRangeContext";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
-import { useMarketplaces } from "../../context/MarketplaceContext";
+import { formatDate } from "../../lib/format";
 
 /**
- * Insights: a second, independent view over the ads data.
+ * Ads Insights: where the ad spend went, and what it returned.
  *
- * It starts as the Ads page's composition so nothing is lost on day one, and it is a
- * SEPARATE page so it can change without touching /ads, which is in production use. The
- * cards are imported from the Ads feature rather than copied: reusing them keeps the two
- * pages honest while they show the same thing, and anything Insights needs to render
- * differently gets its own component in ./components instead of an edit over there.
+ * One card per QUESTION, not per marketplace (2026-10-08, PLAN-ads-insights, designed in the
+ * Insights lab): the KPI strip (each tile split by marketplace), the spend and revenue trend,
+ * where the spend goes, the Performance explorer (campaigns, keywords, products, categories
+ * and cities in one table) and share of voice. Every marketplace in view shares each card and
+ * every row says whose it is; a card no marketplace in view can fill hides itself.
  */
 // The tiles the summary download carries, in the order the strip shows them.
 const SUMMARY_ROWS = [
@@ -38,20 +29,14 @@ const SUMMARY_ROWS = [
 	["Impressions", "impressions"],
 	["Add-to-carts", "atc"],
 	["Units sold", "units_sold"],
-	["Active campaigns", "active_campaigns"],
+	["Campaigns that ran", "active_campaigns"],
 ];
 
 export const InsightsPage = () => {
 	const { data: summary, isLoading, error, refetch } = useAdsSummary();
 	const { data: performance } = useAdsPerformance();
-
-	// The keyword tables are per-marketplace and cannot be merged: Blinkit's rows are per
-	// campaign with a direct/indirect sales split, Zepto's are brand-wide with neither.
-	// Each is shown only when its marketplace is in scope.
-	const [detailCampaign, setDetailCampaign] = useState(null);
-	const { selected } = useMarketplaces();
 	const { range } = useDateRange();
-	const showBlinkit = selected.includes("blinkit");
+	const period = summary?.period;
 
 	return (
 		<div className="flex flex-col gap-6">
@@ -63,6 +48,19 @@ export const InsightsPage = () => {
 					<p className="text-sm text-content-muted">
 						Where the ad spend went, and what it returned.
 					</p>
+					{/* Ads are scraped the next morning, so a window ending today ends on a day with no
+					    data yet. The KPI tiles (and every comparison) stop at the newest day with
+					    data and compare with the same number of days before — say so (N1). */}
+					{period && period.end < period.picked_end && (
+						<p className="mt-1 text-xs text-content-subtle">
+							Ad data up to {formatDate(period.end)}; later days
+							aren&apos;t in yet. Changes compare{" "}
+							{formatDate(period.start)} –{" "}
+							{formatDate(period.end)} with{" "}
+							{formatDate(period.prev_start)} –{" "}
+							{formatDate(period.prev_end)}.
+						</p>
+					)}
 				</div>
 				{/* The headline numbers and the daily series, as one file. Each table below
 				    carries its own download, because a single file of everything is a file
@@ -145,28 +143,10 @@ export const InsightsPage = () => {
 				/>
 			)}
 
-			<div className="grid grid-cols-1 gap-6 lg:grid-cols-2">
-				<InsightsTrendChart />
-				{showBlinkit && <InsightsBudgetDonut />}
-				<ZeptoBudgetSplitDonut />
-				<InstamartBudgetSplitDonut />
-			</div>
-
-			<CampaignInsightsCard onOpenCampaign={setDetailCampaign} />
-			{showBlinkit && <KeywordInsightsCard />}
-			<CategoryInsightsCard />
-			<ZeptoAssetPerformanceCard />
-			<InstamartAssetPerformanceCard />
-
-			<div className="flex flex-col gap-6">
-				{showBlinkit && <SovTable barClass="bg-brand" />}
-				<ZeptoSovTable />
-			</div>
-			<CampaignDrawer
-				open={detailCampaign != null}
-				campaignId={detailCampaign}
-				onClose={() => setDetailCampaign(null)}
-			/>
+			<InsightsTrendChart />
+			<SpendSplitCard />
+			<PerformanceExplorer />
+			<SovCard />
 		</div>
 	);
 };

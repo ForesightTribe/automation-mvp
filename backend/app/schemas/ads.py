@@ -6,6 +6,33 @@ from pydantic import BaseModel, ConfigDict
 from app.schemas.analytics import Metric
 
 
+class AdsSummaryMarketplace(BaseModel):
+    """One marketplace's share of the KPI strip, current window only — the split under each
+    tile. Additive bases only; the UI rebuilds RoAS / ACoS from them. `units_sold` is None
+    where the marketplace's figure is not usable (Instamart reports none it can be trusted
+    on, see CampaignInsights)."""
+
+    platform: str
+    ad_spend: float
+    ad_sales: float
+    impressions: int
+    atc: int
+    units_sold: int | None = None
+    active_campaigns: int
+
+
+class AdsSummaryPeriod(BaseModel):
+    """The windows the KPI tiles were computed over. `end` is the newest day with ad data,
+    which is before `picked_end` when the picker reaches days not scraped yet (today);
+    `prev_*` is the same number of days immediately before `start`."""
+
+    start: date
+    end: date
+    prev_start: date
+    prev_end: date
+    picked_end: date
+
+
 class AdsSummary(BaseModel):
     """KPI strip for the Ads page. Each tile is a `Metric` (value + previous-period
     value + growth), computed over the window vs the equal-length prior window.
@@ -19,6 +46,8 @@ class AdsSummary(BaseModel):
     atc: Metric
     units_sold: Metric
     active_campaigns: Metric
+    by_marketplace: list[AdsSummaryMarketplace] = []
+    period: AdsSummaryPeriod | None = None
 
 
 class CampaignRow(BaseModel):
@@ -71,7 +100,9 @@ class CampaignDayRow(BaseModel):
     window in ONE request: they used to make one call per day (up to 31, four at a time), and
     every one held a pooled connection (2026-09-25). Only days a campaign SPENT on are
     returned — a day it did not run is absent, which the views read as "did not run".
-    `daily_budget` is the campaign's current setting, as on `/ads/campaigns`."""
+    `daily_budget` is THAT DAY's budget where it was recorded — Zepto's daily rows, Blinkit's
+    `blinkit_ad_campaign_daily.daily_budget` (from 2026-10-08) — else the campaign's current
+    setting."""
 
     date: date
     campaign_id: int | str
@@ -83,21 +114,33 @@ class CampaignDayRow(BaseModel):
     ad_sales: float
 
 
+class AdPerformanceSlice(BaseModel):
+    """One marketplace's part of a day on the trend."""
+
+    budget_consumed: float
+    impressions: int
+    ad_sales: float
+
+
 class AdPerformancePoint(BaseModel):
     """One day on the spend/revenue trend. `roas` is the day's ad_sales / spend
-    (0.0 when there was no spend that day)."""
+    (0.0 when there was no spend that day). `by_marketplace` splits the day's figures by
+    marketplace slug (only marketplaces with a row that day), for the "By marketplace" view."""
 
     date: date
     budget_consumed: float
     impressions: int
     ad_sales: float
     roas: float
+    by_marketplace: dict[str, AdPerformanceSlice] = {}
 
 
 class BudgetSplitRow(BaseModel):
-    """Spend (and recomputed RoAS) for one campaign type over the window — powers
-    the budget-split donut and the by-type table."""
+    """Spend (and recomputed RoAS) for one campaign type of one marketplace over the
+    window — powers the budget-split donut and its table. `campaign_type` is the
+    marketplace's own word, so it only means something beside `platform`."""
 
+    platform: str
     campaign_type: str | None
     budget_consumed: float
     ad_sales: float
@@ -112,6 +155,7 @@ class KeywordRow(BaseModel):
     model_config = ConfigDict(from_attributes=True)
 
     campaign_id: int
+    platform: str
     campaign_type: str | None
     target_type: str
     target: str
@@ -128,6 +172,104 @@ class KeywordRow(BaseModel):
     direct_roas: float
     total_roas: float
     snapshot_date: date
+
+
+class CampaignKeywordRow(BaseModel):
+    """One keyword (+ match type) of ONE campaign, in the shape every marketplace can fill.
+    `position` is Blinkit's most-viewed position (None elsewhere — not reported)."""
+
+    keyword: str
+    match_type: str | None = None
+    spend: float
+    sales: float
+    impressions: int
+    roas: float | None = None
+    position: int | None = None
+
+
+class CampaignKeywords(BaseModel):
+    """A campaign's top keywords by spend, and what period they cover. For Blinkit that is
+    its snapshot's 8 days (`snapshot_date − 7 … snapshot_date`), whatever was asked for —
+    the UI labels these dates, never the picker's. `total` = keywords in the period (for
+    Instamart, the rows returned: its rollup is limited at the query)."""
+
+    platform: str
+    # True when the period is a marketplace-reported fixed total (Blinkit's 8-day snapshot,
+    # used until its per-day history reaches the window) rather than the requested window.
+    snapshot: bool = False
+    period_start: date | None = None
+    period_end: date | None = None
+    total: int
+    items: list[CampaignKeywordRow]
+
+
+class KeywordPeriod(BaseModel):
+    """What one marketplace's keyword rows cover. `snapshot` = a fixed-length total the
+    marketplace reports (Blinkit's 8 days to `end`), NOT the requested window — the UI must
+    label these dates. start/end None = that marketplace has no report on or before the
+    requested end."""
+
+    platform: str
+    snapshot: bool
+    start: date | None = None
+    end: date | None = None
+
+
+class KeywordInsightRow(BaseModel):
+    """One campaign × keyword × match type, in the shape every marketplace can fill. A
+    figure the marketplace does not report is None, never 0: Blinkit reports no clicks or
+    orders; Zepto no position and no direct/indirect SALES split (it splits ORDERS instead —
+    `direct_orders` same SKU, `halo_orders` another of the brand's)."""
+
+    platform: str
+    campaign_id: int | str
+    keyword: str
+    match_type: str | None = None
+    spend: float
+    sales: float
+    impressions: int
+    clicks: int | None = None
+    atc: int | None = None
+    orders: int | None = None
+    direct_sales: float | None = None
+    indirect_sales: float | None = None
+    direct_orders: int | None = None
+    halo_orders: int | None = None
+    position: int | None = None
+    # Blinkit's own reported CPM (it is not spend ÷ impressions); None elsewhere.
+    cpm: float | None = None
+    snapshot_date: date | None = None
+
+
+class KeywordInsights(BaseModel):
+    periods: list[KeywordPeriod]
+    items: list[KeywordInsightRow]
+
+
+class AdBreakdownRow(BaseModel):
+    """One product, retail category or city of one marketplace, summed over the window.
+    `key` is stable within its marketplace (the SKU id for a product, else the name);
+    `detail` is a product's retail category. `units_sold` is Zepto's orders count."""
+
+    platform: str
+    key: str
+    name: str
+    detail: str | None = None
+    image_link: str | None = None
+    ad_types: list[str] = []
+    spend: float
+    sales: float
+    impressions: int
+    clicks: int | None = None
+    units_sold: int | None = None
+    atc: int | None = None
+    ctr: float | None = None
+    cpc: float | None = None
+    cpm: float | None = None
+    roas: float | None = None
+    # Which campaigns the row's total is made of, where the marketplace reports it
+    # (Instamart products); empty otherwise.
+    campaigns: list[dict] = []
 
 
 class SponsoredSovRow(BaseModel):

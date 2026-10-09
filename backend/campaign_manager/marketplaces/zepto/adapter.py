@@ -56,7 +56,7 @@ from campaign_manager.marketplaces.zepto import endpoints as ep
 from campaign_manager.marketplaces.zepto import payload as zpayload
 from campaign_manager.marketplaces.zepto import status as zstatus
 from campaign_manager.marketplaces.zepto import translate
-from campaign_manager.marketplaces.zepto.transport import setup  # noqa: F401  (contract)
+from scraper.platforms.zepto.dashboard_data.seller.client import setup  # noqa: F401  (contract)
 from campaign_manager.writes import SessionExpired, WriteRefused
 
 # Platform-imposed bounds, published by Zepto at campaigns/metadata
@@ -493,8 +493,9 @@ async def read_store_catalog(session: dict, query: str, lat: float, lon: float, 
 def locate_position(results: list[dict], keyword: str, lat: float, lon: float, *,
                     products: list[dict] | None = None, campaign_id=None,
                     match_type: str = "EXACT", brand_name: str | None = None,
-                    **_ignored) -> tuple[float | None, str]:
-    """Find THIS campaign+keyword's sponsored slot in already-fetched results (pure).
+                    **_ignored):
+    """Find THIS campaign+keyword's AD SLOT in already-fetched results (pure) — an
+    `ad_slots.Placement`.
 
     Attribution is by campaign id from the row's `uclId`, not by product-name
     similarity — see positions.py. `products` supplies the campaign's variant ids as

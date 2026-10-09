@@ -1,4 +1,12 @@
-"""Zepto HTTP transport — the AWS WAF token, and the only browser in the system.
+"""The Zepto seller-console client — the AWS WAF token, and the only browser in the system.
+
+ONE client for everything that talks to Zepto's console: the private scrape (sales, PO,
+ads) and the campaign manager (reads + budget / bid / status writes). It lived in
+`campaign_manager/marketplaces/zepto/transport.py` until 2026-10-06 (P12) — the scrape
+had to import the campaign manager to get it, the only scraper -> campaign-manager import
+in the repo. It now sits with the scrape's other seller-console code, and the campaign
+manager imports it from here (the direction Blinkit's campaign manager already uses).
+Moved as-is; what changed with it is in P53 (rate limits).
 
 Zepto guards `/ads-bff/*` with an AWS WAF **Challenge**: an unrecognised client gets
 `202` with a JavaScript challenge instead of a response. Solving it means running
@@ -21,7 +29,8 @@ answers **429** — which reads exactly like rate limiting. That misreading cost
 afternoon: three wrong diagnoses (rate limit, IP block, unverified token) chased
 before the real cause turned out to be a missing header that had been visible in the
 very first capture. If you see 429 here, check the headers before theorising about
-the network.
+the network. (Zepto DOES have a real rate limit too — a 429 with a JSON body
+`{"error":"rate limit exceeded"}`; that one is waited out, see `_RATE_LIMIT_WAITS`.)
 
 **The token lives ~5 minutes** (measured: alive at 4, dead at 6 — AWS's default
 challenge immunity). It is never cached in the DB: every job interval we have is
@@ -47,7 +56,7 @@ import httpx
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
 from app.utils.time import now_ist
-from campaign_manager.marketplaces.zepto import endpoints as ep
+from scraper.platforms.zepto.dashboard_data.seller import endpoints as ep
 from platform_auth import service as auth_service
 from platform_auth import store as auth_store
 
@@ -78,8 +87,30 @@ MIN_REAUTH_INTERVAL_SECONDS = int(os.getenv("CM_ZEPTO_MIN_REAUTH_INTERVAL_SECOND
 
 # CloudFront's answers when the WAF is unsatisfied: 202 = challenge, 429 = present
 # but rejected (or the `waf-enabled` header missing). Both mean "re-mint", not
-# "back off".
+# "back off" — EXCEPT a 429 that is Zepto's own rate limit (below).
 _WAF_REJECT = (202, 429)
+
+# Zepto's OWN rate limit is also a 429, but from its origin, with a JSON body:
+# `{"error":"rate limit exceeded"}`. Not a WAF problem — a fresh token does nothing for
+# it. Until 2026-10-06 (P53) both 429s re-minted, so a fast loop relaunched Chromium
+# 7 times in 90 s; the ~10 s launch happened to work as a back-off, by accident. Now the
+# same request is resent after these waits (seconds), same token. Safe for writes too: a
+# rate-limited request was refused before Zepto processed it.
+_RATE_LIMIT_WAITS = (5, 15, 30)
+
+
+def is_rate_limited(r: httpx.Response) -> bool:
+    """Zepto's own "slow down" (back off), as opposed to CloudFront's WAF 429 (re-mint).
+    Told apart by the body: CloudFront's is not Zepto's JSON error."""
+    if r.status_code != 429:
+        return False
+    try:
+        body = r.json()
+    except ValueError:
+        return False
+    if not isinstance(body, dict):
+        return False
+    return "rate limit" in str(body.get("error") or body.get("message") or "").lower()
 
 
 class ZeptoClient:
@@ -106,6 +137,7 @@ class ZeptoClient:
         self.brand_ids = brand_ids or []
         self.reauth_count = 0
         self.remint_count = 0
+        self.ratelimit_count = 0
 
     # ── header construction ──────────────────────────────────────────────────
     def headers(self, *, brand_analytics: bool = False) -> dict[str, str]:
@@ -144,7 +176,7 @@ class ZeptoClient:
     async def _remint(self) -> None:
         self.waf = await mint_waf_token()
         self.remint_count += 1
-        logger.info(f"Zepto WAF token re-minted (#{self.remint_count})")
+        logger.debug(f"Zepto WAF token re-minted (#{self.remint_count})")
 
     async def _adopt_stored(self) -> bool:
         """Take a FRESHER session another job already saved, instead of logging in. (ZC-P25)
@@ -172,7 +204,7 @@ class ZeptoClient:
             return False
         self.jwt = jwt
         self.brand_ids = raw.get("brand_ids") or self.brand_ids
-        logger.info("Zepto session was replaced by another job's login — adopted the "
+        logger.debug("Zepto session was replaced by another job's login — adopted the "
                     "fresher stored session instead of logging in again")
         return True
 
@@ -215,7 +247,9 @@ class ZeptoClient:
                     return False
 
             self.reauth_count += 1
-            logger.warning(
+            # DEBUG: a recovery. Scrapes count it into their section summary
+            # ("1 re-login(s)", scraper/utils/run_log.py); giving up is the ERROR above.
+            logger.debug(
                 f"Zepto session rejected (401) — logging in again ({self.reauth_count}/"
                 f"{MAX_REAUTH_PER_RUN} this run). This logs out anyone using the Zepto "
                 "dashboard on the same account."
@@ -228,8 +262,10 @@ class ZeptoClient:
     # ── the one request path ─────────────────────────────────────────────────
     async def request(self, method: str, path: str, *, brand_analytics: bool = False,
                       retry_writes: bool = True, **kw: Any) -> httpx.Response:
-        """Make one API call, recovering from the two recoverable failures:
+        """Make one API call, recovering from the three recoverable failures:
 
+        * **429 "rate limit exceeded"** (Zepto's own, JSON) — wait and resend, same token,
+          up to `_RATE_LIMIT_WAITS`; still limited after that → returned as is.
         * **202/429** — the WAF pass is stale: re-mint, resend once.
         * **401** — the session is gone: adopt a fresher stored one or log in
           (`_reauth`), resend once. For EVERY method, writes included, since 2026-09-21:
@@ -247,17 +283,32 @@ class ZeptoClient:
         # there while working locally — a failure that only appears in production.
         # Zepto does not require http2.
         async with httpx.AsyncClient(timeout=_TIMEOUT) as http:
-            r = await http.request(method, url, headers=self.headers(
-                brand_analytics=brand_analytics), **kw)
+            async def send() -> httpx.Response:
+                # Every send — first try and each recovery's resend — waits out a rate limit.
+                r = await http.request(method, url, headers=self.headers(
+                    brand_analytics=brand_analytics), **kw)
+                for wait in _RATE_LIMIT_WAITS:
+                    if not is_rate_limited(r):
+                        break
+                    self.ratelimit_count += 1
+                    logger.debug(f"Zepto rate limit on {method} {path} — waiting {wait}s")
+                    await asyncio.sleep(wait)
+                    r = await http.request(method, url, headers=self.headers(
+                        brand_analytics=brand_analytics), **kw)
+                return r
 
-            if r.status_code in _WAF_REJECT and not brand_analytics:
+            r = await send()
+            if (r.status_code in _WAF_REJECT and not brand_analytics
+                    and not is_rate_limited(r)):
                 await self._remint()
-                r = await http.request(method, url, headers=self.headers(), **kw)
+                r = await send()
 
             if r.status_code == 401:
                 if await self._reauth():
-                    r = await http.request(method, url, headers=self.headers(
-                        brand_analytics=brand_analytics), **kw)
+                    r = await send()
+        if is_rate_limited(r):
+            logger.warning(f"Zepto still rate-limiting {method} {path} after "
+                           f"{sum(_RATE_LIMIT_WAITS)}s of waiting — giving up on this call")
         return r
 
     async def get_json(self, path: str, *, brand_analytics: bool = False,

@@ -15,8 +15,7 @@ const DIRECTION = {
 const coverLabel = (v) => (v === null || v === undefined ? "—" : `${v}d`);
 
 /** Every column except Product is right-aligned, header and cell together. */
-const CELL =
-	"px-1.5 py-2 text-right lg:px-3 lg:py-3 2xl:px-4 2xl:py-4";
+const CELL = "px-1.5 py-2 text-right lg:px-3 lg:py-3 2xl:px-4 2xl:py-4";
 const HEAD = `${CELL} font-medium text-content-subtle`;
 
 /**
@@ -92,7 +91,14 @@ export const ProductsTable = ({ rows, sort, onSort }) => {
 					{rows.map((r) => (
 						<tr
 							key={r.item_id}
-							onClick={() => navigate(`/products/${r.item_id}`)}
+							// The row's own marketplace travels with the link: a product belongs to
+							// one marketplace, so its page must not follow the navbar filter (a
+							// Zepto product asked for under "blinkit" is a 404).
+							onClick={() =>
+								navigate(
+									`/products/${r.item_id}${r.marketplace ? `?mp=${r.marketplace}` : ""}`,
+								)
+							}
 							className="cursor-pointer border-b border-border/60 last:border-0 hover:bg-muted/50"
 						>
 							<td className="px-1.5 py-2 text-left lg:px-3 lg:py-3 2xl:px-4 2xl:py-4">

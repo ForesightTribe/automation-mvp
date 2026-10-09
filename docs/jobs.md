@@ -405,8 +405,10 @@ happens next is per-schedule, via `catchup`. **The right answer differs by scrap
 
 - **Marketing** re-scrapes **the last 7 days** on every run (to pick up late metric
   revisions). A missed day therefore **heals itself** next run — `catchup=false` is fine.
-- **Seller** defaults to **yesterday only**. A missed day is a **permanent data gap**. Set
-  `catchup=true`, or give the schedule a wider `--from`/`--to` window.
+- **Seller** re-scrapes **the 4 days up to yesterday** on every run (since 2026-10-07; it
+  was yesterday only, and a missed day was a permanent data gap). A day missed 4 runs running
+  still needs a `--from`/`--to` re-run.
+- **Zepto** (`scrape.zepto`) re-scrapes sales 4 days, ads 3 days, PO 30 days back through today.
 
 Invisible until it has already cost you a week of data, which is why it is written down.
 

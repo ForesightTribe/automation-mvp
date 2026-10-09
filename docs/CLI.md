@@ -170,12 +170,25 @@ python -m cli scrape blinkit --tenant <tenant_id>
 python -m cli scrape blinkit --tenant <tenant_id> --from 2026-05-25 --to 2026-06-24
 
 python -m cli scrape blinkit --tenant <tenant_id> --no-save   # dry run, print only
+
+# Backfill keyword performance one day at a time over a window (2026-10-08, B6)
+python -m cli scrape blinkit --tenant <tenant_id> --from 2026-09-08 --keyword-days 0
 ```
 
 One pass fetches the campaign list, then for **each campaign** its **daily** metric
 series and its **keyword / recommendation breakdown**, plus sponsored SOV, brand
 collections, and visibility plans. Each covers the whole `--from`/`--to` window — so a
 30-day backfill is one pass, not 30 runs.
+
+**Keyword performance per day** (2026-10-08, `blinkit_ad_campaign_detail_daily`): besides
+the old 8-day keyword snapshot (`end − 7 … end`, still written for older code), the report is
+asked for **one day at a time** — the newest `--keyword-days` days before today (default 3,
+so a missed run heals the next day), and only for days the campaign spent on. `0` = every day
+of the window, for a backfill with `--from`. Cost: up to 3 extra report calls per campaign on
+the daily run. **Budget history** (`blinkit_ad_campaign_daily.daily_budget`): every run also
+writes each campaign's current budget onto **yesterday's** daily row, and a re-scrape never
+replaces it — no extra calls (it comes from the configuration pull below). Blinkit keeps no
+budget history, so a backfill can't fill older days; they show the current budget.
 
 Since V7 it also pulls each campaign's **configuration**: city targeting, budget, pacing,
 spend-to-date, and Blinkit's published **bid range per keyword** (the floor a bid rule may
@@ -240,7 +253,7 @@ python -m cli scrape blinkit-seller --tenant <tenant_id> --soh
 python -m cli scrape blinkit-seller --tenant <tenant_id> --no-save
 ```
 
-**Sales** — scrapes day-by-day over the given range (default: yesterday). Each day upserted by `item_id + city + date`; re-running the same date updates in place.
+**Sales** — scrapes day-by-day over the given range (default: the 4 days up to yesterday, so a missed run heals on the next one; a failed day fails the run after the others are saved). Each day upserted by `item_id + city + date`; re-running the same date updates in place.
 
 **PO** — scrapes a rolling window of POs by issue date. Upserted by `po_number` so re-running updates state without duplicating. SKU line items fetched only for POs not already in the DB — first run is expensive, subsequent runs fetch only new POs.
 
@@ -282,6 +295,28 @@ The `--week` date must be a Monday (`YYYY-MM-DD`). A non-Monday will return empt
 | `blinkit_scorecard_weekly`     | Overall fill rate, weighted fill rate, PO/GRN qty, GMV, rank — per week |
 | `blinkit_scorecard_facilities` | Per-facility fill rate, potential loss, rank                            |
 | `blinkit_scorecard_key_skus`   | SKUs with highest potential revenue loss, with GMV and category         |
+
+---
+
+### Zepto seller console — sales + PO + ads (one command)
+
+```bash
+# Daily run — all three sections on ONE login (each Zepto login logs the client's dashboard out)
+python -m cli scrape zepto --tenant <tenant_id>
+
+# Pick sections (any combination)
+python -m cli scrape zepto --tenant <tenant_id> --sales
+python -m cli scrape zepto --tenant <tenant_id> --po --po-days-back 60
+python -m cli scrape zepto --tenant <tenant_id> --ads --from 2026-09-19 --to 2026-09-28
+
+# Sales per-city split for EVERY city on EVERY day (backfills only — ~145 calls a day)
+python -m cli scrape zepto --tenant <tenant_id> --sales --all-cities --from 2026-09-14
+
+# Dry run
+python -m cli scrape zepto --tenant <tenant_id> --no-save
+```
+
+Zepto has one console, so it is one command and one job (`scrape.zepto`) — unlike Blinkit's two dashboards. Default windows: **sales** 4 days to yesterday · **ads** the 3 days up to `--to` · **PO** `--po-days-back` (30) through today. Exit **0** = everything landed, **1** = a section failed or lost fetches (what came back is saved — re-run the same window), **3** = login gone. The code is `scraper/platforms/zepto/dashboard_data/seller/run.py`; full reference: [backend/docs/zepto/cli.md](../backend/docs/zepto/cli.md). (`zepto-sales` / `zepto-ads` / `zepto-po` were removed 2026-10-05.)
 
 ---
 
@@ -613,7 +648,7 @@ python -m cli cm rules remove-bid    --rule <hex>  # full id from `cm rules list
 | Flag                      | Notes                                                                                                     |
 | ------------------------- | --------------------------------------------------------------------------------------------------------- |
 | `--keyword`               | search keyword to chase                                                                                   |
-| `--target`                | target sponsored position (e.g. `3`)                                                                      |
+| `--target`                | target **ad slot**, 1–5: the Nth sponsored listing on the page, wherever it lands (`2` = the second ad) — campaign-manager.md §7.0 |
 | `--min-bid` / `--max-bid` | bid floor / ceiling (₹) — CPM on Blinkit, **CPC** on Zepto                                               |
 | `--city`                  | measure in this city, at its **frozen store** (`cm stores`, below) — the rule keeps following it          |
 | `--location-id`           | **pin** to one store (merchant_id from `cli locations list --city <slug>`); ignores the city's store      |
@@ -648,7 +683,7 @@ registry through its store catalogue and, where its **ads** spell a city differe
 ### Measurement stores — `cm stores …`
 
 A bid rule saved with `--city` measures at that city's **frozen store set**: up to three stores, rank 1
-the anchor and ranks 2–3 validating it. The bid aims for the target position at **every** store in the
+the anchor and ranks 2–3 validating it. The bid aims for the target ad slot at **every** store in the
 set where the campaign is listed and in stock — the worst such store sets the bid. There is a global set
 per city, which a client can replace whole. The engine reads stock itself (one brand search per store,
 at most hourly). Nothing is frozen until you set it — until then a city measures at its lowest

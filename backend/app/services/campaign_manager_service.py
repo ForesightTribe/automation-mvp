@@ -16,12 +16,12 @@ from app.schemas.campaign_manager import (
     BidContextOut, CatalogKeywordOut, KeywordBidRange, TargetedCity,
     BidRuleIn, BidRuleOut, BidRuleUpdate, BudgetRuleIn, BudgetRuleOut, BudgetRuleUpdate,
     BudgetScheduleIn, BudgetScheduleOut, BudgetScheduleUpdate, CmActionOut, CmJobOut,
-    OverviewOut, RunLogOut,
+    OrganicOverlapOut, OverviewOut, RunLogOut,
 )
 from app.utils.time import now_ist
 # `window` is the same pure module the engines decide with, so the status the UI shows is
 # the logic the engines act on — and it pulls in no Playwright (the app-layer rule holds).
-from campaign_manager import repo, window
+from campaign_manager import ad_slots, repo, window
 from campaign_manager.marketplaces import (keyword_bidding_refusal, match_types,
                                            min_daily_budget)
 from jobs.queue import enqueue
@@ -196,10 +196,16 @@ def _schedule_out(schedule, rules, now=None) -> BudgetScheduleOut:
     )
 
 
-def _bid_out(r, now=None, city_name=None) -> BidRuleOut:
+def _bid_out(r, now=None, city_name=None, overlap=None) -> BidRuleOut:
     o = BidRuleOut.model_validate(r)
     o.status = _bid_status(r, now or now_ist())
     o.city_name = city_name
+    o.target_ad_slot = r.target_position        # the column predates ad slots; same value
+    if overlap is not None:
+        o.organic_overlap = OrganicOverlapOut(
+            stores=overlap.stores, of=overlap.of, store_labels=list(overlap.store_labels),
+            organic_positions=list(overlap.organic_positions),
+            target_page_position=overlap.target_page_position, last_seen=overlap.last_seen)
     return o
 
 
@@ -363,7 +369,21 @@ async def list_bid_rules(tenant_id: uuid.UUID, marketplace: str) -> list[BidRule
         rules = [r for r, _rt in pairs]
         # One resolve for the whole page — a per-row lookup would be a session per rule.
         names = await repo.city_names_for(marketplace, rules, db=db)
-    return [_bid_out(r, now, names.get(r.id)) for r in rules]
+        # The organic-overlap warning: each store's last few page readings, one query.
+        pages = await repo.recent_page_reads(
+            tenant_id, marketplace, [r.id for r in rules],
+            since=now - timedelta(hours=_OVERLAP_LOOKBACK_HOURS),
+            per_store=_OVERLAP_READS_PER_STORE, db=db)
+    return [_bid_out(r, now, names.get(r.id),
+                     ad_slots.overlap_summary(pages.get(r.id, []), r.target_position))
+            for r in rules]
+
+
+# The organic-overlap warning reads each store's last few readings from the past day: a
+# rule out of window overnight still shows what its last window saw, and "most of the last
+# four" is steady enough not to flicker with every 15-minute search.
+_OVERLAP_LOOKBACK_HOURS = 24
+_OVERLAP_READS_PER_STORE = 4
 
 
 def _sorted(cities: list[TargetedCity]) -> list[TargetedCity]:
@@ -479,8 +499,13 @@ _BID_UNIT = {"blinkit": "CPM", "zepto": "CPC"}
 _BID_COL = {"blinkit": "current_cpm", "zepto": "bid_value"}
 
 
-async def list_catalog_keywords(tenant_id: uuid.UUID,
-                                marketplace: str) -> list[CatalogKeywordOut]:
+def _kw_key(keyword: str | None) -> str:
+    """A keyword as it should compare: case and runs of whitespace ignored."""
+    return " ".join((keyword or "").lower().split())
+
+
+async def list_catalog_keywords(tenant_id: uuid.UUID, marketplace: str,
+                                start=None, end=None) -> list[CatalogKeywordOut]:
     """Every keyword the marketplace's catalogue holds for this tenant — the keyword
     picker's list (ZC-E3). DB only.
 
@@ -488,21 +513,38 @@ async def list_catalog_keywords(tenant_id: uuid.UUID,
     `_zepto_bid_context`). Campaigns the automations may not touch keep their rows but carry
     `automatable=False` and the reason, so the picker greys them out rather than hiding a
     campaign someone is looking for.
+
+    On Zepto each row also carries its performance summed over `start`..`end` (the navbar's
+    dates) from the per-campaign keyword report (P43) — zeros when the keyword had no
+    activity in the window.
     """
     from campaign_manager.marketplaces import canonical_status
 
-    async with AsyncSessionLocal() as db:        # both reads on one connection
+    async with AsyncSessionLocal() as db:        # all reads on one connection
         rows = [(k, c) for k, c in await repo.list_catalog_keywords(tenant_id, marketplace,
                                                                    db=db)
                 if not getattr(k, "is_negative", False)]
         refused = await repo.automation_refusals(
             tenant_id, marketplace, {k.campaign_id for k, _c in rows}, db=db)
+        perf = (await repo.zepto_keyword_performance(tenant_id, start, end, db=db)
+                if marketplace == "zepto" and start and end else None)
+    if perf is not None:
+        # Joined on the keyword TEXT (the report carries no keyword id), so compare it the
+        # way a person would: case and surrounding spaces ignored. Checked 2026-10-06 on
+        # campaign 2443333 — the report's 9 keys match the catalogue exactly; this keeps a
+        # spelling drift between Zepto's two endpoints from silently zeroing a row.
+        perf = {(cid, _kw_key(kw), (mt or "").upper()): m for (cid, kw, mt), m in perf.items()}
     name_col = "campaign_name" if marketplace == "zepto" else "name"
     bid_col = _BID_COL[marketplace]
     unit = _BID_UNIT[marketplace]
     out = []
     for k, c in rows:
         raw = getattr(c, "status", None) if c is not None else None
+        m = None
+        if perf is not None:
+            m = perf.get((k.campaign_id, _kw_key(k.keyword), (k.match_type or "").upper())) or {
+                "spend": 0.0, "revenue": 0.0, "impressions": 0, "clicks": 0, "orders": 0,
+                "direct_orders": 0, "indirect_orders": 0, "atc": 0}
         out.append(CatalogKeywordOut(
             campaign_id=k.campaign_id,
             campaign_name=getattr(c, name_col, None) if c is not None else None,
@@ -516,6 +558,11 @@ async def list_catalog_keywords(tenant_id: uuid.UUID,
             automatable=k.campaign_id not in refused,
             not_automatable_reason=refused.get(k.campaign_id),
             scraped_at=getattr(k, "scraped_at", None),
+            **({} if m is None else {
+                "budget_consumed": m["spend"], "total_sales": m["revenue"],
+                "impressions": m["impressions"], "clicks": m["clicks"],
+                "orders": m["orders"], "direct_orders": m["direct_orders"],
+                "indirect_orders": m["indirect_orders"], "atc": m["atc"]}),
         ))
     return out
 

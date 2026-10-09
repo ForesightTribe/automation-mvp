@@ -119,7 +119,7 @@ def test_missing_brand_id_fails_loudly():
         _FakeClient([]).brand_id
     except IndexError:
         pass    # the fake's own failure; the real client raises RuntimeError
-    from campaign_manager.marketplaces.zepto.transport import ZeptoClient
+    from scraper.platforms.zepto.dashboard_data.seller.client import ZeptoClient
     try:
         ZeptoClient("t", "jwt", "waf", []).brand_id
     except RuntimeError as e:

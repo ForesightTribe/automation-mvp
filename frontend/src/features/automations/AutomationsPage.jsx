@@ -431,7 +431,7 @@ export const AutomationsPage = () => {
 						kind: "keyword",
 						title: "Keyword Automation",
 						cta: "Create Keyword Automation",
-						blurb: "Hold a keyword's search position. The optimizer moves its bid within the limits you set to reach the rank you want and defend it.",
+						blurb: "Hold a keyword's ad slot, such as the first or second sponsored listing, wherever it appears on the page. The optimizer moves its bid within the limits you set to reach that slot and defend it.",
 					},
 				].map((c) => (
 					// The card describes; the button acts. A whole card that is itself a button

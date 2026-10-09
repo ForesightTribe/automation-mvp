@@ -137,6 +137,14 @@ class BlinkitAdCampaignDaily(SQLModel, table=True):
     quantities_sold: int = 0  # total_quantities_sold
     ad_sales: float = 0.0  # total_sales — ad-attributed revenue
     roas: float = 0.0  # total_roas (daily; recompute for windows)
+    # The campaign's daily budget ON THIS DAY (BLINKIT-NOTES B8, 2026-10-08) — Blinkit keeps no
+    # budget history, so utilisation for a past day used today's budget. The morning scrape
+    # reads each campaign's current budget and writes it onto YESTERDAY's row (the budget that
+    # day ended on); a re-scrape never replaces it (storage `_KEEP_FIRST`), so a later budget
+    # change cannot rewrite an older day. Zepto's `zepto_ad_campaign_daily.daily_budget` works
+    # the same way. NULL for days before this shipped — readers fall back to the current
+    # budget. A day a campaign did not spend has no row, and needs no budget.
+    daily_budget: int | None = None
     scraped_at: datetime = Field(default_factory=now_ist)
 
 
@@ -179,6 +187,58 @@ class BlinkitAdCampaignDetail(SQLModel, table=True):
     direct_roas: float = 0.0
     total_roas: float = 0.0
     scraped_at: datetime = Field(default_factory=now_ist)
+
+
+class BlinkitAdCampaignDetailDaily(SQLModel, table=True):
+    """The same keyword / recommendation breakdown as `BlinkitAdCampaignDetail`, but for ONE
+    day per row (BLINKIT-NOTES B6, 2026-10-08).
+
+    The detail snapshot above is an 8-day total (`today − 7 … today`) stored under each scrape
+    day, so its rows overlap and can follow no date window. The report answers a one-day range
+    too — probed read-only on campaign 402379, 2026-10-08: single days add up to a 3-day request
+    (sales and impressions exactly, spend within Blinkit's rounding), a day 3 weeks back still
+    answers, a day's keyword spend is ~99% of the campaign's own, today returns nothing. So the
+    scrape asks each campaign × day it spent on, and these rows sum over any window — Zepto's
+    `zepto_ad_campaign_detail` pattern.
+
+    Rows stay at Blinkit's grain: one per SUB-campaign (a keyword under several match types is
+    several rows); readers merge them. Re-scraping a day overwrites it (upsert key has the day)."""
+
+    __tablename__ = "blinkit_ad_campaign_detail_daily"
+
+    __table_args__ = (
+        # "bacdd": index names are database-wide — "bacd" and "bacdet" are taken.
+        Index("idx_bacdd_tenant_date", "tenant_id", "date"),
+        Index("idx_bacdd_tenant_campaign_date", "tenant_id", "campaign_id", "date"),
+    )
+
+    id: int | None = Field(default=None, primary_key=True)
+    tenant_id: uuid.UUID = Field(foreign_key="tenants.id")
+    platform: str = "blinkit"
+    upsert_key: str = Field(unique=True)
+    scrape_job_id: uuid.UUID | None = Field(default=None, foreign_key="scrape_jobs.id")
+    date: date
+    campaign_id: int
+    campaign_type: str | None = None
+    target_type: str  # 'keyword' | 'recommendation'
+    target: str  # keyword string OR asset_type
+    sub_campaign_id: int | None = None
+    match_type: str | None = None
+    impressions: int = 0
+    budget_consumed: float = 0.0
+    cpm: float = 0.0
+    direct_atc: int = 0
+    indirect_atc: int = 0
+    direct_sales: float = 0.0
+    indirect_sales: float = 0.0
+    direct_quantities_sold: int = 0
+    indirect_quantities_sold: int = 0
+    new_users_acquired: int = 0
+    most_viewed_position: int | None = None
+    direct_roas: float = 0.0
+    total_roas: float = 0.0
+    scraped_at: datetime = Field(default_factory=now_ist)
+
 
 
 class BlinkitSponsoredSOV(SQLModel, table=True):
