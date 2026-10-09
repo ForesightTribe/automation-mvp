@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import { Card } from "../../../components/ui/Card";
-import { ViewToggle } from "../../../components/ui/ViewToggle";
+import { ChannelChips } from "../../../components/ui/ChannelChips";
 import { InfoTooltip } from "../../../components/ui/InfoTooltip";
 import { Pagination } from "../../../components/ui/Pagination";
 import { ExportButton } from "../../../components/ui/ExportButton";
@@ -228,33 +228,32 @@ export const SovCard = () => {
 				</span>
 			}
 			actions={
-				<div className="flex items-center gap-2">
-					{asOf && (
-						<span className="text-xs text-content-subtle">
-							Trailing 7 days, as of {asOf}
-						</span>
-					)}
-					{tabs.length > 1 ? (
-						<ViewToggle
-							options={tabs.map((m) => ({
-								value: m,
-								label: marketplaceName(m),
-							}))}
-							value={current}
-							onChange={(v) => {
-								setTab(v);
-								setFilter("all");
-								setQuery("");
-							}}
-						/>
-					) : (
-						<span className="text-xs text-content-subtle">
-							{marketplaceName(current)}
-						</span>
-					)}
-				</div>
+				asOf && (
+					<span className="text-xs text-content-subtle">
+						Trailing 7 days, as of {asOf}
+					</span>
+				)
 			}
 		>
+			{/* Left-aligned, above the content: the same chips the Performance
+			    Explorer uses, so one control means one thing across the page.
+			    No "all" chip — share of voice is measured per marketplace and
+			    the two scales are not comparable, so there is nothing to
+			    combine. */}
+			{tabs.length > 1 && (
+				<div className="mb-3">
+					<ChannelChips
+						slugs={tabs}
+						value={current}
+						onSelect={(v) => {
+							if (!v) return;
+							setTab(v);
+							setFilter("all");
+							setQuery("");
+						}}
+					/>
+				</div>
+			)}
 			{q.isLoading && <Loading label="Loading share of voice…" />}
 			{q.error && (
 				<ErrorState message={q.error.message} onRetry={q.refetch} />
@@ -283,7 +282,7 @@ export const SovCard = () => {
 									}
 									className={`rounded-lg border px-3 py-2.5 text-left transition-colors ${
 										on
-											? "border-brand bg-brand-soft/20"
+											? "border-brand"
 											: "border-border hover:border-content-subtle"
 									}`}
 								>

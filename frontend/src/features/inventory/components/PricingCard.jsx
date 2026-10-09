@@ -1,5 +1,9 @@
 import { usePricing } from "../hooks";
 import { Card } from "../../../components/ui/Card";
+import { SectionExport } from "./SectionExport";
+import { downloadCsv, exportName } from "../../../lib/exportTable";
+import { useDateRange } from "../../../context/DateRangeContext";
+import { pricingSection } from "../exportSections";
 import { DataTable } from "../../../components/ui/DataTable";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
@@ -21,6 +25,7 @@ const pct = (v) =>
  */
 export const PricingCard = ({ kind = "main" }) => {
 	const { data, isLoading, error, refetch } = usePricing(kind);
+	const { range } = useDateRange();
 	const rows = data?.skus ?? [];
 
 	const columns = [
@@ -68,21 +73,34 @@ export const PricingCard = ({ kind = "main" }) => {
 	];
 
 	return (
-		<Card title="Price differences between stores">
-			{isLoading && <Loading label="Loading prices…" />}
-			{error && <ErrorState message={error.message} onRetry={refetch} />}
-			{!isLoading &&
-				!error &&
-				(rows.length === 0 ? (
-					<EmptyState message="No prices captured in this window." />
-				) : (
-					<DataTable
-						columns={columns}
-						rows={rows}
-						rowKey={(r) => r.platform_product_id}
-						maxHeight={420}
-					/>
-				))}
-		</Card>
+		<div>
+			<SectionExport
+				disabled={!rows.length}
+				onExport={() =>
+					downloadCsv(
+						exportName(`availability-prices-${kind}`, range),
+						[pricingSection(data)].filter(Boolean),
+					)
+				}
+			/>
+			<Card title="Price differences between stores">
+				{isLoading && <Loading label="Loading prices…" />}
+				{error && (
+					<ErrorState message={error.message} onRetry={refetch} />
+				)}
+				{!isLoading &&
+					!error &&
+					(rows.length === 0 ? (
+						<EmptyState message="No prices captured in this window." />
+					) : (
+						<DataTable
+							columns={columns}
+							rows={rows}
+							rowKey={(r) => r.platform_product_id}
+							maxHeight={420}
+						/>
+					))}
+			</Card>
+		</div>
 	);
 };

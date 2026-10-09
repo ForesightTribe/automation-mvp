@@ -5,6 +5,10 @@ import { ViewToggle } from "../../../components/ui/ViewToggle";
 import { Loading } from "../../../components/feedback/Loading";
 import { ErrorState } from "../../../components/feedback/ErrorState";
 import { formatNumber } from "../../../lib/format";
+import { SectionExport } from "./SectionExport";
+import { downloadCsv, exportName } from "../../../lib/exportTable";
+import { useDateRange } from "../../../context/DateRangeContext";
+import { citySection, storeSection, productSection } from "../exportSections";
 
 const LENSES = [
 	{ value: "city", label: "By city" },
@@ -12,7 +16,8 @@ const LENSES = [
 	{ value: "product", label: "By product" },
 ];
 
-const pct = (v) => (v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`);
+const pct = (v) =>
+	v === null || v === undefined ? "—" : `${Number(v).toFixed(1)}%`;
 
 /** Colour In-stock% only. On-shelf varies with range strategy, so colouring it would
  *  cry wolf; in-stock below 90/97 is a genuine supply warning. */
@@ -38,9 +43,15 @@ const stockClass = (v) =>
  * the table ranks and sorts, and a click opens a drawer. Column headers sort. See
  * docs/darkstores.md.
  */
-export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectProduct, onSelectCity }) => {
+export const AvailabilityExplorer = ({
+	kind = "main",
+	onSelectStore,
+	onSelectProduct,
+	onSelectCity,
+}) => {
 	const [lens, setLens] = useState("city");
 	const [sort, setSort] = useState({ key: null, dir: "desc" });
+	const { range: dateRange } = useDateRange();
 
 	const cities = useCities(kind);
 	const storesAll = useStores({ kind });
@@ -50,7 +61,8 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 	const scraped = storesAll.data?.stores_scraped ?? 0;
 
 	const view = lens;
-	const source = lens === "city" ? cities : lens === "store" ? storesAll : products;
+	const source =
+		lens === "city" ? cities : lens === "store" ? storesAll : products;
 
 	const setLensReset = (v) => {
 		setLens(v);
@@ -61,54 +73,175 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 	const columns = useMemo(() => {
 		if (view === "store") {
 			return [
-				{ key: "name", label: "Store", render: (r) => (
-					<span>
-						{r.store_name || `Store ${r.merchant_id}`}
-						{r.store_name && (
-							<span className="ml-2 text-xs text-content-subtle">#{r.merchant_id}</span>
-						)}
-						<span className="ml-2 text-xs capitalize text-content-subtle">{r.city}</span>
-						{r.merchant_type && r.merchant_type !== "express" && (
-							<span title={`Store type: ${r.merchant_type}`} className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle">
-								slower delivery
+				{
+					key: "name",
+					label: "Store",
+					render: (r) => (
+						<span>
+							{r.store_name || `Store ${r.merchant_id}`}
+							{r.store_name && (
+								<span className="ml-2 text-xs text-content-subtle">
+									#{r.merchant_id}
+								</span>
+							)}
+							<span className="ml-2 text-xs capitalize text-content-subtle">
+								{r.city}
 							</span>
-						)}
-					</span>
-				), sort: (r) => r.store_name || r.merchant_id },
-				{ key: "skus_listed", label: "On shelf", align: "right", render: (r) => (
-					<span>{formatNumber(r.skus_listed)}<span className="text-content-subtle"> / {formatNumber(range)}</span></span>
-				), sort: (r) => r.skus_listed },
-				{ key: "skus_out_of_stock", label: "Out of stock", align: "right", render: (r) => formatNumber(r.skus_out_of_stock), sort: (r) => r.skus_out_of_stock },
-				{ key: "skus_not_listed", label: "Not carried", align: "right", render: (r) => formatNumber(r.skus_not_listed), sort: (r) => r.skus_not_listed },
-				{ key: "distribution_pct", label: "In stock", align: "right", render: (r) => <span className={stockClass(r.distribution_pct)}>{pct(r.distribution_pct)}</span>, sort: (r) => r.distribution_pct },
+							{r.merchant_type &&
+								r.merchant_type !== "express" && (
+									<span
+										title={`Store type: ${r.merchant_type}`}
+										className="ml-2 rounded bg-surface-subtle px-1.5 py-0.5 text-[10px] text-content-subtle"
+									>
+										slower delivery
+									</span>
+								)}
+						</span>
+					),
+					sort: (r) => r.store_name || r.merchant_id,
+				},
+				{
+					key: "skus_listed",
+					label: "On shelf",
+					align: "right",
+					render: (r) => (
+						<span>
+							{formatNumber(r.skus_listed)}
+							<span className="text-content-subtle">
+								{" "}
+								/ {formatNumber(range)}
+							</span>
+						</span>
+					),
+					sort: (r) => r.skus_listed,
+				},
+				{
+					key: "skus_out_of_stock",
+					label: "Out of stock",
+					align: "right",
+					render: (r) => formatNumber(r.skus_out_of_stock),
+					sort: (r) => r.skus_out_of_stock,
+				},
+				{
+					key: "skus_not_listed",
+					label: "Never stocked",
+					align: "right",
+					render: (r) => formatNumber(r.skus_not_listed),
+					sort: (r) => r.skus_not_listed,
+				},
+				{
+					key: "distribution_pct",
+					label: "In stock",
+					align: "right",
+					render: (r) => (
+						<span className={stockClass(r.distribution_pct)}>
+							{pct(r.distribution_pct)}
+						</span>
+					),
+					sort: (r) => r.distribution_pct,
+				},
 			];
 		}
 		if (view === "product") {
 			return [
-				{ key: "name", label: "Product", render: (r) => r.product_name || r.platform_product_id, sort: (r) => r.product_name || "" },
-				{ key: "stores_listed", label: "Stores carrying it", align: "right", render: (r) => (
-					<span>{formatNumber(r.stores_listed)}<span className="text-content-subtle"> / {formatNumber(scraped)}</span></span>
-				), sort: (r) => r.stores_listed },
-				{ key: "reach_pct", label: "Store coverage", align: "right", render: (r) => pct(r.reach_pct), sort: (r) => r.reach_pct },
-				{ key: "stores_out_of_stock", label: "Out of stock", align: "right", render: (r) => formatNumber(r.stores_out_of_stock), sort: (r) => r.stores_out_of_stock },
-				{ key: "distribution_pct", label: "In stock", align: "right", render: (r) => <span className={stockClass(r.distribution_pct)}>{pct(r.distribution_pct)}</span>, sort: (r) => r.distribution_pct },
+				{
+					key: "name",
+					label: "Product",
+					render: (r) => r.product_name || r.platform_product_id,
+					sort: (r) => r.product_name || "",
+				},
+				{
+					key: "stores_listed",
+					label: "Stores carrying it",
+					align: "right",
+					render: (r) => (
+						<span>
+							{formatNumber(r.stores_listed)}
+							<span className="text-content-subtle">
+								{" "}
+								/ {formatNumber(scraped)}
+							</span>
+						</span>
+					),
+					sort: (r) => r.stores_listed,
+				},
+				{
+					key: "reach_pct",
+					label: "Store coverage",
+					align: "right",
+					render: (r) => pct(r.reach_pct),
+					sort: (r) => r.reach_pct,
+				},
+				{
+					key: "stores_out_of_stock",
+					label: "Out of stock",
+					align: "right",
+					render: (r) => formatNumber(r.stores_out_of_stock),
+					sort: (r) => r.stores_out_of_stock,
+				},
+				{
+					key: "distribution_pct",
+					label: "In stock",
+					align: "right",
+					render: (r) => (
+						<span className={stockClass(r.distribution_pct)}>
+							{pct(r.distribution_pct)}
+						</span>
+					),
+					sort: (r) => r.distribution_pct,
+				},
 			];
 		}
 		return [
-			{ key: "city", label: "City", render: (r) => <span className="capitalize">{r.city || "—"}</span>, sort: (r) => r.city || "" },
-			{ key: "stores", label: "Stores", align: "right", render: (r) => formatNumber(r.stores), sort: (r) => r.stores },
-			{ key: "skus_out_of_stock", label: "Out of stock", align: "right", render: (r) => formatNumber(r.skus_out_of_stock), sort: (r) => r.skus_out_of_stock },
-			{ key: "skus_not_listed", label: "Missing listings", align: "right", render: (r) => formatNumber(r.skus_not_listed), sort: (r) => r.skus_not_listed },
-			{ key: "distribution_pct", label: "In stock", align: "right", render: (r) => <span className={stockClass(r.distribution_pct)}>{pct(r.distribution_pct)}</span>, sort: (r) => r.distribution_pct },
+			{
+				key: "city",
+				label: "City",
+				render: (r) => (
+					<span className="capitalize">{r.city || "—"}</span>
+				),
+				sort: (r) => r.city || "",
+			},
+			{
+				key: "stores",
+				label: "Stores",
+				align: "right",
+				render: (r) => formatNumber(r.stores),
+				sort: (r) => r.stores,
+			},
+			{
+				key: "skus_out_of_stock",
+				label: "Out of stock",
+				align: "right",
+				render: (r) => formatNumber(r.skus_out_of_stock),
+				sort: (r) => r.skus_out_of_stock,
+			},
+			{
+				key: "skus_not_listed",
+				label: "Missing listings",
+				align: "right",
+				render: (r) => formatNumber(r.skus_not_listed),
+				sort: (r) => r.skus_not_listed,
+			},
+			{
+				key: "distribution_pct",
+				label: "In stock",
+				align: "right",
+				render: (r) => (
+					<span className={stockClass(r.distribution_pct)}>
+						{pct(r.distribution_pct)}
+					</span>
+				),
+				sort: (r) => r.distribution_pct,
+			},
 		];
 	}, [view, range, scraped]);
 
 	const rawRows =
 		view === "store"
-			? source.data?.stores ?? []
+			? (source.data?.stores ?? [])
 			: view === "product"
-				? source.data?.skus ?? []
-				: source.data?.cities ?? [];
+				? (source.data?.skus ?? [])
+				: (source.data?.cities ?? []);
 
 	const rows = useMemo(() => {
 		if (!sort.key) return rawRows;
@@ -116,14 +249,19 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 		if (!col) return rawRows;
 		const dir = sort.dir === "asc" ? 1 : -1;
 		return [...rawRows].sort((a, b) => {
-			const av = col.sort(a), bv = col.sort(b);
+			const av = col.sort(a),
+				bv = col.sort(b);
 			if (typeof av === "string") return av.localeCompare(bv) * dir;
 			return ((av ?? 0) - (bv ?? 0)) * dir;
 		});
 	}, [rawRows, sort, columns]);
 
 	const onHeader = (key) =>
-		setSort((s) => (s.key === key ? { key, dir: s.dir === "asc" ? "desc" : "asc" } : { key, dir: "desc" }));
+		setSort((s) =>
+			s.key === key
+				? { key, dir: s.dir === "asc" ? "desc" : "asc" }
+				: { key, dir: "desc" },
+		);
 
 	const onRow = (r) => {
 		if (view === "product") onSelectProduct?.(r.platform_product_id);
@@ -133,7 +271,8 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 
 	// One-of-anything is common here (a single-city client, a single store in a
 	// tier filter), so every count carries its own plural rather than a bare "s".
-	const plural = (n, one, many) => `${formatNumber(n)} ${n === 1 ? one : many}`;
+	const plural = (n, one, many) =>
+		`${formatNumber(n)} ${n === 1 ? one : many}`;
 	const nCityRows = (cities.data?.cities ?? []).length;
 	const subtitle =
 		lens === "product"
@@ -143,65 +282,109 @@ export const AvailabilityExplorer = ({ kind = "main", onSelectStore, onSelectPro
 				: `${plural(nCityRows, "city", "cities")} · click any row for its stores`;
 
 	return (
-		<Card>
-			<div className="mb-4 flex flex-wrap items-start justify-between gap-3">
-				<div>
-					<h2 className="font-display text-base font-semibold text-content">
-						Where you are on the shelf
-					</h2>
-					<p className="text-xs text-content-subtle">{subtitle}</p>
+		<div>
+			{/* The lens on screen is what downloads. */}
+			<SectionExport
+				disabled={!rows.length}
+				onExport={() =>
+					downloadCsv(
+						exportName(`availability-${lens}-${kind}`, dateRange),
+						[
+							lens === "city"
+								? citySection(cities.data, kind)
+								: lens === "store"
+									? storeSection(storesAll.data, kind)
+									: productSection(
+											products.data,
+											storesAll.data,
+											kind,
+										),
+						].filter(Boolean),
+					)
+				}
+			/>
+			<Card>
+				<div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+					<div>
+						<h2 className="font-display text-base font-semibold text-content">
+							Where you are on the shelf
+						</h2>
+						<p className="text-xs text-content-subtle">
+							{subtitle}
+						</p>
+					</div>
+					<ViewToggle
+						options={LENSES}
+						value={lens}
+						onChange={setLensReset}
+					/>
 				</div>
-				<ViewToggle options={LENSES} value={lens} onChange={setLensReset} />
-			</div>
 
-			{source.isLoading ? (
-				<Loading label="Loading…" />
-			) : source.error ? (
-				<ErrorState message={source.error.message} onRetry={source.refetch} />
-			) : rows.length === 0 ? (
-				<p className="py-8 text-center text-sm text-content-subtle">Nothing in this window.</p>
-			) : (
-				<div className="overflow-auto" style={{ maxHeight: 520 }}>
-					<table className="w-full border-collapse text-sm">
-						<thead className="sticky top-0 z-10 bg-card">
-							<tr className="border-b border-border text-content-subtle">
-								{columns.map((c) => (
-									<th
-										key={c.key}
-										onClick={() => onHeader(c.key)}
-										className={`cursor-pointer select-none px-3 py-2 font-medium hover:text-content ${
-											c.align === "right" ? "text-right" : "text-left"
-										}`}
-									>
-										{c.label}
-										{sort.key === c.key && (
-											<span className="ml-1 text-[10px]">{sort.dir === "asc" ? "▲" : "▼"}</span>
-										)}
-									</th>
-								))}
-							</tr>
-						</thead>
-						<tbody>
-							{rows.map((r, i) => (
-								<tr
-									key={r.merchant_id || r.platform_product_id || r.city || i}
-									onClick={() => onRow(r)}
-									className="cursor-pointer border-b border-border/60 hover:bg-surface-subtle"
-								>
+				{source.isLoading ? (
+					<Loading label="Loading…" />
+				) : source.error ? (
+					<ErrorState
+						message={source.error.message}
+						onRetry={source.refetch}
+					/>
+				) : rows.length === 0 ? (
+					<p className="py-8 text-center text-sm text-content-subtle">
+						Nothing in this window.
+					</p>
+				) : (
+					<div className="overflow-auto" style={{ maxHeight: 520 }}>
+						<table className="w-full border-collapse text-sm">
+							<thead className="sticky top-0 z-10 bg-card">
+								<tr className="border-b border-border text-content-subtle">
 									{columns.map((c) => (
-										<td
+										<th
 											key={c.key}
-											className={`px-3 py-2.5 ${c.align === "right" ? "text-right tabular-nums" : "text-content"}`}
+											onClick={() => onHeader(c.key)}
+											className={`cursor-pointer select-none px-3 py-2 font-medium hover:text-content ${
+												c.align === "right"
+													? "text-right"
+													: "text-left"
+											}`}
 										>
-											{c.render(r)}
-										</td>
+											{c.label}
+											{sort.key === c.key && (
+												<span className="ml-1 text-[10px]">
+													{sort.dir === "asc"
+														? "▲"
+														: "▼"}
+												</span>
+											)}
+										</th>
 									))}
 								</tr>
-							))}
-						</tbody>
-					</table>
-				</div>
-			)}
-		</Card>
+							</thead>
+							<tbody>
+								{rows.map((r, i) => (
+									<tr
+										key={
+											r.merchant_id ||
+											r.platform_product_id ||
+											r.city ||
+											i
+										}
+										onClick={() => onRow(r)}
+										className="cursor-pointer border-b border-border/60 hover:bg-surface-subtle"
+									>
+										{columns.map((c) => (
+											<td
+												key={c.key}
+												className={`px-3 py-2.5 ${c.align === "right" ? "text-right tabular-nums" : "text-content"}`}
+											>
+												{c.render(r)}
+											</td>
+										))}
+									</tr>
+								))}
+							</tbody>
+						</table>
+					</div>
+				)}
+			</Card>
+		</div>
 	);
 };
