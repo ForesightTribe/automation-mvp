@@ -59,10 +59,6 @@ import {
 
 const LIMIT = 20;
 const BREAKDOWN_DIMS = new Set(["product"]);
-const COMBINE = [
-	{ value: "combined", label: "Combined" },
-	{ value: "split", label: "Split by marketplace" },
-];
 // Campaign states, in the order they matter. Each marketplace's own status words are mapped
 // onto these by the API (`CampaignRow.state`), so one filter covers every marketplace.
 const STATES = [
@@ -109,8 +105,8 @@ const PeriodNote = ({ periods, rangeTo }) => {
  *   view report that grouping and which do not, so no table belongs to one marketplace.
  * - **Columns** picks which figures the table shows (remembered in this browser, with a reset);
  *   the order is fixed.
- * - **Combined** adds the same keyword, product or category across marketplaces; a row opens
- *   to one line per marketplace. **Split** lists each marketplace's row on its own.
+ * - The same keyword or product is ONE row across marketplaces, opening to one line per
+ *   marketplace; the channel chips narrow the table to one marketplace.
  * - **Chart** shows where the spend earned (RoAS bands) and the biggest spenders.
  * - Clicking a row opens its detail panel. Campaign rows keep the budget-utilisation dots and
  *   their drawer, the state / type filters, and the `?sort=&order=&status=` links the
@@ -131,7 +127,6 @@ export const PerformanceExplorer = () => {
 		setShown(next);
 		saveColumns(next);
 	};
-	const [combine, setCombine] = useState("combined");
 	const [view, setView] = useState("table");
 	const [query, setQuery] = useState("");
 	const [sort, setSort] = useState(() => params.get("sort") || "spend");
@@ -157,8 +152,8 @@ export const PerformanceExplorer = () => {
 	const [channel, setChannel] = useState(null);
 	const reporting = selected.filter((m) => COVER[dim].includes(m));
 	const silent = selected.filter((m) => !COVER[dim].includes(m));
-	const canCombine = dim !== "campaign" && reporting.length > 1;
-	const combined = canCombine && combine === "combined";
+	// Campaigns belong to one marketplace; everything else is merged across them.
+	const combined = dim !== "campaign" && reporting.length > 1;
 	const multi = reporting.length > 1;
 
 	// Only the current grouping's data is asked for. The campaign list is always loaded: it
@@ -182,7 +177,7 @@ export const PerformanceExplorer = () => {
 
 	useEffect(() => {
 		setPage(1);
-	}, [dim, combine, query, sort, order, state, type, range, selected]);
+	}, [dim, query, sort, order, state, type, range, selected]);
 
 	// Every row for the grouping, before filters.
 	const allRows = useMemo(() => {
@@ -274,7 +269,18 @@ export const PerformanceExplorer = () => {
 		});
 		return out;
 		// eslint-disable-next-line react-hooks/exhaustive-deps
-	}, [allRows, query, state, type, sort, order, dim, shown, channel, combined]);
+	}, [
+		allRows,
+		query,
+		state,
+		type,
+		sort,
+		order,
+		dim,
+		shown,
+		channel,
+		combined,
+	]);
 
 	const totals = useMemo(
 		() =>
@@ -464,13 +470,6 @@ export const PerformanceExplorer = () => {
 				</div>
 
 				<div className="mb-3 flex flex-wrap items-center gap-2">
-					{canCombine && (
-						<ViewToggle
-							options={COMBINE}
-							value={combine}
-							onChange={setCombine}
-						/>
-					)}
 					<span className="flex-1" />
 					{dim === "campaign" && (
 						<>

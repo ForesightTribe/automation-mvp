@@ -9,7 +9,7 @@ import {
 	ClipboardList,
 	FileText,
 	Settings,
-	Store,
+	// Store, — Market View's icon, while that page is hidden
 } from "lucide-react";
 
 /**
@@ -45,7 +45,8 @@ export const NAV_ITEMS = [
 	{ label: "Competition", path: "/competition", icon: Gauge },
 	// Store-grain companion to Competition: the same public scrape, read as
 	// "which shops and which search terms" rather than as national roll-ups.
-	{ label: "Market View", path: "/market-view", icon: Store },
+	// Experimental — hidden for now (route commented out in app/router.jsx too).
+	// { label: "Market View", path: "/market-view", icon: Store },
 	// A clipboard, not a document: Scorecard rates performance while Reports produces
 	// files, and both wearing FileText made two different destinations look like one.
 	{ label: "Scorecard", path: "/scorecard", icon: ClipboardCheck },
