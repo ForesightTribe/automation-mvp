@@ -1,7 +1,7 @@
 import asyncio
 import json
 import re
-from datetime import date
+from datetime import date, timedelta
 from urllib.parse import urlencode
 
 from playwright.async_api import async_playwright
@@ -46,7 +46,28 @@ def _norm_status(status: str | None) -> str:
     return (status or "").strip().upper().replace(" ", "_").replace("-", "_")
 
 
-async def scrape(storage_state: dict, start: date, end: date, limit: int | None = None) -> dict:
+# Days of keyword performance asked for ONE day at a time, newest first, each run (B6). Three,
+# like Zepto's ads window, so a missed run or a late revision heals itself the next day.
+KEYWORD_DAYS = 3
+# The 8-day snapshot the old detail table holds: `end − 7 … end` (what every run used to ask).
+_SNAPSHOT_SPAN = timedelta(days=7)
+
+
+def keyword_days(start: date, end: date, days: int | None, today: date) -> list[date]:
+    """The days to ask the keyword report for, one at a time: the newest `days` days of
+    [start, end] that are before `today` (today's report is empty — probed 2026-10-08), or
+    every such day when `days` is None (a backfill)."""
+    last = min(end, today - timedelta(days=1))
+    out = []
+    d = last
+    while d >= start and (days is None or len(out) < days):
+        out.append(d)
+        d -= timedelta(days=1)
+    return out
+
+
+async def scrape(storage_state: dict, start: date, end: date, limit: int | None = None,
+                 kw_days: int | None = KEYWORD_DAYS) -> dict:
     """Active scrape of the marketing dashboard for a [start, end] window.
 
     Authenticates once (capturing the firebase_user_token), then issues in-page
@@ -141,6 +162,9 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
 
             daily: dict[int, list] = {}
             detail: dict[int, dict] = {}
+            # {campaign_id: {"YYYY-MM-DD": report}} — the one-day keyword reports (B6).
+            detail_days: dict[int, dict[str, dict]] = {}
+            kw_dates = keyword_days(start, end, kw_days, date.today())
             campaign_detail: dict[int, dict] = {}
             keyword_attributes: dict[int, list] = {}
             total = len(targets)
@@ -169,19 +193,39 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
                 if cid not in runnable_ids:
                     continue
                 daily[cid] = await _fetch_daily(page, cid, from_str, to_str, token, referrer)
+                report_url = ep.CAMPAIGN_REPORT_API.format(campaign_id=cid)
+                # The 8-day snapshot the old detail table holds, still written while code that
+                # reads it is running anywhere. Always `end − 7 … end`, whatever the window, so a
+                # long backfill window cannot store a 30-day total under a snapshot date.
                 report = await _post(
-                    page,
-                    ep.CAMPAIGN_REPORT_API.format(campaign_id=cid),
-                    {"from_date": from_str, "to_date": to_str},
-                    token,
-                    referrer=referrer,
+                    page, report_url,
+                    {"from_date": _fmt(max(start, end - _SNAPSHOT_SPAN)), "to_date": to_str},
+                    token, referrer=referrer,
                 )
                 detail[cid] = (report or {}).get("data") or {}
+                # Keyword performance ONE day at a time (B6), only for the days this campaign
+                # spent on — the daily series just fetched says which. A day it did not run has
+                # no keywords to report, so asking would only spend a rate-limited call.
+                spent = {
+                    _day_of(r.get("date_ist")) for r in daily[cid]
+                    if (r.get("budget_consumed") or 0) > 0
+                }
+                for d in kw_dates:
+                    if d.isoformat() not in spent:
+                        continue
+                    day_report = await _post(
+                        page, report_url, {"from_date": _fmt(d), "to_date": _fmt(d)},
+                        token, referrer=referrer,
+                    )
+                    if day_report is not None:
+                        detail_days.setdefault(cid, {})[d.isoformat()] = (
+                            (day_report or {}).get("data") or {})
             got_config = sum(1 for v in campaign_detail.values() if v)
             logger.info(
                 f"per-campaign pulls · config {got_config}/{len(campaign_detail)} · "
                 f"{sum(len(v) for v in keyword_attributes.values())} keywords with bid ranges · "
-                f"metrics {len(daily)}"
+                f"metrics {len(daily)} · keyword days "
+                f"{sum(len(v) for v in detail_days.values())} (one report per campaign × day spent)"
             )
             # A campaign whose detail call failed has its targeting/floor columns written
             # NULL (the upsert replaces every updatable column, and a batch insert cannot
@@ -200,6 +244,7 @@ async def scrape(storage_state: dict, start: date, end: date, limit: int | None 
                 "campaigns": campaigns,
                 "daily": daily,
                 "detail": detail,
+                "detail_days": detail_days,
                 "campaign_detail": campaign_detail,
                 "keyword_attributes": keyword_attributes,
                 "cities": cities,
@@ -458,3 +503,8 @@ async def _inject_firebase_idb(context, idb_data: list) -> None:
         }};
     }})();""")
     logger.debug(f"IndexedDB injection: {len(idb_data)} Firebase items")
+
+
+def _day_of(date_ist) -> str:
+    """'2026-09-17 05:30:00+05:30' (metrics-trends' date_ist) → '2026-09-17'."""
+    return str(date_ist or "")[:10]

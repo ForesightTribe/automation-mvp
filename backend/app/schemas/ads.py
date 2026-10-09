@@ -100,7 +100,9 @@ class CampaignDayRow(BaseModel):
     window in ONE request: they used to make one call per day (up to 31, four at a time), and
     every one held a pooled connection (2026-09-25). Only days a campaign SPENT on are
     returned — a day it did not run is absent, which the views read as "did not run".
-    `daily_budget` is the campaign's current setting, as on `/ads/campaigns`."""
+    `daily_budget` is THAT DAY's budget where it was recorded — Zepto's daily rows, Blinkit's
+    `blinkit_ad_campaign_daily.daily_budget` (from 2026-10-08) — else the campaign's current
+    setting."""
 
     date: date
     campaign_id: int | str
@@ -192,6 +194,9 @@ class CampaignKeywords(BaseModel):
     Instamart, the rows returned: its rollup is limited at the query)."""
 
     platform: str
+    # True when the period is a marketplace-reported fixed total (Blinkit's 8-day snapshot,
+    # used until its per-day history reaches the window) rather than the requested window.
+    snapshot: bool = False
     period_start: date | None = None
     period_end: date | None = None
     total: int

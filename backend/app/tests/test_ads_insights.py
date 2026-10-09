@@ -68,6 +68,13 @@ class _Session:
         return 0
 
 
+def _no_daily_history(monkeypatch):
+    """These cases are about Blinkit's 8-day snapshot path: no per-day history yet (B6)."""
+    async def no(*_a, **_k):
+        return False
+    monkeypatch.setattr(ads_service, "_blinkit_daily_covers", no)
+
+
 # ── K-B1 ──────────────────────────────────────────────────────────────────────
 
 def test_zepto_only_zero_spend_day_has_numeric_roas(monkeypatch):
@@ -135,6 +142,7 @@ def test_zepto_campaign_keywords_read_the_per_campaign_table_over_the_window():
 
 
 def test_blinkit_campaign_keywords_label_the_snapshot_not_the_window(monkeypatch):
+    _no_daily_history(monkeypatch)
     seen = {}
 
     async def get_keywords(_s, **kw):
@@ -222,6 +230,7 @@ def test_budget_split_scoped_to_one_marketplace_reads_only_it(monkeypatch):
 
 def test_keyword_insights_label_blinkit_as_a_snapshot_and_zepto_as_the_window(monkeypatch):
     """K-U3: one table; Blinkit's period is its snapshot's 8 days, Zepto's the window."""
+    _no_daily_history(monkeypatch)
     async def get_keywords(_s, **kw):
         assert kw["as_of"] == D7 and kw["target_type"] == "keyword" and kw["recent_only"]
         row = KeywordRow(
@@ -255,6 +264,7 @@ def test_keyword_insights_label_blinkit_as_a_snapshot_and_zepto_as_the_window(mo
 
 
 def test_keyword_insights_with_no_blinkit_report_say_so(monkeypatch):
+    _no_daily_history(monkeypatch)
     async def none(_s, **kw):
         return Page.build([], 0, kw["pagination"])
     monkeypatch.setattr(ads_service, "get_keywords", none)
@@ -349,6 +359,7 @@ def test_performance_days_carry_each_marketplace(monkeypatch):
 
 
 def test_keyword_insights_include_instamart(monkeypatch):
+    _no_daily_history(monkeypatch)
     from app.services import instamart_ads
 
     async def none(_s, **kw):

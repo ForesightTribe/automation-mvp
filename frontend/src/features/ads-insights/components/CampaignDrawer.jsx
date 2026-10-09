@@ -47,7 +47,8 @@ export const CampaignDrawer = ({ campaign: c, open, onClose }) => {
 		kw?.period_start && kw?.period_end
 			? `${formatDate(kw.period_start)} to ${formatDate(kw.period_end)}`
 			: "";
-	const isSnapshot = c.platform === "blinkit";
+	// The API says whether these are Blinkit's 8-day snapshot or per-day rows over the window (B6).
+	const isSnapshot = Boolean(kw?.snapshot);
 
 	// A fraction, because formatPercent multiplies by 100 on the way out.
 	const acos = c.ad_sales ? c.budget_consumed / c.ad_sales : null;

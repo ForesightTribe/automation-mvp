@@ -29,6 +29,7 @@ from app.models.blinkit_marketing import (
     BlinkitAdCampaign,
     BlinkitAdCampaignDaily,
     BlinkitAdCampaignDetail,
+    BlinkitAdCampaignDetailDaily,
     BlinkitBrandCollection,
     BlinkitSponsoredSOV,
     BlinkitVisibilityPlan,
@@ -444,8 +445,8 @@ async def get_campaigns_daily(
     per marketplace.
 
     Same rules as `get_campaigns`, so the two agree row for row: a Blinkit campaign needs a
-    catalogue row (its metadata) to be listed, and its `daily_budget` is the current one.
-    Only days with spend come back.
+    catalogue row (its metadata) to be listed. A day's `daily_budget` is the one recorded on
+    that day's row (B8), else the current one. Only days with spend come back.
     """
     rollups = (
         await session.execute(
@@ -454,6 +455,8 @@ async def get_campaigns_daily(
                 AdDaily.campaign_id,
                 func.coalesce(func.sum(AdDaily.budget_consumed), 0.0),
                 func.coalesce(func.sum(AdDaily.ad_sales), 0.0),
+                # The day's own budget where the scrape recorded one (B8, from 2026-10-08).
+                func.max(AdDaily.daily_budget),
             )
             .where(*_ad_conds(tenant_id, start, end, marketplaces))
             .group_by(AdDaily.date, AdDaily.campaign_id)
@@ -477,10 +480,11 @@ async def get_campaigns_daily(
             "name": meta[cid].name,
             "type": meta[cid].type,
             "budget_consumed": round(float(spend), 2),
-            "daily_budget": meta[cid].daily_budget,
+            # That day's budget; the current one for days before budgets were recorded.
+            "daily_budget": day_budget if day_budget is not None else meta[cid].daily_budget,
             "ad_sales": round(float(sales), 2),
         }
-        for day, cid, spend, sales in rollups
+        for day, cid, spend, sales, day_budget in rollups
         if cid in meta
     ]
     if zepto_ads.wants_zepto(marketplaces):
@@ -849,6 +853,65 @@ async def get_keywords(
 BLINKIT_SNAPSHOT_SPAN = timedelta(days=7)
 
 
+async def _blinkit_daily_covers(session: AsyncSession, tenant_id: uuid.UUID, start: date) -> bool:
+    """Whether Blinkit's per-day keyword history (B6) reaches back to `start` — or to the
+    tenant's first Blinkit ad day, when the window starts before any ads existed. Until it
+    does (it starts the day the per-day scrape ships, plus whatever is backfilled), a window
+    is read from the 8-day snapshot instead, labelled as such, rather than silently summing
+    only the days the new table happens to hold."""
+    D = BlinkitAdCampaignDetailDaily
+    kw_first, ad_first = (await session.execute(select(
+        select(func.min(D.date)).where(D.tenant_id == tenant_id).scalar_subquery(),
+        select(func.min(AdDaily.date)).where(
+            AdDaily.tenant_id == tenant_id, AdDaily.platform == "blinkit").scalar_subquery(),
+    ))).one()
+    if kw_first is None:
+        return False
+    return kw_first <= max(start, ad_first or start)
+
+
+async def _blinkit_keyword_daily(
+    session: AsyncSession, *, tenant_id: uuid.UUID, start: date, end: date,
+    campaign_id: int | None = None, keywords_only: bool = True,
+) -> list[dict]:
+    """Blinkit's per-day keyword report summed over [start, end] — one row per campaign ×
+    target × match type, its sub-campaign rows merged (B6). Money and counts summed, CPM the
+    impression-weighted mean of Blinkit's reported figure (it is not spend ÷ impressions),
+    position the best seen. `keywords_only` drops recommendation placements."""
+    D = BlinkitAdCampaignDetailDaily
+    conds = [D.tenant_id == tenant_id, D.date >= start, D.date <= end]
+    if campaign_id is not None:
+        conds.append(D.campaign_id == campaign_id)
+    if keywords_only:
+        conds.append(D.target_type == "keyword")
+    impressions = func.coalesce(func.sum(D.impressions), 0)
+    rows = (await session.execute(
+        select(
+            D.campaign_id, D.target_type, D.target, D.match_type,
+            impressions,
+            func.coalesce(func.sum(D.budget_consumed), 0.0),
+            func.coalesce(func.sum(D.cpm * D.impressions), 0.0),
+            func.coalesce(func.sum(D.direct_atc + D.indirect_atc), 0),
+            func.coalesce(func.sum(D.direct_sales), 0.0),
+            func.coalesce(func.sum(D.indirect_sales), 0.0),
+            func.min(D.most_viewed_position),
+        )
+        .where(*conds)
+        .group_by(D.campaign_id, D.target_type, D.target, D.match_type)
+    )).all()
+    return [
+        {
+            "campaign_id": cid, "target_type": ttype, "target": target, "match_type": match,
+            "impressions": int(impr), "spend": round(float(spend), 2),
+            "cpm": round(float(cpm_num) / impr, 2) if impr else None,
+            "atc": int(atc), "direct_sales": round(float(ds), 2),
+            "indirect_sales": round(float(ind), 2), "sales": round(float(ds) + float(ind), 2),
+            "position": pos,
+        }
+        for cid, ttype, target, match, impr, spend, cpm_num, atc, ds, ind, pos in rows
+    ]
+
+
 async def get_campaign_keywords(
     session: AsyncSession,
     *,
@@ -863,11 +926,30 @@ async def get_campaign_keywords(
     the Insights campaign drawer. Raises ValueError for an unknown marketplace (no default
     marketplace, ever) or a non-numeric id where the marketplace's ids are numbers.
 
-    - blinkit: its detail snapshot on or before `end` (all targets — a recommendation
-      campaign's rows are its placements), period = that snapshot's 8 days.
+    - blinkit: its per-day keyword report summed over the window (all targets — a
+      recommendation campaign's rows are its placements), once that history reaches the
+      window's start; before then its 8-day detail snapshot on or before `end`, flagged
+      `snapshot` with its own dates.
     - zepto: `zepto_ad_campaign_detail` summed over the window (per day, so it follows it).
     - instamart: `instamart_ads.campaign_keywords`, windowed.
     """
+    if platform == "blinkit" and await _blinkit_daily_covers(session, tenant_id, start):
+        rows = sorted(
+            await _blinkit_keyword_daily(
+                session, tenant_id=tenant_id, start=start, end=end,
+                campaign_id=_numeric_id(platform, campaign_id), keywords_only=False),
+            key=lambda r: r["spend"], reverse=True)
+        return {
+            "platform": platform, "period_start": start, "period_end": end, "snapshot": False,
+            "total": len(rows),
+            "items": [
+                {"keyword": r["target"], "match_type": r["match_type"], "spend": r["spend"],
+                 "sales": r["sales"], "impressions": r["impressions"],
+                 "roas": round(r["sales"] / r["spend"], 4) if r["spend"] else None,
+                 "position": r["position"]}
+                for r in rows[:limit]
+            ],
+        }
     if platform == "blinkit":
         page = await get_keywords(
             session, tenant_id=tenant_id, pagination=Pagination(page=1, limit=limit),
@@ -876,6 +958,7 @@ async def get_campaign_keywords(
         snap = page.items[0].snapshot_date if page.items else None
         return {
             "platform": platform,
+            "snapshot": True,
             "period_start": snap - BLINKIT_SNAPSHOT_SPAN if snap else None,
             "period_end": snap,
             "total": page.total,
@@ -918,9 +1001,10 @@ async def get_keyword_insights(
     """The Insights keyword table: every campaign × keyword × match type of every
     marketplace in scope, in one shape, plus what period each marketplace's rows cover.
 
-    - blinkit: search-term rows of each current campaign's detail snapshot on or before
-      `end` — an 8-day total (`snapshot_date − 7 … snapshot_date`) that cannot follow the
-      window (BLINKIT-NOTES B6), so its period is the snapshot's, flagged `snapshot`.
+    - blinkit: its per-day keyword report (B6) summed over the window, once that history
+      reaches the window's start. Before then: each current campaign's 8-day detail snapshot
+      on or before `end` (`snapshot_date − 7 … snapshot_date`), flagged `snapshot` with its
+      own dates.
     - zepto: `zepto_ad_campaign_detail` summed over the window.
 
     - instamart: `instamart_ads.keyword_rows` (campaign-attributed) over the window.
@@ -930,7 +1014,28 @@ async def get_keyword_insights(
     """
     periods: list[dict] = []
     items: list[dict] = []
-    if marketplaces is None or "blinkit" in marketplaces:
+    if (marketplaces is None or "blinkit" in marketplaces) and await _blinkit_daily_covers(
+            session, tenant_id, start):
+        periods.append({"platform": "blinkit", "snapshot": False, "start": start, "end": end})
+        items += [
+            {
+                "platform": "blinkit",
+                "campaign_id": r["campaign_id"],
+                "keyword": r["target"],
+                "match_type": r["match_type"],
+                "spend": r["spend"],
+                "sales": r["sales"],
+                "impressions": r["impressions"],
+                "atc": r["atc"],
+                "direct_sales": r["direct_sales"],
+                "indirect_sales": r["indirect_sales"],
+                "position": r["position"],
+                "cpm": r["cpm"],
+            }
+            for r in await _blinkit_keyword_daily(
+                session, tenant_id=tenant_id, start=start, end=end)
+        ]
+    elif marketplaces is None or "blinkit" in marketplaces:
         page = await get_keywords(
             session, tenant_id=tenant_id, pagination=Pagination(page=1, limit=10_000),
             marketplaces=["blinkit"], target_type="keyword", recent_only=True, as_of=end)

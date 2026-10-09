@@ -86,7 +86,8 @@ const norm = (s) =>
  */
 const PeriodNote = ({ periods, rangeTo }) => {
 	const blinkit = periods.find((p) => p.platform === "blinkit");
-	if (!blinkit) return null;
+	// Only while Blinkit is read from its 8-day snapshot — per-day rows follow the picker (B6).
+	if (!blinkit?.snapshot) return null;
 	return (
 		<p className="mb-3 text-xs text-content-subtle">
 			Blinkit reports keywords as an 8-day total, so its rows don&apos;t

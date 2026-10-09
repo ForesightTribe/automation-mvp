@@ -138,6 +138,20 @@ _KEEP_IF_NULL: dict[str, tuple[str, ...]] = {
 }
 
 
+# Columns whose FIRST reading is kept: a re-scrape fills them when empty but never replaces
+# them (COALESCE(existing, incoming) — the reverse of _KEEP_IF_NULL).
+#
+# `daily_budget` on the ads daily rows is the budget as read when the scrape ran, stamped on
+# every day of the 3-day ads window. A day's first stamp comes the morning after it — the
+# budget it ended on; the re-scrapes of the next two mornings used to overwrite it with
+# LATER budgets (ZC-P24), so a budget changed on Tuesday rewrote Monday's. Budget
+# utilisation for a past day now divides by that day's own budget (2026-10-08; Blinkit's
+# `blinkit_ad_campaign_daily.daily_budget` follows the same rule, BLINKIT-NOTES B8).
+_KEEP_FIRST: dict[str, tuple[str, ...]] = {
+    "zepto_ad_campaign_daily": ("daily_budget",),
+}
+
+
 # ── reads the run needs ──────────────────────────────────────────────────────
 
 async def known_cities(session: AsyncSession, tenant_id: str) -> list[str]:
@@ -160,6 +174,16 @@ async def stored_ad_spend(session: AsyncSession, tenant_id: str, day: str) -> fl
                ZeptoAdCampaignDaily.date == date.fromisoformat(day))
     )
     return float(total.scalar() or 0)
+
+
+def _on_conflict(model, c: str):
+    """What a re-scrape writes into column `c` of an existing row."""
+    incoming, existing = insert(model).excluded[c], getattr(model, c)
+    if c in _KEEP_IF_NULL.get(model.__tablename__, ()):
+        return func.coalesce(incoming, existing)
+    if c in _KEEP_FIRST.get(model.__tablename__, ()):
+        return func.coalesce(existing, incoming)
+    return incoming
 
 
 async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
@@ -212,16 +236,7 @@ async def _upsert(session: AsyncSession, model, rows: list[dict]) -> None:
             .values(rows[i:i + chunk])
             .on_conflict_do_update(
                 index_elements=["upsert_key"],
-                set_={
-                    c: (
-                        func.coalesce(
-                            insert(model).excluded[c], getattr(model, c)
-                        )
-                        if c in _KEEP_IF_NULL.get(model.__tablename__, ())
-                        else insert(model).excluded[c]
-                    )
-                    for c in update_cols
-                },
+                set_={c: _on_conflict(model, c) for c in update_cols},
             )
         )
         await session.execute(stmt)

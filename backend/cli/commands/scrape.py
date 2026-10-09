@@ -9,6 +9,7 @@ from rich.markup import escape
 from rich.table import Table
 from app.core.database import AsyncSessionLocal
 from app.utils.logger import logger
+from app.utils.time import now_ist
 from platform_auth import service as auth_service
 from platform_auth.errors import AUTH_EXPIRED_EXIT_CODE, AuthError
 from scraper.utils.jobs import create_scrape_job, complete_scrape_job, fail_scrape_job
@@ -19,10 +20,12 @@ from scraper.platforms.blinkit.dashboard_data.marketing.parser import (
     parse_campaign,
     parse_campaign_daily,
     parse_campaign_detail,
+    parse_campaign_detail_day,
     parse_campaign_keywords,
     parse_sponsored_sov,
     parse_brand_collection,
     parse_visibility_plan,
+    stamp_budgets,
 )
 from scraper.platforms.blinkit.dashboard_data.marketing.storage import save_scrape_results
 from scraper.platforms.blinkit.dashboard_data.seller import scraper as seller_scraper
@@ -61,6 +64,11 @@ def scrape_blinkit(
     date_from: str = typer.Option(None, "--from", help="Start date YYYY-MM-DD (default: 7 days ago)"),
     date_to: str = typer.Option(None, "--to", help="End date YYYY-MM-DD (default: today)"),
     limit: int = typer.Option(None, "--limit", help="Test mode: only the N most-active campaigns"),
+    keyword_days: int = typer.Option(
+        3, "--keyword-days",
+        help="Days of keyword performance asked one day at a time, newest first (never today). "
+             "0 = every day of the window — use with --from to backfill.",
+    ),
     save: bool = typer.Option(True, "--save/--no-save", help="Save results to PostgreSQL"),
 ):
     """Scrape the Blinkit marketing dashboard for a date window.
@@ -71,12 +79,13 @@ def scrape_blinkit(
     so late metric revisions are picked up. Use --limit to smoke-test a few
     campaigns without the full-volume run.
     """
-    asyncio.run(_scrape_blinkit(tenant_id, date_from, date_to, limit, save))
+    asyncio.run(_scrape_blinkit(tenant_id, date_from, date_to, limit, save,
+                                keyword_days or None))
 
 
 async def _scrape_blinkit(
     tenant_id: str, date_from: str | None, date_to: str | None, limit: int | None, save: bool
-) -> None:
+, kw_days: int | None = 3) -> None:
     """Logs follow scraper/utils/run_log.py: step lines tagged `blinkit·<tenant>·marketing`,
     no spinner, no printed tables."""
     start = _date.fromisoformat(date_from) if date_from else _date.today() - timedelta(days=7)
@@ -97,7 +106,7 @@ async def _scrape_blinkit(
                 storage_state = (await auth_service.ensure(db, tenant_id, "blinkit")).storage_state
 
                 job_id = await create_scrape_job(db, tenant_id, "blinkit_marketing")
-                raw = await scrape(storage_state, start, end, limit=limit)
+                raw = await scrape(storage_state, start, end, limit=limit, kw_days=kw_days)
 
                 campaign_detail = raw.get("campaign_detail") or {}
                 cities = raw.get("cities") or {}
@@ -128,6 +137,17 @@ async def _scrape_blinkit(
                         report, cid, type_by_id.get(cid), snapshot_date, tenant_id, job_id
                     )
                 ]
+                # Keyword performance per day (B6).
+                detail_days = [
+                    d
+                    for cid, by_day in (raw.get("detail_days") or {}).items()
+                    for day, report in by_day.items()
+                    for d in parse_campaign_detail_day(
+                        report, cid, type_by_id.get(cid), day, tenant_id, job_id)
+                ]
+                # B8: today's budgets go on yesterday's rows, the only budget history there is.
+                budgets = stamp_budgets(
+                    daily, campaign_detail, (now_ist().date() - timedelta(days=1)).isoformat())
                 sov = [
                     parse_sponsored_sov(s, tenant_id, job_id, snapshot_date)
                     for s in raw["sponsored_sov"]
@@ -139,6 +159,7 @@ async def _scrape_blinkit(
                 logger.info(
                     f"parsed · {len(campaigns)} campaigns ({city_targeted} city-targeted) · "
                     f"{len(daily)} daily rows · {len(detail)} detail rows · "
+                    f"{len(detail_days)} keyword-day rows · {budgets} budgets recorded · "
                     f"{len(keyword_bids)} keyword × match-type bid rows · sov {len(sov)} · "
                     f"collections {len(collections)} · plans {len(plans)}"
                 )
@@ -150,7 +171,8 @@ async def _scrape_blinkit(
 
                 if save:
                     await save_scrape_results(db, campaigns, daily, detail, sov, collections,
-                                              plans, keywords=keyword_bids)
+                                              plans, keywords=keyword_bids,
+                                              detail_days=detail_days)
                 # Closed either way: a --no-save run used to leave this row `running`
                 # forever (the phantom scrape_jobs of checklist A9).
                 await complete_scrape_job(db, job_id)

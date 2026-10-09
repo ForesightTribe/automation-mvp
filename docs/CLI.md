@@ -170,12 +170,25 @@ python -m cli scrape blinkit --tenant <tenant_id>
 python -m cli scrape blinkit --tenant <tenant_id> --from 2026-05-25 --to 2026-06-24
 
 python -m cli scrape blinkit --tenant <tenant_id> --no-save   # dry run, print only
+
+# Backfill keyword performance one day at a time over a window (2026-10-08, B6)
+python -m cli scrape blinkit --tenant <tenant_id> --from 2026-09-08 --keyword-days 0
 ```
 
 One pass fetches the campaign list, then for **each campaign** its **daily** metric
 series and its **keyword / recommendation breakdown**, plus sponsored SOV, brand
 collections, and visibility plans. Each covers the whole `--from`/`--to` window — so a
 30-day backfill is one pass, not 30 runs.
+
+**Keyword performance per day** (2026-10-08, `blinkit_ad_campaign_detail_daily`): besides
+the old 8-day keyword snapshot (`end − 7 … end`, still written for older code), the report is
+asked for **one day at a time** — the newest `--keyword-days` days before today (default 3,
+so a missed run heals the next day), and only for days the campaign spent on. `0` = every day
+of the window, for a backfill with `--from`. Cost: up to 3 extra report calls per campaign on
+the daily run. **Budget history** (`blinkit_ad_campaign_daily.daily_budget`): every run also
+writes each campaign's current budget onto **yesterday's** daily row, and a re-scrape never
+replaces it — no extra calls (it comes from the configuration pull below). Blinkit keeps no
+budget history, so a backfill can't fill older days; they show the current budget.
 
 Since V7 it also pulls each campaign's **configuration**: city targeting, budget, pacing,
 spend-to-date, and Blinkit's published **bid range per keyword** (the floor a bid rule may
