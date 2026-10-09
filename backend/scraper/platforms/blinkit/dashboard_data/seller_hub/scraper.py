@@ -27,7 +27,12 @@ credential" finding. This opens a FRESH, non-persistent browser context each
 run, seeded with `storage_state`, rather than reopening one specific disk
 folder — so this no longer requires running from one specific machine.
 
-SCOPE, as of 2026-10-01: only two tables are actively scraped —
+STOCK (added 2026-10-09): `scrape_soh` reads Inventory → "Stock on hand" into
+the SAME blinkit_soh table the old dashboard fills, so the product page's
+"Stock by facility" card works unchanged: warehouse = backend qty, darkstore =
+frontend qty, one row per item x warehouse.
+
+SALES SCOPE, as of 2026-10-01: only two tables are actively scraped —
 BlinkitSellerHubSalesByProductRO (rolling-window item totals + Blinkit's own
 computed "top selling"/transition signals, not reconstructable elsewhere) and
 BlinkitSellerHubSalesOrderRO (order-level — the real item x city x day grain,
@@ -42,6 +47,7 @@ request volume, not new information. Their tables were dropped in migration
 """
 import io
 import json
+from contextlib import asynccontextmanager
 
 import httpx
 from openpyxl import load_workbook
@@ -50,6 +56,7 @@ from playwright.async_api import async_playwright
 from platform_auth.marketplaces.blinkit import endpoints as auth_ep
 from scraper.platforms.blinkit.dashboard_data.seller_hub import endpoints as ep
 from app.utils.logger import logger
+from app.utils.time import now_ist
 
 _NAV_TIMEOUT_MS = 30_000
 _REPORT_POLL_INTERVAL_MS = 2_000
@@ -150,6 +157,88 @@ async def scrape_sales(email: str, storage_state: dict, time_range_filter: str =
         "window_label": time_range_filter,
         "orders": orders,
     }
+
+
+@asynccontextmanager
+async def _hub_page(email: str, storage_state: dict):
+    """A signed-in seller-hub page + the 4 fetch() headers, opened exactly as
+    scrape_sales opens its own (same dead-session checks, same SessionDead), for
+    the stock scrape. Closes the browser on exit."""
+    if not storage_state or not storage_state.get("cookies"):
+        raise RuntimeError(
+            f"No storage_state cookies for {email} — session may never have "
+            "completed a real login. Check `cli auth probe blinkit_seller_new -t <uuid>`."
+        )
+    async with async_playwright() as p:
+        browser = await p.chromium.launch(headless=True, args=_LAUNCH_ARGS)
+        context = await browser.new_context(
+            storage_state=storage_state,
+            viewport=_VIEWPORT,
+            user_agent=auth_ep.USER_AGENT,
+        )
+        try:
+            page = context.pages[0] if context.pages else await context.new_page()
+            await page.goto(
+                f"{ep.BASE_URL}/dashboard/home", wait_until="networkidle", timeout=_NAV_TIMEOUT_MS
+            )
+            if "/dashboard" not in page.url:
+                raise SessionDead(
+                    f"Not on a dashboard route — session may be dead. Landed on {page.url}. "
+                    "Check `cli auth probe blinkit_seller_new -t <uuid>` before re-logging in."
+                )
+            await page.wait_for_timeout(2000)
+            yield page, await _auth_headers(context)
+        finally:
+            await context.close()
+            await browser.close()
+
+
+async def scrape_soh(email: str, storage_state: dict) -> dict:
+    """Stock on hand per item x warehouse, from Inventory → "Stock on hand".
+
+    Blinkit's own figures, asked once per warehouse with the page's warehouse
+    filter (unfiltered, the same call gives all-warehouse totals instead). Only
+    items holding stock in that warehouse are kept: every warehouse lists every
+    item, so keeping zeros would bury the real rows under ~400 empty ones a day.
+
+    Returns {"date", "rows": [{"warehouse": {id, name}, "item": <view row>}],
+    "totals": {item_id: sellable total}} — `totals` is the unfiltered answer,
+    kept to check the per-warehouse rows add up to it.
+    """
+    date = now_ist().strftime("%Y-%m-%d")
+    rows: list[dict] = []
+
+    async with _hub_page(email, storage_state) as (page, headers):
+        filters = await _fetch_json(page, f"/{ep.INVENTORY_FILTERS_PATH}", None, headers, method="GET")
+        warehouses = next(
+            (f["options"] for f in (filters.get("data") or {}).get("filters") or []
+             if f.get("key") == "warehouse_ids"), [])
+
+        async def view(extra: str = "") -> list[dict]:
+            items, page_no = [], 0
+            while True:
+                d = (await _fetch_json(
+                    page, f"/{ep.INVENTORY_VIEW_PATH}?sort=newest_first&page={page_no}"
+                          f"&page_size={ep.INVENTORY_PAGE_SIZE}{extra}",
+                    None, headers, method="GET")).get("data") or {}
+                items += d.get("data") or []
+                page_no += 1
+                if not d.get("data") or len(items) >= (d.get("total_count") or 0):
+                    return items
+
+        totals = {str(i["item_details"]["item_id"]): i["stock_on_hand"]["sellable"]["total"]
+                  for i in await view()}
+        for wh in warehouses:
+            for item in await view(f"&warehouse_ids={wh['id']}"):
+                s = item["stock_on_hand"]["sellable"]
+                if s.get("warehouse") or s.get("darkstore") or s.get("in_between"):
+                    rows.append({"warehouse": wh, "item": item})
+
+    logger.info(
+        f"Seller-hub SOH scraped [{date}] — warehouses:{len(warehouses)} "
+        f"items:{len(totals)} item x warehouse rows:{len(rows)}"
+    )
+    return {"date": date, "rows": rows, "totals": totals}
 
 
 async def _auth_headers(context) -> dict:

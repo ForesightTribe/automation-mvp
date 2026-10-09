@@ -1,5 +1,6 @@
 import re
 
+from scraper.platforms.blinkit.dashboard_data.seller.parser import parse_soh_row
 from scraper.utils.storage import make_upsert_key
 from app.utils.time import now_ist
 
@@ -33,6 +34,39 @@ def parse_sales_by_product(
             "scraped_at": now_ist(),
         })
     return rows
+
+
+def parse_soh(raw: dict, tenant_id: str, scrape_job_id: str) -> list[dict]:
+    """scraper.scrape_soh output -> blinkit_soh rows, built by the OLD
+    dashboard's own `parse_soh_row` so both domains write the same row shape
+    (and the same upsert key) into the one table the product page reads.
+
+    Seller-hub's "sellable warehouse" is the old dashboard's backend qty and
+    "sellable darkstore" its frontend qty. "In between" (on the way from a
+    warehouse to a dark store) has no column there and is left out — it is
+    still in Blinkit's own sellable total, so the two can differ by it."""
+    out = []
+    for r in raw["rows"]:
+        d, s = r["item"]["item_details"], r["item"]["stock_on_hand"]["sellable"]
+        out.append(parse_soh_row({
+            "item_id": str(d["item_id"]),
+            "item_name": d.get("product_name") or "",
+            "backend_facility_id": str(r["warehouse"]["id"]),
+            "backend_facility_name": r["warehouse"].get("name") or "",
+            "backend_inv_qty": _to_int(s.get("warehouse")),
+            "frontend_inv_qty": _to_int(s.get("darkstore")),
+        }, tenant_id, scrape_job_id, raw["date"]))
+    return out
+
+
+def soh_mismatches(raw: dict) -> dict[str, tuple[int, int]]:
+    """Items whose per-warehouse sellable stock does not add up to Blinkit's
+    own all-warehouse total: {item_id: (sum of warehouses, Blinkit total)}."""
+    summed: dict[str, int] = {}
+    for r in raw["rows"]:
+        iid = str(r["item"]["item_details"]["item_id"])
+        summed[iid] = summed.get(iid, 0) + _to_int(r["item"]["stock_on_hand"]["sellable"].get("total"))
+    return {i: (summed.get(i, 0), _to_int(t)) for i, t in raw["totals"].items() if summed.get(i, 0) != _to_int(t)}
 
 
 def parse_sales_orders(rows: list[dict], tenant_id: str, scrape_job_id: str) -> list[dict]:
