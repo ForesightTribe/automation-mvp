@@ -7,6 +7,7 @@ import { useAuth } from "../../context/AuthContext";
 import { CampaignsSection } from "./components/CampaignsSection";
 import { HistoryCard } from "./components/HistoryCard";
 import { ScheduledSection } from "./components/ScheduledSection";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * Campaign Manager — set-and-forget automation for Blinkit budgets and keyword bids.
@@ -102,15 +103,10 @@ export const CampaignManagerPage = () => {
 
 	return (
 		<div className="space-y-6">
-			<header>
-				<h1 className="font-display text-xl font-semibold text-content">
-					Campaign Manager
-				</h1>
-				<p className="text-sm text-content-muted">
-					Automate campaign budgets and keyword bids across the times
-					that matter.
-				</p>
-			</header>
+			<PageHeader
+				title="Campaign Manager"
+				subtitle="Automate campaign budgets and keyword bids across the times that matter."
+			/>
 
 			{!isAdmin && (
 				<ReadOnlyNotice what="Creating and editing automations is admin-only, because they change live budgets and bids." />

@@ -9,6 +9,7 @@ import { downloadCsv, exportName } from "../../lib/exportTable";
 import { useDateRange } from "../../context/DateRangeContext";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * Ads Insights: where the ad spend went, and what it returned.
@@ -38,83 +39,81 @@ export const InsightsPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div className="flex items-start justify-between gap-4">
-				<div>
-					<h1 className="font-display text-2xl font-semibold tracking-tight text-content">
-						Ads Insights
-					</h1>
-				</div>
-				{/* The headline numbers and the daily series, as one file. Each table below
-				    carries its own download, because a single file of everything is a file
-				    nobody opens. */}
-				<ExportButton
-					label="Export summary"
-					disabled={!summary}
-					onExport={() =>
-						downloadCsv(exportName("ads-insights", range), [
-							{
-								title: `Ads insights, ${range.from} to ${range.to}`,
-								columns: [
-									{
-										header: "Metric",
-										value: (r) => r.label,
-									},
-									{
-										header: "This window",
-										value: (r) => r.value,
-									},
-									{
-										header: "Previous window",
-										value: (r) => r.prev,
-									},
-									{
-										header: "Change %",
-										value: (r) => r.delta,
-									},
-								],
-								rows: SUMMARY_ROWS.map(([label, key]) => ({
-									label,
-									value: summary?.[key]?.value ?? "",
-									prev: summary?.[key]?.prev ?? "",
-									// delta_pct is a FRACTION (0.066 = +6.6%), the same as the badge reads.
-									delta:
-										summary?.[key]?.delta_pct == null
-											? ""
-											: (
-													summary[key].delta_pct * 100
-												).toFixed(1),
-								})),
-							},
-							{
-								title: "Daily performance",
-								columns: [
-									{
-										header: "Date",
-										value: (r) => r.date,
-									},
-									{
-										header: "Ad spend",
-										value: (r) => r.budget_consumed,
-									},
-									{
-										header: "Ad sales",
-										value: (r) => r.ad_sales,
-									},
-									{
-										header: "Impressions",
-										value: (r) => r.impressions,
-									},
-									{
-										header: "RoAS",
-										value: (r) => r.roas,
-									},
-								],
-								rows: performance ?? [],
-							},
-						])
-					}
-				/>
-			</div>
+			{/* The headline numbers and the daily series, as one file. Each table
+			    below carries its own download. */}
+			<PageHeader
+				title="Ads Insights"
+				actions={
+					<ExportButton
+						label="Export summary"
+						disabled={!summary}
+						onExport={() =>
+							downloadCsv(exportName("ads-insights", range), [
+								{
+									title: `Ads insights, ${range.from} to ${range.to}`,
+									columns: [
+										{
+											header: "Metric",
+											value: (r) => r.label,
+										},
+										{
+											header: "This window",
+											value: (r) => r.value,
+										},
+										{
+											header: "Previous window",
+											value: (r) => r.prev,
+										},
+										{
+											header: "Change %",
+											value: (r) => r.delta,
+										},
+									],
+									rows: SUMMARY_ROWS.map(([label, key]) => ({
+										label,
+										value: summary?.[key]?.value ?? "",
+										prev: summary?.[key]?.prev ?? "",
+										// delta_pct is a FRACTION (0.066 = +6.6%), the same as the badge reads.
+										delta:
+											summary?.[key]?.delta_pct == null
+												? ""
+												: (
+														summary[key].delta_pct *
+														100
+													).toFixed(1),
+									})),
+								},
+								{
+									title: "Daily performance",
+									columns: [
+										{
+											header: "Date",
+											value: (r) => r.date,
+										},
+										{
+											header: "Ad spend",
+											value: (r) => r.budget_consumed,
+										},
+										{
+											header: "Ad sales",
+											value: (r) => r.ad_sales,
+										},
+										{
+											header: "Impressions",
+											value: (r) => r.impressions,
+										},
+										{
+											header: "RoAS",
+											value: (r) => r.roas,
+										},
+									],
+									rows: performance ?? [],
+								},
+							])
+						}
+					/>
+				}
+			/>
 
 			{isLoading && <Loading label="Loading insights…" />}
 			{error && <ErrorState message={error.message} onRetry={refetch} />}

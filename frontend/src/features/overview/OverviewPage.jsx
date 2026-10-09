@@ -10,6 +10,7 @@ import { OverviewExport } from "./components/OverviewExport";
 import { Loading } from "../../components/feedback/Loading";
 import { useMarketplaces } from "../../context/MarketplaceContext";
 import { PriorityProvider } from "./priority";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * Overview — a daily briefing, read top to bottom: how yesterday went, then how
@@ -35,11 +36,8 @@ export const OverviewPage = () => {
 		<PriorityProvider>
 			<div className="flex flex-col gap-10">
 				<div className="flex flex-col gap-4">
-					{/* The page as one file, above the sections it covers —
-				    it is the whole overview, not yesterday's part of it. */}
-					<div className="flex items-center justify-end">
-						<OverviewExport />
-					</div>
+					{/* The export covers the whole page, not just the block below it. */}
+					<PageHeader title="Overview" actions={<OverviewExport />} />
 
 					{isLoading && <Loading label="Loading overview…" />}
 					{!isLoading && <YesterdayGlance rows={rows} />}

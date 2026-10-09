@@ -10,6 +10,7 @@ import { FacilitiesCard } from "./components/FacilitiesCard";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
 import { EmptyState } from "../../components/feedback/EmptyState";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * Scorecard — a marketplace's view of brand health. Composition root. Scorecard
@@ -53,19 +54,17 @@ export const ScorecardPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div className="flex flex-wrap items-start justify-between gap-3">
-				<div>
-					<h1 className="font-display text-xl font-bold text-content">
-						Scorecard
-					</h1>
-					<p className="text-sm text-content-muted">{subtitle}</p>
-				</div>
-				<WeekPicker
-					weeks={weeks ?? []}
-					value={selectedWeek}
-					onChange={setPicked}
-				/>
-			</div>
+			<PageHeader
+				title="Scorecard"
+				subtitle={subtitle}
+				actions={
+					<WeekPicker
+						weeks={weeks ?? []}
+						value={selectedWeek}
+						onChange={setPicked}
+					/>
+				}
+			/>
 
 			{weeksLoading && <Loading label="Loading scorecard…" />}
 			{weeksError && (

@@ -7,6 +7,7 @@ import { CategoryCityCard } from "./components/CategoryCityCard";
 import { CategoryTrendChart } from "./components/CategoryTrendChart";
 import { Loading } from "../../components/feedback/Loading";
 import { ErrorState } from "../../components/feedback/ErrorState";
+import { PageHeader } from "../../components/ui/PageHeader";
 
 /**
  * Sales & Analytics — "where is revenue coming from". Composition root: lays out
@@ -21,14 +22,10 @@ export const AnalyticsPage = () => {
 
 	return (
 		<div className="flex flex-col gap-6">
-			<div>
-				<h1 className="font-display text-xl font-bold text-content">
-					Sales & Analytics
-				</h1>
-				<p className="text-sm text-content-muted">
-					Where is revenue coming from.
-				</p>
-			</div>
+			<PageHeader
+				title="Sales & Analytics"
+				subtitle="Where is revenue coming from."
+			/>
 
 			{/* First-load spinner only; background refetches won't flip isLoading. */}
 			{isLoading && <Loading label="Loading analytics…" />}
