@@ -22,3 +22,14 @@ SALES_FILTERS_PATH = "seller-hub/api/sales/performance/filters"
 # download for the real file. See scraper.fetch_sales_order_report.
 REPORTS_DOWNLOAD_PATH = "seller-hub/api/reports/download"
 REPORTS_POLL_PATH = "seller-hub/api/reports/poll"
+
+# ── Inventory (Inventory → "Stock on hand" tab) ───────────────────────────────
+# GET, query string only. `view` lists every item with its sellable stock split
+# warehouse / darkstore / in-between (+ unsellable, incoming). Unfiltered, the
+# numbers are all-warehouse totals; with `warehouse_ids=<id>` they are THAT
+# warehouse's own figures (confirmed live 2026-10-09 for Sereko: 1164 sellable
+# in total = 475 Bengaluru B5 + 239 Kundli + ...). `page_size=50` is honoured
+# (the UI asks for 5). `filters` lists the account's warehouses.
+INVENTORY_VIEW_PATH = "seller-hub/api/inventories/v1/view"
+INVENTORY_FILTERS_PATH = "seller-hub/api/inventories/v1/filters"
+INVENTORY_PAGE_SIZE = 50

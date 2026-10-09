@@ -81,6 +81,8 @@ from scraper.platforms.blinkit.dashboard_data.seller_hub import scraper as selle
 from scraper.platforms.blinkit.dashboard_data.seller_hub.parser import (
     parse_sales_by_product as parse_seller_hub_sales_by_product,
     parse_sales_orders as parse_seller_hub_sales_orders,
+    parse_soh as parse_seller_hub_soh,
+    soh_mismatches,
 )
 from scraper.platforms.blinkit.dashboard_data.seller_hub.storage import (
     save_sales_results as save_seller_hub_sales_results,
@@ -699,10 +701,14 @@ def scrape_blinkit_seller_hub(
              '— the account\'s filters list only goes back a few months; anything older '
              "isn't available from Blinkit at all).",
     ),
+    soh: bool = typer.Option(True, "--soh/--no-soh", help="Also scrape stock on hand (Inventory page) into blinkit_soh"),
 ):
     """Scrape Blinkit's NEW seller dashboard (seller.blinkit.com/seller-hub) —
     for tenants Blinkit has migrated off partnersbiz.com (see `blinkit-seller`
-    for everyone else). Currently sales-only; pass --sales or none runs it.
+    for everyone else). Sales always run; stock on hand runs too unless
+    --no-soh, into blinkit_soh (the same table `blinkit-seller` fills), per
+    item x warehouse. One step failing does not skip the other; the exit code
+    is 1 if either failed.
 
     Writes to blinkit_seller_hub_sales_by_product_ro and
     ..._sales_order_ro, NOT blinkit_seller_sales — the old dashboard's sales
@@ -716,10 +722,10 @@ def scrape_blinkit_seller_hub(
     now self-heals any gap under a month instead of losing missed days for
     good. Pass --window with a named month to manually backfill further back.
     """
-    asyncio.run(_scrape_blinkit_seller_hub(tenant_id, sales, save, window))
+    asyncio.run(_scrape_blinkit_seller_hub(tenant_id, sales, save, window, soh))
 
 
-async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: bool, window: str) -> None:
+async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: bool, window: str, soh: bool) -> None:
     # Sales is the only pillar built so far, so it always runs — --sales exists
     # now so a future pillar (Product Expansion, etc.) can gate behind it
     # without a breaking CLI change later.
@@ -739,6 +745,7 @@ async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: boo
             )
             raise typer.Exit(1)
 
+        failed = False
         job_id = None
         try:
             job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_sales")
@@ -780,6 +787,47 @@ async def _scrape_blinkit_seller_hub(tenant_id: str, sales_flag: bool, save: boo
             if job_id:
                 await fail_scrape_job(db, job_id, str(e))
             console.print(f"[red]Seller-hub sales scrape failed: {escape(str(e))}[/red]")
+            failed = True
+
+        # ── Stock on hand → blinkit_soh, the table the old dashboard fills, so
+        # the product page's "Stock by facility" card works for seller-hub too.
+        if soh:
+            soh_job_id = None
+            try:
+                soh_job_id = await create_scrape_job(db, tenant_id, "blinkit_seller_hub_soh")
+                with console.status("[cyan]Scraping seller-hub stock on hand...[/cyan]"):
+                    try:
+                        raw_soh = await seller_hub_scraper.scrape_soh(email, session.storage_state)
+                    except seller_hub_scraper.SessionDead as e:
+                        # Same recovery as the sales step above: log in again, retry once.
+                        logger.warning(f"Seller-hub session died before the stock scrape ({e}) — logging in again")
+                        await auth_store.mark_failed(
+                            db, tenant_id, "blinkit_seller_new", "logged out mid-scrape",
+                            login_attempt=False,
+                        )
+                        session = await auth_service.login(db, tenant_id, "blinkit_seller_new", auto=True)
+                        raw_soh = await seller_hub_scraper.scrape_soh(
+                            session.email or email, session.storage_state
+                        )
+
+                rows = parse_seller_hub_soh(raw_soh, tenant_id, soh_job_id)
+                for item_id, (summed, total) in soh_mismatches(raw_soh).items():
+                    logger.warning(f"Seller-hub SOH item {item_id}: warehouses add up to {summed}, Blinkit total {total}")
+                if save:
+                    await save_soh_results(db, rows)
+                    await complete_scrape_job(db, soh_job_id, len(rows))
+
+                console.print(
+                    f"[green]Seller-hub stock: {len(raw_soh['totals'])} item(s), "
+                    f"{len(rows)} item x warehouse row(s) ({raw_soh['date']})[/green]"
+                )
+            except Exception as e:
+                if soh_job_id:
+                    await fail_scrape_job(db, soh_job_id, str(e))
+                console.print(f"[red]Seller-hub stock scrape failed: {escape(str(e))}[/red]")
+                failed = True
+
+        if failed:
             raise typer.Exit(1)
 
 

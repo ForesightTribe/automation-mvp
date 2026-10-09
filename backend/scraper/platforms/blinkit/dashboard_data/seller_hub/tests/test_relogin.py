@@ -99,7 +99,8 @@ def _patched(scrape_results: list, login_error: Exception | None = None):
 def _run() -> int | None:
     """Exit code of the CLI function; None when it returns normally."""
     try:
-        asyncio.run(cli._scrape_blinkit_seller_hub(TENANT, False, True, "Last 30 days"))
+        # soh=False: these cases are about the sales step's re-login only.
+        asyncio.run(cli._scrape_blinkit_seller_hub(TENANT, False, True, "Last 30 days", soh=False))
     except typer.Exit as e:
         return e.exit_code
     return None
