@@ -763,6 +763,18 @@ async def get_product_pos(
                 [ProductPoRow(**r) for r in z_rows], z_total, pagination
             )
 
+    # Same for Instamart: its PO lines live in `instamart_po_item`, keyed by
+    # the same ITEM_CODE the Instamart product page passes as item_id.
+    if total == 0 and instamart_products.wants_instamart(None):
+        i_rows, i_total = await instamart_products.po_lines(
+            session, tenant_id=tenant_id, item_id=item_id,
+            offset=pagination.offset, limit=pagination.limit,
+        )
+        if i_total:
+            return Page.build(
+                [ProductPoRow(**r) for r in i_rows], i_total, pagination
+            )
+
     rows = (
         await session.execute(
             select(
